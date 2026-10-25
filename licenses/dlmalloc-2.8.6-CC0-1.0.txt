@@ -1,0 +1,13 @@
+Source: https://github.com/emscripten-core/emscripten/blob/285c424dfa9e83b03cf8490c65ceadb7c45f28eb/system/lib/dlmalloc.c (tag 5.0.3 = commit 285c424dfa9e83b03cf8490c65ceadb7c45f28eb)
+Notice (L52-L60). Public domain (CC0-1.0); no notice is required, kept for attribution.
+==============================================================================
+
+ This is a version (aka dlmalloc) of malloc/free/realloc written by
+ Doug Lea and released to the public domain, as explained at
+ http://creativecommons.org/publicdomain/zero/1.0/ Send questions,
+ comments, complaints, performance data, etc to dl@cs.oswego.edu
+ 
+ * Version 2.8.6 Wed Aug 29 06:57:58 2012  Doug Lea
+ Note: There may be an updated version of this malloc obtainable at
+ ftp://gee.cs.oswego.edu/pub/misc/malloc.c
+ Check before installing!
