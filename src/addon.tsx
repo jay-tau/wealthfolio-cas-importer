@@ -13,7 +13,7 @@ function AddonExample({ ctx }: { ctx: AddonContext }) {
     <div className="p-6">
       <Card>
         <CardContent className="p-6">
-          <h1 className="text-2xl font-semibold mb-2">wealthfolio-cas-importer</h1>
+          <h1 className="text-2xl font-semibold mb-2">CAS Importer</h1>
           <p className="text-muted-foreground">
             Welcome to your new Wealthfolio addon! Start building amazing features.
           </p>
@@ -40,8 +40,8 @@ const enable: AddonEnableFunction = (ctx) => {
   // The route `id` MUST match `contributes.routes[].id` in manifest.json.
   // The host derives this root path from the manifest addon id.
   ctx.router.add({
-    id: 'wealthfolio-cas-importer',
-    path: '/addons/wealthfolio-cas-importer',
+    id: 'cas-importer',
+    path: '/addons/cas-importer',
     component: AddonRoute,
   });
 
