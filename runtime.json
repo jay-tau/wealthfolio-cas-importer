@@ -1,0 +1,23 @@
+{
+  "pyodide": "314.0.7",
+  "pyodideCdn": "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/",
+  "wheels": [
+    { "lock": "typing-extensions" },
+    { "lock": "annotated-types" },
+    { "lock": "typing-inspection" },
+    { "lock": "pydantic-core" },
+    { "lock": "pydantic" },
+    { "lock": "six" },
+    { "lock": "python-dateutil" },
+    {
+      "file": "pypdfium2-5.14.0-py3-none-pyemscripten_2026_0_wasm32.whl",
+      "url": "https://files.pythonhosted.org/packages/21/25/e067396b4bdd26c19f0997bfa3422d3975a49ceec2c59668e7599f2adcba/pypdfium2-5.14.0-py3-none-pyemscripten_2026_0_wasm32.whl",
+      "sha256": "c73be14076bedebd9bcaf9b062579c95c668580043bccd29eb0db502101d5716"
+    },
+    {
+      "file": "casparser-1.4.1-py3-none-any.whl",
+      "url": "https://files.pythonhosted.org/packages/f1/f6/7cfdddeb928ee9f7259713842ca93539f66f7475f9860d7b6608c1e4e432/casparser-1.4.1-py3-none-any.whl",
+      "sha256": "fd4e1759cd889e79f4da39fa3e78e2199f392b3d45ff5e05347fcea9aecece68"
+    }
+  ]
+}
