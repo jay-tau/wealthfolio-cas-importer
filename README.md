@@ -2,34 +2,30 @@
 
 Import Indian mutual fund CAS statements (CAMS/KFintech) into Wealthfolio
 
+The add-on reads a detailed Consolidated Account Statement (CAS) PDF from CAMS or KFintech with
+[casparser](https://github.com/codereverser/casparser), running under
+[Pyodide](https://pyodide.org) in a Worker inside Wealthfolio's add-on sandbox. The statement is
+parsed on the device. So far it only shows what the statement contains; importing is planned in
+[#2](https://github.com/jay-tau/wealthfolio-cas-importer/issues/2).
+
 ## Development
 
 ```bash
-# Install dependencies
-npm install
-
-# Start development server
-npm run dev:server
-
-# Build for production
-npm run build
-
-# Package addon
-npm run bundle
+pnpm install
+pnpm runtime   # Pyodide and the pinned wheels (runtime.json) into assets/runtime/
+pnpm build
+pnpm test      # casparser under Pyodide in Node, on the made-up statements in tests/fixtures/
+pnpm bundle    # dist/wealthfolio-cas-importer-<version>.zip
 ```
 
-Wealthfolio 3.7 indexes private files below `assets/` and `dist/assets/` automatically. Use
-`ctx.assets.getBlob(path)` or `ctx.assets.getUrl(path)` to load them in the sandbox; no manifest
-asset list or permission is required. Blob URLs are valid only for the current addon lifetime.
+`pnpm test:browser` runs the parser inside a copy of Wealthfolio's sandbox (sandboxed iframe, the
+add-on content security policy) in Playwright's Chromium and Firefox; pass `webkit` to add WebKit.
+Install the browsers first with `pnpm exec playwright-core install chromium firefox`.
 
-The generated Vite config targets Chrome/Edge 107, Firefox 104, and Safari 16, matching Wealthfolio
-3.7. The sandbox supports packaged images, fonts, media, CSS, and WebAssembly. Worker/service-worker
-entry points, popups, direct network requests, and remote CSS imports are intentionally unavailable.
-
-## Features
-
-- Add your features here
+The statements in `tests/fixtures/` are made up. `make_cas.py` writes them (it needs `reportlab`
+and `pikepdf`); their password is `ABCDE1234F`. Never commit a real statement.
 
 ## License
 
-MIT
+MIT. The package also carries Pyodide, casparser and the other components listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
