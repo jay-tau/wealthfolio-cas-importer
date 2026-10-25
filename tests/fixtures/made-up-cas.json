@@ -1,0 +1,997 @@
+{
+  "statement_period": {
+    "from": "01-Apr-2023",
+    "to": "31-Mar-2025"
+  },
+  "folios": [
+    {
+      "folio": "91234567 / 12",
+      "amc": "Fictiva Mutual Fund",
+      "name": "ANANYA R TESTWALA",
+      "PAN": "ABCDE1234F",
+      "KYC": "OK",
+      "PANKYC": "OK",
+      "schemes": [
+        {
+          "scheme": "Fictiva Flexi Cap Fund - Direct Plan - Growth",
+          "advisor": "DIRECT",
+          "rta_code": "FFCDG",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01FC8",
+          "amfi": null,
+          "nominees": [
+            "RAVI TESTWALA"
+          ],
+          "open": "1250.000",
+          "close": "2892.104",
+          "close_calculated": "2892.104",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "74.3120",
+            "cost": "154554.00",
+            "value": "214918.03"
+          },
+          "transactions": [
+            {
+              "date": "2023-04-10",
+              "description": "Purchase - Online via Fictiva Investor App - Systematic Instalment No 1 of 24",
+              "amount": "4999.75",
+              "units": "103.088",
+              "nav": "48.5000",
+              "balance": "1353.088",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-04-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-05-10",
+              "description": "SIP Purchase - Instalment No 2 of 24",
+              "amount": "4999.75",
+              "units": "99.582",
+              "nav": "50.2075",
+              "balance": "1452.670",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-05-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-06-10",
+              "description": "SIP Purchase - Instalment No 3 of 24",
+              "amount": "4999.75",
+              "units": "99.468",
+              "nav": "50.2650",
+              "balance": "1552.138",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-06-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-07-10",
+              "description": "SIP Purchase - Instalment No 4 of 24",
+              "amount": "4999.75",
+              "units": "94.849",
+              "nav": "52.7125",
+              "balance": "1646.987",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-07-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-08-10",
+              "description": "SIP Purchase - Instalment No 5 of 24",
+              "amount": "4999.75",
+              "units": "94.282",
+              "nav": "53.0300",
+              "balance": "1741.269",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-08-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-09-10",
+              "description": "SIP Purchase - Instalment No 6 of 24",
+              "amount": "4999.75",
+              "units": "94.038",
+              "nav": "53.1675",
+              "balance": "1835.307",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-09-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-10-10",
+              "description": "SIP Purchase - Instalment No 7 of 24",
+              "amount": "4999.75",
+              "units": "90.322",
+              "nav": "55.3550",
+              "balance": "1925.629",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-10-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-11-10",
+              "description": "SIP Purchase - Instalment No 8 of 24",
+              "amount": "4999.75",
+              "units": "87.359",
+              "nav": "57.2325",
+              "balance": "2012.988",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-11-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-12-10",
+              "description": "SIP Purchase - Instalment No 9 of 24",
+              "amount": "4999.75",
+              "units": "87.792",
+              "nav": "56.9500",
+              "balance": "2100.780",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-12-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-01-10",
+              "description": "SIP Purchase - Instalment No 10 of 24",
+              "amount": "4999.75",
+              "units": "85.077",
+              "nav": "58.7675",
+              "balance": "2185.857",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-01-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-01-15",
+              "description": "Redemption - Online",
+              "amount": "-11444.28",
+              "units": "-200.000",
+              "nav": "57.2214",
+              "balance": "1985.857",
+              "type": "REDEMPTION",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-01-15",
+              "description": "*** STT Paid ***",
+              "amount": "0.11",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STT_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-02-10",
+              "description": "SIP Purchase - Instalment No 11 of 24",
+              "amount": "4999.75",
+              "units": "85.532",
+              "nav": "58.4550",
+              "balance": "2071.389",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-02-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-03-10",
+              "description": "SIP Purchase - Instalment No 12 of 24",
+              "amount": "4999.75",
+              "units": "81.732",
+              "nav": "61.1725",
+              "balance": "2153.121",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-03-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-04-10",
+              "description": "SIP Purchase - Instalment No 13 of 24",
+              "amount": "4999.75",
+              "units": "81.231",
+              "nav": "61.5500",
+              "balance": "2234.352",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-04-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-05-10",
+              "description": "SIP Purchase - Instalment No 14 of 24",
+              "amount": "4999.75",
+              "units": "79.038",
+              "nav": "63.2575",
+              "balance": "2313.390",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-05-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-06-10",
+              "description": "SIP Purchase - Instalment No 15 of 24",
+              "amount": "4999.75",
+              "units": "78.966",
+              "nav": "63.3150",
+              "balance": "2392.356",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-06-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-06-20",
+              "description": "Switch-Out - To Fictiva Liquid Fund",
+              "amount": "-9162.83",
+              "units": "-150.000",
+              "nav": "61.0855",
+              "balance": "2242.356",
+              "type": "SWITCH_OUT",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-06-20",
+              "description": "*** STT Paid ***",
+              "amount": "0.09",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STT_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-07-10",
+              "description": "SIP Purchase - Instalment No 16 of 24",
+              "amount": "4999.75",
+              "units": "76.027",
+              "nav": "65.7625",
+              "balance": "2318.383",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-07-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-08-10",
+              "description": "SIP Purchase - Instalment No 17 of 24",
+              "amount": "4999.75",
+              "units": "75.662",
+              "nav": "66.0800",
+              "balance": "2394.045",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-08-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-09-10",
+              "description": "SIP Purchase - Instalment No 18 of 24",
+              "amount": "4999.75",
+              "units": "75.505",
+              "nav": "66.2175",
+              "balance": "2469.550",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-09-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-10-10",
+              "description": "SIP Purchase - Instalment No 19 of 24",
+              "amount": "4999.75",
+              "units": "73.090",
+              "nav": "68.4050",
+              "balance": "2542.640",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-10-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-11-10",
+              "description": "SIP Purchase - Instalment No 20 of 24",
+              "amount": "4999.75",
+              "units": "71.138",
+              "nav": "70.2825",
+              "balance": "2613.778",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-11-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-12-10",
+              "description": "SIP Purchase - Instalment No 21 of 24",
+              "amount": "4999.75",
+              "units": "71.425",
+              "nav": "70.0000",
+              "balance": "2685.203",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-12-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2025-01-10",
+              "description": "SIP Purchase - Instalment No 22 of 24",
+              "amount": "4999.75",
+              "units": "69.617",
+              "nav": "71.8175",
+              "balance": "2754.820",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2025-01-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2025-02-10",
+              "description": "SIP Purchase - Instalment No 23 of 24",
+              "amount": "4999.75",
+              "units": "69.922",
+              "nav": "71.5050",
+              "balance": "2824.742",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2025-02-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2025-03-10",
+              "description": "SIP Purchase - Instalment No 24 of 24",
+              "amount": "4999.75",
+              "units": "67.362",
+              "nav": "74.2225",
+              "balance": "2892.104",
+              "type": "PURCHASE_SIP",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2025-03-10",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            }
+          ]
+        },
+        {
+          "scheme": "Fictiva Liquid Fund - Direct Plan - Growth",
+          "advisor": "DIRECT",
+          "rta_code": "FLQDG",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01LQ6",
+          "amfi": null,
+          "nominees": [
+            "RAVI TESTWALA"
+          ],
+          "open": "0",
+          "close": "8.053",
+          "close_calculated": "8.053",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "2911.4521",
+            "cost": "21337.21",
+            "value": "23445.92"
+          },
+          "transactions": [
+            {
+              "date": "2023-05-05",
+              "description": "Purchase - Online",
+              "amount": "24998.75",
+              "units": "9.747",
+              "nav": "2564.8812",
+              "balance": "9.747",
+              "type": "PURCHASE",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-05-05",
+              "description": "*** Stamp Duty ***",
+              "amount": "1.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-06-20",
+              "description": "Switch-In - From Fictiva Flexi Cap Fund",
+              "amount": "9162.28",
+              "units": "3.306",
+              "nav": "2771.3348",
+              "balance": "13.053",
+              "type": "SWITCH_IN",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-06-20",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.46",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-11-18",
+              "description": "Redemption - Online",
+              "amount": "-14310.95",
+              "units": "-5.000",
+              "nav": "2862.1907",
+              "balance": "8.053",
+              "type": "REDEMPTION",
+              "dividend_rate": null,
+              "gift_folio": null
+            }
+          ]
+        },
+        {
+          "scheme": "Fictiva Balanced Advantage Fund - Direct Plan - IDCW Reinvestment",
+          "advisor": "DIRECT",
+          "rta_code": "FBADR",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01BA1",
+          "amfi": null,
+          "nominees": [
+            "RAVI TESTWALA"
+          ],
+          "open": "0",
+          "close": "3540.293",
+          "close_calculated": "3540.293",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "18.0410",
+            "cost": "54276.36",
+            "value": "63870.43"
+          },
+          "transactions": [
+            {
+              "date": "2023-06-12",
+              "description": "Purchase - Online",
+              "amount": "49997.50",
+              "units": "3281.322",
+              "nav": "15.2370",
+              "balance": "3281.322",
+              "type": "PURCHASE",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-06-12",
+              "description": "*** Stamp Duty ***",
+              "amount": "2.50",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-09-25",
+              "description": "IDCW Reinvestment @ Rs.0.40 per unit",
+              "amount": "1312.46",
+              "units": "84.054",
+              "nav": "15.6145",
+              "balance": "3365.376",
+              "type": "DIVIDEND_REINVEST",
+              "dividend_rate": "0.40",
+              "gift_folio": null
+            },
+            {
+              "date": "2023-09-25",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.07",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-03-26",
+              "description": "IDCW Reinvestment @ Rs.0.45 per unit",
+              "amount": "1514.34",
+              "units": "92.067",
+              "nav": "16.4482",
+              "balance": "3457.443",
+              "type": "DIVIDEND_REINVEST",
+              "dividend_rate": "0.45",
+              "gift_folio": null
+            },
+            {
+              "date": "2024-03-26",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.08",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-09-25",
+              "description": "IDCW Reinvestment @ Rs.0.42 per unit",
+              "amount": "1452.06",
+              "units": "82.850",
+              "nav": "17.5263",
+              "balance": "3540.293",
+              "type": "DIVIDEND_REINVEST",
+              "dividend_rate": "0.42",
+              "gift_folio": null
+            },
+            {
+              "date": "2024-09-25",
+              "description": "*** Stamp Duty ***",
+              "amount": "0.07",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "folio": "1040012345",
+      "amc": "Testbridge Mutual Fund",
+      "name": "ANANYA R TESTWALA",
+      "PAN": "ABCDE1234F",
+      "KYC": "OK",
+      "PANKYC": "OK",
+      "schemes": [
+        {
+          "scheme": "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout",
+          "advisor": "ARN-000000",
+          "rta_code": "TCBRP",
+          "rta": "KFINTECH",
+          "type": "N/A",
+          "isin": "INFZ91T01CB6",
+          "amfi": null,
+          "nominees": [
+            "RAVI TESTWALA"
+          ],
+          "open": "0",
+          "close": "9511.738",
+          "close_calculated": "9511.738",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "10.7432",
+            "cost": "99995.00",
+            "value": "102186.50"
+          },
+          "transactions": [
+            {
+              "date": "2023-07-03",
+              "description": "Purchase - Online",
+              "amount": "99995.00",
+              "units": "9511.738",
+              "nav": "10.5128",
+              "balance": "9511.738",
+              "type": "PURCHASE",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-07-03",
+              "description": "*** Stamp Duty ***",
+              "amount": "5.00",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-12-28",
+              "description": "IDCW Paid @ Rs.0.85 per unit",
+              "amount": "8084.98",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "DIVIDEND_PAYOUT",
+              "dividend_rate": "0.85",
+              "gift_folio": null
+            },
+            {
+              "date": "2023-12-28",
+              "description": "*** TDS on Above ***",
+              "amount": "808.50",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "TDS_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-06-28",
+              "description": "IDCW Paid @ Rs.0.80 per unit",
+              "amount": "7609.39",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "DIVIDEND_PAYOUT",
+              "dividend_rate": "0.80",
+              "gift_folio": null
+            },
+            {
+              "date": "2024-06-28",
+              "description": "*** TDS on Above ***",
+              "amount": "760.94",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "TDS_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-12-27",
+              "description": "IDCW Paid @ Rs.0.82 per unit",
+              "amount": "7799.63",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "DIVIDEND_PAYOUT",
+              "dividend_rate": "0.82",
+              "gift_folio": null
+            },
+            {
+              "date": "2024-12-27",
+              "description": "*** TDS on Above ***",
+              "amount": "779.96",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "TDS_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            }
+          ]
+        },
+        {
+          "scheme": "Testbridge Overnight Fund - Direct Plan - Growth",
+          "advisor": "DIRECT",
+          "rta_code": "TONDG",
+          "rta": "KFINTECH",
+          "type": "N/A",
+          "isin": null,
+          "amfi": null,
+          "nominees": [],
+          "open": "0",
+          "close": "10.201",
+          "close_calculated": "10.201",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "1311.2045",
+            "cost": "12401.06",
+            "value": "13375.60"
+          },
+          "transactions": [
+            {
+              "date": "2023-08-14",
+              "description": "Purchase - Online",
+              "amount": "19999.00",
+              "units": "16.451",
+              "nav": "1215.6611",
+              "balance": "16.451",
+              "type": "PURCHASE",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-08-14",
+              "description": "*** Stamp Duty ***",
+              "amount": "1.00",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-02-02",
+              "description": "***Registration of Nominee***",
+              "amount": null,
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "MISC",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2025-03-10",
+              "description": "Redemption - Online",
+              "amount": "-8168.65",
+              "units": "-6.250",
+              "nav": "1306.9834",
+              "balance": "10.201",
+              "type": "REDEMPTION",
+              "dividend_rate": null,
+              "gift_folio": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "investor_info": {
+    "name": "ANANYA R TESTWALA",
+    "email": "ananya.testwala@example.com",
+    "address": "Flat 7B, Placeholder Residency\n12 Sample Street, Demo Nagar\nFakeville 999999\nMaharashtra, India",
+    "mobile": "+910000000000"
+  },
+  "cas_type": "DETAILED",
+  "file_type": "CAMS",
+  "parse_warnings": []
+}
