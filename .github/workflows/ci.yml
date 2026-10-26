@@ -33,5 +33,25 @@ jobs:
       - run: pnpm test:casparser
       # Builds the add-on and checks the zip against Wealthfolio's limits.
       - run: pnpm bundle
-      - run: pnpm exec playwright-core install --with-deps chromium firefox webkit
+
+  browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    # Playwright's image has Node 24, the browsers and the Ubuntu packages they need; downloading
+    # those packages took some runs past the time limit. Its tag must match playwright-core in
+    # package.json, so change the two together. It has no zip, so pnpm bundle stays in test.
+    container:
+      image: mcr.microsoft.com/playwright:v1.58.2-noble
+      options: --user 1001
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v6
+        with:
+          path: .cache/runtime
+          key: runtime-${{ hashFiles('pnpm-lock.yaml', 'runtime.json', 'runtime-requirements.txt') }}
+      - run: pnpm runtime
       - run: pnpm test:browser chromium firefox webkit
