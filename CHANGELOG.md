@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial addon structure and setup
 - Read detailed CAMS/KFintech CAS PDFs with casparser under Pyodide, in a Worker, and show what they contain
 - Turn a parsed statement into Wealthfolio import rows, each trade and IDCW payout with its cash deposit or withdrawal, and a warning for each row left out
-- Import a statement: choose an account for each PAN or folio and confirm each fund by its ISIN (both remembered), preview every activity, skip what Wealthfolio already has, import, and compare each fund's units with the statement
+- Import a statement: choose an account for each PAN or folio and confirm each fund by its ISIN (both remembered; closed schemes are skipped), preview every activity, skip what Wealthfolio already has, import, and compare each fund's units with the statement
 - Remember the PDF password in Wealthfolio's secret store on request, and forget it
 
 ### Changed

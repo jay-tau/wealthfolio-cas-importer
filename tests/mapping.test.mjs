@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 import { add, cmp, dec, format, mul, neg, sub } from "../src/cas/decimal.ts";
-import { mapStatement } from "../src/cas/mapping.ts";
+import { closedScheme, mapStatement, withoutClosed } from "../src/cas/mapping.ts";
 
 const tx = (date, type, amount, units = null, nav = null, extra = {}) => ({
   date,
@@ -508,6 +508,35 @@ test("explicitly rejected instructions without unit movement are skipped", () =>
   }
 });
 
+test("a scheme without units at either end is closed when its rows record nothing", () => {
+  const nominee = tx("2024-05-10", "MISC", null);
+  const rejected = tx("2024-01-10", "UNKNOWN", "1000", "0", null, { description: "SIP Rejected - insufficient funds" });
+  assert.ok(closedScheme(scheme("A", [])));
+  assert.ok(closedScheme(scheme("A", [nominee, rejected])));
+  // Bought and sold within the statement, held throughout, or an unknown row: not closed.
+  const bought = tx("2023-05-05", "PURCHASE", "1000.00", "100.000", "10.0000");
+  const sold = tx("2024-05-05", "REDEMPTION", "-1100.00", "-100.000", "11.0000");
+  assert.ok(!closedScheme(scheme("A", [bought, sold])));
+  assert.ok(!closedScheme(scheme("A", [], { open: "100.000", close: "100.000" })));
+  assert.ok(!closedScheme(scheme("A", [tx("2024-04-10", "MISC", "50.00")])));
+});
+
+test("withoutClosed drops closed schemes and the folios they leave empty", () => {
+  const [folio] = statement().folios;
+  const data = {
+    ...statement(),
+    folios: [
+      { ...folio, folio: "F1", schemes: [scheme("A", []), scheme("B", [], { open: "100.000", close: "100.000" })] },
+      { ...folio, folio: "F2", schemes: [scheme("C", [tx("2024-05-10", "MISC", null)])] },
+    ],
+  };
+  assert.deepEqual(
+    withoutClosed(data).folios.map((f) => [f.folio, f.schemes.map((s) => s.scheme)]),
+    [["F1", ["B"]]],
+  );
+  assert.equal(data.folios[0].schemes.length, 2);
+});
+
 test("scientific decimal strings from casparser are sent as printed and computed exactly", () => {
   const mapping = map(statement(scheme("A", [
     tx("2024-01-10", "PURCHASE", "0.01", "1E-7", "100000"),
@@ -543,6 +572,14 @@ describe("the made-up statement", async () => {
       ["Fictiva Flexi Cap Fund - Direct Plan - Growth"],
     );
     assert.equal(mapping.transactions.length, 13);
+  });
+
+  test("its closed schemes need no account or fund", () => {
+    const closed = data.folios.flatMap((f) => f.schemes).filter(closedScheme).map((s) => s.scheme);
+    assert.deepEqual(closed, ["Fictiva Midcap Fund - Direct Plan - Growth", "Testbridge Gilt Fund - Direct Plan - Growth"]);
+    const open = withoutClosed(data);
+    assert.equal(open.folios.flatMap((f) => f.schemes).length, 5);
+    assert.equal(map(open).transactions.length, 39);
   });
 
   test("amounts are units × NAV ± charges, within the units' rounding of the statement", () => {

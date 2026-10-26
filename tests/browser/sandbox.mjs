@@ -111,12 +111,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByRole("button", { name: "Reading…", exact: true }).isDisabled(), true);
     assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
     await resume();
-    await frame.getByText(/2 folios, 5 schemes, 77 rows\./).waitFor({ timeout: 180_000 });
+    await frame.getByText(/2 folios, 7 schemes, 78 rows\. Skipping 2 closed schemes, with no units and nothing to import\./).waitFor({ timeout: 180_000 });
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
 
     await frame.getByLabel("PAN ABCDE1234F").click();
     await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
     await frame.getByText("Same as PAN (Mutual funds)").first().waitFor();
+    // Closed schemes get no fund section, so no search either.
+    assert.equal(await frame.locator("section").count(), 5);
+    assert.equal(await frame.getByText(/Midcap|Gilt/).count(), 0);
     const firstFund = frame.locator("section").first();
     const search = firstFund.getByLabel("Search for the fund");
     const useFund = firstFund.getByRole("button", { name: "Use this fund" });
@@ -150,6 +153,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await section.getByRole("button", { name: "Use this fund" }).click();
       await section.getByText("Confirmed").waitFor();
     }
+    const searches = await tab.frames()[1].evaluate(() => window.host.searches);
+    assert.ok(!searches.some((query) => /INFZ90K01MC|INFZ91T01GL/.test(query)), searches.join(" "));
     // Remembered: the PAN's account and the five funds, with no PAN or folio number in a key.
     const saved = (await host()).storage;
     const keys = saved.map(([key]) => key);

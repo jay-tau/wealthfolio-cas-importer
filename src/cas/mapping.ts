@@ -175,6 +175,26 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   return mapping;
 }
 
+/** Event-only rows, such as a nominee registration, and payments that failed. */
+function recordsNothing(row: CasTransaction) {
+  if (row.type === "MISC" && (row.amount === null || isZero(dec(row.amount)))) return true;
+  return (
+    (row.type === "UNKNOWN" || row.type === "MISC") &&
+    (row.units === null || isZero(dec(row.units))) &&
+    /\breject(?:ed|ion)\b|dishonoured|insufficient\s+(?:balance|funds)|payment\s+not\s+received/i.test(row.description)
+  );
+}
+
+/** A scheme with no units at either end and nothing to import, such as one sold before the statement. */
+export const closedScheme = (scheme: CasScheme) =>
+  isZero(dec(scheme.open)) && isZero(dec(scheme.close)) && scheme.transactions.every(recordsNothing);
+
+/** The statement without closed schemes, which need no account or fund, or the folios they leave empty. */
+export function withoutClosed(data: CasData): CasData {
+  const folios = data.folios.map((folio) => ({ ...folio, schemes: folio.schemes.filter((s) => !closedScheme(s)) }));
+  return { ...data, folios: folios.filter((folio) => folio.schemes.length > 0) };
+}
+
 function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: MappingInput): Scheme {
   const target = input.target(folio, scheme);
   const state: Scheme = { folio, scheme, target, entries: [] };
@@ -185,15 +205,7 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
   }
 
   scheme.transactions.forEach((row, index) => {
-    // Event-only rows, such as a nominee registration.
-    if (row.type === "MISC" && (row.amount === null || isZero(dec(row.amount)))) return;
-    if (
-      (row.type === "UNKNOWN" || row.type === "MISC") &&
-      (row.units === null || isZero(dec(row.units))) &&
-      /\breject(?:ed|ion)\b|dishonoured|insufficient\s+(?:balance|funds)|payment\s+not\s+received/i.test(row.description)
-    ) {
-      return;
-    }
+    if (recordsNothing(row)) return;
     const entry: Entry = { scheme: state, index, row, kind: KINDS[row.type], charges: [] };
     if (!entry.kind && !CHARGES[row.type] && row.type !== "REVERSAL") {
       entry.problem = UNSUPPORTED[row.type] ?? UNSUPPORTED.UNKNOWN;

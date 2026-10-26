@@ -1,8 +1,8 @@
 import type { Account, ActivityImport, AddonContext, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
-import { useEffect, useState } from "react";
-import { type Mapping, mapStatement } from "../cas/mapping";
+import { useEffect, useMemo, useState } from "react";
+import { closedScheme, type Mapping, mapStatement, withoutClosed } from "../cas/mapping";
 import {
   closingUnits,
   type FundUnits,
@@ -35,7 +35,9 @@ interface Imported {
 export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const { api } = ctx;
   const [accounts, setAccounts] = useState<Account[] | null>(null);
-  const [data, setData] = useState<CasData | null>(null);
+  const [statement, setStatement] = useState<CasData | null>(null);
+  // Closed schemes need no account or fund, so everything after the summary leaves them out.
+  const data = useMemo(() => statement && withoutClosed(statement), [statement]);
   const [remembered, setRemembered] = useState<AccountChoices | null>(null);
   const [fundChoices, setFundChoices] = useState<Record<string, FundChoice | undefined>>({});
   const [preview, setPreview] = useState<Previewed | null>(null);
@@ -67,13 +69,14 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   ];
 
   const clear = () => {
-    setData(null);
+    setStatement(null);
     setPreview(null);
     setImported(null);
     setError("");
   };
 
-  const read = async (next: CasData) => {
+  const read = async (full: CasData) => {
+    const next = withoutClosed(full);
     const keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : [])]))];
     const choices: AccountChoices = {};
     const funds: Record<string, FundChoice> = {};
@@ -89,7 +92,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     ]);
     setFundChoices(funds);
     setRemembered(choices);
-    setData(next);
+    setStatement(full);
   };
 
   const changed = () => {
@@ -189,7 +192,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       <PageContent>
         <fieldset disabled={busy !== ""} className="min-w-0 space-y-6">
           <StatementForm ctx={ctx} onClear={clear} onRead={read} disabled={busy !== ""} />
-          {data && <StatementSummary data={data} />}
+          {statement && <StatementSummary data={statement} />}
           {data && remembered && accounts && (
             <>
               <AccountChoicesCard data={data} accounts={accounts} choices={accountChoices} onChange={chooseAccount} />
@@ -241,11 +244,13 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
 function StatementSummary({ data }: { data: CasData }) {
   const schemes = data.folios.flatMap((folio) => folio.schemes);
   const rows = schemes.reduce((count, scheme) => count + scheme.transactions.length, 0);
+  const closed = schemes.filter(closedScheme).length;
   return (
     <div className="space-y-4">
       <p className="text-muted-foreground">
         {data.file_type} detailed statement for {data.investor_info.name}, {data.statement_period.from} to{" "}
         {data.statement_period.to}: {data.folios.length} folios, {schemes.length} schemes, {rows} rows.
+        {closed > 0 && ` Skipping ${closed} closed ${closed === 1 ? "scheme" : "schemes"}, with no units and nothing to import.`}
       </p>
       {data.parse_warnings.length > 0 && (
         <Alert variant="warning">

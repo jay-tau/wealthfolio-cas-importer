@@ -795,6 +795,28 @@
               "gift_folio": null
             }
           ]
+        },
+        {
+          "scheme": "Fictiva Midcap Fund - Direct Plan - Growth",
+          "advisor": "DIRECT",
+          "rta_code": "FMCDG",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01MC4",
+          "amfi": null,
+          "nominees": [
+            "RAVI TESTWALA"
+          ],
+          "open": "0",
+          "close": "0",
+          "close_calculated": "0",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "31.2077",
+            "cost": "0.00",
+            "value": "0"
+          },
+          "transactions": []
         }
       ]
     },
@@ -977,6 +999,40 @@
               "nav": "1306.9834",
               "balance": "10.201",
               "type": "REDEMPTION",
+              "dividend_rate": null,
+              "gift_folio": null
+            }
+          ]
+        },
+        {
+          "scheme": "Testbridge Gilt Fund - Direct Plan - Growth",
+          "advisor": "DIRECT",
+          "rta_code": "TGLDG",
+          "rta": "KFINTECH",
+          "type": "N/A",
+          "isin": "INFZ91T01GL6",
+          "amfi": null,
+          "nominees": [
+            "RAVI TESTWALA"
+          ],
+          "open": "0",
+          "close": "0",
+          "close_calculated": "0",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "54.0912",
+            "cost": "0.00",
+            "value": "0"
+          },
+          "transactions": [
+            {
+              "date": "2023-11-06",
+              "description": "***Registration of Nominee***",
+              "amount": null,
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "MISC",
               "dividend_rate": null,
               "gift_folio": null
             }

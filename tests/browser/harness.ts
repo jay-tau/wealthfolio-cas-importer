@@ -14,6 +14,7 @@ const host = {
   storage: new Map<string, string>(),
   secrets: new Map<string, string>(),
   activities: [] as ActivityDetails[],
+  searches: [] as string[],
   pause: "password",
   pending: undefined as Promise<void> | undefined,
   resume: undefined as (() => void) | undefined,
@@ -94,6 +95,7 @@ const api = {
     },
   },
   market: { searchTicker: async (query: string) => {
+    host.searches.push(query);
     await wait("market");
     if (query === "FAIL") throw new Error("Search unavailable");
     return query === "MULTI" ? [fund("A"), fund("B")] : [fund(query)];
