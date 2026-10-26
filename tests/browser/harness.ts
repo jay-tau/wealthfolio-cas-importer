@@ -1,11 +1,123 @@
 // Runs inside the sandboxed iframe that tests/browser/sandbox.mjs builds. The page posts the
-// packaged files as Blobs; this stands in for ctx.assets and drives the real CasParser.
-import type { AddonAssets, AddonContext } from "@wealthfolio/addon-sdk";
+// packaged files as Blobs; this stands in for ctx.assets and drives the real CasParser, then
+// mounts the import page on a fake host: one account, in-memory storage and secrets, a fund
+// search, and an import that stores rows the way Wealthfolio
+// returns them. Wealthfolio's own checks are left to the end-to-end run in the pull request.
+import type { ActivityDetails, ActivityImport, AddonAssets, AddonContext, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { CasError, CasParser } from "../../src/cas/parser";
-import { StatementPage } from "../../src/pages/statement-page";
+import { ImportPage } from "../../src/pages/import-page";
+
+const host = {
+  storage: new Map<string, string>(),
+  secrets: new Map<string, string>(),
+  activities: [] as ActivityDetails[],
+  pause: "password",
+  pending: undefined as Promise<void> | undefined,
+  resume: undefined as (() => void) | undefined,
+  failHistory: false,
+  rejectLine: undefined as number | undefined,
+};
+declare global {
+  interface Window {
+    host: typeof host;
+  }
+}
+window.host = host;
+
+const wait = async (operation: string) => {
+  if (host.pause !== operation) return;
+  host.pending ??= new Promise<void>((resolve) => {
+    host.resume = () => {
+      host.pause = "";
+      host.pending = undefined;
+      host.resume = undefined;
+      resolve();
+    };
+  });
+  await host.pending;
+};
+
+const fund = (query: string): SymbolSearchResult => ({
+  symbol: `${query}.BO`,
+  canonicalSymbol: query,
+  canonicalExchangeMic: "XBOM",
+  exchangeMic: "XBOM",
+  exchange: "BSE",
+  currency: "INR",
+  quoteType: "MUTUALFUND",
+  shortName: query,
+  longName: `Fund ${query}`,
+  providerId: "FAKE",
+  providerSymbol: `${query}.BO`,
+  index: "",
+  score: 1,
+  typeDisplay: "",
+});
+
+const stored = (row: ActivityImport, i: number) =>
+  ({
+    ...row,
+    id: `activity-${host.activities.length + i}`,
+    date: `${row.date}T00:00:00+00:00`,
+    assetSymbol: row.symbol ?? "",
+    status: "POSTED",
+    fee: null,
+    comment: undefined,
+  }) as unknown as ActivityDetails;
+
+const api = {
+  accounts: {
+    getAll: async () => [{ id: "account-1", name: "Mutual funds", currency: "INR", isActive: true, isArchived: false }],
+  },
+  activities: {
+    getAll: async (accountId: string) => {
+      if (host.failHistory) throw new Error("History unavailable");
+      return host.activities.filter((a) => a.accountId === accountId);
+    },
+    checkImport: async (rows: ActivityImport[]) => {
+      await wait("check");
+      return rows.map((row) => ({ ...row, isValid: true }));
+    },
+    import: async (rows: ActivityImport[]) => {
+      await wait("import");
+      const accepted = rows.filter((r) => r.lineNumber !== host.rejectLine);
+      host.activities.push(...accepted.map(stored));
+      const total = rows.length;
+      const summary = { total, imported: accepted.length, skipped: total - accepted.length, duplicates: 0, assetsCreated: 0, success: true };
+      return {
+        activities: rows.map((r) => r.lineNumber === host.rejectLine ? { ...r, errors: { symbol: ["The fund could not be created."] } } : r),
+        importRunId: "run", summary,
+      };
+    },
+  },
+  market: { searchTicker: async (query: string) => {
+    await wait("market");
+    if (query === "FAIL") throw new Error("Search unavailable");
+    return query === "MULTI" ? [fund("A"), fund("B")] : [fund(query)];
+  } },
+  storage: {
+    get: async (key: string) => {
+      await wait("storage");
+      return host.storage.get(key) ?? null;
+    },
+    set: async (key: string, value: string) => void host.storage.set(key, value),
+    delete: async (key: string) => void host.storage.delete(key),
+  },
+  secrets: {
+    get: async (key: string) => {
+      await wait("password");
+      return host.secrets.get(key) ?? null;
+    },
+    set: async (key: string, value: string) => void host.secrets.set(key, value),
+    delete: async (key: string) => void host.secrets.delete(key),
+  },
+  toast: { success() {}, error() {}, warning() {}, info() {} },
+  logger: { error() {}, warn() {}, info() {}, debug() {}, trace() {} },
+  query: { invalidateQueries() {}, refetchQueries() {} },
+};
 
 window.addEventListener("message", async ({ data }) => {
   const assets = {
@@ -38,7 +150,8 @@ window.addEventListener("message", async ({ data }) => {
   result.maxFrameGapMs = Math.round(maxGap);
   parser.dispose();
   const root = createRoot(document.body.appendChild(document.createElement("div")));
-  flushSync(() => root.render(createElement(StatementPage, { ctx: { assets } as AddonContext })));
+  const ctx = { assets, api } as unknown as AddonContext;
+  flushSync(() => root.render(createElement(ImportPage, { ctx })));
   parent.postMessage({ result }, "*");
 });
 parent.postMessage({ ready: true }, "*");

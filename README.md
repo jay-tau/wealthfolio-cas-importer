@@ -5,8 +5,34 @@ Import Indian mutual fund CAS statements (CAMS/KFintech) into Wealthfolio
 The add-on reads a detailed Consolidated Account Statement (CAS) PDF from CAMS or KFintech with
 [casparser](https://github.com/codereverser/casparser), running under
 [Pyodide](https://pyodide.org) in a Worker inside Wealthfolio's add-on sandbox. The statement is
-parsed on the device. So far it only shows what the statement contains; importing is planned in
-[#2](https://github.com/jay-tau/wealthfolio-cas-importer/issues/2).
+parsed on the device.
+
+To import, pick the PDF and enter its password, choose a Wealthfolio account for each PAN (and,
+if you like, a different one for a folio), and confirm the Wealthfolio fund for each scheme; the
+add-on searches by the ISIN printed on the statement. The preview lists every activity with its
+cash deposit or withdrawal, the rows left out and why, and anything Wealthfolio already has. After
+the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
+
+Importing the same statement again, or an overlapping one, adds only what's new: the add-on compares
+each row with the account's activities. Wealthfolio's own duplicate check misses the trades of a fund
+that an earlier import created, because an add-on can't create the fund before importing the way
+Wealthfolio's CSV import does. A fund whose statement starts with units needs those units in
+Wealthfolio first, from an earlier statement or entered by hand.
+The units check counts posted account history; splits or option expiry in that history need review.
+
+What the add-on keeps:
+
+- In Wealthfolio's add-on storage, which device sync copies to your other devices: the account
+  chosen for each PAN or folio, keyed by a SHA-256 hash of the PAN or folio number, and the fund
+  confirmed for each ISIN.
+- In Wealthfolio's secret store, only if you tick "Remember": the PDF password. It stays after the
+  add-on is uninstalled until you choose "Forget the saved password".
+
+These hashes keep PANs and folio numbers out of casual view; they don't make them secret.
+PANs are few enough to brute-force.
+
+Fund searches send the printed ISIN, or what you type, to Wealthfolio's market-data providers. The
+PDF, its password and your PAN never leave Wealthfolio.
 
 ## Development
 
@@ -21,8 +47,9 @@ pnpm bundle           # dist/wealthfolio-cas-importer-<version>.zip, checked aga
 
 The tests load the TypeScript sources directly, so they need Node 22.18 or newer.
 
-`pnpm test:browser` runs the parser inside a copy of Wealthfolio's sandbox (sandboxed iframe, the
-add-on content security policy) in Playwright's Chromium and Firefox; pass `webkit` to add WebKit.
+`pnpm test:browser` runs the parser and the import page inside a copy of Wealthfolio's sandbox
+(sandboxed iframe, the add-on content security policy) in Playwright's Chromium and Firefox, against a
+fake host; pass `webkit` to add WebKit.
 Install the browsers first with `pnpm exec playwright-core install chromium firefox`.
 
 The statements in `tests/fixtures/` are made up. `make_cas.py` writes them (it needs `reportlab`

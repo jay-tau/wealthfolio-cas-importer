@@ -11,6 +11,8 @@ export interface FundAsset {
   exchangeMic?: string;
   quoteCcy: string;
   instrumentType: string;
+  providerId?: string;
+  providerSymbol?: string;
 }
 
 export interface SchemeTarget {
@@ -308,6 +310,8 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
     exchangeMic: target.asset.exchangeMic,
     quoteCcy: target.asset.quoteCcy,
     instrumentType: target.asset.instrumentType,
+    providerId: target.asset.providerId,
+    providerSymbol: target.asset.providerSymbol,
     symbolName: entry.scheme.scheme.scheme,
   };
   const cash = (activityType: "DEPOSIT" | "WITHDRAWAL", amount: Dec): ActivityImport => ({
