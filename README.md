@@ -9,7 +9,8 @@ parsed on the device.
 
 To import, pick the PDF and enter its password, choose a Wealthfolio account for each PAN (and,
 if you like, a different one for a folio), and confirm the Wealthfolio fund for each scheme; the
-add-on searches by the ISIN printed on the statement. Closed schemes, with no units at either end and
+add-on searches by the ISIN printed on the statement, then by the fund's name if the ISIN finds
+nothing. Closed schemes, with no units at either end and
 nothing to import, are skipped. The preview lists every activity with its
 cash deposit or withdrawal, the rows left out and why, and anything Wealthfolio already has. After
 the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
@@ -32,7 +33,8 @@ What the add-on keeps:
 These hashes keep PANs and folio numbers out of casual view; they don't make them secret.
 PANs are few enough to brute-force.
 
-Fund searches send the printed ISIN, or what you type, to Wealthfolio's market-data providers. The
+Fund searches send the printed ISIN, the fund's name from the statement when the ISIN finds nothing,
+or what you type, to Wealthfolio's market-data providers. The
 PDF, its password and your PAN never leave Wealthfolio.
 
 ## Development

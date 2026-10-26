@@ -144,6 +144,31 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await useFund.isDisabled(), true);
     await search.fill(expected.folios[0].schemes[0].isin);
     await search.press("Enter");
+    // The Corporate Bond fund's ISIN finds nothing, so its name is searched without the plan and option.
+    const byName = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
+    await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund".').waitFor();
+    assert.equal(await byName.getByLabel("Search for the fund").inputValue(), "Testbridge Corporate Bond Fund");
+    await byName.getByRole("radio").first().waitFor({ state: "attached" });
+    assert.equal(await byName.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
+    // A late name fallback cannot replace a newer typed search or restore its message.
+    const nameSearch = byName.getByLabel("Search for the fund");
+    await pause("Testbridge Corporate Bond Fund");
+    await nameSearch.fill("INFZ91T01CB6");
+    await nameSearch.press("Enter");
+    await waiting();
+    await tab.frames()[1].evaluate(() => { window.host.pause = ""; });
+    await nameSearch.fill("NEWER");
+    await nameSearch.press("Enter");
+    await byName.getByText("Fund NEWER").waitFor();
+    await resume();
+    await nameSearch.press("Tab");
+    assert.equal(await byName.getByText("Fund NEWER").count(), 1, "the newer result survives the old fallback");
+    assert.equal(await byName.getByText(/Nothing found for the ISIN/).count(), 0, "the message belongs to the newer search");
+    assert.equal(await byName.getByRole("button", { name: "Use this fund" }).isDisabled(), false);
+    await nameSearch.fill("INFZ91T01CB6");
+    await nameSearch.press("Enter");
+    await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund".').waitFor();
+    await byName.getByRole("radio").first().dispatchEvent("click");
     for (const section of await frame.locator("section").all()) {
       if (await section.getByText("No ISIN printed").count()) {
         await section.getByLabel("Search for the fund").fill("OVERNIGHT");
@@ -155,6 +180,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }
     const searches = await tab.frames()[1].evaluate(() => window.host.searches);
     assert.ok(!searches.some((query) => /INFZ90K01MC|INFZ91T01GL/.test(query)), searches.join(" "));
+    assert.ok(searches.includes("INFZ91T01CB6") && searches.includes("Testbridge Corporate Bond Fund"), searches.join(" "));
+    assert.ok(!searches.some((query) => query.includes(" - ")), "full scheme names are never searched");
     // Remembered: the PAN's account and the five funds, with no PAN or folio number in a key.
     const saved = (await host()).storage;
     const keys = saved.map(([key]) => key);

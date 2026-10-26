@@ -97,7 +97,12 @@ const api = {
   market: { searchTicker: async (query: string) => {
     host.searches.push(query);
     await wait("market");
+    await wait(query);
     if (query === "FAIL") throw new Error("Search unavailable");
+    // Like Yahoo with some funds, the Corporate Bond fund is listed under neither its ISIN nor its
+    // full scheme name.
+    if (query === "INFZ91T01CB6" || query.includes(" - ")) return [];
+    if (query === "Testbridge Corporate Bond Fund") return [fund("0P0000TBCB")];
     return query === "MULTI" ? [fund("A"), fund("B")] : [fund(query)];
   } },
   storage: {
