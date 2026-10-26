@@ -15,6 +15,7 @@ import {
 import { useEffect, useRef, useState } from "react";
 import type { CasData, CasScheme } from "../cas/types";
 import { type ChosenFund, fundKey } from "../lib/choices";
+import { fundName } from "../lib/fund-name";
 
 /** Undefined while undecided. */
 export type FundChoice = { fund: ChosenFund } | { leftOut: true };
@@ -57,12 +58,15 @@ function FundSearch({
   onChoose: (fund: ChosenFund) => void;
   onLeaveOut: () => void;
 }) {
-  // Only the printed ISIN or what the user types is sent to market-data providers.
+  // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing, or what
+  // the user types is sent to market-data providers.
   const [query, setQuery] = useState(scheme.isin ?? "");
   const [results, setResults] = useState<SymbolSearchResult[] | null>(null);
   const [picked, setPicked] = useState<string>("");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
+  // The name searched instead when the printed ISIN found nothing.
+  const [byName, setByName] = useState("");
   // Answers can arrive out of order; only the latest search's counts.
   const latest = useRef(0);
 
@@ -73,11 +77,22 @@ function FundSearch({
     setPicked("");
     setSearching(true);
     setError("");
+    setByName("");
     try {
-      const found = await ctx.api.market.searchTicker(text.trim());
+      let found = await ctx.api.market.searchTicker(text.trim());
       if (id !== latest.current) return;
+      // Yahoo doesn't list every fund under its ISIN. The shorter name can match several plans and
+      // options of the fund, so the user picks one even when there's a single result.
+      const name = fundName(scheme.scheme);
+      const retry = found.length === 0 && text.trim().toUpperCase() === scheme.isin && name !== "";
+      if (retry) {
+        setByName(name);
+        setQuery((typed) => (typed.trim().toUpperCase() === scheme.isin ? name : typed));
+        found = await ctx.api.market.searchTicker(name);
+        if (id !== latest.current) return;
+      }
       setResults(found);
-      setPicked(found.length === 1 ? "0" : "");
+      setPicked(found.length === 1 && !retry ? "0" : "");
     } catch (e) {
       if (id === latest.current) setError(`The search failed: ${String(e)}`);
     } finally {
@@ -110,7 +125,16 @@ function FundSearch({
         </Button>
       </div>
       {error && <p className="text-destructive text-sm">{error}</p>}
-      {results?.length === 0 && <p className="text-muted-foreground text-sm">Nothing found. Try the fund's name.</p>}
+      {results && byName && (
+        <p className="text-muted-foreground text-sm">
+          {results.length
+            ? `Nothing found for the ISIN; showing results for "${byName}". Pick the plan and option on the statement.`
+            : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker.`}
+        </p>
+      )}
+      {results?.length === 0 && !byName && (
+        <p className="text-muted-foreground text-sm">Nothing found. Try the fund's name.</p>
+      )}
       {results && results.length > 0 && (
         <RadioGroup value={picked} onValueChange={(value) => setPicked(String(value))} className="grid gap-2">
           {results.map((r, i) => (
@@ -151,8 +175,8 @@ export function FundChoicesCard({
       <CardHeader>
         <CardTitle>Funds</CardTitle>
         <p className="text-muted-foreground text-sm">
-          Confirm the Wealthfolio fund for each scheme. Funds are searched by their printed ISIN; the add-on remembers
-          the fund you confirm for each ISIN.
+          Confirm the Wealthfolio fund for each scheme. Funds are searched by their printed ISIN, then by name if
+          that finds nothing; the add-on remembers the fund you confirm for each ISIN.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
