@@ -103,6 +103,8 @@ const api = {
     // full scheme name.
     if (query === "INFZ91T01CB6" || query.includes(" - ")) return [];
     if (query === "Testbridge Corporate Bond Fund") return [fund("0P0000TBCB")];
+    // The Overnight fund has no ISIN on the statement.
+    if (query === "Testbridge Overnight Fund") return [fund("0P0000TONF")];
     return query === "MULTI" ? [fund("A"), fund("B")] : [fund(query)];
   } },
   storage: {
