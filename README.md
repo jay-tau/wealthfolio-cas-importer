@@ -14,9 +14,11 @@ parsed on the device. So far it only shows what the statement contains; importin
 pnpm install
 pnpm runtime   # Pyodide and the pinned wheels (runtime.json) into assets/runtime/
 pnpm build
-pnpm test      # casparser under Pyodide in Node, on the made-up statements in tests/fixtures/
+pnpm test      # casparser under Pyodide in Node, and the mapping to Wealthfolio activities, on the made-up statements in tests/fixtures/
 pnpm bundle    # dist/wealthfolio-cas-importer-<version>.zip
 ```
+
+The tests load the TypeScript sources directly, so they need Node 22.18 or newer.
 
 `pnpm test:browser` runs the parser inside a copy of Wealthfolio's sandbox (sandboxed iframe, the
 add-on content security policy) in Playwright's Chromium and Firefox; pass `webkit` to add WebKit.
