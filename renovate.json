@@ -1,0 +1,18 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "packageRules": [
+    {
+      "description": "Only the Python runtime the add-on bundles; the host packages follow Wealthfolio's releases",
+      "matchPackageNames": ["*"],
+      "enabled": false
+    },
+    {
+      "description": "One pull request for the runtime, majors included: a new Pyodide ABI needs matching wheels",
+      "matchPackageNames": ["pyodide", "casparser", "pypdfium2"],
+      "enabled": true,
+      "groupName": "Python runtime",
+      "separateMajorMinor": false
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v6
+        with:
+          path: .cache/runtime
+          key: runtime-${{ hashFiles('pnpm-lock.yaml', 'runtime.json', 'runtime-requirements.txt') }}
+      # Downloads the pinned files, and fails if a release has no wheel Pyodide can load.
+      - run: pnpm runtime
+      - run: pnpm lint
+      - run: pnpm test
+      - run: pnpm test:casparser
+      # Builds the add-on and checks the zip against Wealthfolio's limits.
+      - run: pnpm bundle
+      - run: pnpm exec playwright-core install --with-deps chromium firefox webkit
+      - run: pnpm test:browser chromium firefox webkit

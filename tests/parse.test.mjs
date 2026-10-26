@@ -3,27 +3,14 @@
 // tests/browser/sandbox.mjs checks the same in browsers, inside Wealthfolio's sandbox.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
 import { before, test } from "node:test";
-import { loadPyodide } from "pyodide";
+import { loadRuntime } from "./runtime.mjs";
 
 const PASSWORD = "ABCDE1234F";
 let parse;
 
 before(async () => {
-  const runtime = JSON.parse(await readFile("assets/runtime/files.json", "utf8"));
-  const quiet = () => {};
-  const py = await loadPyodide({ stdout: quiet, stderr: quiet });
-  await py.loadPackage(
-    runtime.wheels.map((wheel) => resolve("assets/runtime", wheel)),
-    { checkIntegrity: false, messageCallback: quiet },
-  );
-  py.FS.mkdirTree("/addon");
-  for (const name of ["cas_parse.py", "casparser_isin.py"]) {
-    py.FS.writeFile(`/addon/${name}`, await readFile(`src/cas/${name}`, "utf8"));
-  }
-  py.runPython("import sys; sys.path.insert(0, '/addon')");
-  parse = py.pyimport("cas_parse").parse;
+  parse = (await loadRuntime()).pyimport("cas_parse").parse;
 });
 
 const fixture = async (name) => ({

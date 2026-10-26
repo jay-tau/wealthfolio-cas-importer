@@ -18,6 +18,10 @@ class _Db:
     def batch_isin_lookup(self, isins):
         return {}
 
+    # Only casparser's capital gains report asks for this; the add-on doesn't use it.
+    def nav_lookup(self, isin):
+        return None
+
 
 class MFISINDb(_Db):
     pass

@@ -15,11 +15,13 @@
     "dev:server": "wealthfolio-addon dev",
     "clean": "rm -rf dist",
     "package": "mkdir -p dist assets && find dist -name '*.map' -delete && zip -r dist/$npm_package_name-$npm_package_version.zip manifest.json dist/ assets/ README.md LICENSE THIRD_PARTY_NOTICES.md licenses/ -x '*.map'",
-    "bundle": "pnpm clean && pnpm runtime && pnpm build && pnpm package",
+    "bundle": "pnpm clean && pnpm runtime && pnpm build && pnpm package && pnpm check:package",
+    "check:package": "node scripts/check-package.mjs",
     "lint": "tsc --noEmit",
     "type-check": "tsc --noEmit",
     "runtime": "node scripts/fetch-runtime.mjs",
     "test": "node --test tests/*.test.mjs",
+    "test:casparser": "node tests/casparser-tests.mjs",
     "test:browser": "node tests/browser/sandbox.mjs"
   },
   "peerDependencies": {

@@ -35,7 +35,9 @@ const runtime = JSON.parse(await readFile("assets/runtime/files.json", "utf8"));
 const paths = ["files.json", ...runtime.files, ...runtime.wasmParts, ...runtime.wheels].map(
   (name) => `assets/runtime/${name}`,
 );
-const page = `<!doctype html><iframe sandbox="allow-scripts"></iframe><script>
+// The meta charset matters: Playwright's WebKit reads a routed page as windows-1252 despite the
+// header, which would garble the harness's non-ASCII text and so break its CSP hash.
+const page = `<!doctype html><meta charset="utf-8"><iframe sandbox="allow-scripts"></iframe><script>
 const paths = ${JSON.stringify(paths)};
 const frame = document.querySelector("iframe");
 addEventListener("message", async ({ data }) => {
