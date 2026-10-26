@@ -32,7 +32,29 @@
     "react-dom": "^19.2.0",
     "recharts": "^3.7.0"
   },
-  "permissions": [],
+  "permissions": [
+    {
+      "category": "accounts",
+      "functions": ["getAll"],
+      "purpose": "Choose the account each PAN's or folio's transactions go to"
+    },
+    {
+      "category": "activities",
+      "functions": ["getAll", "checkImport", "import"],
+      "purpose": "Check the statement's transactions against the account's activities, then import them"
+    },
+    {
+      "category": "market-data",
+      "functions": ["searchTicker"],
+      "purpose": "Find each fund by the ISIN printed on the statement"
+    },
+    {
+      "category": "secrets",
+      "functions": ["get", "set", "delete"],
+      "purpose": "Keep the statement password when you tick Remember, and forget it"
+    }
+  ],
   "keywords": ["wealthfolio", "addon"],
-  "license": "MIT"
+  "license": "MIT",
+  "repository": "https://github.com/jay-tau/wealthfolio-cas-importer"
 }

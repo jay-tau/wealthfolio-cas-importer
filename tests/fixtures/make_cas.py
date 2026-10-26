@@ -324,9 +324,31 @@ def build_portfolio() -> List[Folio]:
     overnight.misc(date(2024, 2, 2), "***Registration of Nominee***")
     overnight.sell(date(2025, 3, 10), "Redemption - Online", D("6.250"), D("1306.9834"), stt=False)
 
+    # Closed schemes: CAMS still lists a fund sold before the statement, with no
+    # units at either end, and no rows or only events such as a new nominee.
+    midcap = Scheme(
+        code="FMCDG",
+        name="Fictiva Midcap Fund - Direct Plan - Growth",
+        isin=isin("INFZ90K01MC"),
+        advisor="DIRECT",
+        rta="CAMS",
+        nominee="RAVI TESTWALA",
+        close_nav=D("31.2077"),
+    )
+    gilt = Scheme(
+        code="TGLDG",
+        name="Testbridge Gilt Fund - Direct Plan - Growth",
+        isin=isin("INFZ91T01GL"),
+        advisor="DIRECT",
+        rta="KFINTECH",
+        nominee="RAVI TESTWALA",
+        close_nav=D("54.0912"),
+    )
+    gilt.misc(date(2023, 11, 6), "***Registration of Nominee***")
+
     return [
-        Folio("Fictiva Mutual Fund", "91234567 / 12", INVESTOR["name"], [flexi, liquid, balanced]),
-        Folio("Testbridge Mutual Fund", "1040012345", INVESTOR["name"], [corp_bond, overnight]),
+        Folio("Fictiva Mutual Fund", "91234567 / 12", INVESTOR["name"], [flexi, liquid, balanced, midcap]),
+        Folio("Testbridge Mutual Fund", "1040012345", INVESTOR["name"], [corp_bond, overnight, gilt]),
     ]
 
 

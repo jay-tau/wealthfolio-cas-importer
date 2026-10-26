@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { AddonContext, AddonEnableFunction } from '@wealthfolio/addon-sdk';
-import { StatementPage } from './pages/statement-page';
+import { ImportPage } from './pages/import-page';
 
 // The host owns a single React root per addon and mounts the route `component`
 // itself (`createElement(Component, { location })`) with no access to the addon
@@ -15,7 +15,7 @@ let addonCtx: AddonContext | undefined;
 // route navigations; invalidations/refetches are bridged to the host.
 const AddonRoute = () => (
   <QueryClientProvider client={addonCtx!.api.query.getClient() as QueryClient}>
-    <StatementPage ctx={addonCtx!} />
+    <ImportPage ctx={addonCtx!} />
   </QueryClientProvider>
 );
 

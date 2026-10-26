@@ -1,0 +1,270 @@
+import type { Account, ActivityImport, AddonContext, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
+import { QueryKeys } from "@wealthfolio/addon-sdk";
+import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
+import { useEffect, useMemo, useState } from "react";
+import { closedScheme, type Mapping, mapStatement, withoutClosed } from "../cas/mapping";
+import {
+  closingUnits,
+  type FundUnits,
+  importRows,
+  indexActivities,
+  openingUnits,
+  planImport,
+  type PlannedTransaction,
+  rowsOf,
+  sameUnits,
+} from "../cas/plan";
+import type { CasData, CasFolio, CasScheme } from "../cas/types";
+import { type AccountChoices, AccountChoicesCard, accountFor } from "../components/account-choices";
+import { type FundChoice, FundChoicesCard, fundsOf } from "../components/fund-choices";
+import { ImportResult, Preview } from "../components/preview";
+import { StatementForm } from "../components/statement-form";
+import { folioKey, fundKey, panKey, readFund, saveFund } from "../lib/choices";
+
+interface Previewed {
+  mapping: Mapping;
+  plan: PlannedTransaction[];
+}
+
+interface Imported {
+  result: ImportActivitiesResult;
+  sent: ActivityImport[];
+  closing: FundUnits[];
+}
+
+export function ImportPage({ ctx }: { ctx: AddonContext }) {
+  const { api } = ctx;
+  const [accounts, setAccounts] = useState<Account[] | null>(null);
+  const [statement, setStatement] = useState<CasData | null>(null);
+  // Closed schemes need no account or fund, so everything after the summary leaves them out.
+  const data = useMemo(() => statement && withoutClosed(statement), [statement]);
+  const [remembered, setRemembered] = useState<AccountChoices | null>(null);
+  const [fundChoices, setFundChoices] = useState<Record<string, FundChoice | undefined>>({});
+  const [preview, setPreview] = useState<Previewed | null>(null);
+  const [importAnyway, setImportAnyway] = useState<Set<PlannedTransaction>>(new Set());
+  const [imported, setImported] = useState<Imported | null>(null);
+  const [busy, setBusy] = useState<"" | "preview" | "import">("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.accounts.getAll().then(
+      (all) => setAccounts(all.filter((a) => a.isActive && !a.isArchived)),
+      (e) => setError(`Couldn't load the accounts: ${String(e)}`),
+    );
+  }, [api]);
+
+  // Remembered accounts that no longer exist are ignored.
+  const accountChoices: AccountChoices = Object.fromEntries(
+    Object.entries(remembered ?? {}).filter(([, id]) => accounts?.some((a) => a.id === id)),
+  );
+
+  const target = (folio: CasFolio, scheme: CasScheme) => {
+    const accountId = accountFor(accountChoices, folio);
+    const choice = fundChoices[fundKey(scheme)];
+    return accountId && choice && "fund" in choice ? { accountId, asset: choice.fund } : undefined;
+  };
+
+  const accountIds = () => [
+    ...new Set(data?.folios.flatMap((f) => f.schemes.flatMap((s) => target(f, s)?.accountId ?? [])) ?? []),
+  ];
+
+  const clear = () => {
+    setStatement(null);
+    setPreview(null);
+    setImported(null);
+    setError("");
+  };
+
+  const read = async (full: CasData) => {
+    const next = withoutClosed(full);
+    const keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : [])]))];
+    const choices: AccountChoices = {};
+    const funds: Record<string, FundChoice> = {};
+    await Promise.all([
+      ...keys.map(async (key) => {
+        const id = await api.storage.get(key).catch(() => null);
+        if (id) choices[key] = id;
+      }),
+      ...[...fundsOf(next).keys()].map(async (key) => {
+        const fund = await readFund(api.storage, key);
+        if (fund) funds[key] = { fund };
+      }),
+    ]);
+    setFundChoices(funds);
+    setRemembered(choices);
+    setStatement(full);
+  };
+
+  const changed = () => {
+    setPreview(null);
+    setImported(null);
+  };
+
+  const chooseAccount = (key: string, id: string) => {
+    setRemembered((choices) => ({ ...choices, [key]: id }));
+    changed();
+    (id ? api.storage.set(key, id) : api.storage.delete(key)).catch(() =>
+      api.toast.error("Couldn't remember the account."),
+    );
+  };
+
+  const chooseFund = (key: string, choice: FundChoice | undefined) => {
+    setFundChoices((choices) => ({ ...choices, [key]: choice }));
+    changed();
+    if (choice && "fund" in choice) {
+      saveFund(api.storage, key, choice.fund).catch(() => api.toast.error("Couldn't remember the fund."));
+    }
+  };
+
+  const undecided = data
+    ? data.folios.some((f) =>
+        f.schemes.some((s) => {
+          const choice = fundChoices[fundKey(s)];
+          return !choice || ("fund" in choice && !accountFor(accountChoices, f));
+        }),
+      )
+    : true;
+
+  const runPreview = async () => {
+    if (!data) return;
+    setBusy("preview");
+    setError("");
+    setPreview(null);
+    setImported(null);
+    try {
+      const existing = (await Promise.all(accountIds().map((id) => api.activities.getAll(id)))).flat();
+      // A fund that starts with units needs Wealthfolio to hold exactly those before the statement.
+      const covered = new Set(
+        openingUnits(data, target, existing)
+          .filter(sameUnits)
+          .flatMap((f) => f.schemes),
+      );
+      const mapping = mapStatement(data, {
+        target: (folio, scheme) => {
+          const t = target(folio, scheme);
+          return t && { ...t, openingCovered: covered.has(scheme) };
+        },
+        alreadyImported: indexActivities(existing).has,
+      });
+      const rows = rowsOf(mapping);
+      const checked = rows.length ? await api.activities.checkImport(rows) : [];
+      setPreview({ mapping, plan: planImport(mapping, existing, checked) });
+      setImportAnyway(new Set());
+    } catch (e) {
+      setError(`Couldn't prepare the preview: ${String(e)}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const runImport = async () => {
+    if (!data || !preview) return;
+    const sent = importRows(preview.plan, (t) => importAnyway.has(t));
+    setBusy("import");
+    setError("");
+    try {
+      const result = await api.activities.import(sent);
+      setPreview(null);
+      setImported({ result, sent, closing: [] });
+      api.query.invalidateQueries([QueryKeys.ACTIVITY_DATA]);
+      api.query.invalidateQueries([QueryKeys.ACTIVITIES]);
+      try {
+        const after = (await Promise.all(accountIds().map((id) => api.activities.getAll(id)))).flat();
+        setImported({ result, sent, closing: closingUnits(data, target, after) });
+      } catch {
+        setError("The import finished, but the closing units couldn't be checked. Check the holdings in Wealthfolio.");
+      }
+    } catch (e) {
+      setError(`The import failed: ${String(e)}`);
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const sendCount = preview ? importRows(preview.plan, (t) => importAnyway.has(t)).length : 0;
+
+  return (
+    <Page>
+      <PageHeader
+        heading="CAS Importer"
+        text="Import a detailed CAMS or KFintech statement (CAS PDF). The PDF is read on this device."
+      />
+      <PageContent>
+        <fieldset disabled={busy !== ""} className="min-w-0 space-y-6">
+          <StatementForm ctx={ctx} onClear={clear} onRead={read} disabled={busy !== ""} />
+          {statement && <StatementSummary data={statement} />}
+          {data && remembered && accounts && (
+            <>
+              <AccountChoicesCard data={data} accounts={accounts} choices={accountChoices} onChange={chooseAccount} />
+              <FundChoicesCard ctx={ctx} data={data} choices={fundChoices} onChange={chooseFund} />
+              <div className="flex flex-wrap items-center gap-3">
+                <Button type="button" disabled={undecided || busy !== ""} onClick={() => void runPreview()}>
+                  {busy === "preview" && <Spinner />}
+                  Preview the import
+                </Button>
+                {undecided && (
+                  <span className="text-muted-foreground text-sm">
+                    Choose an account for each folio and a fund for each scheme first.
+                  </span>
+                )}
+              </div>
+            </>
+          )}
+          {error && (
+            <Alert variant="destructive">
+              <AlertTitle>Something went wrong</AlertTitle>
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
+          {preview && (
+            <Preview
+              mapping={preview.mapping}
+              plan={preview.plan}
+              importAnyway={importAnyway}
+              onImportAnyway={(t, yes) =>
+                setImportAnyway((set) => {
+                  const next = new Set(set);
+                  if (yes) next.add(t);
+                  else next.delete(t);
+                  return next;
+                })
+              }
+              onImport={() => void runImport()}
+              importing={busy === "import"}
+              rowCount={sendCount}
+            />
+          )}
+          {imported && <ImportResult result={imported.result} sent={imported.sent} closing={imported.closing} />}
+        </fieldset>
+      </PageContent>
+    </Page>
+  );
+}
+
+function StatementSummary({ data }: { data: CasData }) {
+  const schemes = data.folios.flatMap((folio) => folio.schemes);
+  const rows = schemes.reduce((count, scheme) => count + scheme.transactions.length, 0);
+  const closed = schemes.filter(closedScheme).length;
+  return (
+    <div className="space-y-4">
+      <p className="text-muted-foreground">
+        {data.file_type} detailed statement for {data.investor_info.name}, {data.statement_period.from} to{" "}
+        {data.statement_period.to}: {data.folios.length} folios, {schemes.length} schemes, {rows} rows.
+        {closed > 0 && ` Skipping ${closed} closed ${closed === 1 ? "scheme" : "schemes"}, with no units and nothing to import.`}
+      </p>
+      {data.parse_warnings.length > 0 && (
+        <Alert variant="warning">
+          <AlertTitle>casparser found rows that don't add up</AlertTitle>
+          <AlertDescription>
+            A row was probably dropped or misread. Check these schemes against the PDF before importing.
+            <ul className="list-disc ps-4">
+              {data.parse_warnings.map((warning) => (
+                <li key={warning}>{warning}</li>
+              ))}
+            </ul>
+          </AlertDescription>
+        </Alert>
+      )}
+    </div>
+  );
+}
