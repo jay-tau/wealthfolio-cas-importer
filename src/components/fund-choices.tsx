@@ -58,14 +58,15 @@ function FundSearch({
   onChoose: (fund: ChosenFund) => void;
   onLeaveOut: () => void;
 }) {
-  // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing, or what
-  // the user types is sent to market-data providers.
-  const [query, setQuery] = useState(scheme.isin ?? "");
+  // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing or isn't
+  // printed, or what the user types is sent to market-data providers.
+  const name = fundName(scheme.scheme);
+  const [query, setQuery] = useState(scheme.isin ?? name);
   const [results, setResults] = useState<SymbolSearchResult[] | null>(null);
   const [picked, setPicked] = useState<string>("");
   const [searching, setSearching] = useState(false);
   const [error, setError] = useState("");
-  // The name searched instead when the printed ISIN found nothing.
+  // The name searched when the printed ISIN found nothing, or when there's no ISIN.
   const [byName, setByName] = useState("");
   // Answers can arrive out of order; only the latest search's counts.
   const latest = useRef(0);
@@ -77,22 +78,23 @@ function FundSearch({
     setPicked("");
     setSearching(true);
     setError("");
-    setByName("");
+    // The shorter name can match several plans and options of the fund, so the user picks one
+    // even when there's a single result.
+    let named = !scheme.isin && text.trim() === name;
+    setByName(named ? name : "");
     try {
       let found = await ctx.api.market.searchTicker(text.trim());
       if (id !== latest.current) return;
-      // Yahoo doesn't list every fund under its ISIN. The shorter name can match several plans and
-      // options of the fund, so the user picks one even when there's a single result.
-      const name = fundName(scheme.scheme);
-      const retry = found.length === 0 && text.trim().toUpperCase() === scheme.isin && name !== "";
-      if (retry) {
+      // Yahoo doesn't list every fund under its ISIN.
+      if (found.length === 0 && text.trim().toUpperCase() === scheme.isin && name !== "") {
+        named = true;
         setByName(name);
         setQuery((typed) => (typed.trim().toUpperCase() === scheme.isin ? name : typed));
         found = await ctx.api.market.searchTicker(name);
         if (id !== latest.current) return;
       }
       setResults(found);
-      setPicked(found.length === 1 && !retry ? "0" : "");
+      setPicked(found.length === 1 && !named ? "0" : "");
     } catch (e) {
       if (id === latest.current) setError(`The search failed: ${String(e)}`);
     } finally {
@@ -100,9 +102,9 @@ function FundSearch({
     }
   };
 
-  // Search the printed ISIN once, when the fund is first shown.
+  // Search the printed ISIN, or the fund's name when there's none, once, when the fund is first shown.
   useEffect(() => {
-    if (scheme.isin) void search(scheme.isin);
+    void search(query);
   }, []);
 
   const result = picked === "" ? undefined : results?.[Number(picked)];
@@ -127,9 +129,13 @@ function FundSearch({
       {error && <p className="text-destructive text-sm">{error}</p>}
       {results && byName && (
         <p className="text-muted-foreground text-sm">
-          {results.length
-            ? `Nothing found for the ISIN; showing results for "${byName}". Pick the plan and option on the statement.`
-            : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker.`}
+          {scheme.isin
+            ? results.length
+              ? `Nothing found for the ISIN; showing results for "${byName}". Pick the plan and option on the statement.`
+              : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker.`
+            : results.length
+              ? `No ISIN on the statement; showing results for "${byName}". Pick the plan and option on the statement.`
+              : `No ISIN on the statement, and nothing found for "${byName}". Try another name or a ticker.`}
         </p>
       )}
       {results?.length === 0 && !byName && (
@@ -175,8 +181,8 @@ export function FundChoicesCard({
       <CardHeader>
         <CardTitle>Funds</CardTitle>
         <p className="text-muted-foreground text-sm">
-          Confirm the Wealthfolio fund for each scheme. Funds are searched by their printed ISIN, then by name if
-          that finds nothing; the add-on remembers the fund you confirm for each ISIN.
+          Confirm the Wealthfolio fund for each scheme. Funds are searched by their printed ISIN, and by name when
+          that finds nothing or no ISIN is printed; the add-on remembers the fund you confirm for each scheme.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -187,7 +193,7 @@ export function FundChoicesCard({
             <section key={key} className="grid gap-2">
               <h3 className="font-medium">{scheme.scheme}</h3>
               <p className="text-muted-foreground text-sm">
-                {scheme.isin ? `ISIN ${scheme.isin}` : "No ISIN printed: find the fund by name"}
+                {scheme.isin ? `ISIN ${scheme.isin}` : "No ISIN printed"}
                 {schemes.length > 1 && ` · in ${schemes.length} folios`}
               </p>
               {choice && "fund" in choice ? (

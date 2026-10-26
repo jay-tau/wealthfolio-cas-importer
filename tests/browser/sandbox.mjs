@@ -120,6 +120,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Closed schemes get no fund section, so no search either.
     assert.equal(await frame.locator("section").count(), 5);
     assert.equal(await frame.getByText(/Midcap|Gilt/).count(), 0);
+    // The Overnight fund has no ISIN, so its name is searched without the plan and option when it's first shown.
+    const noIsin = frame.locator("section").filter({ hasText: "No ISIN printed" });
+    await noIsin.getByText('No ISIN on the statement; showing results for "Testbridge Overnight Fund". Pick the plan and option on the statement.').waitFor();
+    assert.equal(await noIsin.getByLabel("Search for the fund").inputValue(), "Testbridge Overnight Fund");
+    assert.equal(await noIsin.getByRole("radio").count(), 1);
+    assert.equal(await noIsin.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
     const firstFund = frame.locator("section").first();
     const search = firstFund.getByLabel("Search for the fund");
     const useFund = firstFund.getByRole("button", { name: "Use this fund" });
@@ -169,11 +175,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await nameSearch.press("Enter");
     await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund".').waitFor();
     await byName.getByRole("radio").first().dispatchEvent("click");
+    await noIsin.getByRole("radio").first().dispatchEvent("click");
     for (const section of await frame.locator("section").all()) {
-      if (await section.getByText("No ISIN printed").count()) {
-        await section.getByLabel("Search for the fund").fill("OVERNIGHT");
-        await section.getByLabel("Search for the fund").press("Enter");
-      }
       await section.getByRole("radio").first().waitFor();
       await section.getByRole("button", { name: "Use this fund" }).click();
       await section.getByText("Confirmed").waitFor();
@@ -181,6 +184,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const searches = await tab.frames()[1].evaluate(() => window.host.searches);
     assert.ok(!searches.some((query) => /INFZ90K01MC|INFZ91T01GL/.test(query)), searches.join(" "));
     assert.ok(searches.includes("INFZ91T01CB6") && searches.includes("Testbridge Corporate Bond Fund"), searches.join(" "));
+    assert.ok(searches.includes("Testbridge Overnight Fund"), searches.join(" "));
     assert.ok(!searches.some((query) => query.includes(" - ")), "full scheme names are never searched");
     // Remembered: the PAN's account and the five funds, with no PAN or folio number in a key.
     const saved = (await host()).storage;
