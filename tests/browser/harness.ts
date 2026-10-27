@@ -1,7 +1,7 @@
 // Runs inside the sandboxed iframe that tests/browser/sandbox.mjs builds. The page posts the
 // packaged files as Blobs; this stands in for ctx.assets and drives the real CasParser, then
 // mounts the import page on a fake host: one account, in-memory storage and secrets, a fund
-// search, and an import that stores rows the way Wealthfolio
+// search, recorded error toasts, and an import that stores rows the way Wealthfolio
 // returns them. Wealthfolio's own checks are left to the end-to-end run in the pull request.
 import type { ActivityDetails, ActivityImport, AddonAssets, AddonContext, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { createElement } from "react";
@@ -19,7 +19,12 @@ const host = {
   pending: undefined as Promise<void> | undefined,
   resume: undefined as (() => void) | undefined,
   failHistory: false,
+  failDelete: false,
   rejectLine: undefined as number | undefined,
+  // An invented second folio holding the fund with this ISIN, added to what the parser reads.
+  sharedIsin: "",
+  parsed: 0,
+  toasts: [] as string[],
 };
 declare global {
   interface Window {
@@ -57,6 +62,16 @@ const fund = (query: string): SymbolSearchResult => ({
   score: 1,
   typeDisplay: "",
 });
+
+// Adds the invented folio to every read while the test sets host.sharedIsin.
+const parse = CasParser.prototype.parse;
+CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, password: string) {
+  const data = await parse.call(this, pdf, password);
+  host.parsed++;
+  const [folio] = data.folios;
+  const scheme = folio.schemes.find((s) => s.isin === host.sharedIsin);
+  return scheme ? { ...data, folios: [...data.folios, { ...folio, folio: "91234568 / 34", schemes: [scheme] }] } : data;
+};
 
 const stored = (row: ActivityImport, i: number) =>
   ({
@@ -112,8 +127,15 @@ const api = {
       await wait("storage");
       return host.storage.get(key) ?? null;
     },
-    set: async (key: string, value: string) => void host.storage.set(key, value),
-    delete: async (key: string) => void host.storage.delete(key),
+    set: async (key: string, value: string) => {
+      await wait("set");
+      host.storage.set(key, value);
+    },
+    delete: async (key: string) => {
+      await wait("delete");
+      if (host.failDelete) throw new Error("Storage unavailable");
+      host.storage.delete(key);
+    },
   },
   secrets: {
     get: async (key: string) => {
@@ -123,7 +145,7 @@ const api = {
     set: async (key: string, value: string) => void host.secrets.set(key, value),
     delete: async (key: string) => void host.secrets.delete(key),
   },
-  toast: { success() {}, error() {}, warning() {}, info() {} },
+  toast: { success() {}, error: (message: string) => void host.toasts.push(message), warning() {}, info() {} },
   logger: { error() {}, warn() {}, info() {}, debug() {}, trace() {} },
   query: { invalidateQueries() {}, refetchQueries() {} },
 };

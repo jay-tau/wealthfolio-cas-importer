@@ -30,7 +30,10 @@ What the add-on keeps:
 
 - In Wealthfolio's add-on storage, which device sync copies to your other devices: the account
   chosen for each PAN or folio, keyed by a SHA-256 hash of the PAN or folio number, and the fund
-  confirmed for each ISIN, or for the registrar and scheme code of a scheme with no ISIN.
+  confirmed for each ISIN, or for the registrar and scheme code of a scheme with no ISIN. Leaving
+  a fund out forgets the fund confirmed for it, in every folio that holds it; if Wealthfolio can't
+  delete it, the add-on says so and it can come back. "Left out" itself isn't kept: the next read
+  searches for the fund again.
 - In Wealthfolio's secret store, only if you tick "Remember": the PDF password. It stays after the
   add-on is uninstalled until you choose "Forget the saved password".
 

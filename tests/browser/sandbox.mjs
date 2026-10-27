@@ -252,6 +252,142 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText(/The import finished, but the closing units couldn't be checked/).waitFor();
     assert.equal(await frame.getByText(/The import failed/).count(), 0);
 
+    // Reads the selected statement again; storage reads wait until the previous one has gone.
+    const readAgain = async () => {
+      await pause("storage");
+      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+      await waiting();
+      assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
+      await resume();
+      await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
+    };
+    const storage = async () => Object.fromEntries((await host()).storage);
+    const confirmed = () => frame.getByText("Confirmed", { exact: true }).count();
+    const undecided = async (section) => {
+      await section.getByLabel("Search for the fund").waitFor();
+      assert.equal(await section.getByText("Confirmed", { exact: true }).count(), 0);
+      assert.equal(await section.getByText("Left out", { exact: true }).count(), 0);
+    };
+    const leaveOut = async (section) => {
+      await section.getByRole("button", { name: "Change", exact: true }).click();
+      await section.getByRole("button", { name: "Leave this fund out" }).click();
+      await section.getByText("Left out", { exact: true }).waitFor();
+    };
+
+    // Change alone keeps the saved fund, so reading again confirms it again.
+    const flexi = frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" });
+    const remembered = await storage();
+    await flexi.getByRole("button", { name: "Change", exact: true }).click();
+    await flexi.getByRole("button", { name: "Leave this fund out" }).waitFor();
+    await readAgain();
+    await flexi.getByText("Fund INFZ90K01FC8").waitFor();
+    assert.equal(await confirmed(), 5);
+    assert.deepEqual(await storage(), remembered);
+
+    // Leaving it out forgets only its saved fund: reading again searches for it as if it were new,
+    // and keeps the other funds and the account.
+    await leaveOut(flexi);
+    const { "isin:INFZ90K01FC8": flexiFund, ...forgotten } = remembered;
+    assert.ok(flexiFund);
+    assert.deepEqual(await storage(), forgotten);
+    await readAgain();
+    await undecided(flexi);
+    assert.equal(await confirmed(), 4);
+    await frame.getByText("Same as PAN (Mutual funds)").first().waitFor();
+    assert.deepEqual(await storage(), forgotten);
+
+    // Choosing a fund after leaving it out doesn't bring the old one back; confirming another saves it.
+    await flexi.getByRole("button", { name: "Leave this fund out" }).click();
+    await flexi.getByRole("button", { name: "Choose a fund" }).click();
+    await flexi.getByRole("radio").first().waitFor({ state: "attached" });
+    assert.deepEqual(await storage(), forgotten);
+    await flexi.getByLabel("Search for the fund").fill("MULTI");
+    await flexi.getByLabel("Search for the fund").press("Enter");
+    await flexi.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    await flexi.getByRole("radio").nth(1).dispatchEvent("click");
+    await flexi.getByRole("button", { name: "Use this fund" }).click();
+    await flexi.getByText("Confirmed", { exact: true }).waitFor();
+    const chosen = await storage();
+    assert.equal(JSON.parse(chosen["isin:INFZ90K01FC8"]).symbol, "B");
+    // The same for the fund with no ISIN, saved under its registrar and scheme code.
+    const [noIsinKey] = Object.keys(chosen).filter((key) => key.startsWith("fund:"));
+    await leaveOut(noIsin);
+    const { [noIsinKey]: noIsinFund, ...noIsinForgotten } = chosen;
+    assert.ok(noIsinFund);
+    assert.deepEqual(await storage(), noIsinForgotten);
+    await readAgain();
+    await flexi.getByText("Fund B").waitFor();
+    await undecided(noIsin);
+    await noIsin.getByText(/^No ISIN on the statement; showing results for/).waitFor();
+    assert.equal(await confirmed(), 4);
+    assert.deepEqual(await storage(), noIsinForgotten);
+
+    // A deletion that fails keeps the fund saved and says it can come back; it stays left out for this read.
+    assert.deepEqual(await tab.frames()[1].evaluate(() => window.host.toasts), []);
+    await tab.frames()[1].evaluate(() => { window.host.failDelete = true; });
+    const balanced = frame.locator("section").filter({ hasText: "ISIN INFZ90K01BA1" });
+    await leaveOut(balanced);
+    await tab.frames()[1].waitForFunction(() => window.host.toasts.length);
+    assert.deepEqual(await tab.frames()[1].evaluate(() => window.host.toasts), [
+      "Couldn't forget the fund chosen before. It can come back the next time you read a statement.",
+    ]);
+    assert.equal(await balanced.getByText("Left out", { exact: true }).count(), 1);
+    assert.deepEqual(await storage(), noIsinForgotten);
+    await tab.frames()[1].evaluate(() => {
+      window.host.failDelete = false;
+      window.host.toasts = [];
+    });
+
+    // A fund in two folios has one section and one saved fund, so leaving it out forgets it for both.
+    await tab.frames()[1].evaluate(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
+    await readAgain();
+    await frame.getByText(/3 folios, 8 schemes, 83 rows\./).waitFor();
+    assert.equal(await frame.locator("section").count(), 5);
+    const liquid = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6 · in 2 folios" });
+    await liquid.getByText("Confirmed", { exact: true }).waitFor();
+    // The failed deletion left the Balanced Advantage fund saved, so it's back.
+    await balanced.getByText("Confirmed", { exact: true }).waitFor();
+    await leaveOut(liquid);
+    const { "isin:INFZ90K01LQ6": liquidFund, ...unshared } = noIsinForgotten;
+    assert.ok(liquidFund);
+    assert.deepEqual(await storage(), unshared);
+    await readAgain();
+    await undecided(liquid);
+    assert.equal(await confirmed(), 3);
+    await frame.getByText("Same as PAN (Mutual funds)").first().waitFor();
+    assert.deepEqual(await storage(), unshared);
+    assert.deepEqual(await tab.frames()[1].evaluate(() => window.host.toasts), []);
+    await tab.frames()[1].evaluate(() => { window.host.sharedIsin = ""; });
+
+    // A slow deletion must finish before a later confirmation is saved.
+    await pause("delete");
+    await leaveOut(flexi);
+    await waiting();
+    await flexi.getByRole("button", { name: "Choose a fund" }).click();
+    await flexi.getByRole("button", { name: "Use this fund" }).click();
+    await flexi.getByText("Confirmed", { exact: true }).waitFor();
+    await resume();
+    await tab.frames()[1].waitForFunction(() =>
+      JSON.parse(window.host.storage.get("isin:INFZ90K01FC8") ?? "null")?.symbol === "INFZ90K01FC8",
+    );
+
+    // A slow save must finish before leaving it out deletes it, and before a reread restores choices.
+    await flexi.getByRole("button", { name: "Change", exact: true }).click();
+    await pause("set");
+    await flexi.getByRole("button", { name: "Use this fund" }).click();
+    await waiting();
+    await leaveOut(flexi);
+    const parsed = await tab.frames()[1].evaluate(() => window.host.parsed);
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await tab.frames()[1].waitForFunction((previous) => window.host.parsed > previous, parsed, { timeout: 180_000 });
+    assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
+    await resume();
+    await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
+    await undecided(flexi);
+    const { "isin:INFZ90K01FC8": previousFund, ...afterSlowWrites } = unshared;
+    assert.ok(previousFund);
+    assert.deepEqual(await storage(), afterSlowWrites);
+
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });
     assert.deepEqual((await host()).secrets, []);
