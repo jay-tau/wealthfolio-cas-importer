@@ -46,7 +46,7 @@
     {
       "category": "market-data",
       "functions": ["searchTicker"],
-      "purpose": "Find each fund by the ISIN printed on the statement"
+      "purpose": "Find each fund by the ISIN or name printed on the statement, or by what you type"
     },
     {
       "category": "secrets",
