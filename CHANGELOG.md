@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Start the parser without Pyodide's CSP errors or depending on the CSP to block its classic Worker probes
 
 ### Security
 
