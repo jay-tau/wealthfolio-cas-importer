@@ -122,7 +122,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText(/Midcap|Gilt/).count(), 0);
     // The Overnight fund has no ISIN, so its name is searched without the plan and option when it's first shown.
     const noIsin = frame.locator("section").filter({ hasText: "No ISIN printed" });
-    await noIsin.getByText('No ISIN on the statement; showing results for "Testbridge Overnight Fund". Pick the plan and option on the statement.').waitFor();
+    await noIsin.getByText(`No ISIN on the statement; showing results for "Testbridge Overnight Fund". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`).waitFor();
     assert.equal(await noIsin.getByLabel("Search for the fund").inputValue(), "Testbridge Overnight Fund");
     assert.equal(await noIsin.getByRole("radio").count(), 1);
     assert.equal(await noIsin.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");

@@ -131,10 +131,10 @@ function FundSearch({
         <p className="text-muted-foreground text-sm">
           {scheme.isin
             ? results.length
-              ? `Nothing found for the ISIN; showing results for "${byName}". Pick the plan and option on the statement.`
+              ? `Nothing found for the ISIN; showing results for "${byName}". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`
               : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker.`
             : results.length
-              ? `No ISIN on the statement; showing results for "${byName}". Pick the plan and option on the statement.`
+              ? `No ISIN on the statement; showing results for "${byName}". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`
               : `No ISIN on the statement, and nothing found for "${byName}". Try another name or a ticker.`}
         </p>
       )}

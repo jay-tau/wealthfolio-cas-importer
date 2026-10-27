@@ -13,7 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Turn a parsed statement into Wealthfolio import rows, each trade and IDCW payout with its cash deposit or withdrawal, and a warning for each row left out
 - Import a statement: choose an account for each PAN or folio and confirm each fund by its ISIN (both remembered; closed schemes are skipped), preview every activity, skip what Wealthfolio already has, import, and compare each fund's units with the statement
 - Remember the PDF password in Wealthfolio's secret store on request, and forget it
-- Search by the fund's name when its ISIN finds nothing or none is printed
+- Search by the fund's name when its ISIN finds nothing or none is printed, and warn that those results can be other funds
 
 ### Changed
 
