@@ -1,7 +1,7 @@
 {
   "id": "cas-importer",
   "name": "CAS Importer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Import Indian mutual fund CAS statements (CAMS/KFintech) into Wealthfolio",
   "author": "Joel Tony",
   "main": "dist/addon.js",
