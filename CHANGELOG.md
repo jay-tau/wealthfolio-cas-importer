@@ -8,12 +8,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Initial addon structure and setup
-- Read detailed CAMS/KFintech CAS PDFs with casparser under Pyodide, in a Worker, and show what they contain
-- Turn a parsed statement into Wealthfolio import rows, each trade and IDCW payout with its cash deposit or withdrawal, and a warning for each row left out
-- Import a statement: choose an account for each PAN or folio and confirm each fund by its ISIN (both remembered, and a fund forgotten when you leave it out; closed schemes are skipped), preview every activity, skip what Wealthfolio already has, import, and compare each fund's units with the statement
-- Remember the PDF password in Wealthfolio's secret store on request, and forget it
-- Search by the fund's name when its ISIN finds nothing or none is printed, and warn that those results can be other funds
 
 ### Changed
 
@@ -22,23 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
-- Start the parser without Pyodide's CSP errors or depending on the CSP to block its classic Worker probes
 
 ### Security
 
-## [1.0.0] - {{currentDate}}
+## [1.0.0] - 2026-10-27
 
 ### Added
-- Initial release of wealthfolio-cas-importer addon
-- Basic addon functionality and core features
-- Integration with Wealthfolio addon SDK v3.11.0
-- Sidebar navigation integration for easy access
-- Responsive design for all screen sizes
+- Initial addon structure and setup
+- Read detailed CAMS/KFintech CAS PDFs with casparser under Pyodide, in a Worker, and show what they contain
+- Turn a parsed statement into Wealthfolio import rows, each trade and IDCW payout with its cash deposit or withdrawal, and a warning for each row left out
+- Import a statement: choose an account for each PAN or folio and confirm each fund by its ISIN (both remembered, and a fund forgotten when you leave it out; closed schemes are skipped), preview every activity, skip what Wealthfolio already has, import, and compare each fund's units with the statement
+- Remember the PDF password in Wealthfolio's secret store on request, and forget it
+- Search by the fund's name when its ISIN finds nothing or none is printed, and warn that those results can be other funds
 
-### Features
-- Import Indian mutual fund CAS statements (CAMS/KFintech) into Wealthfolio
-- User-friendly interface
-- Compatible with Wealthfolio platform
-
-### Compatibility
-- Requires Wealthfolio 3.11.0 or newer
+### Fixed
+- Start the parser without Pyodide's CSP errors or depending on the CSP to block its classic Worker probes

@@ -1,0 +1,55 @@
+name: Release
+
+# Push a tag like v1.0.0, or v1.0.0-rc.1 for a pre-release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  # The tag must name the version in manifest.json and package.json, and CHANGELOG.md must have
+  # that version's dated section. Checked before the slower CI jobs.
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - run: node scripts/release-notes.mjs "$GITHUB_REF_NAME" > /dev/null
+
+  ci:
+    needs: check
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: ci
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release
+      id-token: write # sign the build provenance
+      attestations: write # store it
+    steps:
+      - uses: actions/checkout@v7
+      # The zip CI built and checked.
+      - uses: actions/download-artifact@v8
+        with:
+          name: package
+          path: dist
+      - name: Checksum
+        working-directory: dist
+        run: |
+          zip=$(jq -r '"\(.name)-\(.version).zip"' ../package.json)
+          sha256sum "$zip" > "$zip.sha256"
+          echo "ZIP=dist/$zip" >> "$GITHUB_ENV"
+      # Users can check the zip with: gh attestation verify <zip> --repo jay-tau/wealthfolio-cas-importer
+      - uses: actions/attest@v4
+        with:
+          subject-path: ${{ env.ZIP }}
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-notes.mjs "$GITHUB_REF_NAME" > "$RUNNER_TEMP/notes.md"
+          gh release create "$GITHUB_REF_NAME" "$ZIP" "$ZIP.sha256" --verify-tag \
+            --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md" \
+            --prerelease=${{ contains(github.ref_name, '-rc.') }}
