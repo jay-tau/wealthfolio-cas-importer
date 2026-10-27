@@ -229,7 +229,10 @@ describe("units", () => {
   test("statement dates", () => {
     assert.equal(statementDay("01-Apr-2023"), "2023-04-01");
     assert.equal(statementDay("31-DEC-2024"), "2024-12-31");
+    assert.equal(statementDay("31-03-2026"), "2026-03-31");
+    assert.equal(statementDay("31/03/2026"), "2026-03-31");
     assert.throws(() => statementDay("2023-04-01"));
+    assert.throws(() => statementDay("31-13-2026"));
   });
 
   test("an opening balance is covered by Wealthfolio's units before the statement", () => {

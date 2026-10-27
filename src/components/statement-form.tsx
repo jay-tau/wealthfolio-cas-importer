@@ -2,13 +2,13 @@ import type { AddonContext } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Checkbox, Input, Label, Spinner } from "@wealthfolio/ui";
 import { useEffect, useRef, useState } from "react";
 import { CasError, CasParser } from "../cas/parser";
-import type { CasData } from "../cas/types";
+import type { Statement } from "../cas/types";
 import { PASSWORD_SECRET } from "../lib/choices";
 
 export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
   ctx: AddonContext;
   onClear: () => void;
-  onRead: (data: CasData) => Promise<void>;
+  onRead: (data: Statement) => Promise<void>;
   disabled?: boolean;
 }) {
   const parser = useRef<CasParser | null>(null);

@@ -1,0 +1,229 @@
+{
+  "accounts": [
+    {
+      "name": "FICTIVA SECURITIES LIMITED",
+      "type": "CDSL Demat Account",
+      "dp_id": "19999901",
+      "client_id": "00012345",
+      "folios": 4,
+      "balance": "399075.00",
+      "owners": [
+        {
+          "name": "ANANYA R TESTWALA",
+          "PAN": "ABCDE1234F"
+        }
+      ],
+      "equities": [
+        {
+          "name": "FICTIVA INDUSTRIES LIMITED",
+          "isin": "INEZ90A01017",
+          "num_shares": "120.000",
+          "price": "1482.35",
+          "value": "177882.00",
+          "symbol": null,
+          "exchange": null
+        },
+        {
+          "name": "TESTBRIDGE POWER AND INFRASTRUCTURE LIMITED",
+          "isin": "INEZ91B01013",
+          "num_shares": "450.000",
+          "price": "312.60",
+          "value": "140670.00",
+          "symbol": null,
+          "exchange": null
+        },
+        {
+          "name": "TESTBRIDGE POWER AND INFRASTRUCTURE LTD - RE",
+          "isin": "INEZ91B20013",
+          "num_shares": "0",
+          "price": "6.29",
+          "value": "0.00",
+          "symbol": null,
+          "exchange": null
+        }
+      ],
+      "mutual_funds": [
+        {
+          "name": "FICTIVA NIFTY 50 ETF",
+          "isin": "INFZ90K01NF5",
+          "amfi": null,
+          "type": null,
+          "balance": "300.000",
+          "nav": "268.41",
+          "value": "80523.00",
+          "avg_cost": null,
+          "total_cost": null,
+          "ucc": null,
+          "folio": null,
+          "pnl": null,
+          "return": null
+        }
+      ],
+      "bonds": []
+    },
+    {
+      "name": "Mutual Fund Folios",
+      "type": "Mutual Fund Folios",
+      "dp_id": "",
+      "client_id": "",
+      "folios": 4,
+      "balance": "319411.56",
+      "owners": [
+        {
+          "name": "ANANYA R TESTWALA",
+          "PAN": "ABCDE1234F"
+        }
+      ],
+      "equities": [],
+      "mutual_funds": [
+        {
+          "name": "FFCDG - Fictiva Flexi Cap Fund - Direct Plan - Growth",
+          "isin": "INFZ90K01FC8",
+          "amfi": null,
+          "type": null,
+          "balance": "2104.518",
+          "nav": "81.4471",
+          "value": "171406.89",
+          "avg_cost": null,
+          "total_cost": "140000.00",
+          "ucc": "UCCZ900001",
+          "folio": "91234567/12",
+          "pnl": "31406.89",
+          "return": "13.84"
+        },
+        {
+          "name": "TCBRP - Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout",
+          "isin": "INFZ91T01CB6",
+          "amfi": null,
+          "type": null,
+          "balance": "9512.207",
+          "nav": "10.9105",
+          "value": "103782.93",
+          "avg_cost": null,
+          "total_cost": "100000.00",
+          "ucc": "UCCZ900002",
+          "folio": "1040012345",
+          "pnl": "3782.93",
+          "return": "6.91"
+        },
+        {
+          "name": "FMCDG - Fictiva Midcap Fund - Direct Plan - Growth",
+          "isin": "INFZ90K01MC4",
+          "amfi": null,
+          "type": null,
+          "balance": "640.250",
+          "nav": "29.8814",
+          "value": "19131.57",
+          "avg_cost": null,
+          "total_cost": "21000.00",
+          "ucc": "UCCZ900003",
+          "folio": "91234567/12",
+          "pnl": "-1868.43",
+          "return": "-9.12"
+        },
+        {
+          "name": "TGLDG - Testbridge Gilt Fund - Direct Plan - Growth",
+          "isin": "INFZ91T01GL6",
+          "amfi": null,
+          "type": null,
+          "balance": "455.120",
+          "nav": "55.1287",
+          "value": "25090.17",
+          "avg_cost": null,
+          "total_cost": null,
+          "ucc": null,
+          "folio": "1040012345",
+          "pnl": null,
+          "return": null
+        }
+      ],
+      "bonds": []
+    },
+    {
+      "name": "TESTBRIDGE CAPITAL SERVICES PRIVATE LIMITED",
+      "type": "NSDL Demat Account",
+      "dp_id": "IN999901",
+      "client_id": "10012345",
+      "folios": 2,
+      "balance": "178572.50",
+      "owners": [
+        {
+          "name": "ANANYA R TESTWALA",
+          "PAN": "ABCDE1234F"
+        },
+        {
+          "name": "RAVI TESTWALA",
+          "PAN": "ABCDE5678K"
+        }
+      ],
+      "equities": [
+        {
+          "name": "SAMPLEWORKS TECHNOLOGIES LIMITED",
+          "isin": "INEZ93C01017",
+          "num_shares": "75.000",
+          "price": "2145.90",
+          "value": "160942.50",
+          "symbol": null,
+          "exchange": null
+        },
+        {
+          "name": "DEMOCORP FINANCE LIMITED",
+          "isin": "INEZ94D01013",
+          "num_shares": "200.000",
+          "price": "88.15",
+          "value": "17630.00",
+          "symbol": null,
+          "exchange": null
+        }
+      ],
+      "mutual_funds": [],
+      "bonds": []
+    }
+  ],
+  "statement_period": {
+    "from": "01-Apr-2025",
+    "to": "31-Mar-2026"
+  },
+  "investor_info": {
+    "name": "ANANYA R TESTWALA",
+    "email": "",
+    "address": "Flat 7B, Placeholder Residency\n12 Sample Street, Demo Nagar\nFakeville, Maharashtra\nPINCODE: 999999",
+    "mobile": ""
+  },
+  "file_type": "CDSL",
+  "nps": {
+    "pran": "XXXXXXXX9001",
+    "nps_sp": "TCRA",
+    "value": "160673.43",
+    "schemes": [
+      {
+        "scheme": "NPS TRUST- A/C FICTIVA PENSION FUND MANAGEMENT LIMITED SCHEME E - TIER I",
+        "fund_manager": "FICTIVA PENSION FUND MANAGEMENT LIMITED",
+        "tier": "I",
+        "asset_class": "E",
+        "units": "1234.5678",
+        "nav": "58.1234",
+        "value": "71757.28"
+      },
+      {
+        "scheme": "NPS TRUST- A/C FICTIVA PENSION FUND MANAGEMENT LIMITED SCHEME G - TIER I",
+        "fund_manager": "FICTIVA PENSION FUND MANAGEMENT LIMITED",
+        "tier": "I",
+        "asset_class": "G",
+        "units": "2345.6789",
+        "nav": "29.8765",
+        "value": "70080.68"
+      },
+      {
+        "scheme": "NPS TRUST- A/C FICTIVA PENSION FUND MANAGEMENT LIMITED SCHEME E - TIER II",
+        "fund_manager": "FICTIVA PENSION FUND MANAGEMENT LIMITED",
+        "tier": "II",
+        "asset_class": "E",
+        "units": "456.7891",
+        "nav": "41.2345",
+        "value": "18835.47"
+      }
+    ]
+  },
+  "parse_warnings": []
+}

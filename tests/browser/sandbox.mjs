@@ -62,6 +62,7 @@ let failed = false;
 for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium", "firefox"]) {
   const browser = await engines[name].launch();
   const tab = await browser.newPage();
+  tab.setDefaultTimeout(30_000);
   const violations = [];
   tab.on("console", (message) => {
     if (/Content.Security.Policy|Refused/i.test(message.text())) violations.push(message.text());
@@ -387,6 +388,308 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const { "isin:INFZ90K01FC8": previousFund, ...afterSlowWrites } = unshared;
     assert.ok(previousFund);
     assert.deepEqual(await storage(), afterSlowWrites);
+
+    // An NSDL statement's holdings go to accounts that track holdings, as snapshots.
+    const hosted = (fn, arg) => tab.frames()[1].evaluate(fn, arg);
+    await hosted(() => {
+      window.host.parseWarnings = ["MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail"];
+      window.host.failHistory = false;
+      // An account tracking transactions holds the Flexi Cap fund and a short share position.
+      window.host.snapshots["account-1"] = {
+        "2025-03-31": {
+          holdings: [
+            { symbol: "INFZ90K01FC8", quantity: "10", currency: "INR" },
+            { symbol: "INEZ90B01015", quantity: "-10", currency: "INR" },
+          ],
+          cash: {}, source: "CALCULATED",
+        },
+      };
+      // Fund folios has a snapshot from before the statement: a fund added by hand, and cash.
+      window.host.snapshots["holdings-2"] = {
+        "2025-01-31": { holdings: [{ assetId: "asset-gilt", symbol: "GILT", quantity: "-10", averageCost: "100", currency: "INR", name: "Gilt fund" }], cash: { INR: "1500" } },
+      };
+    });
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 13 holdings.").waitFor({ timeout: 180_000 });
+    await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
+    await frame.getByText("MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail", { exact: true }).waitFor();
+    assert.equal(await frame.getByText("Bonds aren't imported yet.", { exact: false }).count(), 4);
+    const choose = async (label, option) => {
+      await frame.getByLabel(label).click();
+      // Only accounts that track holdings.
+      assert.equal(await frame.getByRole("option", { name: "Mutual funds (INR)" }).count(), 0);
+      assert.equal(await frame.getByRole("option", { name: "Archived funds (INR)" }).count(), 0);
+      await frame.getByRole("option", { name: option }).click();
+    };
+    // A delayed account A write cannot overwrite the later B choice, and a reread waits for both.
+    const statementKey = await frame.getByLabel("All of this statement").getAttribute("id");
+    await pause("set:holdings-1");
+    await choose("All of this statement", "Demat (INR)");
+    await waiting();
+    await choose("All of this statement", "Fund folios (INR)");
+    const parsedAccounts = await hosted(() => window.host.parsed);
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await tab.frames()[1].waitForFunction((previous) => window.host.parsed > previous, parsedAccounts, { timeout: 180_000 });
+    assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
+    await resume();
+    await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
+    assert.equal((await storage())[statementKey], "holdings-2");
+    assert.match(await frame.getByLabel("All of this statement").textContent(), /Fund folios/);
+    await choose(/^NSDL Demat Account 1,/, "Demat (INR)");
+    await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
+    await choose(/^Folio 1040012345/, "Leave out");
+    const preview = frame.getByRole("button", { name: "Preview the snapshots" });
+    assert.equal(await frame.locator("section").count(), 12);
+    for (const section of await frame.locator("section").all()) {
+      if (await section.getByText("PLACEHOLDER PHARMA LIMITED").count()) {
+        await section.getByRole("button", { name: "Leave this share out" }).click();
+        continue;
+      }
+      const use = section.getByRole("button", { name: /^Use this (fund|share)$/ });
+      await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).first().waitFor();
+      if (await section.getByText("Confirmed", { exact: true }).count()) continue;
+      if (await use.isDisabled()) await section.getByRole("radio").first().click();
+      await use.click();
+      await section.getByText("Confirmed", { exact: true }).waitFor();
+    }
+    // A known MANUAL asset in an inactive account is unsafe even when the target starts empty.
+    await hosted(() => {
+      window.host.held["archived-1"] = ["INFZ90K01LQ6"];
+      window.host.pricingModes.INFZ90K01LQ6 = "MANUAL";
+    });
+    await preview.click();
+    const demat = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-03-31" });
+    const folios = frame.locator("section").filter({ hasText: "Fund folios: snapshot of 2025-03-31" });
+    await demat.waitFor();
+    await folios.getByText("Fund INFZ90K01LQ6 uses a manual price", { exact: true }).waitFor();
+    assert.equal(await frame.getByRole("button", { name: "Save 2 snapshots" }).isDisabled(), true);
+    await hosted(() => { window.host.pricingModes.INFZ90K01LQ6 = "MARKET"; });
+    await preview.click();
+    await folios.getByText("Fund INFZ90K01LQ6 uses a manual price", { exact: true }).waitFor({ state: "hidden" });
+    await frame.getByText("PLACEHOLDER PHARMA LIMITED, CDSL Demat Account 2, TESTBRIDGE BROKING LIMITED: You left this share out.").waitFor();
+    await frame.getByText(/^Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout, Folio 1040012345: Its folio or demat account is left out\.$/).waitFor();
+    assert.equal(await frame.getByText("Bonds aren't imported yet.", { exact: false }).count(), 4);
+    const nsdl = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
+    const rendered = await frame.locator("body").innerText();
+    for (const number of nsdl.accounts.flatMap((a) => [a.dp_id, a.client_id]).filter(Boolean)) {
+      assert.equal(rendered.includes(number), false, `A depository identifier is visible: ${number}`);
+    }
+    // Shares print no cost: typed, or blank for unknown.
+    assert.equal(await demat.getByRole("row").count(), 8);
+    await demat.getByText("150", { exact: true }).waitFor();
+    await demat.getByText("520", { exact: true }).waitFor();
+    const shortRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90B01015" });
+    await shortRow.getByText("Mutual funds also holds it.", { exact: true }).waitFor();
+    assert.equal(await shortRow.getByRole("checkbox", { name: "Import", exact: true }).isChecked(), true);
+    await demat.getByLabel("Total cost of Fund INEZ90A01017").fill("185175");
+    await demat.getByLabel("Total cost of Fund INEZ90C01021").fill("abc");
+    await demat.getByText("Type an amount like 12345.67, or leave it blank.").waitFor();
+    const save = frame.getByRole("button", { name: "Save 2 snapshots" });
+    assert.equal(await save.isDisabled(), true);
+    const invalidRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90C01021" });
+    const invalidImport = invalidRow.getByRole("checkbox", { name: "Import", exact: true });
+    await invalidImport.dispatchEvent("click");
+    assert.equal(await save.isDisabled(), false);
+    assert.equal(await invalidRow.getByText("Type an amount like 12345.67, or leave it blank.").count(), 0);
+    await invalidImport.dispatchEvent("click");
+    assert.equal(await save.isDisabled(), true);
+    assert.equal(await demat.getByLabel("Total cost of Fund INEZ90C01021").inputValue(), "abc");
+    await invalidRow.getByText("Type an amount like 12345.67, or leave it blank.").waitFor();
+    await demat.getByLabel("Total cost of Fund INEZ90C01021").fill("");
+    assert.equal(await save.isDisabled(), false);
+    // The Flexi Cap fund is left out because Mutual funds holds it; the hand-added fund and the cash stay.
+    const flexiRow = folios.getByRole("row").filter({ hasText: "Fund INFZ90K01FC8" });
+    await flexiRow.getByText("Mutual funds already holds this fund, from its transactions. Including it here counts it twice.").waitFor();
+    assert.equal(await flexiRow.getByText("Left out", { exact: true }).count(), 1);
+    assert.equal(await folios.getByRole("row").filter({ hasText: "Gilt fund" }).getByText("Kept", { exact: true }).count(), 1);
+    await folios.getByText("Cash carried over from the snapshot of 2025-01-31: INR 1500.").waitFor();
+    await folios.getByText("Starts from the account's snapshot of 2025-01-31", { exact: false }).waitFor();
+    assert.equal(await frame.getByText("Wealthfolio has later snapshots of this account", { exact: true }).count(), 0);
+    await save.click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    const snapshot = (id, date) => hosted(([id, date]) => window.host.snapshots[id][date], [id, date]);
+    const first = await snapshot("holdings-1", "2025-03-31");
+    assert.deepEqual(first.cash, {});
+    assert.deepEqual(
+      first.holdings.map((h) => [h.symbol, h.quantity, h.averageCost ?? null]),
+      [
+        ["INEZ90A01017", "150", "1234.5"],
+        ["INEZ90B01015", "520", null],
+        ["INEZ90C01021", "75", null],
+        ["INFZ90K01NE8", "1200", null],
+        ["INEZ92A01013", "200", null],
+        ["INFZ91T01NF4", "1523.456", null],
+        ["INFZ91T01GE1", "300", null],
+      ],
+    );
+    const funds = await snapshot("holdings-2", "2025-03-31");
+    assert.deepEqual(funds.cash, { INR: "1500" });
+    assert.deepEqual(
+      funds.holdings.map((h) => [h.assetId ?? h.symbol, h.quantity]),
+      [
+        ["asset-gilt", "-10"],
+        ["INFZ90K01LQ6", "8.053"],
+        ["INFZ90K01BA1", "3540.293"],
+      ],
+    );
+    assert.equal(funds.holdings.find((h) => h.symbol === "GILT").averageCost, "100");
+
+    // Leaving a still-listed fund out keeps both its units and the earlier import's provenance.
+    await leaveOut(frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" }));
+    await preview.click();
+    await folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" }).getByText("Kept", { exact: true }).waitFor();
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await save.click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
+
+    // Once that fund is no longer listed, the remembered import still removes it by default.
+    // Replacing a snapshot on the same date needs confirming; Wealthfolio's cost carries over.
+    await hosted(() => { window.host.soldIsins = ["INFZ90K01LQ6"]; });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 12 holdings.").waitFor({ timeout: 180_000 });
+    await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
+    await preview.click();
+    await demat.waitFor();
+    const sold = folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" });
+    await sold.getByText("Not on the statement any more. An earlier import of Folio 91234567/12 added it.").waitFor();
+    assert.equal(await sold.getByText("Removed", { exact: true }).count(), 1);
+    assert.equal(await demat.getByLabel("Total cost of Fund INEZ90A01017").inputValue(), "185175");
+    await demat.getByText("From the account's average cost in Wealthfolio").waitFor();
+    assert.equal(await save.isDisabled(), true);
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await save.click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    assert.deepEqual(
+      (await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.assetId ?? h.symbol),
+      ["asset-gilt", "asset-INFZ90K01BA1"],
+    );
+    assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, "1234.5");
+    // An empty demat account still reconciles its sold holdings. Manual assets with known cost
+    // block Save: an editable statement cost can be cleared; a kept holding must be removed.
+    await hosted(() => {
+      window.host.soldIsins.push("INEZ90A01017", "INEZ90B01015", "INEZ90C01021", "INFZ90K01NE8");
+      const share = window.host.snapshots["holdings-1"]["2025-03-31"].holdings.find((h) => h.symbol === "INEZ92A01013");
+      window.host.pricingModes.INEZ92A01013 = "MANUAL";
+      share.averageCost = "12";
+      const gilt = window.host.snapshots["holdings-2"]["2025-03-31"].holdings.find((h) => h.symbol === "GILT");
+      window.host.pricingModes.GILT = "MANUAL";
+      gilt.averageCost = "3";
+    });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 7 holdings.").waitFor({ timeout: 180_000 });
+    await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
+    await frame.getByLabel(/^NSDL Demat Account 1,/).getByText("Demat (INR)").waitFor();
+    await preview.click();
+    await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText("Removed", { exact: true }).waitFor();
+    await demat.getByRole("row").filter({ hasText: "Fund INFZ90K01NE8" }).getByText("Removed", { exact: true }).waitFor();
+    await demat.getByText("Fund INEZ92A01013 uses a manual price", { exact: true }).waitFor();
+    await folios.getByText("Fund GILT uses a manual price", { exact: true }).waitFor();
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    assert.equal(await save.isDisabled(), true);
+    await demat.getByLabel("Total cost of Fund INEZ92A01013").fill("");
+    assert.equal(await save.isDisabled(), true);
+    await folios.getByRole("row").filter({ hasText: "Fund GILT" }).getByRole("checkbox", { name: "Keep", exact: true }).dispatchEvent("click");
+    assert.equal(await save.isDisabled(), false);
+    await save.click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    assert.deepEqual((await snapshot("holdings-1", "2025-03-31")).holdings.map((h) => h.symbol), ["INEZ92A01013", "INFZ91T01NF4", "INFZ91T01GE1"]);
+    assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, undefined);
+    assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.symbol), ["INFZ90K01BA1"]);
+    assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).cash, { INR: "1500" });
+    assert.equal(await hosted(() => window.host.pricingModes.INEZ92A01013), "MANUAL");
+
+    // The target's current, later snapshot can expose a MANUAL asset absent from the baseline.
+    await hosted(() => {
+      const other = window.host.snapshots["account-1"]["2025-03-31"];
+      other.holdings = other.holdings.filter((h) => h.symbol !== "INEZ90B01015");
+      window.host.soldIsins = window.host.soldIsins.filter((isin) => isin !== "INEZ90B01015");
+      window.host.pricingModes.INEZ90B01015 = "MANUAL";
+      window.host.snapshots["holdings-1"]["2025-04-30"] = {
+        holdings: [{ symbol: "INEZ90B01015", quantity: "100", currency: "INR", averageCost: "20" }], cash: {},
+      };
+    });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 9 holdings.").waitFor({ timeout: 180_000 });
+    await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
+    await preview.click();
+    await demat.getByLabel("Total cost of Fund INEZ90B01015").fill("1000");
+    await demat.getByText("Fund INEZ90B01015 uses a manual price", { exact: true }).waitFor();
+    const manualShare = frame.locator("section").filter({ hasText: "ISIN INEZ90B01015" });
+    await manualShare.getByRole("button", { name: "Change", exact: true }).click();
+    await manualShare.getByRole("button", { name: "Use this share" }).click();
+    await manualShare.getByText("Confirmed", { exact: true }).waitFor();
+    assert.equal(JSON.parse((await storage())["isin:INEZ90B01015"]).manual, undefined);
+    // With no observed holding left, the current search result still carries its MANUAL mode.
+    const laterSnapshot = await snapshot("holdings-1", "2025-04-30");
+    await hosted(() => { delete window.host.snapshots["holdings-1"]["2025-04-30"]; });
+    await preview.click();
+    await demat.getByLabel("Total cost of Fund INEZ90B01015").fill("1000");
+    await demat.getByText("Fund INEZ90B01015 uses a manual price", { exact: true }).waitFor();
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    assert.equal(await save.isDisabled(), true);
+    // A live mode change overrides the mode the search result supplied earlier.
+    await hosted((later) => {
+      window.host.snapshots["holdings-1"]["2025-04-30"] = later;
+      window.host.pricingModes.INEZ90B01015 = "MARKET";
+    }, laterSnapshot);
+    await preview.click();
+    await demat.getByLabel("Total cost of Fund INEZ90B01015").fill("1000");
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    assert.equal(await save.isDisabled(), false);
+    await save.click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    assert.equal((await snapshot("holdings-1", "2025-04-30")).holdings[0].averageCost, "20");
+
+    // Archived accounts are absent from portfolio.getHoldings, but their saved assets still use
+    // their global pricing mode. Reload the account inventory after archiving the hidden account.
+    await hosted((isins) => {
+      window.host.soldIsins = isins.filter((isin) => isin !== "INEZ90A01017");
+      window.host.archiveOtherAccount = true;
+      window.host.pricingModes.INEZ90A01017 = "MANUAL";
+      window.host.snapshots["archived-1"] = {
+        "2025-03-31": { holdings: [{ symbol: "INEZ90A01017", quantity: "1", averageCost: "20", currency: "INR" }], cash: {}, source: "CALCULATED" },
+      };
+      window.host.reopen();
+    }, nsdl.accounts.flatMap((a) => [...a.equities, ...a.mutual_funds].map((h) => h.isin)));
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
+    await frame.locator("#cas-password").fill("ABCDE1234F");
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("Confirmed", { exact: true }).waitFor({ timeout: 180_000 });
+    await preview.click();
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    const saveOne = frame.getByRole("button", { name: "Save 1 snapshot", exact: true });
+    assert.equal(await saveOne.isDisabled(), false);
+    await demat.getByLabel("Total cost of Fund INEZ90A01017").fill("1500");
+    await demat.getByText("Fund INEZ90A01017 uses a manual price", { exact: true }).waitFor();
+    assert.equal(await saveOne.isDisabled(), true);
+
+    // Exclusions are visible even when the statement has nothing that could reach a preview.
+    await hosted(() => { window.host.onlyNps = true; });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("Test NPS Scheme, National Pension System: NPS holdings aren't imported yet.", { exact: true }).waitFor({ timeout: 180_000 });
+    assert.equal(await preview.isDisabled(), true);
+    assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+    await hosted(() => {
+      window.host.soldIsins = [];
+      window.host.parseWarnings = [];
+      window.host.onlyNps = false;
+    });
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-summary-cams.pdf");
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("Check each folio's funds and AMC against the PDF. The parser can merge equal folio numbers across AMCs without a warning.", { exact: true }).waitFor({ timeout: 180_000 });
+    // A folio with funds from two issuers, as the parser returns two AMCs' folios with one number, still reads.
+    await hosted(() => { window.host.ambiguousSummary = true; });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("CAMS summary statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 folios, 6 holdings.", { exact: true }).waitFor({ timeout: 180_000 });
+    assert.equal(await frame.getByRole("button", { name: "Preview the snapshots" }).count(), 1);
+    await hosted(() => { window.host.ambiguousSummary = false; });
 
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });

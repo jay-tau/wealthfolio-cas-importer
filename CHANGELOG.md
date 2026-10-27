@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Import summary CAMS/KFintech statements and NSDL/CDSL depository statements as holdings snapshots: choose an account that tracks holdings for each folio or demat account, confirm each fund and share by its ISIN, and preview each account's snapshot. Holdings the statement doesn't list and cash carry over from the account's latest snapshot, except holdings an earlier import of the same folio or demat account added and the statement no longer lists; a folio's fund that an account tracking transactions already holds is left out by default; costs come from the statement, the account's average cost in INR, or what you type. A split recorded since the snapshot being carried over, and a holding priced by hand whose cost would replace its price, are flagged. Bonds and NPS holdings are left out for now
 
 ### Changed
 

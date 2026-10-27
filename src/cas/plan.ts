@@ -149,11 +149,15 @@ export function importRows(plan: PlannedTransaction[], importAnyway: (t: Planned
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
-/** casparser's statement dates, `01-Apr-2023`, as `2023-04-01`. */
+/** casparser's statement dates, `01-Apr-2023` (or `01-04-2023` and `01/04/2023` from NSDL/CDSL), as `2023-04-01`. */
 export function statementDay(date: string) {
-  const match = /^(\d{2})-([A-Za-z]{3})-(\d{4})$/.exec(date);
-  const month = match && MONTHS.indexOf(match[2][0].toUpperCase() + match[2].slice(1).toLowerCase());
-  if (!match || month === null || month < 0) throw new Error(`Not a statement date: ${date}`);
+  const match = /^(\d{2})[-/]([A-Za-z]{3}|\d{2})[-/](\d{4})$/.exec(date);
+  const month =
+    match &&
+    (/^\d+$/.test(match[2])
+      ? Number(match[2]) - 1
+      : MONTHS.indexOf(match[2][0].toUpperCase() + match[2].slice(1).toLowerCase()));
+  if (!match || month === null || month < 0 || month > 11) throw new Error(`Not a statement date: ${date}`);
   return `${match[3]}-${String(month + 1).padStart(2, "0")}-${match[1]}`;
 }
 

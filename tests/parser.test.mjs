@@ -72,17 +72,30 @@ test("disposing during a parse rejects its request", { timeout: 1000 }, async ()
   await rejected;
 });
 
-for (const data of [{ file_type: "CAMS", cas_type: "SUMMARY" }, { file_type: "NSDL" }, { file_type: "CDSL" }]) {
-  test(`rejects unsupported ${data.cas_type ?? data.file_type} statements`, { timeout: 1000 }, async () => {
-    const { parser, worker } = createParser();
-    const rejected = assert.rejects(parser.parse(new ArrayBuffer(1), "test"), { kind: "unsupported" });
-    await setImmediate();
-    const { id } = worker.messages.find((message) => message.type === "parse");
-    worker.onmessage({ data: { id, json: JSON.stringify(data) } });
-    await rejected;
-    parser.dispose();
+async function reply(data) {
+  const { parser, worker } = createParser();
+  const parsed = parser.parse(new ArrayBuffer(1), "test");
+  await setImmediate();
+  const { id } = worker.messages.find((message) => message.type === "parse");
+  worker.onmessage({ data: { id, json: JSON.stringify(data) } });
+  return parsed.finally(() => parser.dispose());
+}
+
+for (const data of [
+  { file_type: "CAMS", cas_type: "DETAILED" },
+  { file_type: "KFINTECH", cas_type: "SUMMARY" },
+  { file_type: "NSDL", accounts: [] },
+  { file_type: "CDSL", accounts: [] },
+]) {
+  test(`reads ${data.cas_type ?? data.file_type} statements`, { timeout: 1000 }, async () => {
+    // Parsed in the bundle's own realm, so compare plain copies.
+    assert.deepEqual(JSON.parse(JSON.stringify(await reply(data))), data);
   });
 }
+
+test("rejects a CAMS statement that is neither detailed nor a summary", { timeout: 1000 }, async () => {
+  await assert.rejects(reply({ file_type: "CAMS", cas_type: "UNKNOWN" }), { kind: "unsupported" });
+});
 
 test("parse errors do not put extracted data into the Worker reply", async () => {
   const source = await readFile("src/cas/worker.js", "utf8");

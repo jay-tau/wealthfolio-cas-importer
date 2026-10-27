@@ -1,0 +1,167 @@
+{
+  "statement_period": {
+    "from": "31-Mar-2025",
+    "to": "31-Mar-2025"
+  },
+  "folios": [
+    {
+      "folio": "91234567 / 12",
+      "amc": "Fictiva Mutual Fund",
+      "name": null,
+      "PAN": "",
+      "KYC": null,
+      "PANKYC": null,
+      "schemes": [
+        {
+          "scheme": "Fictiva Flexi Cap Fund - Direct Plan - Growth",
+          "advisor": null,
+          "rta_code": "FFCDG",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01FC8",
+          "amfi": null,
+          "nominees": [],
+          "open": "2892.104",
+          "close": "2892.104",
+          "close_calculated": "2892.104",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "74.3120",
+            "cost": "154554.00",
+            "value": "214918.03"
+          },
+          "transactions": []
+        },
+        {
+          "scheme": "Fictiva Liquid Fund - Direct Plan - Growth",
+          "advisor": null,
+          "rta_code": "FLQDG",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01LQ6",
+          "amfi": null,
+          "nominees": [],
+          "open": "12.296",
+          "close": "12.296",
+          "close_calculated": "12.296",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "2911.4521",
+            "cost": "33150.40",
+            "value": "35799.22"
+          },
+          "transactions": []
+        }
+      ]
+    },
+    {
+      "folio": "91234570/0",
+      "amc": "Fictiva Mutual Fund",
+      "name": null,
+      "PAN": "",
+      "KYC": null,
+      "PANKYC": null,
+      "schemes": [
+        {
+          "scheme": "Fictiva Balanced Advantage Fund - Direct Plan - Income Distribution cum Capital Withdrawal Option - Reinvestment",
+          "advisor": null,
+          "rta_code": "FBADR",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01BA1",
+          "amfi": null,
+          "nominees": [],
+          "open": "3443.910",
+          "close": "3443.910",
+          "close_calculated": "3443.910",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "18.0410",
+            "cost": "56021.37",
+            "value": "62131.58"
+          },
+          "transactions": []
+        }
+      ]
+    },
+    {
+      "folio": "1040012345",
+      "amc": "Testbridge Mutual Fund",
+      "name": null,
+      "PAN": "",
+      "KYC": null,
+      "PANKYC": null,
+      "schemes": [
+        {
+          "scheme": "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout",
+          "advisor": null,
+          "rta_code": "TCBRP",
+          "rta": "KFINTECH",
+          "type": "N/A",
+          "isin": "INFZ91T01CB6",
+          "amfi": null,
+          "nominees": [],
+          "open": "9511.474",
+          "close": "9511.474",
+          "close_calculated": "9511.474",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "10.7432",
+            "cost": "99995.00",
+            "value": "102183.67"
+          },
+          "transactions": []
+        },
+        {
+          "scheme": "Testbridge Gilt Fund - Direct Plan - Growth",
+          "advisor": null,
+          "rta_code": "TGLDG",
+          "rta": "KFINTECH",
+          "type": "N/A",
+          "isin": "INFZ91T01GL6",
+          "amfi": null,
+          "nominees": [],
+          "open": "845.512",
+          "close": "845.512",
+          "close_calculated": "845.512",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "54.0912",
+            "cost": null,
+            "value": "45734.76"
+          },
+          "transactions": []
+        },
+        {
+          "scheme": "Testbridge Fixed Term Plan - Series 12 - Direct Plan - Growth",
+          "advisor": null,
+          "rta_code": "TFT12",
+          "rta": "KFINTECH",
+          "type": "N/A",
+          "isin": "INFZ91T01FT1",
+          "amfi": null,
+          "nominees": [],
+          "open": "5000.000",
+          "close": "5000.000",
+          "close_calculated": "5000.000",
+          "valuation": {
+            "date": "2025-03-28",
+            "nav": "11.2045",
+            "cost": "50000.00",
+            "value": "56022.50"
+          },
+          "transactions": []
+        }
+      ]
+    }
+  ],
+  "investor_info": {
+    "name": "ANANYA R TESTWALA",
+    "email": "ananya.testwala@example.com",
+    "address": "Flat 7B, Placeholder Residency\n12 Sample Street, Demo Nagar\nFakeville 999999\nMaharashtra, India",
+    "mobile": "+910000000000"
+  },
+  "cas_type": "SUMMARY",
+  "file_type": "CAMS",
+  "parse_warnings": []
+}
