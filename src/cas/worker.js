@@ -4,6 +4,15 @@
 
 const ORIGIN = "https://runtime.invalid/";
 
+// Pyodide refuses classic Workers, and checks for one with importScripts("data:..."). Fail data:
+// URLs here, so the check fails without depending on the CSP to block it (and log that it did).
+// Chromium won't start a module Worker from a blob URL in Wealthfolio's sandboxed iframe.
+const loadScripts = self.importScripts;
+self.importScripts = (...urls) => {
+  if (urls.some((url) => /^data:/i.test(url))) throw new TypeError("This Worker loads no data: scripts.");
+  return loadScripts.apply(self, urls);
+};
+
 let pyodide;
 
 async function boot({ files, wasmParts, wheels, pythonFiles }) {

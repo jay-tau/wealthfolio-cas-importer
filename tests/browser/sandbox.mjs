@@ -1,5 +1,6 @@
 // Checks the parser where it really runs: in a sandbox="allow-scripts" srcdoc iframe with
-// Wealthfolio's add-on CSP, starting its classic Worker from a blob URL.
+// Wealthfolio's add-on CSP, starting its classic Worker from a blob URL. Then parses again
+// without the CSP.
 // Usage: pnpm runtime && node tests/browser/sandbox.mjs [chromium] [firefox] [webkit]
 // Needs Playwright's browsers (`pnpm exec playwright-core install chromium firefox`).
 import assert from "node:assert/strict";
@@ -27,9 +28,7 @@ const [bundle] = await build({
 });
 const script = bundle.output[0].code.replace(/<\/script/gi, "<\\/script");
 const hash = createHash("sha256").update(script).digest("base64");
-const srcdoc =
-  `<!doctype html><meta http-equiv="Content-Security-Policy" content="${csp(hash)}">` +
-  `<script>${script}</script>`;
+const srcdoc = (head) => `<!doctype html>${head}<script>${script}</script>`;
 
 const runtime = JSON.parse(await readFile("assets/runtime/files.json", "utf8"));
 const paths = ["files.json", ...runtime.files, ...runtime.wasmParts, ...runtime.wheels].map(
@@ -37,7 +36,7 @@ const paths = ["files.json", ...runtime.files, ...runtime.wasmParts, ...runtime.
 );
 // The meta charset matters: Playwright's WebKit reads a routed page as windows-1252 despite the
 // header, which would garble the harness's non-ASCII text and so break its CSP hash.
-const page = `<!doctype html><meta charset="utf-8"><iframe sandbox="allow-scripts"></iframe><script>
+const page = (doc) => `<!doctype html><meta charset="utf-8"><iframe sandbox="allow-scripts"></iframe><script>
 const paths = ${JSON.stringify(paths)};
 const frame = document.querySelector("iframe");
 addEventListener("message", async ({ data }) => {
@@ -50,8 +49,12 @@ addEventListener("message", async ({ data }) => {
     window.result = data.result;
   }
 });
-frame.srcdoc = ${JSON.stringify(srcdoc).replace(/<\//g, "<\\/")};
+frame.srcdoc = ${JSON.stringify(doc).replace(/<\//g, "<\\/")};
 </script>`;
+const pages = {
+  "": page(srcdoc(`<meta http-equiv="Content-Security-Policy" content="${csp(hash)}">`)),
+  "no-csp": page(srcdoc("")),
+};
 
 const expected = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
 const engines = { chromium, firefox, webkit };
@@ -65,16 +68,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
   });
   await tab.route("http://sandbox.test/**", async (route) => {
     const path = new URL(route.request().url()).pathname.slice(1);
-    if (path === "") return route.fulfill({ contentType: "text/html; charset=utf-8", body: page });
+    if (Object.hasOwn(pages, path)) return route.fulfill({ contentType: "text/html; charset=utf-8", body: pages[path] });
     return route.fulfill({ body: await readFile(path) });
   });
   await tab.goto("http://sandbox.test/");
   await tab.waitForFunction(() => window.result, null, { timeout: 180_000 });
   const { data, ...result } = await tab.evaluate(() => window.result);
   console.log(`${name} ${browser.version()}`, result);
-  // Pyodide probes for a classic Worker with importScripts("data:..."), which the CSP refuses.
-  const unexpected = violations.filter((text) => !text.includes("data:text/javascript"));
-  if (unexpected.length) console.log("  CSP:", unexpected);
   try {
     assert.equal(result.wrongPassword, "password");
     assert.deepEqual(data, expected);
@@ -394,6 +394,23 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
   } catch (error) {
     failed = true;
     console.log(`  FAILED: ${error.stack}`);
+  }
+  // Pyodide refuses a classic Worker when its importScripts("data:...") probe works, which the CSP
+  // would otherwise be all that prevents.
+  try {
+    await tab.goto("http://sandbox.test/no-csp");
+    await tab.waitForFunction(() => window.result, null, { timeout: 180_000 });
+    const { data, error } = await tab.evaluate(() => window.result);
+    assert.equal(error, undefined);
+    assert.deepEqual(data, expected);
+  } catch (error) {
+    failed = true;
+    console.log(`  FAILED without the CSP: ${error.stack}`);
+  }
+  // Playwright passes on no CSP messages from a Chromium Worker; the run without the CSP covers it.
+  if (violations.length) {
+    failed = true;
+    console.log("  FAILED: CSP messages:", violations);
   }
   await browser.close();
 }
