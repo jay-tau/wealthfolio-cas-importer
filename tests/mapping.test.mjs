@@ -433,6 +433,85 @@ describe("reversals", () => {
       assert.match(mapping.warnings[0].message, /purchase isn't in the statement/);
     }
   });
+
+  // Franklin Templeton's wound-up schemes print "Payment - Units Extinguished-Reversed", which casparser returns as a purchase.
+  const extinguished = tx("2021-03-30", "REDEMPTION", "-5126.75", "-171.447", "29.9028", { description: "Payment - Units Extinguished" });
+  const restored = tx("2021-04-05", "PURCHASE", "5126.75", "171.447", "29.9028", { description: "Payment - Units Extinguished-Reversed" });
+  const repaid = { ...extinguished, date: "2021-04-20" };
+
+  test("a later row with opposite units and amount is left out as a possible redemption reversal", () => {
+    const mapping = map(statement(scheme("A", [extinguished, charge("2021-03-30", "STT_TAX", "0.05"), restored, repaid], { open: "171.447" })));
+    assert.deepEqual(summary(mapping).rows, [["SELL", "", "171.447", "5126.7453516", "", "WITHDRAWAL"]]);
+    assert.equal(mapping.transactions[0].rows[0], repaid);
+    assert.deepEqual(
+      mapping.warnings.map((w) => [w.rows.map((row) => row.type), w.message]),
+      [[["REDEMPTION", "STT_TAX", "PURCHASE"], "A later row has the opposite units and amount to this redemption. This could be a reversal or a new purchase, so neither row is imported. Check the statement and handle these rows by hand."]],
+    );
+  });
+
+  test("an earlier import needs review before deleting a possible reversed redemption", () => {
+    for (const existing of ["SELL", "WITHDRAWAL"]) {
+      const asked = [];
+      const mapping = map(statement(scheme("A", [extinguished, restored], { open: "171.447" })), {
+        alreadyImported: (activity) => (asked.push(activity.activityType), activity.activityType === existing),
+      });
+      assert.deepEqual(asked, existing === "SELL" ? ["SELL"] : ["SELL", "WITHDRAWAL"]);
+      assert.deepEqual(mapping.transactions, []);
+      assert.match(mapping.warnings[0].message, /could be a reversal or a new purchase/);
+      assert.match(mapping.warnings[0].message, /Wealthfolio has the sale or its withdrawal from an earlier import; delete them only if this is a reversal\.$/);
+    }
+    const mapping = map(statement(scheme("A", [{ ...extinguished, nav: null }, restored], { open: "171.447" })));
+    assert.deepEqual(mapping.transactions, []);
+    assert.match(mapping.warnings[0].message, /If Wealthfolio has the sale or its withdrawal from an earlier import, delete them only if this is a reversal\.$/);
+  });
+
+  test("an explicit purchase reversal takes priority over a possible redemption reversal", () => {
+    for (const type of ["PURCHASE", "PURCHASE_SIP"]) {
+      const bought = { ...restored, type };
+      const undone = { ...repaid, type: "REVERSAL" };
+      const mapping = map(statement(scheme("A", [extinguished, bought, undone], { open: "171.447" })));
+      assert.deepEqual(mapping.transactions.map((t) => t.rows), [[extinguished]]);
+      assert.deepEqual(mapping.warnings.map((w) => w.rows), [[bought, undone]]);
+      assert.equal(mapping.warnings[0].message, "The statement reverses this purchase, so neither row is imported.");
+    }
+  });
+
+  test("a redemption can be paired only once", () => {
+    const bought = { ...restored, type: "PURCHASE_SIP", date: "2021-04-10" };
+    const mapping = map(statement(scheme("A", [extinguished, restored, bought], { open: "171.447" })));
+    assert.deepEqual(mapping.transactions.map((t) => t.rows), [[bought]]);
+    assert.deepEqual(mapping.warnings.map((w) => w.rows), [[extinguished, restored]]);
+  });
+
+  test("opposite unit movements without payment keep their separate warnings", () => {
+    for (const amount of [null, "0.00"]) {
+      for (const type of ["PURCHASE", "PURCHASE_SIP"]) {
+        const removed = { ...extinguished, amount };
+        const added = { ...restored, type, amount };
+        const mapping = map(statement(scheme("A", [removed, added], { open: "171.447" })));
+        assert.deepEqual(mapping.transactions, []);
+        assert.deepEqual(mapping.warnings.map((w) => w.rows), [[removed], [added]]);
+        assert.deepEqual(summary(mapping).warnings, [
+          "Units removed without a payment, such as a transmission or a move to another folio, aren't imported yet.",
+          "Units added without a payment, such as bonus units or a transmission, aren't imported yet.",
+        ]);
+      }
+    }
+  });
+
+  test("a purchase reverses no redemption unless exactly one earlier redemption has the same units and amount", () => {
+    const cases = [
+      [restored, extinguished],
+      [extinguished, { ...restored, amount: "5000.00" }],
+      [extinguished, { ...restored, units: "171.446" }],
+      [extinguished, { ...extinguished, date: "2021-03-31" }, restored],
+    ];
+    for (const rows of cases) {
+      const mapping = map(statement(scheme("A", rows, { open: "342.894" })));
+      assert.equal(mapping.transactions.length, rows.length);
+      assert.ok(mapping.warnings.every((w) => !w.leftOut));
+    }
+  });
 });
 
 describe("mergers", () => {
@@ -496,6 +575,57 @@ test("rows #1 leaves for later are warnings; event-only rows are skipped", () =>
       [["MISC"], "casparser couldn't tell what this row is, so it isn't imported."],
     ],
   );
+});
+
+test("units moved without a payment are warnings, whatever casparser calls them", () => {
+  const mapping = map(
+    statement(
+      scheme("A", [
+        // casparser#88: a bonus row prints units but no amount or NAV, and comes out as a purchase.
+        tx("2024-01-10", "PURCHASE", null, "10.000", null, { description: "Bonus" }),
+        tx("2024-02-10", "REDEMPTION", "0.00", "-5.000", "10.0000"),
+        tx("2024-03-10", "SWITCH_IN", null, "10.000"),
+      ], { open: "5.000" }),
+    ),
+  );
+  assert.deepEqual(summary(mapping), {
+    rows: [],
+    warnings: [
+      "Units added without a payment, such as bonus units or a transmission, aren't imported yet.",
+      "Units removed without a payment, such as a transmission or a move to another folio, aren't imported yet.",
+      "This row has no amount, or one with the wrong sign.",
+    ],
+  });
+});
+
+test("a row that prints only a balance is skipped unless the balance changes", () => {
+  const bought = tx("2024-01-10", "PURCHASE", "1000.00", "100.000", "10.0000", { balance: "100.000" });
+  const restated = (balance) => tx("2024-02-10", "MISC", null, null, null, { description: "Transmission", balance });
+  assert.deepEqual(summary(map(statement(scheme("A", [bought, restated("100.000")])))).warnings, []);
+  assert.deepEqual(summary(map(statement(scheme("A", [bought, restated("150.000")])))), {
+    rows: [["BUY", "", "100.000", "1000", "", "DEPOSIT"]],
+    warnings: ["This row changes the unit balance from 100 to 150 without listing any units, so it isn't imported."],
+  });
+  // Without an earlier balance, the units held count from the opening balance.
+  assert.deepEqual(summary(map(statement(scheme("A", [restated("10.000")])))).warnings, [
+    "This row changes the unit balance from 0 to 10 without listing any units, so it isn't imported.",
+  ]);
+  assert.ok(closedScheme(scheme("A", [restated("0.000")])));
+  assert.ok(!closedScheme(scheme("A", [restated("10.000"), { ...restated("0.000"), date: "2024-03-10" }])));
+});
+
+test("balance-only rows do not compete for charges, including before the first printed balance", () => {
+  const bought = tx("2024-01-10", "PURCHASE", "1000.00", "100.000", "10.0000");
+  const stamp = charge("2024-01-10", "STAMP_DUTY_TAX", "0.05");
+  const unchanged = tx("2024-01-10", "MISC", null, null, null, { balance: "105.000" });
+  const restated = { ...unchanged, balance: "150.000" };
+  const mapping = map(statement(scheme("A", [bought, stamp, unchanged, restated], { open: "5.000" })));
+  assert.deepEqual(mapping.transactions.map((t) => t.rows), [[bought, stamp]]);
+  assert.deepEqual(mapping.warnings.map((w) => w.rows), [[restated]]);
+  assert.deepEqual(summary(mapping), {
+    rows: [["BUY", "", "100.000", "1000.05", "0.05", "DEPOSIT"]],
+    warnings: ["This row changes the unit balance from 105 to 150 without listing any units, so it isn't imported."],
+  });
 });
 
 test("explicitly rejected instructions without unit movement are skipped", () => {
