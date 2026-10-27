@@ -44,6 +44,22 @@ Fund searches send the printed ISIN, the fund's name from the statement when the
 or none is printed, or what you type, to Wealthfolio's market-data providers. The
 PDF, its password and your PAN never leave Wealthfolio.
 
+## Install
+
+Download `wealthfolio-cas-importer-<version>.zip` from
+[Releases](https://github.com/jay-tau/wealthfolio-cas-importer/releases). In Wealthfolio's desktop
+app, 3.11.0 or newer, open **Settings** → **Add-ons**, choose **Install from File**, pick the zip
+and allow the permissions it asks for.
+
+Wealthfolio's web app can't install it from a file yet: its server turns away add-on zips over about
+1.5 MiB, and this one is about 11 MB
+([wealthfolio/wealthfolio#2306](https://github.com/wealthfolio/wealthfolio/issues/2306)).
+
+Each release also carries the zip's SHA-256 (`sha256sum -c wealthfolio-cas-importer-<version>.zip.sha256`)
+and a build provenance attestation:
+`gh attestation verify wealthfolio-cas-importer-<version>.zip --repo jay-tau/wealthfolio-cas-importer`
+checks that the zip was built from this repository.
+
 ## Development
 
 ```bash
@@ -82,6 +98,14 @@ itself, listed in `runtime.json`, follow its version. CI then:
 Every bump also needs `THIRD_PARTY_NOTICES.md` (and perhaps `licenses/`) brought up to date; the
 tests fail until it names the new files. When casparser starts needing a package Pyodide builds,
 add it to `runtime.json`.
+
+## Releasing
+
+Set the version in `manifest.json` and `package.json`, and move `CHANGELOG.md`'s `[Unreleased]`
+entries into a `## [<version>] - YYYY-MM-DD` section. Pushing the tag `v<version>` then runs CI's
+checks and publishes the zip CI built as a GitHub release, with its SHA-256, its build provenance
+and that CHANGELOG section as the notes; a `v<version>-rc.N` tag makes a pre-release. The release
+stops before CI if the tag, either version or the CHANGELOG doesn't match.
 
 ## License
 
