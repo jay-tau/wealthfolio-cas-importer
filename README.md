@@ -13,7 +13,8 @@ been tried on macOS.
 To import, pick the PDF and enter its password, choose a Wealthfolio account for each PAN (and,
 if you like, a different one for a folio), and confirm the Wealthfolio fund for each scheme; the
 add-on searches by the ISIN printed on the statement, and by the fund's name if the ISIN finds
-nothing or none is printed. Closed schemes, with no units at either end and
+nothing or none is printed. Name-search results can be other funds: pick one with the statement's
+fund name, plan and option, or leave the fund out. Closed schemes, with no units at either end and
 nothing to import, are skipped. The preview lists every activity with its
 cash deposit or withdrawal, the rows left out and why, and anything Wealthfolio already has. After
 the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
