@@ -25,7 +25,7 @@ export interface SchemeTarget {
 export interface MappingInput {
   /** The account chosen for the folio and the asset for the fund; undefined leaves the scheme out. */
   target(folio: CasFolio, scheme: CasScheme): SchemeTarget | undefined;
-  /** Whether Wealthfolio has this row from an earlier import. Asked about reversed purchases. */
+  /** Whether Wealthfolio has this row from an earlier import. Asked about reversed purchases and redemptions. */
   alreadyImported(activity: ActivityImport): boolean;
 }
 
@@ -158,8 +158,8 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
     for (const entry of entries) {
       const rows = [entry.row, ...entry.charges];
       if (entry.reverses) {
-        const purchase = entry.reverses;
-        warn([purchase.row, ...purchase.charges, ...rows], reversalMessage(purchase, input));
+        const original = entry.reverses;
+        warn([original.row, ...original.charges, ...rows], reversalMessage(original, input));
       } else if (entry.reversedBy || entry.attached) {
         continue;
       } else if (entry.problem) {
@@ -185,9 +185,19 @@ function recordsNothing(row: CasTransaction) {
   );
 }
 
+/** A row whose printed unit balance differs from the units held before it. */
+function changesBalance(scheme: CasScheme, index: number) {
+  const { balance } = scheme.transactions[index];
+  return balance !== null && cmp(dec(balance), unitsHeldBefore(scheme, index)) !== 0;
+}
+
+/** Rows that record nothing and leave the unit balance as it was. */
+const skipped = (scheme: CasScheme, index: number) =>
+  recordsNothing(scheme.transactions[index]) && !changesBalance(scheme, index);
+
 /** A scheme with no units at either end and nothing to import, such as one sold before the statement. */
 export const closedScheme = (scheme: CasScheme) =>
-  isZero(dec(scheme.open)) && isZero(dec(scheme.close)) && scheme.transactions.every(recordsNothing);
+  isZero(dec(scheme.open)) && isZero(dec(scheme.close)) && scheme.transactions.every((_, index) => skipped(scheme, index));
 
 /** The statement without closed schemes, which need no account or fund, or the folios they leave empty. */
 export function withoutClosed(data: CasData): CasData {
@@ -205,9 +215,12 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
   }
 
   scheme.transactions.forEach((row, index) => {
-    if (recordsNothing(row)) return;
+    if (skipped(scheme, index)) return;
     const entry: Entry = { scheme: state, index, row, kind: KINDS[row.type], charges: [] };
-    if (!entry.kind && !CHARGES[row.type] && row.type !== "REVERSAL") {
+    if (recordsNothing(row)) {
+      // casparser returns transmission and transformation restatements with only a balance.
+      entry.problem = `This row changes the unit balance from ${format(unitsHeldBefore(scheme, index))} to ${format(dec(row.balance!))} without listing any units, so it isn't imported.`;
+    } else if (!entry.kind && !CHARGES[row.type] && row.type !== "REVERSAL") {
       entry.problem = UNSUPPORTED[row.type] ?? UNSUPPORTED.UNKNOWN;
     }
     state.entries.push(entry);
@@ -221,6 +234,7 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
       (entry) =>
         entry.row.date === charge.row.date &&
         !CHARGES[entry.row.type] &&
+        !recordsNothing(entry.row) &&
         (!entry.kind || rule.kinds.includes(entry.kind)),
     );
     if (candidates.length === 0) {
@@ -263,6 +277,29 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
           : `${candidates.length} purchases in the statement could be the one this reverses, so the reversal isn't imported. Delete the reversed purchase and its deposit after importing.`;
     }
   }
+
+  // casparser 1.4.1 has no type for a row that puts redeemed units back, such as Franklin
+  // Templeton's "Payment - Units Extinguished-Reversed", and returns it as a purchase.
+  // shortcut: equal units and amounts can also be a new purchase; use an explicit casparser signal when available.
+  for (const restore of state.entries) {
+    if ((restore.row.type !== "PURCHASE" && restore.row.type !== "PURCHASE_SIP") || restore.reversedBy) continue;
+    const { units, amount } = restore.row;
+    if (units === null || amount === null || dec(units).n <= 0n || dec(amount).n <= 0n) continue;
+    const candidates = state.entries.filter(
+      (entry) =>
+        entry.index < restore.index &&
+        entry.row.type === "REDEMPTION" &&
+        !entry.reversedBy &&
+        entry.row.units !== null &&
+        cmp(dec(entry.row.units), neg(dec(units))) === 0 &&
+        entry.row.amount !== null &&
+        cmp(dec(entry.row.amount), neg(dec(amount))) === 0,
+    );
+    if (candidates.length === 1) {
+      restore.reverses = candidates[0];
+      candidates[0].reversedBy = restore;
+    }
+  }
   return state;
 }
 
@@ -283,8 +320,15 @@ function matchMergers(schemes: Scheme[]) {
   }
 }
 
-function reversalMessage(purchase: Entry, input: MappingInput) {
-  const { rows } = purchase;
+function reversalMessage(original: Entry, input: MappingInput) {
+  const { rows } = original;
+  if (original.kind === "sell") {
+    const putBack = "A later row has the opposite units and amount to this redemption. This could be a reversal or a new purchase, so neither row is imported. Check the statement and handle these rows by hand.";
+    if (rows && (input.alreadyImported(rows.activity) || (rows.cash && input.alreadyImported(rows.cash)))) {
+      return `${putBack} Wealthfolio has the sale or its withdrawal from an earlier import; delete them only if this is a reversal.`;
+    }
+    return rows ? putBack : `${putBack} If Wealthfolio has the sale or its withdrawal from an earlier import, delete them only if this is a reversal.`;
+  }
   if (!rows) {
     return "The statement reverses this purchase, so neither row is imported. If Wealthfolio has the purchase from an earlier import, delete it and its deposit.";
   }
@@ -307,6 +351,13 @@ function unitsHeldBefore(scheme: CasScheme, index: number) {
 function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"]> | string {
   const { row, kind } = entry;
   const sign = kind === "sell" ? -1n : 1n;
+  // casparser 1.4.1 returns bonus units, and units passed on by transmission, as purchases or redemptions.
+  const plain = row.type === "PURCHASE" || row.type === "PURCHASE_SIP" || row.type === "REDEMPTION";
+  if (plain && (row.amount === null || isZero(dec(row.amount))) && row.units !== null && dec(row.units).n * sign > 0n) {
+    return kind === "buy"
+      ? "Units added without a payment, such as bonus units or a transmission, aren't imported yet."
+      : "Units removed without a payment, such as a transmission or a move to another folio, aren't imported yet.";
+  }
   if (row.amount === null || dec(row.amount).n * sign <= 0n) return "This row has no amount, or one with the wrong sign.";
   const printed = abs(dec(row.amount));
   let charges = ZERO;
