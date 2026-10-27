@@ -1,7 +1,7 @@
 import type { Account, ActivityImport, AddonContext, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { closedScheme, type Mapping, mapStatement, withoutClosed } from "../cas/mapping";
 import {
   closingUnits,
@@ -40,6 +40,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const data = useMemo(() => statement && withoutClosed(statement), [statement]);
   const [remembered, setRemembered] = useState<AccountChoices | null>(null);
   const [fundChoices, setFundChoices] = useState<Record<string, FundChoice | undefined>>({});
+  // Storage requests can finish out of order; rereads must wait for these writes too.
+  const fundWrites = useRef(Promise.resolve());
   const [preview, setPreview] = useState<Previewed | null>(null);
   const [importAnyway, setImportAnyway] = useState<Set<PlannedTransaction>>(new Set());
   const [imported, setImported] = useState<Imported | null>(null);
@@ -76,6 +78,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   };
 
   const read = async (full: CasData) => {
+    await fundWrites.current;
     const next = withoutClosed(full);
     const keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : [])]))];
     const choices: AccountChoices = {};
@@ -108,12 +111,21 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     );
   };
 
+  // Undefined (Change, or Choose a fund) keeps what's saved, so a reread restores it. Leaving a
+  // fund out forgets it for every folio that shares the key; the left-out state isn't saved.
   const chooseFund = (key: string, choice: FundChoice | undefined) => {
     setFundChoices((choices) => ({ ...choices, [key]: choice }));
     changed();
-    if (choice && "fund" in choice) {
-      saveFund(api.storage, key, choice.fund).catch(() => api.toast.error("Couldn't remember the fund."));
-    }
+    if (!choice) return;
+    fundWrites.current = fundWrites.current
+      .then(() => ("fund" in choice ? saveFund(api.storage, key, choice.fund) : api.storage.delete(key)))
+      .catch(() =>
+        api.toast.error(
+          "fund" in choice
+            ? "Couldn't remember the fund."
+            : "Couldn't forget the fund chosen before. It can come back the next time you read a statement.",
+        ),
+      );
   };
 
   const undecided = data
