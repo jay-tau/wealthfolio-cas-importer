@@ -48,7 +48,7 @@ jobs:
     timeout-minutes: 30
     # Playwright's image has Node 24, the browsers and the Ubuntu packages they need; downloading
     # those packages took some runs past the time limit. Its tag must match playwright-core in
-    # package.json, so change the two together. It has no zip, so pnpm bundle stays in test.
+    # package.json, so change the two together.
     container:
       image: mcr.microsoft.com/playwright:v1.58.2-noble
       options: --user 1001
