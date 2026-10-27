@@ -7,6 +7,9 @@ The add-on reads a detailed Consolidated Account Statement (CAS) PDF from CAMS o
 [Pyodide](https://pyodide.org) in a Worker inside Wealthfolio's add-on sandbox. The statement is
 parsed on the device.
 
+The add-on has been checked in Wealthfolio 3.11.0's desktop app on Linux and Windows; it hasn't
+been tried on macOS.
+
 To import, pick the PDF and enter its password, choose a Wealthfolio account for each PAN (and,
 if you like, a different one for a folio), and confirm the Wealthfolio fund for each scheme; the
 add-on searches by the ISIN printed on the statement, and by the fund's name if the ISIN finds
