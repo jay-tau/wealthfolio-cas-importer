@@ -7,37 +7,42 @@ import { type CasData, type DepositoryData, isDepository, type Statement } from 
 // A summary or NSDL/CDSL statement's holdings → the snapshots saved to Wealthfolio accounts that
 // track holdings. Wealthfolio's snapshot is the account's whole state on its date, so each one
 // starts from the account's latest snapshot: the statement's holdings replace their own, and
-// the account's other holdings and cash carry over unless an earlier import of the same folio
-// or demat account put them there. Pure: the user's choices come in, snapshots come out.
+// the account's other holdings and cash carry over unless an earlier import of the same folio,
+// demat account or PRAN put them there. Pure: the user's choices come in, snapshots come out.
 
 const CURRENCY = "INR";
 /** Decimals of the average cost sent to Wealthfolio, which multiplies it back by the units. */
 const COST_PLACES = 20;
 
-export type HoldingKind = "fund" | "share";
+export type HoldingKind = "fund" | "share" | "bond" | "nps";
 
-/** A fund in a folio, or a fund or share in a demat account. */
+/** A fund in a folio, a fund, share or bond in a demat account, or an NPS scheme under a PRAN. */
 export interface StatementHolding {
   kind: HoldingKind;
   isin: string | null;
   /** The registrar and its scheme code, for a summary statement's fund without an ISIN. */
   rta: string | null;
   rtaCode: string | null;
+  /** An NPS scheme's symbol (`npsSymbol`), its identity without an ISIN. */
+  code?: string;
   name: string;
   units: string;
+  /** The price of one unit, share or bond. */
   price: string;
   value: string;
   /** Printed total cost. A printed zero is taken as unknown. */
   cost: string | null;
+  /** What else the statement prints about a bond or NPS scheme, as printed. */
+  details?: Record<string, string>;
 }
 
-/** A folio or a demat account. The statement lists every holding in it, so each goes to one account. */
+/** A folio, a demat account or a PRAN. The statement lists every holding in it, so each goes to one account. */
 export interface Source {
   /** Stable across statements; hashed before it's stored. */
   id: string;
   /** Issuer-scoped folio links; [] severs old links, undefined retains learned ones. */
   aliases?: string[];
-  kind: "folio" | "demat";
+  kind: "folio" | "demat" | "nps";
   label: string;
   holdings: StatementHolding[];
 }
@@ -65,7 +70,27 @@ const printedCost = (value: string | null | undefined) => (positive(value) ? for
 export const security = (h: StatementHolding) => [
   ...(h.isin ? [h.isin] : []),
   ...(h.rta && h.rtaCode ? [`${h.rta}|${h.rtaCode}`] : []),
+  ...(h.code ? [`nps|${h.code}`] : []),
 ];
+
+// Words that every pension fund manager's or scheme's name repeats. "NPS TRUST" and "A/C" go
+// as phrases, since A and C on their own are asset classes.
+const NPS_FILLER = new Set(["PENSION", "FUND", "FUNDS", "MANAGEMENT", "PRIVATE", "PVT", "LIMITED", "LTD", "COMPANY", "SCHEME"]);
+const TIERS: Record<string, string> = { "1": "I", "2": "II" };
+
+/**
+ * An NPS scheme's symbol in Wealthfolio, from its printed name: the statement prints no scheme
+ * code. "NPS TRUST- A/C SBI PENSION FUNDS PRIVATE LIMITED SCHEME E - TIER I" → "NPS-SBI-E-TIER-I".
+ */
+export function npsSymbol(scheme: string) {
+  const words = scheme.toUpperCase().replace(/\bNPS\s+TRUST\b/g, " ").replace(/\bA\s*\/\s*C\b/g, " ").split(/[^A-Z0-9]+/).filter(Boolean);
+  const kept = words.map((w, i) => (words[i - 1] === "TIER" && TIERS[w]) || w).filter((w) => !NPS_FILLER.has(w));
+  return ["NPS", ...kept].join("-");
+}
+
+/** Printed details, without the ones the statement leaves blank. */
+const printed = (details: Record<string, string | null | undefined>) =>
+  Object.fromEntries(Object.entries(details).filter((e): e is [string, string] => typeof e[1] === "string" && e[1].trim() !== ""));
 
 /** The same folio prints as `91234567 / 12` on CAMS statements and `91234567/12` on NSDL ones. */
 export const folioNumber = (folio: string) => folio.replace(/\s+/g, "");
@@ -168,28 +193,66 @@ function readDepository(data: DepositoryData): Holdings {
         }),
       ),
       ...account.mutual_funds.map(fund),
+      ...account.bonds.map(
+        (b): StatementHolding => ({
+          kind: "bond",
+          isin: b.isin,
+          rta: null,
+          rtaCode: null,
+          name: b.name ?? b.isin,
+          units: b.num_bonds,
+          // NSDL demat accounts print each bond's value but not its price.
+          price: b.market_price ?? (positive(b.num_bonds) ? format(div(dec(b.value), dec(b.num_bonds), 6)) : "0"),
+          value: b.value,
+          cost: null,
+          details: printed({
+            name: b.name, isin: b.isin, couponRate: b.coupon_rate, couponFrequency: b.coupon_frequency,
+            maturityDate: b.maturity_date, faceValue: b.face_value,
+          }),
+        }),
+      ),
     ].filter((h) => held(label, h));
-    for (const bond of account.bonds) {
-      leftOut.push({ source: label, name: bond.name ?? bond.isin, reason: "Bonds aren't imported yet." });
-    }
     sources.push({ id: `demat|${account.dp_id ?? ""}|${account.client_id ?? ""}`, kind: "demat", label, holdings });
   }
-  for (const scheme of data.nps?.schemes ?? []) {
-    leftOut.push({ source: "National Pension System", name: scheme.scheme, reason: "NPS holdings aren't imported yet." });
-  }
   const owner = data.accounts.flatMap((a) => a.owners)[0];
+  const investor = (owner?.PAN || data.investor_info.name).trim().toUpperCase();
+  if (data.nps) {
+    // The PRAN is printed masked, but it's what the statement has to tell PRANs apart. Without
+    // one, the investor's: a person has one PRAN.
+    const pran = data.nps.pran?.trim();
+    const label = pran ? `NPS, PRAN ${pran}` : "National Pension System";
+    const holdings = data.nps.schemes.map(
+      (s): StatementHolding => ({
+        kind: "nps",
+        isin: null,
+        rta: null,
+        rtaCode: null,
+        code: npsSymbol(s.scheme),
+        name: s.scheme,
+        units: s.units,
+        price: s.nav,
+        value: s.value,
+        cost: null,
+        details: printed({ scheme: s.scheme, fundManager: s.fund_manager, tier: s.tier, assetClass: s.asset_class }),
+      }),
+    ).filter((h) => held(label, h));
+    sources.push({ id: pran ? `nps|${pran}` : `nps|investor:${investor}`, kind: "nps", label, holdings });
+  }
   return {
     date: statementDay(data.statement_period.to),
-    investor: (owner?.PAN || data.investor_info.name).trim().toUpperCase(),
+    investor,
     sources,
     leftOut,
   };
 }
 
-/** The fund or share the user confirmed, as `market.searchTicker` gave it. */
+/** The holding's asset: what the user confirmed from `market.searchTicker`, or one priced from statements. */
 export interface ChosenAsset extends FundAsset {
+  assetId?: string;
   name: string;
   manual?: boolean;
+  /** Priced by hand from each statement's prices, when no search result fits. */
+  statementPrices?: boolean;
 }
 
 /** A position in the snapshot an import starts from. */
@@ -203,8 +266,10 @@ export interface ExistingPosition {
   /** Total cost; null when Wealthfolio has none. */
   cost: string | null;
   currency: string;
-  /** Saving a nonzero average cost would overwrite this asset's manual market price. */
+  /** Priced by hand: saving a nonzero average cost writes it as the asset's price on the snapshot's date. */
   manual?: boolean;
+  /** For a manual-priced asset, its latest quote on or before the statement's date. */
+  price?: { close: string; currency: string };
   /** A split was recorded since the snapshot, so its units and cost predate it. */
   split?: boolean;
 }
@@ -256,7 +321,8 @@ export interface PlanInput {
   heldElsewhere(ref: string, accountId: string): OtherAccount[];
 }
 
-export type CostSource = "statement" | "wealthfolio";
+/** A bond's face value times the number of bonds stands in for its unprinted cost. */
+export type CostSource = "statement" | "wealthfolio" | "face";
 
 export interface PlannedPosition {
   /** The preview row, separate from the asset when overlapping folio units need their own toggle. */
@@ -318,10 +384,13 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
       const asset = input.asset(holding);
       if (!asset) continue;
       const ref = fundRef(asset.symbol, asset.exchangeMic);
+      // The host's holding symbol can be a custom display code. A resolved asset ID wins.
+      const existing = plan.existing.positions.find((p) => asset.assetId ? p.assetId === asset.assetId : p.ref === ref);
+      if (existing && existing.ref !== ref && !plan.byRef.get(existing.ref)?.lines.length) plan.byRef.delete(existing.ref);
       const overlap = source.kind === "folio" && input.heldElsewhere(ref, accountId).some((o) => o.tracksTransactions);
       const key = overlap ? `${ref}|overlap` : ref;
       const position = plan.byRef.get(key) ?? {
-        key, ref, name: asset.name || holding.name, existing: plan.existing.positions.find((p) => p.ref === ref),
+        key, ref, name: asset.name || holding.name, existing,
         lines: [], include: true, notes: [], order,
       };
       position.order = Math.min(position.order, order++);
@@ -366,9 +435,15 @@ function settleStatement(position: PlannedPosition, accountId: string, input: Pl
       position.notes.push(`The account's existing cost is in ${before.currency}. Enter a total cost in INR, or leave it unknown.`);
     }
   }
+  const faces = holdings.map((h) => (h.kind === "bond" && positive(h.details?.faceValue) ? mul(dec(h.details!.faceValue), dec(h.units)) : null));
+  if (!position.cost && faces.every((f) => f !== null)) {
+    position.cost = { total: format(faces.reduce((total, f) => add(total, f!), dec("0"))), from: "face" };
+  }
   if (printed.some((c) => c !== null) && printed.some((c) => c === null)) {
     position.notes.push("The statement prints a cost for only some of its lines for this holding.");
   }
+
+  if (pricedByHand(position)) position.notes.push("Priced by hand: saving also saves the statement's price as its price on this date.");
 
   const others = input.heldElsewhere(position.ref, accountId);
   const tracked = others.filter((o) => o.tracksTransactions);
@@ -406,7 +481,19 @@ function settleOther(position: PlannedPosition, sources: Source[], accountId: st
   if (position.existing?.split) {
     position.notes.push("A split was recorded since the account's snapshot, so these units predate it. If you keep it, correct its units in Wealthfolio after saving.");
   }
+  if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
+    position.notes.push("It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date if you keep it.");
+  }
 }
+
+/** The account's pricing mode for the asset, else the confirmed asset's. */
+const pricedByHand = (p: PlannedPosition) => p.existing?.manual ?? p.asset?.manual;
+
+/**
+ * Saving it writes its average cost as its price on the snapshot's date: a manual price with a known
+ * cost (wealthfolio/wealthfolio#2331).
+ */
+const keepsAverageCost = (p: ExistingPosition | undefined) => !!p?.manual && nonzero(p.units) && nonzero(p.cost);
 
 const names = (accounts: OtherAccount[]) => accounts.map((a) => a.name).join(", ");
 
@@ -430,26 +517,8 @@ export interface Choices {
 export const included = (position: PlannedPosition, choices: Choices) =>
   position.include !== choices.flipped.has(position.key);
 
-/** Wealthfolio's save would turn this outgoing cost into a manual market price. */
-export const manualPriceChange = (plan: AccountPlan, choices: Choices) => plan.positions.find((p) => {
-  if (!p.existing?.manual && !p.asset?.manual) return false;
-  const listed = plan.positions.filter((other) => other.ref === p.ref && other.lines.length && included(other, choices));
-  if (listed.length) {
-    const costs = listed.map((other) => costOf(other, choices.costs.get(other.key)));
-    if (costs.some((cost) => cost === undefined)) return false;
-    try {
-      return costs.some(nonzero);
-    } catch {
-      return false;
-    }
-  }
-  return (p.lines.length > 0 || included(p, choices)) && nonzero(p.existing?.units) && nonzero(p.existing?.cost);
-});
-
 /** What `snapshots.save` gets for the account. */
 export function snapshotOf(plan: AccountPlan, choices: Choices) {
-  const unsafe = manualPriceChange(plan, choices);
-  if (unsafe) throw new Error(`Saving ${unsafe.name} would overwrite its manual price with its average cost.`);
   const listed = new Map<string, { holding: SnapshotHoldingInput; total: string | undefined }>();
   const kept = new Map<string, { ref: string; holding: SnapshotHoldingInput }>();
   for (const position of plan.positions) {
@@ -461,8 +530,8 @@ export function snapshotOf(plan: AccountPlan, choices: Choices) {
       const quantity = before ? format(add(dec(before.holding.quantity), dec(position.units!))) : position.units!;
       if (before) total = before.total !== undefined && total !== undefined ? format(add(dec(before.total), dec(total))) : undefined;
       const holding: SnapshotHoldingInput = {
-        ...(position.existing
-          ? { assetId: position.existing.assetId }
+        ...(position.existing || asset.assetId
+          ? { assetId: position.existing?.assetId ?? asset.assetId }
           : {
               symbol: asset.symbol,
               exchangeMic: asset.exchangeMic,
@@ -471,6 +540,8 @@ export function snapshotOf(plan: AccountPlan, choices: Choices) {
               providerId: asset.providerId,
               providerSymbol: asset.providerSymbol,
               name: asset.name,
+              // A new asset priced from statements. One Wealthfolio prices from market data stays so.
+              ...(asset.statementPrices && asset.manual && { dataSource: "MANUAL" }),
             }),
         symbol: asset.symbol,
         quantity,
@@ -521,3 +592,91 @@ export function importedRefs(plan: AccountPlan, choices: Choices) {
 
 /** Whether the snapshot changes anything the account has on the statement's date. */
 export const replacesSnapshot = (plan: AccountPlan) => plan.existing.date === plan.date;
+
+/**
+ * A price to save on the snapshot's date once it's saved, over the average cost Wealthfolio's save
+ * writes there for a manual-priced asset (wealthfolio/wealthfolio#2331).
+ */
+export interface PriceToSave {
+  ref: string;
+  /** Undefined for an asset the save creates. */
+  assetId?: string;
+  name: string;
+  price: string;
+  currency: string;
+  /** The statement's price, or the price a kept holding had. */
+  from: "statement" | "earlier";
+}
+
+/**
+ * The manual-priced holdings in the account's snapshot, and the price each should have on its date.
+ * `listed` has the statement's price for each asset any account's import lists (`fundRef` → price):
+ * one this account only keeps gets it too, since saving this snapshot writes its average cost over it.
+ */
+export function pricesToSave(plan: AccountPlan, choices: Choices, listed: ReadonlyMap<string, string> = new Map()): PriceToSave[] {
+  const prices = new Map<string, PriceToSave>();
+  for (const position of plan.positions) {
+    if (!position.lines.length || !included(position, choices) || prices.has(position.ref)) continue;
+    if (!pricedByHand(position)) continue;
+    const { holding } = position.lines[0];
+    prices.set(position.ref, {
+      ref: position.ref, assetId: position.existing?.assetId ?? position.asset?.assetId, name: position.name, price: holding.price, currency: CURRENCY, from: "statement",
+    });
+  }
+  for (const position of plan.positions) {
+    const p = position.existing;
+    if (!p || prices.has(position.ref) || !(position.lines.length || included(position, choices))) continue;
+    if (!keepsAverageCost(p)) continue;
+    const statement = listed.get(position.ref);
+    if (statement !== undefined) {
+      prices.set(position.ref, { ref: position.ref, assetId: p.assetId, name: position.name, price: statement, currency: CURRENCY, from: "statement" });
+    } else if (p.price) {
+      prices.set(position.ref, { ref: position.ref, assetId: p.assetId, name: position.name, price: p.price.close, currency: p.price.currency, from: "earlier" });
+    }
+  }
+  return [...prices.values()];
+}
+
+// Wealthfolio's `BondSpec` (asset metadata `bond`) knows these coupon frequencies; its pricer
+// takes any other as semi-annual, so the rest stay only in the printed details.
+const FREQUENCIES: [RegExp, string][] = [
+  [/^(half[- ]?yearly|semi[-_ ]?annual(ly)?|bi[- ]?annual(ly)?|twice (a year|per year|yearly))$/i, "SEMI_ANNUAL"],
+  [/^(quarterly|once (a|per) quarter)$/i, "QUARTERLY"],
+  [/^(once (a|per) year|annual(ly)?|yearly)$/i, "ANNUAL"],
+];
+
+const record = (value: unknown): Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+
+/**
+ * The asset's metadata with a bond's or NPS scheme's printed details: as printed under
+ * `casStatement`, and for a bond asset, any `bond` fields Wealthfolio doesn't have yet.
+ * Undefined when nothing changes.
+ */
+export function assetDetails(holding: StatementHolding, metadata: unknown, instrumentType: string | null | undefined) {
+  if (!holding.details) return undefined;
+  const before = record(metadata);
+  const next: Record<string, unknown> = { ...before, casStatement: { ...record(before.casStatement), ...holding.details } };
+  if (holding.kind === "bond" && instrumentType === "BOND") {
+    const d = holding.details;
+    const spec: Record<string, unknown> = {};
+    if (d.isin) spec.isin = d.isin;
+    try {
+      if (d.maturityDate) {
+        const day = statementDay(d.maturityDate);
+        if (new Date(day).toJSON()?.slice(0, 10) === day) spec.maturityDate = day;
+      }
+    } catch {
+      // Left in the printed details only.
+    }
+    if (d.couponRate && /^\d+(\.\d+)?$/.test(d.couponRate)) spec.couponRate = Number(format(div(dec(d.couponRate), dec("100"), 10)));
+    const frequency = FREQUENCIES.find(([pattern]) => pattern.test(d.couponFrequency?.trim() ?? ""));
+    if (frequency) spec.couponFrequency = frequency[1];
+    if (positive(d.faceValue)) spec.faceValue = Number(d.faceValue);
+    // Wealthfolio's or the user's own values win; it writes unknown ones as null.
+    const bond = record(before.bond);
+    const missing = Object.entries(spec).filter(([key]) => bond[key] == null);
+    if (missing.length) next.bond = { ...bond, ...Object.fromEntries(missing) };
+  }
+  return JSON.stringify(next) === JSON.stringify(before) ? undefined : next;
+}

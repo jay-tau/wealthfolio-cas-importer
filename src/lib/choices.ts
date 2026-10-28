@@ -20,16 +20,20 @@ export const NO_BANK = "outside";
 /** Funds are found by the printed ISIN, or by the registrar's scheme code when there's none. */
 export const fundKey = (scheme: CasScheme) => holdingKey({ isin: scheme.isin, rta: scheme.rta, rtaCode: scheme.rta_code });
 
-/** A fund or share on any statement; the same key as `fundKey` for the same scheme. */
-export const holdingKey = (h: Pick<StatementHolding, "isin" | "rta" | "rtaCode">) =>
-  h.isin ? `isin:${h.isin}` : `fund:${sha256(`cas-importer fund ${h.rta}|${h.rtaCode}`)}`;
+/** A holding on any statement; the same key as `fundKey` for the same scheme. NPS schemes go by their symbol. */
+export const holdingKey = (h: Pick<StatementHolding, "isin" | "rta" | "rtaCode" | "code">) =>
+  h.isin
+    ? `isin:${h.isin}`
+    : h.code
+      ? `nps:${sha256(`cas-importer nps ${h.code}`)}`
+      : `fund:${sha256(`cas-importer fund ${h.rta}|${h.rtaCode}`)}`;
 
 // Holdings imports keep their own account choices: accounts that track holdings, not the
 // PAN's or folio's account for transactions.
 
 /** The account a summary or depository statement's folios and demat accounts go to by default. */
 export const investorKey = (investor: string) => `holdings-investor:${sha256(`cas-importer holdings investor ${investor}`)}`;
-/** The account a folio or demat account goes to, or `LEFT_OUT`. */
+/** The account a folio, demat account or PRAN goes to, or `LEFT_OUT`. */
 export const sourceKey = (source: Source) => `holdings-source:${sha256(`cas-importer holdings source ${source.id}`)}`;
 export const LEFT_OUT = "left-out";
 
@@ -111,10 +115,13 @@ export async function saveImported(storage: Storage, source: Source, accountId: 
   for (const key of keys) await storage.set(key, value);
 }
 
-/** A fund the user confirmed, with the name `market.searchTicker` gave it. */
+/** A fund the user confirmed, with the name `market.searchTicker` gave it, or a holding priced from statements. */
 export interface ChosenFund extends FundAsset {
+  assetId?: string;
   name: string;
+  /** Wealthfolio's pricing mode at the time; looked up again for each import, so not stored. */
   manual?: boolean;
+  statementPrices?: boolean;
 }
 
 export async function readFund(storage: Storage, key: string): Promise<ChosenFund | undefined> {

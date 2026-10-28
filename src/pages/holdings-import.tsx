@@ -1,16 +1,20 @@
-import type { Account, AddonContext, Holding } from "@wealthfolio/addon-sdk";
+import type { Account, AddonContext, Holding, Quote, UpdateAssetProfile } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Spinner } from "@wealthfolio/ui";
 import { useState } from "react";
 import {
   type AccountPlan,
+  assetDetails,
   type Choices,
   type ExistingSnapshot,
+  type HoldingKind,
   type Holdings,
   importedRefs,
+  included,
   type LeftOutLine,
   type OtherAccount,
   planSnapshots,
+  pricesToSave,
   snapshotOf,
   type Source,
   splitSince,
@@ -20,7 +24,7 @@ import { fundRef } from "../cas/plan";
 import type { Statement } from "../cas/types";
 import { type FundChoice, FundChoicesCard, type FundItem } from "../components/fund-choices";
 import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } from "../components/holdings-accounts";
-import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots } from "../components/holdings-preview";
+import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
 import { holdingKey, LEFT_OUT, readImported, saveImported, sourceKey } from "../lib/choices";
 
 type Api = AddonContext["api"];
@@ -31,18 +35,42 @@ type HostInstrument = NonNullable<Holding["instrument"]> & {
 };
 const isManual = (instrument: HostInstrument) => (instrument.pricingMode ?? instrument.quoteMode) === "MANUAL";
 
-/** The statement's funds and shares, one entry each however many folios or demat accounts hold it. */
+// Wealthfolio stores canonical types, while remembered provider results can use aliases.
+const instrumentType = (value: string) => {
+  const type = value.trim().toUpperCase();
+  if (/^(STOCK|ETF|MUTUAL[_ ]?FUND|INDEX|ECNQUOTE|FUTURES?)$/.test(type)) return "EQUITY";
+  if (type === "CRYPTOCURRENCY") return "CRYPTO";
+  if (/^(FOREX|CURRENCY)$/.test(type)) return "FX";
+  if (type === "COMMODITY") return "METAL";
+  if (/^(FIXED_?INCOME|DEBT|MONEYMARKET)$/.test(type)) return "BOND";
+  return type;
+};
+
+const NOUNS: Record<HoldingKind, FundItem["noun"]> = { fund: "fund", share: "share", bond: "bond", nps: "NPS scheme" };
+
+/** A bond or NPS scheme priced by hand from statements: a bond by its ISIN, a scheme by its symbol. */
+function statementAsset(h: StatementHolding) {
+  if (h.kind === "bond" && h.isin) {
+    return { symbol: h.isin, quoteCcy: "INR", instrumentType: "BOND", name: h.name, manual: true, statementPrices: true };
+  }
+  if (h.kind === "nps" && h.code) {
+    return { symbol: h.code, quoteCcy: "INR", instrumentType: "EQUITY", name: h.name, manual: true, statementPrices: true };
+  }
+  return undefined;
+}
+
+/** The statement's holdings, one entry each however many folios, demat accounts or PRANs hold it. */
 export function holdingItems(holdings: Holdings): FundItem[] {
   const items = new Map<string, FundItem & { count: number }>();
   for (const h of holdings.sources.flatMap((s) => s.holdings)) {
     const key = holdingKey(h);
-    const item = items.get(key) ?? { key, isin: h.isin, name: h.name, noun: h.kind, count: 0 };
+    const item = items.get(key) ?? { key, isin: h.isin, name: h.name, noun: NOUNS[h.kind], statementAsset: statementAsset(h), count: 0 };
     item.count++;
     items.set(key, item);
   }
   return [...items.values()].map(({ count, ...item }) => ({
     ...item,
-    where: count > 1 ? `in ${count} folios or demat accounts` : undefined,
+    where: count > 1 ? `in ${count} folios, demat accounts or PRANs` : undefined,
   }));
 }
 
@@ -84,6 +112,104 @@ async function readExisting(api: Api, accountId: string, date: string): Promise<
   return existing;
 }
 
+/** The asset's latest quote on or before `date`, the price a kept manual-priced holding goes on with. */
+async function priceOn(api: Api, assetId: string, date: string) {
+  const quotes = await api.quotes.getHistory(assetId);
+  const quote = quotes
+    .filter((q) => Number.isFinite(q.close) && String(q.timestamp).slice(0, 10) <= date)
+    .sort((a, b) => String(a.timestamp).localeCompare(String(b.timestamp)))
+    .pop();
+  return quote && { close: text(quote.close), currency: quote.currency, onDate: String(quote.timestamp).slice(0, 10) === date ? quote : undefined };
+}
+
+/** A manual quote for the day, the way Wealthfolio's own quote editor saves one. */
+const manualQuote = (assetId: string, date: string, price: string, currency: string): Quote => {
+  const n = Number(price);
+  return {
+    // Wealthfolio's `quote_id` for a manual quote; another ID would be deleted first.
+    id: `${assetId}_${date}_MANUAL`,
+    createdAt: new Date().toISOString(),
+    dataSource: "MANUAL",
+    timestamp: `${date}T12:00:00.000Z`,
+    assetId,
+    open: n,
+    high: n,
+    low: n,
+    close: n,
+    adjclose: n,
+    volume: 0,
+    currency,
+    notes: null,
+  };
+};
+
+/**
+ * After the account's snapshot is saved: each manual-priced holding gets the statement's price, or
+ * the price it had, on the snapshot's date, over the average cost the save wrote there
+ * (wealthfolio/wealthfolio#2331); each bond's and NPS scheme's asset gets the statement's details.
+ * Returns what didn't work.
+ */
+async function afterSave(api: Api, plan: AccountPlan, chosen: Choices, listed: ReadonlyMap<string, string>, quotes: ReadonlyMap<string, Quote>, snapshotSaved = true): Promise<Unfinished[]> {
+  const unfinished: Unfinished[] = [];
+  const prices = pricesToSave(plan, chosen, listed);
+  const described = snapshotSaved ? plan.positions.filter((p) => p.lines.length && included(p, chosen) && p.lines.some((l) => l.holding.details)) : [];
+  if (!prices.length && !described.length) return unfinished;
+  const ids = new Map<string, string>();
+  try {
+    for (const h of await api.snapshots.getByDate(plan.accountId, plan.date)) {
+      const instrument = h.instrument as HostInstrument | null | undefined;
+      if (instrument?.id && instrument.symbol) ids.set(fundRef(instrument.symbol, instrument.exchangeMic), instrument.id);
+    }
+  } catch {
+    // Each holding below is reported.
+  }
+  for (const p of prices) {
+    const assetId = p.assetId ?? ids.get(p.ref);
+    // A failed save left no snapshot to find a new asset in, and the failure is already reported.
+    if (!assetId && !snapshotSaved) continue;
+    try {
+      if (!assetId) throw new Error("not in the saved snapshot");
+      const fresh = manualQuote(assetId, plan.date, p.price, p.currency);
+      const before = quotes.get(assetId);
+      await api.quotes.update(assetId, {
+        ...fresh,
+        ...(p.from === "earlier" && before),
+        // A provider quote's ID must not be sent: the host would delete that provider row.
+        id: fresh.id,
+        dataSource: fresh.dataSource,
+        notes: before?.notes ?? null,
+      });
+    } catch {
+      unfinished.push({ accountId: plan.accountId, name: p.name, what: "price", date: plan.date });
+    }
+  }
+  for (const position of described) {
+    const assetId = position.existing?.assetId ?? position.asset?.assetId ?? ids.get(position.ref);
+    try {
+      if (!assetId) throw new Error("not in the saved snapshot");
+      const profile = await api.assets.getProfile(assetId);
+      let metadata: unknown = profile.metadata;
+      for (const { holding } of position.lines) metadata = assetDetails(holding, metadata, profile.instrumentType) ?? metadata;
+      if (metadata === profile.metadata) continue;
+      // Wealthfolio stores the profile as sent: fields left out are cleared, and the price mode goes back to market.
+      await api.assets.updateProfile({
+        id: assetId,
+        name: profile.name ?? null,
+        displayCode: profile.displayCode ?? null,
+        notes: profile.notes ?? "",
+        kind: profile.kind,
+        quoteMode: profile.quoteMode,
+        quoteCcy: profile.quoteCcy,
+        providerConfig: profile.providerConfig ?? null,
+        metadata,
+      } as UpdateAssetProfile);
+    } catch {
+      unfinished.push({ accountId: plan.accountId, name: position.name, what: "details", date: plan.date });
+    }
+  }
+  return unfinished;
+}
+
 /** Which accounts hold each asset now: `fundRef` → accounts. */
 async function holders(api: Api, accounts: Account[]) {
   const held = new Map<string, (OtherAccount & { id: string })[]>();
@@ -117,6 +243,7 @@ async function holders(api: Api, accounts: Account[]) {
 
 interface Previewed {
   plans: AccountPlan[];
+  quotes: Map<string, Quote>;
 }
 
 export function HoldingsImport({
@@ -179,9 +306,9 @@ export function HoldingsImport({
     ...holdings.sources.flatMap((source) =>
       source.holdings.flatMap((h) =>
         usable[sourceKey(source)] === LEFT_OUT
-          ? [{ source: source.label, name: h.name, reason: "Its folio or demat account is left out." }]
+          ? [{ source: source.label, name: h.name, reason: "Its folio, demat account or PRAN is left out." }]
           : fundChoices[holdingKey(h)] && !assetOf(h)
-            ? [{ source: source.label, name: h.name, reason: `You left this ${h.kind} out.` }]
+            ? [{ source: source.label, name: h.name, reason: `You left this ${NOUNS[h.kind]} out.` }]
             : [],
       ),
     ),
@@ -201,14 +328,62 @@ export function HoldingsImport({
         Promise.all(ids.map(async (id) => [id, await readExisting(api, id, holdings.date)] as const)).then((e) => new Map(e)),
         holders(api, allAccounts),
       ]);
+      const resolved = new Map<string, { assetId: string; symbol: string; exchangeMic?: string; manual: boolean }>();
+      const assets = new Map(bySource.flatMap(({ source }) => source.holdings.flatMap((h) => {
+        const asset = assetOf(h);
+        return asset ? [[fundRef(asset.symbol, asset.exchangeMic), asset] as const] : [];
+      })));
+      // Without a resolved asset, the choice's own fields create or find it on saving, as before.
+      await Promise.all([...assets].map(async ([ref, asset]) => {
+        try {
+          let assetId = asset.assetId;
+          if (!assetId && (asset.statementPrices || modes.get(ref) || asset.manual)) {
+            const same = (await api.market.searchTicker(asset.symbol)).filter((r) =>
+              r.existingAssetId && fundRef(r.canonicalSymbol || r.symbol, r.canonicalExchangeMic || r.exchangeMic) === ref);
+            const type = instrumentType(asset.instrumentType);
+            // Keep exact types first; snapshot saving defaults an unknown choice type to EQUITY.
+            const found = same.find((r) => instrumentType(r.quoteType) === type) ??
+              (!/^(EQUITY|CRYPTO|FX|OPTION|METAL|BOND)$/.test(type) ? same.find((r) => instrumentType(r.quoteType) === "EQUITY") : undefined);
+            assetId = found?.existingAssetId;
+          }
+          if (!assetId && modes.get(ref)) throw new Error("Existing manual asset not found");
+          if (!assetId) return;
+          // Throws for an asset deleted since it was chosen.
+          const profile = await api.assets.getProfile(assetId);
+          const current = {
+            assetId, symbol: profile.instrumentSymbol || asset.symbol, exchangeMic: profile.instrumentExchangeMic ?? undefined,
+            manual: profile.quoteMode === "MANUAL",
+          };
+          resolved.set(ref, current);
+          modes.set(ref, current.manual);
+          modes.set(fundRef(current.symbol, current.exchangeMic), current.manual);
+        } catch {
+          // A manual asset's ID is needed to preserve its quote before saving.
+          if (modes.get(ref) ?? asset.manual ?? asset.statementPrices) {
+            throw new Error(`Couldn't verify pricing for ${asset.name}. Try the preview again.`);
+          }
+          // Unresolved: left to the choice's fields.
+        }
+      }));
+      const refs = new Map([...resolved.values()].map((asset) => [asset.assetId, fundRef(asset.symbol, asset.exchangeMic)]));
       const older = [...existing.values()].some((snapshot) => snapshot.date && snapshot.date < holdings.date && snapshot.positions.length > 0);
       const activities = older ? await api.activities.getAll() : [];
       for (const snapshot of existing.values()) {
         const split = splitSince(snapshot, holdings.date, activities);
         for (const position of snapshot.positions) {
+          position.ref = refs.get(position.assetId) ?? position.ref;
           position.manual = modes.get(position.ref) ?? position.manual;
           position.split = split.has(position.assetId);
         }
+      }
+      // Capture prices and same-day quote details before the host's snapshot write replaces them.
+      const manualIds = new Set([
+        ...[...existing.values()].flatMap((s) => s.positions.filter((p) => p.manual).map((p) => p.assetId)),
+        ...[...resolved.values()].filter((a) => a.manual).map((a) => a.assetId),
+      ]);
+      const prices = new Map(await Promise.all([...manualIds].map(async (id) => [id, await priceOn(api, id, holdings.date)] as const)));
+      for (const snapshot of existing.values()) {
+        for (const position of snapshot.positions) position.price = prices.get(position.assetId);
       }
       const remembered = new Map(await Promise.all(
         bySource.map(async ({ source, accountId }) => [
@@ -220,13 +395,17 @@ export function HoldingsImport({
         account: accountOf,
         asset: (holding) => {
           const asset = assetOf(holding);
-          return asset && { ...asset, manual: modes.get(fundRef(asset.symbol, asset.exchangeMic)) ?? asset.manual };
+          if (!asset) return undefined;
+          // A remembered choice doesn't store the pricing mode; one priced from statements is manual until Wealthfolio says otherwise.
+          const ref = fundRef(asset.symbol, asset.exchangeMic);
+          // A remembered asset ID that no longer resolves would make Wealthfolio create a bare asset under it.
+          return { ...asset, assetId: undefined, ...resolved.get(ref), manual: modes.get(ref) ?? asset.manual ?? asset.statementPrices };
         },
         existing: (id) => existing.get(id)!,
         remembered: (source, accountId) => remembered.get(`${source.id}|${accountId}`) ?? new Map(),
         heldElsewhere: (ref, accountId) => (held.get(ref) ?? []).filter((o) => o.id !== accountId),
       });
-      setPreview({ plans });
+      setPreview({ plans, quotes: new Map([...prices].flatMap(([id, p]) => p?.onDate ? [[id, p.onDate] as const] : [])) });
       setChoices(new Map(plans.map((p) => [p.accountId, noChoices()])));
       setConfirmed(new Set());
     } catch (e) {
@@ -240,8 +419,11 @@ export function HoldingsImport({
     if (!preview) return;
     setBusy("import");
     setError("");
-    const saved: SavedSnapshots = { saved: [], failed: [], unremembered: false };
+    const saved: SavedSnapshots = { saved: [], failed: [], unremembered: false, unfinished: [] };
     try {
+      // The statement's price for each manual-priced asset any account's snapshot lists.
+      const listed = new Map(preview.plans.flatMap((plan) =>
+        pricesToSave(plan, choices.get(plan.accountId) ?? noChoices()).filter((p) => p.from === "statement").map((p) => [p.ref, p.price] as const)));
       for (const plan of preview.plans) {
         const chosen = choices.get(plan.accountId) ?? noChoices();
         const { holdings: positions, cash } = snapshotOf(plan, chosen);
@@ -250,8 +432,11 @@ export function HoldingsImport({
           saved.saved.push({ accountId: plan.accountId, date: plan.date, holdings: positions.length });
         } catch (e) {
           saved.failed.push({ accountId: plan.accountId, error: String(e) });
+          // A failed host save can already have written average-cost quotes.
+          saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, preview.quotes, false)));
           continue;
         }
+        saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, preview.quotes)));
         try {
           for (const { source, refs } of importedRefs(plan, chosen)) await saveImported(api.storage, source, plan.accountId, plan.date, refs);
         } catch {
@@ -305,8 +490,8 @@ export function HoldingsImport({
           changed();
           onFund(key, choice);
         }}
-        title="Funds and shares"
-        intro="Confirm the Wealthfolio fund or share for each holding. They are searched by their printed ISIN, and by name when that finds nothing; the add-on remembers what you confirm for each ISIN, for detailed statements too."
+        title="Holdings"
+        intro="Confirm the Wealthfolio asset for each holding. Holdings are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed. A bond or NPS scheme that no result fits can use the statement's prices: the add-on creates an asset you price by hand, saves the statement's price on its date, and keeps the printed details on the asset. The add-on remembers what you confirm for each ISIN or scheme, for detailed statements too."
       />
       <div className="flex flex-wrap items-center gap-3">
         <Button type="button" disabled={undecided || nothing || busy !== ""} onClick={() => void runPreview()}>
@@ -316,7 +501,7 @@ export function HoldingsImport({
         {(undecided || nothing) && (
           <span className="text-muted-foreground text-sm">
             {undecided
-              ? "Confirm or leave out each fund and share, and choose an account for each folio and demat account first."
+              ? "Confirm or leave out each holding, and choose an account for each folio, demat account and PRAN first."
               : "Everything is left out, so there's nothing to import."}
           </span>
         )}
@@ -367,7 +552,8 @@ function HoldingsSummary({ statement, holdings }: { statement: Statement; holdin
       <p className="text-muted-foreground">
         {kind} statement for {statement.investor_info.name}, as on {statement.statement_period.to}:{" "}
         {count("demat") > 0 && `${count("demat")} demat accounts, `}
-        {count("folio")} folios, {lines} holdings.
+        {count("folio")} folios, {count("nps") > 0 && `${count("nps")} NPS ${count("nps") === 1 ? "account" : "accounts"}, `}
+        {lines} holdings.
       </p>
       {"cas_type" in statement && (
         <p className="text-muted-foreground text-sm">

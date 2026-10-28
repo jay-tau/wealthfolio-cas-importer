@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { planSnapshots, readHoldings, snapshotOf } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
-import { readFund, readImported, saveFund, saveImported } from "../src/lib/choices.ts";
+import { fundKey, holdingKey, readFund, readImported, saveFund, saveImported } from "../src/lib/choices.ts";
 
 const summary = { id: "folio|90123456789/45|amc:Made-up Fund", aliases: ["folio|90123456789/45|INFTEST"] };
 const depository = { id: summary.aliases[0] };
@@ -27,6 +27,19 @@ test("manual pricing metadata is refreshed rather than stored with a fund choice
   assert.deepEqual(JSON.parse(store.data.get("fund-choice")), choice);
   store.data.set("fund-choice", JSON.stringify({ ...choice, manual: true }));
   assert.deepEqual(await readFund(store, "fund-choice"), choice);
+});
+
+test("a choice to use the statement's prices is remembered, under the bond's ISIN or the scheme's symbol", async () => {
+  const store = storage();
+  const choice = { symbol: "NPS-SBI-E-TIER-I", quoteCcy: "INR", instrumentType: "EQUITY", name: "NPS TRUST- A/C SBI", statementPrices: true };
+  await saveFund(store, "nps-choice", { ...choice, manual: true });
+  assert.deepEqual(await readFund(store, "nps-choice"), choice);
+  const nps = { isin: null, rta: null, rtaCode: null, code: "NPS-SBI-E-TIER-I" };
+  assert.match(holdingKey(nps), /^nps:[a-f0-9]{64}$/);
+  assert.notEqual(holdingKey(nps), holdingKey({ ...nps, code: "NPS-SBI-E-TIER-II" }));
+  // Not the key of a fund without an ISIN or registrar code.
+  assert.notEqual(holdingKey(nps), fundKey({ isin: null, rta: undefined, rta_code: undefined }));
+  assert.equal(holdingKey({ ...nps, isin: "INEZ91A07012" }), "isin:INEZ91A07012");
 });
 
 test("import provenance follows the baseline snapshot date, including out-of-order imports", async () => {

@@ -3,10 +3,12 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { dec, div, format } from "../src/cas/decimal.ts";
 import {
+  assetDetails,
   importedRefs,
   included,
-  manualPriceChange,
+  npsSymbol,
   planSnapshots,
+  pricesToSave,
   readHoldings,
   replacesSnapshot,
   snapshotOf,
@@ -18,7 +20,7 @@ import { fundRef } from "../src/cas/plan.ts";
 const fixture = async (name) => JSON.parse(await readFile(`tests/fixtures/${name}.json`, "utf8"));
 
 const asset = (h) => ({
-  symbol: h.isin ?? h.rtaCode,
+  symbol: h.isin ?? h.rtaCode ?? h.code,
   exchangeMic: "XBOM",
   quoteCcy: "INR",
   instrumentType: h.kind === "share" ? "EQUITY" : "MUTUALFUND",
@@ -81,15 +83,15 @@ test("reads a summary statement's folios", async () => {
   }
 });
 
-test("reads an NSDL statement's demat accounts and folios, and leaves bonds out", async () => {
+test("reads an NSDL statement's demat accounts, with their bonds, and folios", async () => {
   const holdings = readHoldings(await fixture("made-up-nsdl"));
   assert.equal(holdings.date, "2025-03-31");
   assert.equal(holdings.investor, "ABCDE1234F");
   assert.deepEqual(
     holdings.sources.map((s) => [s.id, s.kind, s.holdings.map((h) => h.kind).join(",")]),
     [
-      ["demat|IN999901|90000001", "demat", "share,share,share,fund"],
-      ["demat|99990001|90000002", "demat", "share,share,share,fund,fund"],
+      ["demat|IN999901|90000001", "demat", "share,share,share,fund,bond,bond"],
+      ["demat|99990001|90000002", "demat", "share,share,share,fund,fund,bond,bond"],
       ["folio|91234567/12|INFZ90K", "folio", "fund,fund,fund"],
       ["folio|1040012345|INFZ91T", "folio", "fund"],
     ],
@@ -102,13 +104,42 @@ test("reads an NSDL statement's demat accounts and folios, and leaves bonds out"
   assert.ok(holdings.sources.slice(0, 2).every((s) => s.holdings.every((h) => h.cost === null)));
   assert.equal(holdings.sources[2].holdings[0].cost, "154554");
   assert.deepEqual(holdings.sources[3].holdings.map((h) => h.cost), [null]);
-  assert.deepEqual(
-    holdings.leftOut.map((l) => l.reason),
-    Array(4).fill("Bonds aren't imported yet."),
-  );
+  assert.deepEqual(holdings.leftOut, []);
+  // NSDL demat accounts print a bond's value, face value and coupon; CDSL ones its market price.
+  const bonds = holdings.sources.flatMap((s) => s.holdings.filter((h) => h.kind === "bond"));
+  assert.deepEqual(bonds.map((b) => [b.isin, b.units, b.price, b.value]), [
+    ["INEZ91A07012", "50", "1000", "50000.00"],
+    ["INEZ91B07028", "2", "100000", "200000.00"],
+    ["INEZ92A07036", "25.000", "1012.40", "25310.00"],
+    ["INEZ93A08016", "5.000", "101250.00", "506250.00"],
+  ]);
+  assert.deepEqual(bonds[0].details, {
+    name: "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31", isin: "INEZ91A07012", couponRate: "8.10",
+    couponFrequency: "Once a year", maturityDate: "15-Apr-2031", faceValue: "1000.00",
+  });
+  assert.deepEqual(bonds[2].details, { name: "MOCKSTEEL INDUSTRIES LIMITED 9.25 NCD 01MR27", isin: "INEZ92A07036" });
+  assert.ok(bonds.every((b) => b.cost === null));
 });
 
-test("reads a CDSL statement, and leaves out NPS and holdings without units", async () => {
+test("a bond's cost defaults to its face value times the number of bonds", async () => {
+  const holdings = readHoldings(await fixture("made-up-nsdl"));
+  const [account] = plan(holdings);
+  const cost = (isin) => account.positions.find((p) => p.ref === ref(isin)).cost;
+  assert.deepEqual(cost("INEZ91A07012"), { total: "50000", from: "face" });
+  assert.deepEqual(cost("INEZ91B07028"), { total: "200000", from: "face" });
+  // No face value printed: unknown.
+  assert.equal(cost("INEZ92A07036"), undefined);
+  // Wealthfolio's average cost comes first, and a typed cost replaces either.
+  const [held] = plan(holdings, { existing: () => ({ ...none, positions: [{
+    assetId: "ncd", ref: ref("INEZ91A07012"), symbol: "INEZ91A07012", name: "NCD", units: "40", cost: "38000", currency: "INR",
+  }] }) });
+  const position = held.positions.find((p) => p.ref === ref("INEZ91A07012"));
+  assert.deepEqual(position.cost, { total: "47500", from: "wealthfolio" });
+  assert.equal(snapshotOf(held, { ...noChoices, costs: new Map([[position.key, "49000"]]) }).holdings
+    .find((h) => h.assetId === "ncd").averageCost, "980");
+});
+
+test("reads a CDSL statement and its NPS schemes, and leaves out holdings without units", async () => {
   const holdings = readHoldings(await fixture("made-up-cdsl"));
   assert.equal(holdings.date, "2026-03-31");
   assert.equal(holdings.investor, "ABCDE1234F");
@@ -119,12 +150,22 @@ test("reads a CDSL statement, and leaves out NPS and holdings without units", as
       ["folio|91234567/12|INFZ90K", 2],
       ["folio|1040012345|INFZ91T", 2],
       ["demat|IN999901|10012345", 2],
+      ["nps|XXXXXXXX9001", 3],
     ],
   );
-  assert.deepEqual(
-    holdings.leftOut.map((l) => l.reason),
-    ["No units on the statement.", ...Array(3).fill("NPS holdings aren't imported yet.")],
-  );
+  assert.deepEqual(holdings.leftOut.map((l) => l.reason), ["No units on the statement."]);
+  const nps = holdings.sources[4];
+  assert.equal(nps.kind, "nps");
+  assert.equal(nps.label, "NPS, PRAN XXXXXXXX9001");
+  assert.deepEqual(nps.holdings.map((h) => [h.kind, h.code, h.units, h.price, h.value, h.cost]), [
+    ["nps", "NPS-FICTIVA-E-TIER-I", "1234.5678", "58.1234", "71757.28", null],
+    ["nps", "NPS-FICTIVA-G-TIER-I", "2345.6789", "29.8765", "70080.68", null],
+    ["nps", "NPS-FICTIVA-E-TIER-II", "456.7891", "41.2345", "18835.47", null],
+  ]);
+  assert.deepEqual(nps.holdings[2].details, {
+    scheme: "NPS TRUST- A/C FICTIVA PENSION FUND MANAGEMENT LIMITED SCHEME E - TIER II",
+    fundManager: "FICTIVA PENSION FUND MANAGEMENT LIMITED", tier: "II", assetClass: "E",
+  });
   assert.match(holdings.sources[0].label, /^CDSL Demat Account 1,/);
   assert.match(holdings.sources[3].label, /^NSDL Demat Account 2,/);
   const displayed = JSON.stringify([holdings.sources.map((s) => s.label), holdings.leftOut]);
@@ -334,7 +375,7 @@ test("the same fund in two places in one account adds up, and a partly printed c
 test("each source goes to its own account, or is left out", async () => {
   const holdings = readHoldings(await fixture("made-up-cdsl"));
   const plans = plan(holdings, {
-    account: (s) => (s.kind === "demat" ? "brokerage" : s.id === "folio|1040012345|INFZ91T" ? undefined : "funds"),
+    account: (s) => (s.kind === "demat" ? "brokerage" : s.kind === "nps" ? "pension" : s.id === "folio|1040012345|INFZ91T" ? undefined : "funds"),
     existing: (id) => ({ ...none, date: id === "funds" ? "2026-03-31" : null }),
   });
   assert.deepEqual(
@@ -342,6 +383,7 @@ test("each source goes to its own account, or is left out", async () => {
     [
       ["brokerage", ["demat|19999901|00012345", "demat|IN999901|10012345"], 5, false],
       ["funds", ["folio|91234567/12|INFZ90K"], 2, true],
+      ["pension", ["nps|XXXXXXXX9001"], 3, false],
     ],
   );
 });
@@ -359,21 +401,44 @@ test("rejects ambiguous existing asset references before they can be lost", asyn
   assert.throws(() => plan(holdings, { existing: () => existing }), /multiple assets for ABC@XBOM/);
 });
 
-test("manual prices cannot be overwritten by a carried or imported average cost", async () => {
+test("manual-priced holdings get the statement's price, and kept ones the price they had", async () => {
   const holdings = readHoldings(await fixture("made-up-summary-cams"));
-  const existing = { ...none, positions: [{
-    assetId: "manual", ref: ref("MANUAL"), symbol: "MANUAL", name: "Manual asset", units: "10", cost: "100", currency: "INR", manual: true,
-  }] };
-  const [account] = plan(holdings, { existing: () => existing });
-  assert.equal(manualPriceChange(account, noChoices).name, "Manual asset");
-  assert.throws(() => snapshotOf(account, noChoices), /overwrite its manual price/);
-  assert.ok(!snapshotOf(account, { ...noChoices, flipped: new Set([ref("MANUAL")]) }).holdings.some((h) => h.assetId === "manual"));
+  const kept = {
+    assetId: "manual", ref: ref("MANUAL"), symbol: "MANUAL", name: "Manual asset", units: "10", cost: "100", currency: "USD",
+    manual: true, price: { close: "12.5", currency: "USD" },
+  };
   const gold = holdings.sources[2].holdings.find((h) => h.cost === null);
-  existing.positions[0] = { ...existing.positions[0], ref: ref(gold.isin), symbol: gold.isin };
-  const [matched] = plan(holdings, { existing: () => existing });
-  assert.throws(() => snapshotOf(matched, noChoices), /overwrite its manual price/);
-  assert.doesNotThrow(() => snapshotOf(matched, { ...noChoices, costs: new Map([[ref(gold.isin), ""]]) }));
-  assert.doesNotThrow(() => manualPriceChange(matched, { ...noChoices, costs: new Map([[ref(gold.isin), "abc"]]) }));
+  const listed = { assetId: "gold", ref: ref(gold.isin), symbol: gold.isin, name: "Gold", units: "800", cost: "40000", currency: "INR", manual: true };
+  const unpriced = { assetId: "unpriced", ref: ref("UNPRICED"), symbol: "UNPRICED", name: "Unpriced", units: "1", cost: "5", currency: "INR", manual: true };
+  const [account] = plan(holdings, { existing: () => ({ ...none, positions: [kept, listed, unpriced] }) });
+  // Saving no longer refuses: the prices are written after it.
+  assert.ok(snapshotOf(account, noChoices).holdings.some((h) => h.assetId === "manual" && h.averageCost === "10"));
+  assert.deepEqual(pricesToSave(account, noChoices), [
+    { ref: ref(gold.isin), assetId: "gold", name: "Gold", price: gold.price, currency: "INR", from: "statement" },
+    { ref: ref("MANUAL"), assetId: "manual", name: "Manual asset", price: "12.5", currency: "USD", from: "earlier" },
+  ]);
+  assert.match(account.positions.find((p) => p.ref === ref("UNPRICED")).notes[0], /no price on or before this date.*average cost as its price/);
+  // Removed or left out of the statement's side: nothing to price, or the price it had.
+  const removed = { flipped: new Set([ref("MANUAL"), ref(gold.isin)]), costs: new Map() };
+  assert.deepEqual(pricesToSave(account, removed), []);
+  const goldPriced = { ...listed, price: { close: "49", currency: "INR" } };
+  const [leftOut] = plan(holdings, { existing: () => ({ ...none, positions: [goldPriced] }) });
+  assert.deepEqual(pricesToSave(leftOut, { ...noChoices, flipped: new Set([ref(gold.isin)]) }).map((p) => [p.assetId, p.price, p.from]), [["gold", "49", "earlier"]]);
+  // Another account's import lists it on the same date: its statement price, with or without an earlier one.
+  const listedElsewhere = new Map([[ref("MANUAL"), "13"], [ref("UNPRICED"), "6"]]);
+  assert.deepEqual(pricesToSave(account, noChoices, listedElsewhere).map((p) => [p.assetId, p.price, p.currency, p.from]), [
+    ["gold", gold.price, "INR", "statement"], ["manual", "13", "INR", "statement"], ["unpriced", "6", "INR", "statement"],
+  ]);
+  // The warning stays accurate even if another account's row is later left out.
+  const twoAccounts = (lists) => plan(holdings, {
+    account: (s) => (s.id === holdings.sources[2].id ? lists : "keeps"),
+    existing: (id) => (id === "keeps" ? { ...none, positions: [{ ...unpriced, ref: ref(gold.isin), symbol: gold.isin }] } : none),
+  }).find((p) => p.accountId === "keeps");
+  assert.match(twoAccounts("lists").positions.find((p) => p.ref === ref(gold.isin)).notes[0], /If no included holding supplies the statement's price/);
+  assert.match(twoAccounts(undefined).positions.find((p) => p.ref === ref(gold.isin)).notes[0], /no price on or before this date/);
+  // Market-priced holdings get none.
+  const [market] = plan(holdings, { existing: () => ({ ...none, positions: [{ ...kept, manual: false }] }) });
+  assert.deepEqual(pricesToSave(market, noChoices), []);
 });
 
 test("explicit empty sources remove their last imported holding, preserving cash", async () => {
@@ -388,6 +453,7 @@ test("explicit empty sources remove their last imported holding, preserving cash
       data.accounts = [data.accounts[0]];
       data.accounts[0].equities = [];
       data.accounts[0].mutual_funds = [];
+      data.accounts[0].bonds = [];
     }
     const holdings = readHoldings(data);
     assert.equal(holdings.sources[0].id, first.id);
@@ -447,8 +513,9 @@ test("overlap leaves only folio contributions out and saves selected contributio
       assetId: "manual", ref: ref(h.isin), symbol: h.isin, name: "Manual", units: "105", cost: "105", currency: "INR", manual: true,
     }] }),
   });
-  assert.doesNotThrow(() => snapshotOf(manual, { flipped: new Set(), costs: new Map([[manual.positions[0].key, ""]]) }));
-  assert.throws(() => snapshotOf(manual, noChoices), /overwrite its manual price/);
+  // One price for the asset, from the statement, however many rows list it.
+  assert.deepEqual(pricesToSave(manual, noChoices).map((p) => [p.assetId, p.price, p.from]), [["manual", "2", "statement"]]);
+  assert.equal(snapshotOf(manual, noChoices).holdings.length, 1);
 });
 
 test("already separate parsed folios distinguish issuers, link formats, and survive missing ISINs and zero balances", async () => {
@@ -500,20 +567,160 @@ test("average-cost fallback preserves a known cost smaller than a paisa", async 
   assert.equal(snapshotOf(account, noChoices).holdings.find((h) => h.assetId === "gold").averageCost, "1");
 });
 
-test("known global manual pricing blocks new-to-account assets too", async () => {
+test("new manual-priced assets get the statement's price; ones priced from statements are created manual", async () => {
   const holdings = readHoldings(await fixture("made-up-summary-cams"));
   const [account] = plan(holdings, { asset: (h) => ({ ...asset(h), manual: true }) });
   assert.equal(account.positions[0].existing, undefined);
-  assert.throws(() => snapshotOf(account, noChoices), /overwrite its manual price/);
-  const blank = { ...noChoices, costs: new Map(account.positions.map((p) => [p.key, ""])) };
-  // Printed costs cannot be cleared in the preview.
-  assert.throws(() => snapshotOf(account, blank), /overwrite its manual price/);
-  const unknownOnly = { ...holdings, sources: holdings.sources.map((s) => ({
-    ...s, holdings: s.holdings.filter((h) => h.cost === null),
-  })) };
-  const [unknown] = plan(unknownOnly, { asset: (h) => ({ ...asset(h), manual: true }) });
-  assert.doesNotThrow(() => snapshotOf(unknown, noChoices));
-  assert.throws(() => snapshotOf(unknown, { ...noChoices, costs: new Map([[unknown.positions[0].key, "10"]]) }), /overwrite its manual price/);
+  const prices = pricesToSave(account, noChoices);
+  assert.equal(prices.length, 6);
+  assert.ok(prices.every((p) => p.assetId === undefined && p.from === "statement"));
+  // Found by search: Wealthfolio keeps its pricing mode.
+  assert.ok(snapshotOf(account, noChoices).holdings.every((h) => h.dataSource === undefined));
+  const [fromStatements] = plan(holdings, { asset: (h) => ({ ...asset(h), manual: true, statementPrices: true }) });
+  assert.ok(snapshotOf(fromStatements, noChoices).holdings.every((h) => h.dataSource === "MANUAL"));
+  // Wealthfolio prices it from market data now: it stays so, and gets no statement price.
+  const [market] = plan(holdings, { asset: (h) => ({ ...asset(h), manual: false, statementPrices: true }) });
+  assert.ok(snapshotOf(market, noChoices).holdings.every((h) => h.dataSource === undefined));
+  assert.deepEqual(pricesToSave(market, noChoices), []);
+});
+
+test("bonds and NPS schemes priced from statements keep their identity and printed details", async () => {
+  const nsdl = readHoldings(await fixture("made-up-nsdl"));
+  const cdsl = readHoldings(await fixture("made-up-cdsl"));
+  const fromStatements = (h) => ({
+    symbol: h.isin ?? h.code, quoteCcy: "INR", instrumentType: h.kind === "bond" ? "BOND" : "EQUITY", name: h.name, manual: true, statementPrices: true,
+  });
+  for (const holdings of [nsdl, cdsl]) {
+    const sources = holdings.sources.filter((s) => s.holdings.some((h) => h.details));
+    const [account] = plan({ ...holdings, sources }, { asset: (h) => (h.details ? fromStatements(h) : undefined) });
+    const saved = snapshotOf(account, noChoices).holdings;
+    const priced = new Map(pricesToSave(account, noChoices).map((p) => [p.ref, p.price]));
+    for (const h of sources.flatMap((s) => s.holdings.filter((h) => h.details))) {
+      const symbol = h.isin ?? h.code;
+      const row = saved.find((s) => s.symbol === symbol);
+      assert.equal(row.dataSource, "MANUAL", symbol);
+      assert.equal(row.exchangeMic, undefined, symbol);
+      assert.equal(priced.get(fundRef(symbol)), h.price, symbol);
+    }
+    // What an import remembers finds them again on the next statement.
+    for (const { refs } of importedRefs(account, noChoices)) {
+      for (const ids of Object.values(refs)) assert.ok(ids.every((id) => /^(INE|nps\|NPS-)/.test(id)), ids.join());
+    }
+  }
+});
+
+test("npsSymbol builds one symbol per scheme from its printed name", () => {
+  assert.equal(npsSymbol("NPS TRUST- A/C SBI PENSION FUNDS PRIVATE LIMITED SCHEME E - TIER I"), "NPS-SBI-E-TIER-I");
+  assert.equal(npsSymbol("NPS TRUST A/C - SBI PENSION FUNDS PVT. LTD. SCHEME E - TIER 1"), "NPS-SBI-E-TIER-I");
+  assert.equal(npsSymbol("NPS TRUST - A/C HDFC PENSION FUND MANAGEMENT LIMITED SCHEME C - TIER II"), "NPS-HDFC-C-TIER-II");
+  assert.equal(npsSymbol("NPS TRUST- A/C ICICI PRUDENTIAL PENSION FUNDS MANAGEMENT COMPANY LIMITED SCHEME A - TIER I"), "NPS-ICICI-PRUDENTIAL-A-TIER-I");
+  assert.equal(npsSymbol("NPS TRUST - A/C SBI PENSION FUNDS PRIVATE LIMITED - CENTRAL GOVT"), "NPS-SBI-CENTRAL-GOVT");
+});
+
+test("an NPS account without a printed PRAN is the investor's, and keeps its holdings", async () => {
+  for (const pran of [null, "", "  "]) {
+    const data = await fixture("made-up-cdsl");
+    data.nps.pran = pran;
+    const holdings = readHoldings(data);
+    const nps = holdings.sources.filter((s) => s.kind === "nps");
+    assert.deepEqual(nps.map((s) => [s.id, s.label, s.holdings.length]), [["nps|investor:ABCDE1234F", "National Pension System", 3]]);
+    assert.deepEqual(holdings.leftOut.map((l) => l.reason), ["No units on the statement."]);
+    // Another investor's PRAN-less account is a different source.
+    data.accounts.forEach((a) => a.owners.forEach((o) => { o.PAN = "ZZZZZ9999Z"; }));
+    assert.equal(readHoldings(data).sources.find((s) => s.kind === "nps").id, "nps|investor:ZZZZZ9999Z");
+  }
+});
+
+test("a zero-unit bond is left out without dividing its value by zero", async () => {
+  const data = await fixture("made-up-nsdl");
+  const bond = data.accounts[0].bonds[0];
+  bond.num_bonds = "0";
+  const holdings = readHoldings(data);
+  assert.ok(!holdings.sources.flatMap((s) => s.holdings).some((h) => h.isin === bond.isin));
+  assert.ok(holdings.leftOut.some((l) => l.name === bond.name && l.reason === "No units on the statement."));
+});
+
+test("PRANs share scheme assets while each keeps its own source and account", async () => {
+  const holdings = readHoldings(await fixture("made-up-cdsl"));
+  const nps = holdings.sources.find((s) => s.kind === "nps");
+  const other = { ...nps, id: "nps|XXXXXXXX9002", label: "NPS, PRAN XXXXXXXX9002" };
+  const both = { ...holdings, sources: [nps, other] };
+  const [combined] = plan(both);
+  assert.equal(combined.positions.length, 3);
+  assert.equal(combined.positions[0].units, "2469.1356");
+  const separate = plan(both, { account: (s) => s.id });
+  assert.equal(separate.length, 2);
+  assert.deepEqual(separate[0].positions.map((p) => p.ref), separate[1].positions.map((p) => p.ref));
+  assert.deepEqual(importedRefs(combined, noChoices).map((s) => s.source.id), [nps.id, other.id]);
+});
+
+test("a resolved asset ID reconciles a custom display code and supplies price IDs", () => {
+  const holding = { kind: "bond", isin: "INEZ91A07012", rta: null, rtaCode: null, name: "Made-up bond", units: "2", price: "1100", value: "2200", cost: null };
+  const source = { id: "demat|test", kind: "demat", label: "Demat", holdings: [holding] };
+  const chosen = { symbol: holding.isin, quoteCcy: "INR", name: holding.name, instrumentType: "BOND", assetId: "opaque-id", manual: true, statementPrices: true };
+  const before = { assetId: "opaque-id", ref: fundRef("My bond"), symbol: "My bond", name: "Custom name", units: "1", cost: "900", currency: "INR", manual: true, price: { close: "1050", currency: "INR" } };
+  const [account] = plan({ date: "2026-03-31", investor: "test", sources: [source], leftOut: [] }, {
+    asset: () => chosen,
+    existing: () => ({ ...none, positions: [before] }),
+  });
+  assert.equal(account.positions.length, 1);
+  const saved = snapshotOf(account, noChoices).holdings;
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].assetId, "opaque-id");
+  assert.equal(saved[0].quantity, "2");
+  assert.equal(saved[0].dataSource, undefined);
+  assert.deepEqual(pricesToSave(account, noChoices).map((p) => [p.assetId, p.price]), [["opaque-id", "1100"]]);
+  // Resolved assets can be new to the target account without being new to Wealthfolio.
+  const [empty] = plan({ date: "2026-03-31", investor: "test", sources: [source], leftOut: [] }, { asset: () => chosen });
+  assert.equal(snapshotOf(empty, noChoices).holdings[0].assetId, "opaque-id");
+  assert.equal(snapshotOf(empty, noChoices).holdings[0].dataSource, undefined);
+  assert.equal(pricesToSave(empty, noChoices)[0].assetId, "opaque-id");
+});
+
+test("assetDetails adds printed details without overwriting Wealthfolio's or the user's", async () => {
+  const nsdl = readHoldings(await fixture("made-up-nsdl"));
+  const [face, onMaturity, market] = ["INEZ91A07012", "INEZ91B07028", "INEZ92A07036"].map((isin) =>
+    nsdl.sources.flatMap((s) => s.holdings).find((h) => h.isin === isin));
+  assert.deepEqual(assetDetails(face, undefined, "BOND"), {
+    casStatement: face.details,
+    bond: { isin: "INEZ91A07012", maturityDate: "2031-04-15", couponRate: 0.081, couponFrequency: "ANNUAL", faceValue: 1000 },
+  });
+  // "On Maturity" isn't a frequency Wealthfolio's pricer knows: printed details only.
+  assert.equal(assetDetails(onMaturity, undefined, "BOND").bond.couponFrequency, undefined);
+  assert.equal(assetDetails(onMaturity, undefined, "BOND").casStatement.couponFrequency, "On Maturity");
+  for (const [couponFrequency, expected] of [
+    ["Bi-Annual", "SEMI_ANNUAL"], ["Biannual", "SEMI_ANNUAL"], ["Semi Annually", "SEMI_ANNUAL"],
+    ["Quarterly", "QUARTERLY"], ["Annual", "ANNUAL"], ["Monthly", undefined], ["Annual on maturity", undefined],
+  ]) {
+    const details = assetDetails({ ...face, details: { ...face.details, couponFrequency } }, undefined, "BOND");
+    assert.equal(details.bond.couponFrequency, expected);
+    assert.equal(details.casStatement.couponFrequency, couponFrequency);
+  }
+  for (const maturityDate of ["31-Feb-2031", "00-Apr-2031", "32-Apr-2031", "not printed clearly"]) {
+    const details = assetDetails({ ...face, details: { ...face.details, maturityDate } }, undefined, "BOND");
+    assert.equal(details.bond.maturityDate, undefined);
+    assert.equal(details.casStatement.maturityDate, maturityDate);
+    assert.equal(details.bond.faceValue, 1000);
+  }
+  // Wealthfolio's nulls are filled; its values, the user's edits and other keys stay.
+  const before = { contractMultiplier: 0.01, bond: { isin: "INEZ91A07012", couponRate: 0.08, maturityDate: null, faceValue: null } };
+  assert.deepEqual(assetDetails(face, before, "BOND"), {
+    contractMultiplier: 0.01,
+    bond: { isin: "INEZ91A07012", couponRate: 0.08, maturityDate: "2031-04-15", faceValue: 1000, couponFrequency: "ANNUAL" },
+    casStatement: face.details,
+  });
+  // Nothing new: no write.
+  assert.equal(assetDetails(face, assetDetails(face, before, "BOND"), "BOND"), undefined);
+  // An asset found by search that isn't a bond keeps only the printed details.
+  assert.deepEqual(assetDetails(market, { other: 1 }, "EQUITY"), { other: 1, casStatement: market.details });
+  // A later statement adds to the printed details, and keeps what an earlier one printed.
+  const kept = assetDetails({ ...face, details: { isin: face.isin, name: "RENAMED" } }, assetDetails(face, undefined, "BOND"), "BOND");
+  assert.deepEqual(kept.casStatement, { ...face.details, name: "RENAMED" });
+  const cdsl = readHoldings(await fixture("made-up-cdsl"));
+  const scheme = cdsl.sources.find((s) => s.kind === "nps").holdings[0];
+  assert.deepEqual(assetDetails(scheme, null, "EQUITY"), { casStatement: scheme.details });
+  // Funds and shares carry no details.
+  assert.equal(assetDetails(nsdl.sources[0].holdings[0], undefined, "EQUITY"), undefined);
 });
 
 test("a still-listed left-out summary fund survives losing its printed ISIN", async () => {
@@ -579,7 +786,7 @@ test("a split recorded since an older snapshot is flagged, not carried", async (
   assert.match(goldRow.notes[0], /split was recorded.*Enter the total cost, or leave it unknown/);
 });
 
-test("signed existing costs and average costs survive, including manual-price protection", async () => {
+test("signed existing costs and average costs survive, and keep a manual price", async () => {
   const holdings = readHoldings(await fixture("made-up-summary-cams"));
   const short = { assetId: "short", ref: ref("SHORT"), symbol: "SHORT", name: "Short", units: "-10", cost: "-1000", currency: "INR" };
   const existing = { ...none, positions: [short] };
@@ -588,17 +795,17 @@ test("signed existing costs and average costs survive, including manual-price pr
     assetId: "short", symbol: "SHORT", quantity: "-10", currency: "INR", averageCost: "100",
   });
   short.manual = true;
-  assert.throws(() => snapshotOf(account, noChoices), /overwrite its manual price/);
+  short.price = { close: "100", currency: "INR" };
+  assert.deepEqual(pricesToSave(account, noChoices).map((p) => [p.assetId, p.price, p.from]), [["short", "100", "earlier"]]);
   const gold = holdings.sources[2].holdings.find((h) => h.cost === null);
   existing.positions[0] = { ...short, ref: ref(gold.isin), symbol: gold.isin, units: "-800", cost: "-40000" };
   const [matched] = plan(holdings, { existing: () => existing });
   const position = matched.positions.find((p) => p.ref === ref(gold.isin));
   assert.deepEqual(position.cost, { total: "42275.6", from: "wealthfolio" });
-  assert.throws(() => snapshotOf(matched, noChoices), /overwrite its manual price/);
-  assert.doesNotThrow(() => snapshotOf(matched, { ...noChoices, costs: new Map([[position.key, ""]]) }));
+  assert.deepEqual(pricesToSave(matched, noChoices).map((p) => [p.assetId, p.price, p.from]), [["short", gold.price, "statement"]]);
   existing.positions[0].cost = "40000";
   const [negativeAverage] = plan(holdings, { existing: () => existing });
-  assert.throws(() => snapshotOf(negativeAverage, noChoices), /overwrite its manual price/);
+  assert.equal(snapshotOf(negativeAverage, noChoices).holdings.find((h) => h.assetId === "short").quantity, "845.512");
 });
 
 test("one source remembers every printed security confirmed to the same asset", () => {
