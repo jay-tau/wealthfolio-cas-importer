@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Offer only accounts that track transactions for a detailed statement, since Wealthfolio doesn't update the holdings of an account that tracks holdings from its transactions; a PAN or folio account chosen before that tracks holdings is ignored, and its row says why to choose again
 
 ### Security
 

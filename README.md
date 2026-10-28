@@ -12,8 +12,9 @@ imported as holdings (see [Summary and depository statements](#summary-and-depos
 Detailed imports have been checked in Wealthfolio 3.11.0's desktop app on Linux and Windows;
 they haven't been tried on macOS.
 
-To import, pick the PDF and enter its password, choose a Wealthfolio account for each PAN (and,
-if you like, a different one for a folio), and confirm the Wealthfolio fund for each scheme; the
+To import, pick the PDF and enter its password, choose a Wealthfolio account that tracks
+transactions for each PAN (and, if you like, a different one for a folio), and confirm the
+Wealthfolio fund for each scheme; the
 add-on searches by the ISIN printed on the statement, and by the fund's name if the ISIN finds
 nothing or none is printed. Name-search results can be other funds: pick one with the statement's
 fund name, plan and option, or leave the fund out. Closed schemes, with no units at either end and

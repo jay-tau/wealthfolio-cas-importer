@@ -153,6 +153,7 @@ const api = {
   accounts: {
     getAll: async (includeArchived = false) => [
       account("account-1", "Mutual funds", "TRANSACTIONS"),
+      account("unset-1", "Not set", "NOT_SET"),
       account("holdings-1", "Demat", "HOLDINGS"),
       account("holdings-2", "Fund folios", "HOLDINGS"),
       { ...account("archived-1", "Archived funds", host.archiveOtherAccount ? "TRANSACTIONS" : "HOLDINGS"), isActive: false, isArchived: host.archiveOtherAccount },
