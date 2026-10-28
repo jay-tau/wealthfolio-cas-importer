@@ -39,6 +39,9 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const { api } = ctx;
   const [allAccounts, setAllAccounts] = useState<Account[] | null>(null);
   const accounts = allAccounts?.filter((a) => a.isActive && !a.isArchived) ?? null;
+  // Wealthfolio values an account that tracks holdings from its snapshots alone, so a detailed
+  // statement's transactions go to the others. It treats NOT_SET as transactions.
+  const transactionAccounts = accounts?.filter((a) => a.trackingMode !== "HOLDINGS") ?? null;
   const [statement, setStatement] = useState<Statement | null>(null);
   // Summary and depository statements: their holdings, saved as snapshots.
   const [holdings, setHoldings] = useState<Holdings | null>(null);
@@ -69,9 +72,19 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const accountChoices: AccountChoices = Object.fromEntries(
     Object.entries(remembered ?? {}).filter(([, id]) => id === LEFT_OUT || accounts?.some((a) => a.id === id)),
   );
+  // So are remembered PAN and folio accounts that track holdings; their rows say why.
+  const transactionChoices: AccountChoices = Object.fromEntries(
+    Object.entries(accountChoices).filter(([, id]) => transactionAccounts?.some((a) => a.id === id)),
+  );
+  const holdingsChoices: Record<string, string> = Object.fromEntries(
+    Object.entries(accountChoices).flatMap(([key, id]) => {
+      const account = accounts?.find((a) => a.id === id && a.trackingMode === "HOLDINGS");
+      return account ? [[key, account.name]] : [];
+    }),
+  );
 
   const target = (folio: CasFolio, scheme: CasScheme) => {
-    const accountId = accountFor(accountChoices, folio);
+    const accountId = accountFor(transactionChoices, folio);
     const choice = fundChoices[fundKey(scheme)];
     return accountId && choice && "fund" in choice ? { accountId, asset: choice.fund } : undefined;
   };
@@ -159,7 +172,9 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     ? data.folios.some((f) =>
         f.schemes.some((s) => {
           const choice = fundChoices[fundKey(s)];
-          return !choice || ("fund" in choice && !accountFor(accountChoices, f));
+          // A folio whose remembered account tracks holdings needs choosing again, even to go with its PAN.
+          const account = folioKey(f) in holdingsChoices ? undefined : accountFor(transactionChoices, f);
+          return !choice || ("fund" in choice && !account);
         }),
       )
     : true;
@@ -248,9 +263,15 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
               setBusy={setBusy}
             />
           )}
-          {data && remembered && accounts && (
+          {data && remembered && transactionAccounts && (
             <>
-              <AccountChoicesCard data={data} accounts={accounts} choices={accountChoices} onChange={chooseAccount} />
+              <AccountChoicesCard
+                data={data}
+                accounts={transactionAccounts}
+                choices={transactionChoices}
+                holdingsChoices={holdingsChoices}
+                onChange={chooseAccount}
+              />
               <FundChoicesCard ctx={ctx} items={fundItems(data)} choices={fundChoices} onChange={chooseFund} />
               <div className="flex flex-wrap items-center gap-3">
                 <Button type="button" disabled={undecided || busy !== ""} onClick={() => void runPreview()}>

@@ -22,7 +22,8 @@ export function AccountSelect({
 }: {
   id: string;
   accounts: Account[];
-  value: string | undefined;
+  /** Empty inherits when `inherit` is given; null shows that nothing is chosen yet. */
+  value: string | null | undefined;
   onChange: (accountId: string) => void;
   /** Offer "the PAN's account", which is the empty choice. */
   inherit?: string;
@@ -37,7 +38,7 @@ export function AccountSelect({
   return (
     <Select
       items={items}
-      value={value || (inherit ? SAME_AS_PAN : null)}
+      value={value === null ? null : value || (inherit ? SAME_AS_PAN : null)}
       onValueChange={(next) => onChange(next === SAME_AS_PAN || next === null ? "" : next)}
     >
       <SelectTrigger id={id} className="w-72">
@@ -58,26 +59,42 @@ export function AccountChoicesCard({
   data,
   accounts,
   choices,
+  holdingsChoices,
   onChange,
 }: {
   data: CasData;
+  /** Accounts that track transactions. */
   accounts: Account[];
   choices: AccountChoices;
+  /** Remembered choices of an account that tracks holdings, ignored: key → the account's name. */
+  holdingsChoices: Record<string, string>;
   onChange: (key: string, accountId: string) => void;
 }) {
   const pans = [...new Set(data.folios.flatMap((f) => (f.PAN ? [f.PAN] : [])))];
   const name = (id: string | undefined) => accounts.find((a) => a.id === id)?.name;
+  const chooseAgain = (key: string) =>
+    key in holdingsChoices && (
+      <p className="text-muted-foreground w-full text-sm">
+        Chosen before: {holdingsChoices[key]}, which tracks holdings. Transactions imported there wouldn't change its
+        holdings, so choose again.
+      </p>
+    );
   return (
     <Card>
       <CardHeader>
         <CardTitle>Accounts</CardTitle>
         <p className="text-muted-foreground text-sm">
-          Each PAN's folios go to one Wealthfolio account. A folio can go to a different one. The add-on remembers your
-          choices, keyed by a hash of the PAN or folio number.
+          Each PAN's folios go to one Wealthfolio account that tracks transactions. A folio can go to a different one.
+          The add-on remembers your choices, keyed by a hash of the PAN or folio number.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
-        {accounts.length === 0 && <p>Add an account in Wealthfolio first.</p>}
+        {accounts.length === 0 && (
+          <p>
+            No account tracks transactions. Add one in Wealthfolio, set to track transactions, then close and reopen the
+            add-on.
+          </p>
+        )}
         <div className="grid gap-4">
           {pans.map((pan) => (
             <div key={pan} className="flex flex-wrap items-center justify-between gap-2">
@@ -88,6 +105,7 @@ export function AccountChoicesCard({
                 value={choices[panKey(pan)]}
                 onChange={(id) => onChange(panKey(pan), id)}
               />
+              {chooseAgain(panKey(pan))}
             </div>
           ))}
         </div>
@@ -95,6 +113,7 @@ export function AccountChoicesCard({
           {data.folios.map((folio) => {
             const key = folioKey(folio);
             const panAccount = folio.PAN ? name(choices[panKey(folio.PAN)]) : undefined;
+            // Shown unchosen when its remembered account is ignored, so even going with the PAN is a new choice.
             return (
               <div key={key} className="flex flex-wrap items-center justify-between gap-2">
                 <Label htmlFor={key}>
@@ -104,10 +123,11 @@ export function AccountChoicesCard({
                 <AccountSelect
                   id={key}
                   accounts={accounts}
-                  value={choices[key]}
+                  value={key in holdingsChoices ? null : choices[key]}
                   onChange={(id) => onChange(key, id)}
                   inherit={folio.PAN ? `Same as PAN${panAccount ? ` (${panAccount})` : ""}` : undefined}
                 />
+                {chooseAgain(key)}
               </div>
             );
           })}

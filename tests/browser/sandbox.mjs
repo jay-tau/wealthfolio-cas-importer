@@ -116,6 +116,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
 
     await frame.getByLabel("PAN ABCDE1234F").click();
+    // Only accounts that track transactions, which in Wealthfolio include NOT_SET.
+    await frame.getByRole("option", { name: "Not set (INR)" }).waitFor();
+    assert.equal(await frame.getByRole("option", { name: "Demat (INR)" }).count(), 0);
+    assert.equal(await frame.getByRole("option", { name: "Fund folios (INR)" }).count(), 0);
     await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
     await frame.getByText("Same as PAN (Mutual funds)").first().waitFor();
     // Closed schemes get no fund section, so no search either.
@@ -274,6 +278,36 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await section.getByRole("button", { name: "Leave this fund out" }).click();
       await section.getByText("Left out", { exact: true }).waitFor();
     };
+
+    // A remembered PAN or folio account that tracks holdings is ignored, and its row says why. The
+    // folio's own account needs choosing again, even to go with its PAN.
+    const panAccount = frame.getByLabel("PAN ABCDE1234F");
+    const fictiva = frame.getByLabel("Fictiva Mutual Fund, folio 91234567 / 12");
+    const accountKeys = [await panAccount.getAttribute("id"), await fictiva.getAttribute("id")];
+    const beforeHoldings = await storage();
+    await tab.frames()[1].evaluate(([pan, folio]) => {
+      window.host.storage.set(pan, "holdings-1");
+      window.host.storage.set(folio, "holdings-2");
+    }, accountKeys);
+    await readAgain();
+    const reason = ", which tracks holdings. Transactions imported there wouldn't change its holdings, so choose again.";
+    await frame.getByText(`Chosen before: Demat${reason}`, { exact: true }).waitFor();
+    await frame.getByText(`Chosen before: Fund folios${reason}`, { exact: true }).waitFor();
+    const previewButton = frame.getByRole("button", { name: "Preview the import" });
+    assert.equal(await previewButton.isDisabled(), true);
+    assert.match(await panAccount.textContent(), /Choose an account/);
+    await panAccount.click();
+    await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
+    assert.equal(await frame.getByText(/^Chosen before: Demat/).count(), 0);
+    assert.equal(await previewButton.isDisabled(), true, "the folio's own account needs choosing again");
+    assert.match(await fictiva.textContent(), /Choose an account/);
+    await fictiva.click();
+    await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).click();
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.equal(await previewButton.isDisabled(), false);
+    await tab.frames()[1].waitForFunction(([pan, folio]) =>
+      window.host.storage.get(pan) === "account-1" && !window.host.storage.has(folio), accountKeys);
+    assert.deepEqual(await storage(), beforeHoldings);
 
     // Change alone keeps the saved fund, so reading again confirms it again.
     const flexi = frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" });
