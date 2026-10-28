@@ -1,9 +1,17 @@
 // Runs inside the sandboxed iframe that tests/browser/sandbox.mjs builds. The page posts the
 // packaged files as Blobs; this stands in for ctx.assets and drives the real CasParser, then
-// mounts the import page on a fake host: one account, in-memory storage and secrets, a fund
-// search, recorded error toasts, and an import that stores rows the way Wealthfolio
-// returns them. Wealthfolio's own checks are left to the end-to-end run in the pull request.
-import type { ActivityDetails, ActivityImport, AddonAssets, AddonContext, SymbolSearchResult } from "@wealthfolio/addon-sdk";
+// mounts the import page on a fake host: an account tracking transactions and two tracking
+// holdings, in-memory storage, secrets and snapshots, a fund search, recorded error toasts, and
+// an import that stores rows the way Wealthfolio returns them. Wealthfolio's own checks are left
+// to the end-to-end run in the pull request.
+import type {
+  ActivityDetails,
+  ActivityImport,
+  AddonAssets,
+  AddonContext,
+  SnapshotHoldingInput,
+  SymbolSearchResult,
+} from "@wealthfolio/addon-sdk";
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -23,6 +31,20 @@ const host = {
   rejectLine: undefined as number | undefined,
   // An invented second folio holding the fund with this ISIN, added to what the parser reads.
   sharedIsin: "",
+  // Holdings dropped from a depository statement as if they had been sold.
+  soldIsins: [] as string[],
+  parseWarnings: [] as string[],
+  onlyNps: false,
+  ambiguousSummary: false,
+  archiveOtherAccount: false,
+  reopen: () => {},
+  // Asset pricing mode belongs to the asset, independently of any account or snapshot.
+  pricingModes: {} as Record<string, string>,
+  // Each account's snapshots by date, as saved.
+  snapshots: {} as Record<string, Record<string, { holdings: SnapshotHoldingInput[]; cash: Record<string, string>; source?: string }>>,
+  saves: [] as { accountId: string; date: string }[],
+  // What accounts that track transactions hold, by symbol on XBOM.
+  held: {} as Record<string, string[]>,
   parsed: 0,
   toasts: [] as string[],
 };
@@ -46,7 +68,7 @@ const wait = async (operation: string) => {
   await host.pending;
 };
 
-const fund = (query: string): SymbolSearchResult => ({
+const fund = (query: string): SymbolSearchResult & { quoteMode?: string } => ({
   symbol: `${query}.BO`,
   canonicalSymbol: query,
   canonicalExchangeMic: "XBOM",
@@ -61,13 +83,32 @@ const fund = (query: string): SymbolSearchResult => ({
   index: "",
   score: 1,
   typeDisplay: "",
+  quoteMode: host.pricingModes[query],
 });
 
 // Adds the invented folio to every read while the test sets host.sharedIsin.
 const parse = CasParser.prototype.parse;
 CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, password: string) {
   const data = await parse.call(this, pdf, password);
+  data.parse_warnings.push(...host.parseWarnings);
   host.parsed++;
+  if (!("folios" in data)) {
+    if (host.onlyNps) return {
+      ...data,
+      accounts: [],
+      nps: {
+        pran: null, nps_sp: null, value: "100",
+        schemes: [{ scheme: "Test NPS Scheme", fund_manager: "Test manager", tier: "Tier I", asset_class: "E", units: "1", nav: "100", value: "100" }],
+      },
+    };
+    const sold = (h: { isin: string }) => !host.soldIsins.includes(h.isin);
+    const accounts = data.accounts.map((a) => ({ ...a, equities: a.equities.filter(sold), mutual_funds: a.mutual_funds.filter(sold) }));
+    return { ...data, accounts };
+  }
+  if (host.ambiguousSummary && data.cas_type === "SUMMARY") {
+    const [first, second, third, ...rest] = data.folios;
+    return { ...data, folios: [{ ...first, schemes: [...first.schemes, ...third.schemes] }, second, ...rest] };
+  }
   const [folio] = data.folios;
   const scheme = folio.schemes.find((s) => s.isin === host.sharedIsin);
   return scheme ? { ...data, folios: [...data.folios, { ...folio, folio: "91234568 / 34", schemes: [scheme] }] } : data;
@@ -84,14 +125,77 @@ const stored = (row: ActivityImport, i: number) =>
     comment: undefined,
   }) as unknown as ActivityDetails;
 
+const account = (id: string, name: string, trackingMode: string) => ({ id, name, currency: "INR", isActive: true, isArchived: false, trackingMode });
+
+// A saved snapshot the way `snapshots.getByDate` returns it.
+const snapshotHoldings = (accountId: string, date: string) => {
+  const { holdings, cash } = host.snapshots[accountId][date];
+  return [
+    ...holdings.map((h) => {
+      const symbol = h.symbol.toUpperCase();
+      const quantity = Number(h.quantity);
+      return {
+        id: `${accountId}-${symbol}`,
+        holdingType: "security",
+        accountId,
+        instrument: { id: h.assetId ?? `asset-${symbol}`, symbol, name: h.name ?? `Fund ${symbol}`, currency: "INR", exchangeMic: h.exchangeMic ?? "XBOM", pricingMode: host.pricingModes[symbol] ?? "MARKET" },
+        quantity,
+        localCurrency: h.currency,
+        costBasis: { local: h.averageCost ? quantity * Number(h.averageCost) : 0, base: 0 },
+      };
+    }),
+    ...Object.entries(cash).map(([currency, amount]) => ({ id: `CASH-${currency}`, holdingType: "cash", accountId, quantity: Number(amount), localCurrency: currency })),
+  ];
+};
+const latest = (accountId: string) => Object.keys(host.snapshots[accountId] ?? {}).sort().pop();
+
 const api = {
   accounts: {
-    getAll: async () => [{ id: "account-1", name: "Mutual funds", currency: "INR", isActive: true, isArchived: false }],
+    getAll: async (includeArchived = false) => [
+      account("account-1", "Mutual funds", "TRANSACTIONS"),
+      account("holdings-1", "Demat", "HOLDINGS"),
+      account("holdings-2", "Fund folios", "HOLDINGS"),
+      { ...account("archived-1", "Archived funds", host.archiveOtherAccount ? "TRANSACTIONS" : "HOLDINGS"), isActive: false, isArchived: host.archiveOtherAccount },
+    ].filter((a) => includeArchived || !a.isArchived),
+  },
+  portfolio: {
+    getHoldings: async (accountId: string) => {
+      if (accountId === "archived-1" && host.archiveOtherAccount) return [];
+      const date = latest(accountId);
+      if (date) return snapshotHoldings(accountId, date);
+      return (host.held[accountId] ?? []).map((symbol) => ({
+        holdingType: "security",
+        instrument: { id: `asset-${symbol}`, symbol, exchangeMic: "XBOM", quoteMode: host.pricingModes[symbol] ?? "MARKET" },
+        quantity: 10,
+      }));
+    },
+  },
+  snapshots: {
+    getAll: async (accountId: string) =>
+      [
+        ...Object.entries(host.snapshots[accountId] ?? {}).map(([date, snapshot]) => ({ id: `${accountId}-${date}`, snapshotDate: date, source: snapshot.source ?? "MANUAL_ENTRY" })),
+        ...["2025-03-15", "2099-12-31"].map((date) => ({
+          id: `${accountId}-${date}`, snapshotDate: date,
+          source: accountId === "archived-1" && host.archiveOtherAccount ? "MANUAL_ENTRY" : "CALCULATED",
+        })),
+      ],
+    getByDate: async (accountId: string, date: string) => {
+      const holdings = !(accountId === "archived-1" && host.archiveOtherAccount);
+      const snapshot = host.snapshots[accountId]?.[date];
+      const source = snapshot?.source ?? (snapshot || !holdings ? "MANUAL_ENTRY" : "CALCULATED");
+      if (!snapshot || holdings === (source === "CALCULATED")) return [];
+      return snapshotHoldings(accountId, date);
+    },
+    save: async (accountId: string, holdings: SnapshotHoldingInput[], cash: Record<string, string>, date: string) => {
+      await wait("snapshot");
+      host.saves.push({ accountId, date });
+      (host.snapshots[accountId] ??= {})[date] = { holdings, cash };
+    },
   },
   activities: {
-    getAll: async (accountId: string) => {
+    getAll: async (accountId?: string) => {
       if (host.failHistory) throw new Error("History unavailable");
-      return host.activities.filter((a) => a.accountId === accountId);
+      return host.activities.filter((a) => accountId === undefined || a.accountId === accountId);
     },
     checkImport: async (rows: ActivityImport[]) => {
       await wait("check");
@@ -129,6 +233,7 @@ const api = {
     },
     set: async (key: string, value: string) => {
       await wait("set");
+      await wait(`set:${value}`);
       host.storage.set(key, value);
     },
     delete: async (key: string) => {
@@ -182,7 +287,9 @@ window.addEventListener("message", async ({ data }) => {
   parser.dispose();
   const root = createRoot(document.body.appendChild(document.createElement("div")));
   const ctx = { assets, api } as unknown as AddonContext;
-  flushSync(() => root.render(createElement(ImportPage, { ctx })));
+  let opens = 0;
+  host.reopen = () => flushSync(() => root.render(createElement(ImportPage, { ctx, key: opens++ })));
+  host.reopen();
   parent.postMessage({ result }, "*");
 });
 parent.postMessage({ ready: true }, "*");

@@ -1,7 +1,7 @@
 import type { AddonAssets } from "@wealthfolio/addon-sdk";
 import casParse from "./cas_parse.py?raw";
 import casparserIsin from "./casparser_isin.py?raw";
-import type { CasData } from "./types";
+import type { Statement } from "./types";
 import workerSource from "./worker.js?raw";
 
 const RUNTIME = "assets/runtime/";
@@ -86,10 +86,10 @@ export class CasParser {
   }
 
   /**
-   * Parses a detailed CAMS/KFintech statement. Throws a `CasError` for anything else.
-   * The PDF's buffer is transferred to the Worker, so it is unusable afterwards.
+   * Parses a CAMS/KFintech (detailed or summary) or NSDL/CDSL statement. Throws a `CasError`
+   * for anything else. The PDF's buffer is transferred to the Worker, so it is unusable afterwards.
    */
-  async parse(pdf: ArrayBuffer, password: string): Promise<CasData> {
+  async parse(pdf: ArrayBuffer, password: string): Promise<Statement> {
     await this.ready;
     if (this.error) throw this.error;
     const id = this.nextId++;
@@ -101,16 +101,12 @@ export class CasParser {
       if (reply.errorType === "IncorrectPasswordError") {
         throw new CasError("password", "Wrong password for this PDF.");
       }
-      throw new CasError("parse", "Couldn't parse this PDF. Check that it is a detailed CAMS or KFintech statement.");
+      throw new CasError("parse", "Couldn't parse this PDF. Check that it is a CAMS, KFintech, NSDL or CDSL statement.");
     }
     // NSDL/CDSL results have no `cas_type` and a different shape.
-    const data = JSON.parse(reply.json) as CasData;
-    if ((data.file_type !== "CAMS" && data.file_type !== "KFINTECH") || data.cas_type !== "DETAILED") {
-      const kind = data.cas_type ? `${data.cas_type.toLowerCase()} ${data.file_type}` : `${data.file_type} depository`;
-      throw new CasError(
-        "unsupported",
-        `This is a ${kind} statement. Only detailed CAMS and KFintech statements can be read so far.`,
-      );
+    const data = JSON.parse(reply.json) as Statement;
+    if ("cas_type" in data && data.cas_type !== "DETAILED" && data.cas_type !== "SUMMARY") {
+      throw new CasError("unsupported", `Couldn't tell whether this ${data.file_type} statement is detailed or a summary.`);
     }
     return data;
   }

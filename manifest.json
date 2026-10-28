@@ -2,7 +2,7 @@
   "id": "cas-importer",
   "name": "CAS Importer",
   "version": "1.0.1",
-  "description": "Import Indian mutual fund CAS statements (CAMS/KFintech) into Wealthfolio",
+  "description": "Import Indian CAS statements (CAMS/KFintech, NSDL/CDSL) into Wealthfolio",
   "author": "Joel Tony",
   "main": "dist/addon.js",
   "sdkVersion": "3.11.0",
@@ -36,17 +36,27 @@
     {
       "category": "accounts",
       "functions": ["getAll"],
-      "purpose": "Choose the account each PAN's or folio's transactions go to"
+      "purpose": "Choose the account each PAN's or folio's transactions, or each folio's or demat account's holdings, go to"
+    },
+    {
+      "category": "portfolio",
+      "functions": ["getHoldings"],
+      "purpose": "Warn when another account already holds a fund or share, so it isn't counted twice"
+    },
+    {
+      "category": "snapshots",
+      "functions": ["getAll", "getByDate", "save"],
+      "purpose": "Read the account's holdings on the statement's date, then save the statement's holdings as a snapshot"
     },
     {
       "category": "activities",
       "functions": ["getAll", "checkImport", "import"],
-      "purpose": "Check the statement's transactions against the account's activities, then import them"
+      "purpose": "Check transactions before importing activities, and stock splits before carrying holdings into a snapshot"
     },
     {
       "category": "market-data",
       "functions": ["searchTicker"],
-      "purpose": "Find each fund by the ISIN or name printed on the statement, or by what you type"
+      "purpose": "Find each fund or share by the ISIN or name printed on the statement, or by what you type"
     },
     {
       "category": "secrets",

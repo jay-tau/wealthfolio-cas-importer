@@ -31,6 +31,23 @@ export const sub = (a: Dec, b: Dec) => add(a, neg(b));
 export const abs = (a: Dec): Dec => (a.n < 0n ? neg(a) : a);
 export const mul = (a: Dec, b: Dec): Dec => ({ n: a.n * b.n, scale: a.scale + b.scale });
 
+/** `a / b` rounded half away from zero to `places` decimals. */
+export function div(a: Dec, b: Dec, places: number): Dec {
+  if (b.n === 0n) throw new Error("Division by zero");
+  // a/b = (a.n / b.n) * 10^(b.scale - a.scale); scale the numerator so the quotient has `places` decimals.
+  const shift = places + b.scale - a.scale;
+  let num = shift >= 0 ? a.n * 10n ** BigInt(shift) : a.n;
+  let den = shift >= 0 ? b.n : b.n * 10n ** BigInt(-shift);
+  if (den < 0n) {
+    num = -num;
+    den = -den;
+  }
+  const q = num / den;
+  const twice = 2n * (num % den);
+  const n = twice >= den ? q + 1n : twice <= -den ? q - 1n : q;
+  return { n, scale: places };
+}
+
 export function cmp(a: Dec, b: Dec): number {
   const diff = sub(a, b).n;
   return diff < 0n ? -1 : diff > 0n ? 1 : 0;

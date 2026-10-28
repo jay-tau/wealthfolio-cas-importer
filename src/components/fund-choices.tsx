@@ -22,6 +22,7 @@ export type FundChoice = { fund: ChosenFund } | { leftOut: true };
 
 /** The import fields the way Wealthfolio's own import builds them from a search result. */
 function toFund(result: SymbolSearchResult): ChosenFund {
+  const mode = result as SymbolSearchResult & { pricingMode?: string | null; quoteMode?: string | null };
   return {
     symbol: (result.canonicalSymbol || result.symbol).trim().toUpperCase(),
     exchangeMic: result.canonicalExchangeMic || result.exchangeMic,
@@ -31,8 +32,14 @@ function toFund(result: SymbolSearchResult): ChosenFund {
     providerId: result.providerId,
     providerSymbol: result.providerSymbol,
     name: result.longName || result.shortName || result.symbol,
+    manual: (mode.pricingMode ?? mode.quoteMode) === "MANUAL",
   };
 }
+
+const pickHint = (noun: FundItem["noun"]) =>
+  noun === "fund"
+    ? "Pick one with the statement's fund name, plan and option, or leave this fund out."
+    : "Pick one with the statement's company name, or leave this share out.";
 
 const describe = (fund: ChosenFund) =>
   [fund.symbol, fund.exchangeMic, fund.instrumentType, fund.quoteCcy].filter(Boolean).join(" · ");
@@ -47,21 +54,42 @@ export function fundsOf(data: CasData) {
   return funds;
 }
 
+/** A fund or share to confirm, however many lines of the statement hold it. */
+export interface FundItem {
+  key: string;
+  isin: string | null;
+  /** As printed. */
+  name: string;
+  noun: "fund" | "share";
+  /** Where else the statement lists it, e.g. "in 2 folios". */
+  where?: string;
+}
+
+export const fundItems = (data: CasData): FundItem[] =>
+  [...fundsOf(data)].map(([key, schemes]) => ({
+    key,
+    isin: schemes[0].isin,
+    name: schemes[0].scheme,
+    noun: "fund",
+    where: schemes.length > 1 ? `in ${schemes.length} folios` : undefined,
+  }));
+
 function FundSearch({
   ctx,
-  scheme,
+  item,
   onChoose,
   onLeaveOut,
 }: {
   ctx: AddonContext;
-  scheme: CasScheme;
+  item: FundItem;
   onChoose: (fund: ChosenFund) => void;
   onLeaveOut: () => void;
 }) {
   // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing or isn't
   // printed, or what the user types is sent to market-data providers.
-  const name = fundName(scheme.scheme);
-  const [query, setQuery] = useState(scheme.isin ?? name);
+  const name = fundName(item.name);
+  const { isin, noun } = item;
+  const [query, setQuery] = useState(isin ?? name);
   const [results, setResults] = useState<SymbolSearchResult[] | null>(null);
   const [picked, setPicked] = useState<string>("");
   const [searching, setSearching] = useState(false);
@@ -80,16 +108,16 @@ function FundSearch({
     setError("");
     // The shorter name can match several plans and options of the fund, so the user picks one
     // even when there's a single result.
-    let named = !scheme.isin && text.trim() === name;
+    let named = !isin && text.trim() === name;
     setByName(named ? name : "");
     try {
       let found = await ctx.api.market.searchTicker(text.trim());
       if (id !== latest.current) return;
       // Yahoo doesn't list every fund under its ISIN.
-      if (found.length === 0 && text.trim().toUpperCase() === scheme.isin && name !== "") {
+      if (found.length === 0 && text.trim().toUpperCase() === isin && name !== "") {
         named = true;
         setByName(name);
-        setQuery((typed) => (typed.trim().toUpperCase() === scheme.isin ? name : typed));
+        setQuery((typed) => (typed.trim().toUpperCase() === isin ? name : typed));
         found = await ctx.api.market.searchTicker(name);
         if (id !== latest.current) return;
       }
@@ -112,10 +140,10 @@ function FundSearch({
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          aria-label="Search for the fund"
+          aria-label={`Search for the ${noun}`}
           className="w-72"
           value={query}
-          placeholder={scheme.isin ? "ISIN, name or ticker" : "Name or ticker"}
+          placeholder={isin ? "ISIN, name or ticker" : "Name or ticker"}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === "Enter") void search(query);
@@ -129,17 +157,17 @@ function FundSearch({
       {error && <p className="text-destructive text-sm">{error}</p>}
       {results && byName && (
         <p className="text-muted-foreground text-sm">
-          {scheme.isin
+          {isin
             ? results.length
-              ? `Nothing found for the ISIN; showing results for "${byName}". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`
+              ? `Nothing found for the ISIN; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(noun)}`
               : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker.`
             : results.length
-              ? `No ISIN on the statement; showing results for "${byName}". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`
+              ? `No ISIN on the statement; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(noun)}`
               : `No ISIN on the statement, and nothing found for "${byName}". Try another name or a ticker.`}
         </p>
       )}
       {results?.length === 0 && !byName && (
-        <p className="text-muted-foreground text-sm">Nothing found. Try the fund's name.</p>
+        <p className="text-muted-foreground text-sm">Nothing found. Try the {noun}'s name.</p>
       )}
       {results && results.length > 0 && (
         <RadioGroup value={picked} onValueChange={(value) => setPicked(String(value))} className="grid gap-2">
@@ -155,10 +183,10 @@ function FundSearch({
       )}
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" disabled={!result} onClick={() => result && onChoose(toFund(result))}>
-          Use this fund
+          Use this {noun}
         </Button>
         <Button type="button" variant="ghost" onClick={onLeaveOut}>
-          Leave this fund out
+          Leave this {noun} out
         </Button>
       </div>
     </div>
@@ -167,34 +195,35 @@ function FundSearch({
 
 export function FundChoicesCard({
   ctx,
-  data,
+  items,
   choices,
   onChange,
+  title = "Funds",
+  intro = "Confirm the Wealthfolio fund for each scheme. Funds are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed; the add-on remembers the fund you confirm for each scheme.",
 }: {
   ctx: AddonContext;
-  data: CasData;
+  items: FundItem[];
   choices: Record<string, FundChoice | undefined>;
   onChange: (key: string, choice: FundChoice | undefined) => void;
+  title?: string;
+  intro?: string;
 }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Funds</CardTitle>
-        <p className="text-muted-foreground text-sm">
-          Confirm the Wealthfolio fund for each scheme. Funds are searched by their printed ISIN, and by name when
-          that finds nothing or no ISIN is printed; the add-on remembers the fund you confirm for each scheme.
-        </p>
+        <CardTitle>{title}</CardTitle>
+        <p className="text-muted-foreground text-sm">{intro}</p>
       </CardHeader>
       <CardContent className="space-y-6">
-        {[...fundsOf(data)].map(([key, schemes]) => {
+        {items.map((item) => {
+          const { key } = item;
           const choice = choices[key];
-          const scheme = schemes[0];
           return (
             <section key={key} className="grid gap-2">
-              <h3 className="font-medium">{scheme.scheme}</h3>
+              <h3 className="font-medium">{item.name}</h3>
               <p className="text-muted-foreground text-sm">
-                {scheme.isin ? `ISIN ${scheme.isin}` : "No ISIN printed"}
-                {schemes.length > 1 && ` · in ${schemes.length} folios`}
+                {item.isin ? `ISIN ${item.isin}` : "No ISIN printed"}
+                {item.where && ` · ${item.where}`}
               </p>
               {choice && "fund" in choice ? (
                 <div className="flex flex-wrap items-center gap-2">
@@ -210,13 +239,13 @@ export function FundChoicesCard({
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="secondary">Left out</Badge>
                   <Button type="button" variant="link" size="sm" onClick={() => onChange(key, undefined)}>
-                    Choose a fund
+                    Choose a {item.noun}
                   </Button>
                 </div>
               ) : (
                 <FundSearch
                   ctx={ctx}
-                  scheme={scheme}
+                  item={item}
                   onChoose={(fund) => onChange(key, { fund })}
                   onLeaveOut={() => onChange(key, { leftOut: true })}
                 />

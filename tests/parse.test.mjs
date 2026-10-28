@@ -1,5 +1,5 @@
 // casparser under Pyodide in Node, with the packaged wheels (run `pnpm runtime` first), the
-// add-on's stub and entry point, on the made-up statements in tests/fixtures/.
+// add-on's stub and entry point, on the made-up statements in tests/fixtures/ (make_*.py).
 // tests/browser/sandbox.mjs checks the same in browsers, inside Wealthfolio's sandbox.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -31,6 +31,15 @@ test("reports a missing row as a balance mismatch", async () => {
   assert.deepEqual(data, expected);
   assert.equal(data.parse_warnings.length, 1);
 });
+
+for (const name of ["made-up-summary-cams", "made-up-summary-kfintech", "made-up-nsdl", "made-up-cdsl"]) {
+  test(`parses every holding of ${name}`, async () => {
+    const { pdf, expected } = await fixture(name);
+    const data = JSON.parse(parse(pdf, PASSWORD));
+    assert.deepEqual(data, expected);
+    assert.deepEqual(data.parse_warnings, []);
+  });
+}
 
 test("rejects a wrong password", async () => {
   const { pdf } = await fixture("made-up-cas");

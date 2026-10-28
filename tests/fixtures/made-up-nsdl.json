@@ -1,0 +1,278 @@
+{
+  "accounts": [
+    {
+      "name": "FICTIVA SECURITIES PRIVATE LIMITED",
+      "type": "NSDL Demat Account",
+      "dp_id": "IN999901",
+      "client_id": "90000001",
+      "folios": 6,
+      "balance": "991658.44",
+      "owners": [
+        {
+          "name": "ANANYA R TESTWALA",
+          "PAN": "ABCDE1234F"
+        }
+      ],
+      "equities": [
+        {
+          "name": "FICTIVA POWER AND LIGHT LIMITED",
+          "isin": "INEZ90A01017",
+          "num_shares": "150",
+          "price": "1234.50",
+          "value": "185175.00",
+          "symbol": null,
+          "exchange": null
+        },
+        {
+          "name": "SAMPLEWORKS TECHNOLOGIES LIMITED",
+          "isin": "INEZ90B01015",
+          "num_shares": "420",
+          "price": "312.85",
+          "value": "131397.00",
+          "symbol": null,
+          "exchange": null
+        },
+        {
+          "name": "DEMOCORP BANK LIMITED",
+          "isin": "INEZ90C01021",
+          "num_shares": "75",
+          "price": "1689.40",
+          "value": "126705.00",
+          "symbol": null,
+          "exchange": null
+        }
+      ],
+      "mutual_funds": [
+        {
+          "name": "FICTIVA NIFTY 50 ETF",
+          "isin": "INFZ90K01NE8",
+          "amfi": null,
+          "type": null,
+          "balance": "1200.000",
+          "nav": "248.6512",
+          "value": "298381.44",
+          "avg_cost": null,
+          "total_cost": null,
+          "ucc": null,
+          "folio": null,
+          "pnl": null,
+          "return": null
+        }
+      ],
+      "bonds": [
+        {
+          "name": "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31",
+          "isin": "INEZ91A07012",
+          "num_bonds": "50",
+          "value": "50000.00",
+          "face_value": "1000.00",
+          "coupon_rate": "8.10",
+          "coupon_frequency": "Once a year",
+          "maturity_date": "15-Apr-2031",
+          "market_price": null
+        },
+        {
+          "name": "SAMPLE HOUSING FINANCE LIMITED 7.95 NCD 20JN28",
+          "isin": "INEZ91B07028",
+          "num_bonds": "2",
+          "value": "200000.00",
+          "face_value": "100000.00",
+          "coupon_rate": "7.95",
+          "coupon_frequency": "On Maturity",
+          "maturity_date": "20-Jun-2028",
+          "market_price": null
+        }
+      ]
+    },
+    {
+      "name": "TESTBRIDGE BROKING LIMITED",
+      "type": "CDSL Demat Account",
+      "dp_id": "99990001",
+      "client_id": "90000002",
+      "folios": 7,
+      "balance": "908967.76",
+      "owners": [
+        {
+          "name": "ANANYA R TESTWALA",
+          "PAN": "ABCDE1234F"
+        }
+      ],
+      "equities": [
+        {
+          "name": "MOCKSTEEL INDUSTRIES LIMITED",
+          "isin": "INEZ92A01013",
+          "num_shares": "200.000",
+          "price": "845.20",
+          "value": "169040.00",
+          "symbol": null,
+          "exchange": null
+        },
+        {
+          "name": "PLACEHOLDER PHARMA LIMITED",
+          "isin": "INEZ92B01011",
+          "num_shares": "60.000",
+          "price": "2104.75",
+          "value": "126285.00",
+          "symbol": null,
+          "exchange": null
+        },
+        {
+          "name": "SAMPLEWORKS TECHNOLOGIES LIMITED",
+          "isin": "INEZ90B01015",
+          "num_shares": "100.000",
+          "price": "312.85",
+          "value": "31285.00",
+          "symbol": null,
+          "exchange": null
+        }
+      ],
+      "mutual_funds": [
+        {
+          "name": "TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH",
+          "isin": "INFZ91T01NF4",
+          "amfi": null,
+          "type": null,
+          "balance": "1523.456",
+          "nav": "18.7421",
+          "value": "28552.76",
+          "avg_cost": null,
+          "total_cost": null,
+          "ucc": null,
+          "folio": null,
+          "pnl": null,
+          "return": null
+        },
+        {
+          "name": "TESTBRIDGE GOLD ETF",
+          "isin": "INFZ91T01GE1",
+          "amfi": null,
+          "type": null,
+          "balance": "300.000",
+          "nav": "74.1500",
+          "value": "22245.00",
+          "avg_cost": null,
+          "total_cost": null,
+          "ucc": null,
+          "folio": null,
+          "pnl": null,
+          "return": null
+        }
+      ],
+      "bonds": [
+        {
+          "name": "MOCKSTEEL INDUSTRIES LIMITED 9.25 NCD 01MR27",
+          "isin": "INEZ92A07036",
+          "num_bonds": "25.000",
+          "value": "25310.00",
+          "face_value": null,
+          "coupon_rate": null,
+          "coupon_frequency": null,
+          "maturity_date": null,
+          "market_price": "1012.40"
+        },
+        {
+          "name": "DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33",
+          "isin": "INEZ93A08016",
+          "num_bonds": "5.000",
+          "value": "506250.00",
+          "face_value": null,
+          "coupon_rate": null,
+          "coupon_frequency": null,
+          "maturity_date": null,
+          "market_price": "101250.00"
+        }
+      ]
+    },
+    {
+      "name": "Mutual Fund Folios",
+      "type": "Mutual Fund Folios",
+      "dp_id": "",
+      "client_id": "",
+      "folios": 2,
+      "balance": "404420.88",
+      "owners": [
+        {
+          "name": "ANANYA R TESTWALA",
+          "PAN": "ABCDE1234F"
+        }
+      ],
+      "equities": [],
+      "mutual_funds": [
+        {
+          "name": "Fictiva Flexi Cap Fund - Direct Plan - Growth",
+          "isin": "INFZ90K01FC8",
+          "amfi": null,
+          "type": null,
+          "balance": "2892.104",
+          "nav": "74.3120",
+          "value": "214918.03",
+          "avg_cost": "53.4400",
+          "total_cost": "154554.00",
+          "ucc": "FFCDG",
+          "folio": "91234567/12",
+          "pnl": "60364.03",
+          "return": "17.84"
+        },
+        {
+          "name": "Fictiva Liquid Fund - Direct Plan - Growth",
+          "isin": "INFZ90K01LQ6",
+          "amfi": null,
+          "type": null,
+          "balance": "8.053",
+          "nav": "2911.4521",
+          "value": "23445.92",
+          "avg_cost": "2649.5977",
+          "total_cost": "21337.21",
+          "ucc": "FLQDG",
+          "folio": "91234567/12",
+          "pnl": "2108.71",
+          "return": "7.12"
+        },
+        {
+          "name": "Fictiva Balanced Advantage Fund - Direct Plan - IDCW Reinvestment",
+          "isin": "INFZ90K01BA1",
+          "amfi": null,
+          "type": null,
+          "balance": "3540.293",
+          "nav": "18.0410",
+          "value": "63870.43",
+          "avg_cost": "15.3310",
+          "total_cost": "54276.36",
+          "ucc": "NOT AVAILABLE",
+          "folio": "91234567/12",
+          "pnl": "9594.07",
+          "return": "11.05"
+        },
+        {
+          "name": "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout",
+          "isin": "INFZ91T01CB6",
+          "amfi": null,
+          "type": null,
+          "balance": "9511.738",
+          "nav": "10.7432",
+          "value": "102186.50",
+          "avg_cost": null,
+          "total_cost": null,
+          "ucc": "TCBRP",
+          "folio": "1040012345",
+          "pnl": null,
+          "return": null
+        }
+      ],
+      "bonds": []
+    }
+  ],
+  "statement_period": {
+    "from": "01-Mar-2025",
+    "to": "31-Mar-2025"
+  },
+  "investor_info": {
+    "name": "ANANYA R TESTWALA",
+    "email": "",
+    "address": "FLAT 7B, PLACEHOLDER RESIDENCY\n12 SAMPLE STREET, DEMO NAGAR\nFAKEVILLE\nMAHARASHTRA\nPINCODE: 999999",
+    "mobile": ""
+  },
+  "file_type": "NSDL",
+  "nps": null,
+  "parse_warnings": []
+}

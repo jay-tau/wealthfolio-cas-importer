@@ -1,5 +1,6 @@
-// casparser 1.4.1's JSON for a CAMS/KFintech statement (`CASData` in casparser/types.py,
-// serialised by `read_cas_pdf(..., output="json")`). Decimals stay strings.
+// casparser 1.4.1's JSON for a CAMS/KFintech statement (`CASData` in casparser/types.py) and
+// for an NSDL/CDSL one (`NSDLCASData`), serialised by `read_cas_pdf(..., output="json")`.
+// Decimals stay strings.
 
 export type Decimal = string;
 
@@ -70,3 +71,91 @@ export interface CasData {
   /** casparser's checks, e.g. a unit balance that doesn't match the printed one. */
   parse_warnings: string[];
 }
+
+
+export interface DematOwner {
+  name: string;
+  PAN: string;
+}
+
+export interface DematEquity {
+  name: string | null;
+  isin: string;
+  num_shares: Decimal;
+  price: Decimal;
+  value: Decimal;
+  /** Filled in from casparser-isin's database, which the add-on doesn't ship. */
+  symbol: string | null;
+  exchange: string | null;
+}
+
+export interface DematFund {
+  name: string | null;
+  isin: string;
+  amfi: string | null;
+  type: string | null;
+  balance: Decimal;
+  nav: Decimal;
+  value: Decimal;
+  avg_cost: Decimal | null;
+  total_cost: Decimal | null;
+  ucc: string | null;
+  /** Set for units held in a folio, outside demat. */
+  folio: string | null;
+  pnl: Decimal | null;
+  return: Decimal | null;
+}
+
+export interface DematBond {
+  name: string | null;
+  isin: string;
+  num_bonds: Decimal;
+  value: Decimal;
+  face_value: Decimal | null;
+  coupon_rate: Decimal | null;
+  coupon_frequency: string | null;
+  maturity_date: string | null;
+  market_price: Decimal | null;
+}
+
+export interface DematAccount {
+  name: string;
+  /** "NSDL Demat Account", "CDSL Demat Account", or "Mutual Fund Folios" for units held outside demat. */
+  type: string;
+  dp_id: string | null;
+  client_id: string | null;
+  folios: number;
+  balance: Decimal;
+  owners: DematOwner[];
+  equities: DematEquity[];
+  mutual_funds: DematFund[];
+  bonds: DematBond[];
+}
+
+export interface NpsAccount {
+  pran: string | null;
+  nps_sp: string | null;
+  value: Decimal;
+  schemes: {
+    scheme: string;
+    fund_manager: string | null;
+    tier: string | null;
+    asset_class: string | null;
+    units: Decimal;
+    nav: Decimal;
+    value: Decimal;
+  }[];
+}
+
+export interface DepositoryData {
+  accounts: DematAccount[];
+  statement_period: { from: string; to: string };
+  investor_info: { name: string; email: string; address: string; mobile: string };
+  file_type: "NSDL" | "CDSL";
+  nps: NpsAccount | null;
+  parse_warnings: string[];
+}
+
+export type Statement = CasData | DepositoryData;
+
+export const isDepository = (statement: Statement): statement is DepositoryData => "accounts" in statement;

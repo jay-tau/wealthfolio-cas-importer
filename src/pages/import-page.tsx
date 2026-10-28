@@ -2,7 +2,9 @@ import type { Account, ActivityImport, AddonContext, ImportActivitiesResult } fr
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { type Holdings, readHoldings } from "../cas/holdings";
 import { closedScheme, type Mapping, mapStatement, withoutClosed } from "../cas/mapping";
+import { CasError } from "../cas/parser";
 import {
   closingUnits,
   type FundUnits,
@@ -14,12 +16,13 @@ import {
   rowsOf,
   sameUnits,
 } from "../cas/plan";
-import type { CasData, CasFolio, CasScheme } from "../cas/types";
+import { type CasData, type CasFolio, type CasScheme, isDepository, type Statement } from "../cas/types";
 import { type AccountChoices, AccountChoicesCard, accountFor } from "../components/account-choices";
-import { type FundChoice, FundChoicesCard, fundsOf } from "../components/fund-choices";
+import { type FundChoice, FundChoicesCard, fundItems, fundsOf } from "../components/fund-choices";
 import { ImportResult, Preview } from "../components/preview";
 import { StatementForm } from "../components/statement-form";
-import { folioKey, fundKey, panKey, readFund, saveFund } from "../lib/choices";
+import { folioKey, fundKey, investorKey, LEFT_OUT, panKey, readFund, saveFund, sourceKey } from "../lib/choices";
+import { HoldingsImport, holdingItems } from "./holdings-import";
 
 interface Previewed {
   mapping: Mapping;
@@ -34,14 +37,20 @@ interface Imported {
 
 export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const { api } = ctx;
-  const [accounts, setAccounts] = useState<Account[] | null>(null);
-  const [statement, setStatement] = useState<CasData | null>(null);
+  const [allAccounts, setAllAccounts] = useState<Account[] | null>(null);
+  const accounts = allAccounts?.filter((a) => a.isActive && !a.isArchived) ?? null;
+  const [statement, setStatement] = useState<Statement | null>(null);
+  // Summary and depository statements: their holdings, saved as snapshots.
+  const [holdings, setHoldings] = useState<Holdings | null>(null);
+  // Bumped on every read, so a holdings import starts afresh.
+  const [reads, setReads] = useState(0);
+  const detailed = statement && !holdings ? (statement as CasData) : null;
   // Closed schemes need no account or fund, so everything after the summary leaves them out.
-  const data = useMemo(() => statement && withoutClosed(statement), [statement]);
+  const data = useMemo(() => detailed && withoutClosed(detailed), [detailed]);
   const [remembered, setRemembered] = useState<AccountChoices | null>(null);
   const [fundChoices, setFundChoices] = useState<Record<string, FundChoice | undefined>>({});
   // Storage requests can finish out of order; rereads must wait for these writes too.
-  const fundWrites = useRef(Promise.resolve());
+  const choiceWrites = useRef(Promise.resolve());
   const [preview, setPreview] = useState<Previewed | null>(null);
   const [importAnyway, setImportAnyway] = useState<Set<PlannedTransaction>>(new Set());
   const [imported, setImported] = useState<Imported | null>(null);
@@ -49,15 +58,16 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const [error, setError] = useState("");
 
   useEffect(() => {
-    api.accounts.getAll().then(
-      (all) => setAccounts(all.filter((a) => a.isActive && !a.isArchived)),
+    // The host supports includeArchived; the SDK omits this argument.
+    (api.accounts.getAll as (includeArchived: boolean) => Promise<Account[]>)(true).then(
+      setAllAccounts,
       (e) => setError(`Couldn't load the accounts: ${String(e)}`),
     );
   }, [api]);
 
   // Remembered accounts that no longer exist are ignored.
   const accountChoices: AccountChoices = Object.fromEntries(
-    Object.entries(remembered ?? {}).filter(([, id]) => accounts?.some((a) => a.id === id)),
+    Object.entries(remembered ?? {}).filter(([, id]) => id === LEFT_OUT || accounts?.some((a) => a.id === id)),
   );
 
   const target = (folio: CasFolio, scheme: CasScheme) => {
@@ -72,15 +82,30 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
 
   const clear = () => {
     setStatement(null);
+    setHoldings(null);
     setPreview(null);
     setImported(null);
     setError("");
   };
 
-  const read = async (full: CasData) => {
-    await fundWrites.current;
-    const next = withoutClosed(full);
-    const keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : [])]))];
+  const read = async (full: Statement) => {
+    await choiceWrites.current;
+    let keys: string[];
+    let fundKeys: string[];
+    let held: Holdings | null = null;
+    if (!isDepository(full) && full.cas_type === "DETAILED") {
+      const next = withoutClosed(full);
+      keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : [])]))];
+      fundKeys = [...fundsOf(next).keys()];
+    } else {
+      try {
+        held = readHoldings(full);
+      } catch (e) {
+        throw new CasError("parse", e instanceof Error ? e.message : "Couldn't prepare this statement's holdings.");
+      }
+      keys = [investorKey(held.investor), ...held.sources.map(sourceKey)];
+      fundKeys = holdingItems(held).map((item) => item.key);
+    }
     const choices: AccountChoices = {};
     const funds: Record<string, FundChoice> = {};
     await Promise.all([
@@ -88,14 +113,16 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
         const id = await api.storage.get(key).catch(() => null);
         if (id) choices[key] = id;
       }),
-      ...[...fundsOf(next).keys()].map(async (key) => {
+      ...fundKeys.map(async (key) => {
         const fund = await readFund(api.storage, key);
         if (fund) funds[key] = { fund };
       }),
     ]);
     setFundChoices(funds);
     setRemembered(choices);
+    setHoldings(held);
     setStatement(full);
+    setReads((n) => n + 1);
   };
 
   const changed = () => {
@@ -106,9 +133,9 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const chooseAccount = (key: string, id: string) => {
     setRemembered((choices) => ({ ...choices, [key]: id }));
     changed();
-    (id ? api.storage.set(key, id) : api.storage.delete(key)).catch(() =>
-      api.toast.error("Couldn't remember the account."),
-    );
+    choiceWrites.current = choiceWrites.current
+      .then(() => (id ? api.storage.set(key, id) : api.storage.delete(key)))
+      .catch(() => api.toast.error("Couldn't remember the account."));
   };
 
   // Undefined (Change, or Choose a fund) keeps what's saved, so a reread restores it. Leaving a
@@ -117,7 +144,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     setFundChoices((choices) => ({ ...choices, [key]: choice }));
     changed();
     if (!choice) return;
-    fundWrites.current = fundWrites.current
+    choiceWrites.current = choiceWrites.current
       .then(() => ("fund" in choice ? saveFund(api.storage, key, choice.fund) : api.storage.delete(key)))
       .catch(() =>
         api.toast.error(
@@ -199,16 +226,32 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     <Page>
       <PageHeader
         heading="CAS Importer"
-        text="Import a detailed CAMS or KFintech statement (CAS PDF). The PDF is read on this device."
+        text="Import a CAMS, KFintech, NSDL or CDSL statement (CAS PDF). The PDF is read on this device."
       />
       <PageContent>
         <fieldset disabled={busy !== ""} className="min-w-0 space-y-6">
           <StatementForm ctx={ctx} onClear={clear} onRead={read} disabled={busy !== ""} />
-          {statement && <StatementSummary data={statement} />}
+          {detailed && <StatementSummary data={detailed} />}
+          {statement && holdings && remembered && accounts && (
+            <HoldingsImport
+              key={reads}
+              ctx={ctx}
+              statement={statement}
+              holdings={holdings}
+              accounts={accounts}
+              allAccounts={allAccounts!}
+              accountChoices={accountChoices}
+              onAccount={chooseAccount}
+              fundChoices={fundChoices}
+              onFund={chooseFund}
+              busy={busy}
+              setBusy={setBusy}
+            />
+          )}
           {data && remembered && accounts && (
             <>
               <AccountChoicesCard data={data} accounts={accounts} choices={accountChoices} onChange={chooseAccount} />
-              <FundChoicesCard ctx={ctx} data={data} choices={fundChoices} onChange={chooseFund} />
+              <FundChoicesCard ctx={ctx} items={fundItems(data)} choices={fundChoices} onChange={chooseFund} />
               <div className="flex flex-wrap items-center gap-3">
                 <Button type="button" disabled={undecided || busy !== ""} onClick={() => void runPreview()}>
                   {busy === "preview" && <Spinner />}

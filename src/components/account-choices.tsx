@@ -12,12 +12,13 @@ export const accountFor = (choices: AccountChoices, folio: CasFolio) =>
 
 const SAME_AS_PAN = "same-as-pan";
 
-function AccountSelect({
+export function AccountSelect({
   id,
   accounts,
   value,
   onChange,
   inherit,
+  leaveOut,
 }: {
   id: string;
   accounts: Account[];
@@ -25,10 +26,13 @@ function AccountSelect({
   onChange: (accountId: string) => void;
   /** Offer "the PAN's account", which is the empty choice. */
   inherit?: string;
+  /** Offer leaving it out, with this value. */
+  leaveOut?: string;
 }) {
   const items = [
     ...(inherit ? [{ value: SAME_AS_PAN, label: inherit }] : []),
     ...accounts.map((a) => ({ value: a.id, label: `${a.name} (${a.currency})` })),
+    ...(leaveOut ? [{ value: leaveOut, label: "Leave out" }] : []),
   ];
   return (
     <Select
