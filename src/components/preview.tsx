@@ -1,4 +1,4 @@
-import type { ActivityImport, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
+import type { Account, ActivityDetails, ActivityImport, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
 import {
   Alert,
   AlertDescription,
@@ -21,7 +21,7 @@ import {
 } from "@wealthfolio/ui";
 import { format } from "../cas/decimal";
 import type { Mapping, MappingWarning } from "../cas/mapping";
-import { type FundUnits, type PlannedRow, type PlannedTransaction, sameUnits, type Status } from "../cas/plan";
+import { day, type FundUnits, type PlannedRow, type PlannedTransaction, sameUnits, type Status } from "../cas/plan";
 
 const LABELS: Record<string, string> = {
   BUY: "purchase",
@@ -29,8 +29,18 @@ const LABELS: Record<string, string> = {
   DIVIDEND: "dividend",
   DEPOSIT: "deposit",
   WITHDRAWAL: "withdrawal",
+  TRANSFER_IN: "transfer in",
+  TRANSFER_OUT: "transfer out",
 };
-const label = (row: ActivityImport) => (row.subtype === "DRIP" ? "reinvested dividend" : LABELS[row.activityType] ?? row.activityType);
+const label = (row: { activityType: string; subtype?: string | null }) =>
+  row.subtype === "DRIP" ? "reinvested dividend" : LABELS[row.activityType] ?? row.activityType;
+
+/** A transaction whose cash went to a bank row already in Wealthfolio, and what went wrong. */
+export interface BankLink {
+  transaction: PlannedTransaction;
+  bankRow: ActivityDetails;
+  error?: string;
+}
 
 const STATUS: Record<Status, { badge: string; variant: "success-subtle" | "secondary" | "warning-subtle" | "destructive-subtle" }> = {
   new: { badge: "New", variant: "success-subtle" },
@@ -42,7 +52,9 @@ const STATUS: Record<Status, { badge: string; variant: "success-subtle" | "secon
 function reasons(row: PlannedRow) {
   const name = label(row.activity);
   const duplicate = row.existingId
-    ? `Wealthfolio already has this ${name}.`
+    ? row.existingType
+      ? `Wealthfolio already has this ${name}, as a ${label({ activityType: row.existingType })}.`
+      : `Wealthfolio already has this ${name}.`
     : row.repeatsLine !== undefined
       ? `This ${name} equals another one in this statement.`
       : row.flagged
@@ -78,6 +90,10 @@ export function Preview({
   onImport,
   importing,
   rowCount,
+  matches,
+  reuse,
+  onReuse,
+  accounts,
 }: {
   mapping: Mapping;
   plan: PlannedTransaction[];
@@ -86,19 +102,27 @@ export function Preview({
   onImport: () => void;
   importing: boolean;
   rowCount: number;
+  /** The bank row each new transaction could use instead of a new one. */
+  matches: Map<PlannedTransaction, ActivityDetails>;
+  reuse: Set<PlannedTransaction>;
+  onReuse: (t: PlannedTransaction, yes: boolean) => void;
+  accounts: Account[];
 }) {
   const count = (status: Status) => plan.filter((t) => t.status === status).length;
   const caveats = mapping.warnings.filter((w) => !w.leftOut);
   const caveatsOf = (t: PlannedTransaction) => caveats.filter((w) => w.rows[0] === t.transaction.rows[0]);
+  const accountName = (id: string) => accounts.find((a) => a.id === id)?.name ?? "the bank account";
   return (
     <Card>
       <CardHeader>
         <CardTitle>Preview</CardTitle>
         <p className="text-muted-foreground text-sm">
           {count("new")} new transactions, {count("existing")} already in Wealthfolio, {count("duplicate")} possible
-          duplicates and {count("invalid")} Wealthfolio can't import. Each purchase comes with a deposit and each sale
-          or dividend payout with a withdrawal, as if the money came from or went to a bank account outside Wealthfolio;
-          the add-on sends a transaction with its cash or neither row.
+          duplicates and {count("invalid")} Wealthfolio can't import. Each purchase comes with a transfer from the
+          bank account you chose, and each sale or dividend payout with a transfer to it. Without one, and for switches
+          and mergers, a purchase comes with a deposit and a sale or payout with a withdrawal, as if the money came
+          from or went outside Wealthfolio. When you use a bank row Wealthfolio already has, the add-on imports the
+          trade first, then adds and links its cash.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -126,8 +150,9 @@ export function Preview({
           </TableHeader>
           <TableBody>
             {plan.map((t, i) => {
-              const { activity, cash } = t.transaction;
+              const { activity, cash, bank } = t.transaction;
               const notes = [...t.rows.flatMap(reasons), ...caveatsOf(t).map((w) => w.message)];
+              const match = matches.get(t);
               return (
                 <TableRow key={i}>
                   <TableCell className="whitespace-nowrap">{String(activity.date)}</TableCell>
@@ -137,7 +162,14 @@ export function Preview({
                   <TableCell className="text-end tabular-nums">{activity.unitPrice ?? ""}</TableCell>
                   <TableCell className="text-end tabular-nums">{activity.tax ?? ""}</TableCell>
                   <TableCell className="text-end tabular-nums">{activity.amount}</TableCell>
-                  <TableCell className="whitespace-nowrap">{cash ? `${label(cash)} ${cash.amount}` : ""}</TableCell>
+                  <TableCell className="whitespace-nowrap">
+                    {cash ? `${label(cash)} ${cash.amount}` : ""}
+                    {bank && (
+                      <span className="text-muted-foreground block text-xs">
+                        {bank.activityType === "TRANSFER_OUT" ? "from" : "to"} {accountName(bank.accountId)}
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell>
                     <div className="grid gap-1">
                       <Badge variant={STATUS[t.status].variant}>{STATUS[t.status].badge}</Badge>
@@ -151,6 +183,20 @@ export function Preview({
                           <Checkbox disabled={importing} checked={importAnyway.has(t)} onCheckedChange={(yes) => onImportAnyway(t, yes)} />
                           Import anyway
                         </Label>
+                      )}
+                      {match && (
+                        <>
+                          <span className="text-muted-foreground text-xs">
+                            {accountName(match.accountId)} has a {label(match)} of {match.amount} on {day(match.date)}
+                            {match.comment ? ` (${match.comment})` : ""}.
+                            {match.activityType !== bank?.activityType &&
+                              ` If you use it, the add-on changes it into a ${label(bank!)} and links it with this ${label(cash!)}.`}
+                          </span>
+                          <Label className="flex items-center gap-2 text-xs font-normal">
+                            <Checkbox disabled={importing} checked={reuse.has(t)} onCheckedChange={(yes) => onReuse(t, yes)} />
+                            Use it instead of a new {label(bank!)}
+                          </Label>
+                        </>
                       )}
                     </div>
                   </TableCell>
@@ -172,12 +218,15 @@ export function ImportResult({
   result,
   sent,
   closing,
+  links,
 }: {
   result: ImportActivitiesResult;
   /** The rows sent, to tell Wealthfolio's surprises apart. */
   sent: ActivityImport[];
   closing: FundUnits[];
+  links: BankLink[];
 }) {
+  const failedLinks = links.filter((l) => l.error);
   const { summary } = result;
   const failed = result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0);
   // Rows Wealthfolio skipped that the preview didn't expect to be duplicates.
@@ -217,6 +266,26 @@ export function ImportResult({
                 {failed.map((a) => (
                   <li key={a.lineNumber}>
                     {String(a.date)} {label(a)}: {Object.values(a.errors ?? {}).flat().join(" ")}
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+        {links.length > failedLinks.length && (
+          <p className="text-sm">
+            Linked {links.length - failedLinks.length} of {links.length} bank rows you chose with their transactions.
+          </p>
+        )}
+        {failedLinks.length > 0 && (
+          <Alert variant="destructive">
+            <AlertTitle>Bank rows not linked</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc ps-4">
+                {failedLinks.map((l) => (
+                  <li key={l.bankRow.id}>
+                    {String(l.transaction.transaction.activity.date)} {label(l.transaction.transaction.activity)}{" "}
+                    {l.transaction.transaction.scheme}, bank row of {l.bankRow.amount} on {day(l.bankRow.date)}: {l.error}
                   </li>
                 ))}
               </ul>

@@ -36,7 +36,7 @@
     {
       "category": "accounts",
       "functions": ["getAll"],
-      "purpose": "Choose the account each PAN's or folio's transactions, or each folio's or demat account's holdings, go to"
+      "purpose": "Choose the account each PAN's or folio's transactions go to and the bank account their cash comes from and goes to, or the account each folio's or demat account's holdings go to"
     },
     {
       "category": "portfolio",
@@ -50,8 +50,8 @@
     },
     {
       "category": "activities",
-      "functions": ["getAll", "checkImport", "import"],
-      "purpose": "Check transactions before importing activities, and stock splits before carrying holdings into a snapshot"
+      "functions": ["getAll", "checkImport", "import", "create", "update", "getTransferPair", "linkTransfer"],
+      "purpose": "Check transactions before importing activities, and stock splits before carrying holdings into a snapshot. When you choose to use a bank account's deposit or withdrawal for a fund's cash, add the fund's transfer, change the bank's row into a transfer if it isn't one, and link the two; transfers already linked aren't offered"
     },
     {
       "category": "market-data",

@@ -19,7 +19,7 @@ add-on searches by the ISIN printed on the statement, and by the fund's name if 
 nothing or none is printed. Name-search results can be other funds: pick one with the statement's
 fund name, plan and option, or leave the fund out. Closed schemes, with no units at either end and
 nothing to import, are skipped. The preview lists every activity with its
-cash deposit or withdrawal, the rows left out and why, and anything Wealthfolio already has. After
+cash deposit or withdrawal (or [bank transfer](#bank-account)), the rows left out and why, and anything Wealthfolio already has. After
 the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
 
 Importing the same statement again, or an overlapping one, adds only what's new: the add-on compares
@@ -28,6 +28,21 @@ that an earlier import created, because an add-on can't create the fund before i
 Wealthfolio's CSV import does. A fund whose statement starts with units needs those units in
 Wealthfolio first, from an earlier statement or entered by hand.
 The units check counts posted account history; splits or option expiry in that history need review.
+
+### Bank account
+
+If Wealthfolio also tracks the bank account a PAN's purchases are paid from, choose it under
+**Bank account** (a folio can have a different one, or none). Each purchase then comes with a transfer
+from that account to the funds' account, and each redemption or IDCW payout with a transfer back,
+which Wealthfolio links, instead of a deposit or withdrawal. Switches and mergers keep their deposit
+and withdrawal, since their money stays with the fund house; reinvested dividends have no cash row.
+
+If the bank account already has the debit or credit, from a bank statement import for example, the
+preview offers to use it: a withdrawal or deposit (or a transfer not yet linked) within 7 days, for
+the transaction's amount to the paisa, with or without its stamp duty, STT or TDS. Tick it, and the
+add-on imports the trade, adds the funds' account's side of the transfer, changes the bank's
+withdrawal or deposit into a transfer and links the two. Transactions imported earlier with a deposit
+or withdrawal count as already in Wealthfolio, and the add-on leaves those rows as they are.
 
 ## Summary and depository statements
 
@@ -86,8 +101,8 @@ the later snapshot's prices.
 
 ## What the add-on keeps
 
-- In Wealthfolio's add-on storage, which device sync copies to your other devices: the account
-  chosen for each PAN or folio, keyed by a SHA-256 hash of the PAN or folio number, and the fund
+- In Wealthfolio's add-on storage, which device sync copies to your other devices: the account and
+  bank account chosen for each PAN or folio, keyed by a SHA-256 hash of the PAN or folio number, and the fund
   confirmed for each ISIN, or for the registrar and scheme code of a scheme with no ISIN. Leaving
   a fund out forgets the fund confirmed for it, in every folio that holds it; if Wealthfolio can't
   delete it, the add-on says so and it can come back. "Left out" itself isn't kept: the next read

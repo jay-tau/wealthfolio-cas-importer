@@ -63,8 +63,8 @@ const map = (data, overrides) => {
 };
 
 /** What Wealthfolio's import would keep, and that each pair nets to zero. */
-function checkRows({ activity, cash }) {
-  for (const row of [activity, cash].filter(Boolean)) {
+function checkRows({ activity, cash, bank }) {
+  for (const row of [activity, cash, bank].filter(Boolean)) {
     for (const key of ["activityType", "currency", "date", "symbol", "isDraft", "isValid"]) assert.ok(key in row, key);
     assert.equal(row.currency, "INR");
     assert.match(row.date, /^\d{4}-\d{2}-\d{2}$/);
@@ -92,15 +92,21 @@ function checkRows({ activity, cash }) {
   }
   if (activity.subtype === "DRIP") {
     assert.equal(cash, undefined);
+    assert.equal(bank, undefined);
     return;
   }
-  const direction = { BUY: "DEPOSIT", SELL: "WITHDRAWAL", DIVIDEND: "WITHDRAWAL" }[activity.activityType];
-  assert.equal(cash.activityType, direction);
+  const into = activity.activityType === "BUY";
+  assert.equal(cash.activityType, bank ? (into ? "TRANSFER_IN" : "TRANSFER_OUT") : into ? "DEPOSIT" : "WITHDRAWAL");
   assert.equal(cash.accountId, activity.accountId);
   assert.equal(cash.date, activity.date);
   assert.equal(cash.symbol, "");
   assert.equal(cash.amount, activity.amount, "the pair nets to zero");
-  const cashEffect = cash.activityType === "DEPOSIT" ? dec(cash.amount) : neg(dec(cash.amount));
+  if (bank) {
+    assert.equal(bank.activityType, into ? "TRANSFER_OUT" : "TRANSFER_IN");
+    assert.notEqual(bank.accountId, cash.accountId);
+    for (const key of ["date", "symbol", "amount", "currency"]) assert.equal(bank[key], cash[key], key);
+  }
+  const cashEffect = into ? dec(cash.amount) : neg(dec(cash.amount));
   assert.equal(cmp(add(effect, cashEffect), dec("0")), 0, "signed host cash nets to zero");
 }
 
@@ -407,22 +413,27 @@ describe("reversals", () => {
   });
 
   test("a reversed purchase imported earlier needs correcting", () => {
-    const asked = [];
-    const mapping = map(statement(scheme("A", [purchase, reversal])), {
-      alreadyImported: (activity) => (asked.push(activity.activityType), activity.activityType === "BUY"),
-    });
-    assert.deepEqual(asked, ["BUY"]);
-    assert.deepEqual(mapping.transactions, []);
-    assert.match(mapping.warnings[0].message, /^Wealthfolio has this purchase from an earlier import, but the statement reverses it\. Delete/);
+    for (const bankAccountId of [undefined, "bank-1"]) {
+      const asked = [];
+      const mapping = map(statement(scheme("A", [purchase, reversal])), {
+        target: (folio, s) => ({ ...input().target(folio, s), bankAccountId }),
+        alreadyImported: (activity) => (asked.push(activity.activityType), activity.activityType === "BUY"),
+      });
+      assert.deepEqual(asked, ["BUY"]);
+      assert.deepEqual(mapping.transactions, []);
+      assert.match(mapping.warnings[0].message, /^Wealthfolio has this purchase from an earlier import, but the statement reverses it\. Delete/);
+      assert.match(mapping.warnings[0].message, /If that cash is a transfer, unlink it first: Wealthfolio deletes both sides of a linked transfer\. Then delete the bank account's side too, unless it's a row from your bank statement\.$/);
+    }
   });
 
   test("a reversal without its purchase, or with more than one candidate, is a warning", () => {
     assert.deepEqual(summary(map(statement(scheme("A", [reversal])))).warnings, [
-      "This reversal's purchase isn't in the statement, so the reversal isn't imported. If Wealthfolio has that purchase, delete it and its deposit.",
+      "This reversal's purchase isn't in the statement, so the reversal isn't imported. If Wealthfolio has that purchase, delete it and its cash in the fund account. If that cash is a transfer, unlink it first: Wealthfolio deletes both sides of a linked transfer. Then delete the bank account's side too, unless it's a row from your bank statement.",
     ]);
     const twice = summary(map(statement(scheme("A", [purchase, { ...purchase, date: "2024-01-11" }, reversal]))));
     assert.equal(twice.rows.length, 2);
     assert.match(twice.warnings[0], /^2 purchases in the statement could be the one this reverses/);
+    assert.match(twice.warnings[0], /If that cash is a transfer, unlink it first: Wealthfolio deletes both sides of a linked transfer\. Then delete the bank account's side too, unless it's a row from your bank statement\.$/);
   });
 
   test("a reversal with contradictory or missing amounts does not cancel a purchase", () => {
@@ -450,19 +461,23 @@ describe("reversals", () => {
   });
 
   test("an earlier import needs review before deleting a possible reversed redemption", () => {
-    for (const existing of ["SELL", "WITHDRAWAL"]) {
+    for (const existing of ["SELL", "WITHDRAWAL", "TRANSFER_OUT"]) {
       const asked = [];
+      const cashType = existing === "TRANSFER_OUT" ? "TRANSFER_OUT" : "WITHDRAWAL";
       const mapping = map(statement(scheme("A", [extinguished, restored], { open: "171.447" })), {
+        target: (folio, s) => ({ ...input().target(folio, s), bankAccountId: existing === "TRANSFER_OUT" ? "bank-1" : undefined }),
         alreadyImported: (activity) => (asked.push(activity.activityType), activity.activityType === existing),
       });
-      assert.deepEqual(asked, existing === "SELL" ? ["SELL"] : ["SELL", "WITHDRAWAL"]);
+      assert.deepEqual(asked, existing === "SELL" ? ["SELL"] : ["SELL", cashType]);
       assert.deepEqual(mapping.transactions, []);
       assert.match(mapping.warnings[0].message, /could be a reversal or a new purchase/);
-      assert.match(mapping.warnings[0].message, /Wealthfolio has the sale or its withdrawal from an earlier import; delete them only if this is a reversal\.$/);
+      assert.match(mapping.warnings[0].message, /Wealthfolio has the sale or its cash from an earlier import; delete the fund rows only if this is a reversal\./);
+      assert.match(mapping.warnings[0].message, /If that cash is a transfer, unlink it first: Wealthfolio deletes both sides of a linked transfer\. Then delete the bank account's side too, unless it's a row from your bank statement\.$/);
     }
     const mapping = map(statement(scheme("A", [{ ...extinguished, nav: null }, restored], { open: "171.447" })));
     assert.deepEqual(mapping.transactions, []);
-    assert.match(mapping.warnings[0].message, /If Wealthfolio has the sale or its withdrawal from an earlier import, delete them only if this is a reversal\.$/);
+    assert.match(mapping.warnings[0].message, /If Wealthfolio has the sale or its cash from an earlier import, delete the fund rows only if this is a reversal\./);
+    assert.match(mapping.warnings[0].message, /If that cash is a transfer, unlink it first: Wealthfolio deletes both sides of a linked transfer\. Then delete the bank account's side too, unless it's a row from your bank statement\.$/);
   });
 
   test("an explicit purchase reversal takes priority over a possible redemption reversal", () => {
@@ -674,6 +689,49 @@ test("scientific decimal strings from casparser are sent as printed and computed
   assert.deepEqual(mapping.warnings, []);
   assert.equal(mapping.transactions[0].activity.quantity, "1E-7");
   assert.equal(mapping.transactions[0].activity.amount, "0.01");
+});
+
+describe("bank account", () => {
+  const banked = (folio, s) => ({ ...input().target(folio, s), bankAccountId: "bank-1" });
+  const types = ({ transactions }) =>
+    transactions.map(({ activity, cash, bank }) =>
+      [activity.activityType, cash?.activityType, bank && `${bank.activityType} ${bank.accountId}`].filter(Boolean).join(" "),
+    );
+
+  test("purchases, redemptions and payouts are transfers between the bank and fund accounts", () => {
+    const mapping = map(
+      statement(
+        scheme("A", [
+          tx("2024-01-10", "PURCHASE_SIP", "1000.00", "100.000", "10.0000", { balance: "100.000" }),
+          tx("2024-02-10", "PURCHASE", "1000.00", "100.000", "10.0000", { balance: "200.000" }),
+          tx("2024-03-10", "REDEMPTION", "-500.00", "-50.000", "10.0000", { balance: "150.000" }),
+          tx("2024-04-10", "DIVIDEND_PAYOUT", "150.00", null, null, { dividend_rate: "1.00" }),
+          tx("2024-05-10", "DIVIDEND_REINVEST", "150.00", "15.000", "10.0000"),
+        ]),
+      ),
+      { target: banked },
+    );
+    assert.deepEqual(types(mapping), [
+      "BUY TRANSFER_IN TRANSFER_OUT bank-1",
+      "BUY TRANSFER_IN TRANSFER_OUT bank-1",
+      "SELL TRANSFER_OUT TRANSFER_IN bank-1",
+      "DIVIDEND TRANSFER_OUT TRANSFER_IN bank-1",
+      "DIVIDEND",
+    ]);
+    const lines = mapping.transactions.flatMap((t) => [t.activity, t.cash, t.bank].filter(Boolean).map((row) => row.lineNumber));
+    assert.deepEqual(lines, lines.map((_, i) => i + 1));
+  });
+
+  test("switches and mergers keep the fund house's money in the fund account", () => {
+    const mapping = map(
+      statement(
+        scheme("A", [tx("2024-06-20", "SWITCH_OUT", "-1000.00", "-100.000", "10.0000"), tx("2024-08-01", "SWITCH_OUT_MERGER", "-500.00", "-50.000", "10.0000")]),
+        scheme("B", [tx("2024-06-20", "SWITCH_IN", "1000.00", "50.000", "20.0000"), tx("2024-08-01", "SWITCH_IN_MERGER", "500.00", "25.000", "20.0000")]),
+      ),
+      { target: banked },
+    );
+    assert.deepEqual(types(mapping), ["SELL WITHDRAWAL", "SELL WITHDRAWAL", "BUY DEPOSIT", "BUY DEPOSIT"]);
+  });
 });
 
 describe("the made-up statement", async () => {

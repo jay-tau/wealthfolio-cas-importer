@@ -9,8 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Import summary CAMS/KFintech statements and NSDL/CDSL depository statements as holdings snapshots: choose an account that tracks holdings for each folio or demat account, confirm each fund and share by its ISIN, and preview each account's snapshot. Holdings the statement doesn't list and cash carry over from the account's latest snapshot, except holdings an earlier import of the same folio or demat account added and the statement no longer lists; a folio's fund that an account tracking transactions already holds is left out by default; costs come from the statement, the account's average cost in INR, or what you type. A split recorded since the snapshot being carried over, and a holding priced by hand whose cost would replace its price, are flagged. Bonds and NPS holdings are left out for now
+- Record a fund's cash as transfers from and to a bank account Wealthfolio tracks, chosen for each PAN or folio: purchases, redemptions and IDCW payouts come with a transfer pair Wealthfolio links instead of a deposit or withdrawal, while switches and mergers keep theirs. The preview offers a deposit or withdrawal the bank account already has, within 7 days and for the same amount, in place of a new transfer; if you tick it, the add-on changes it into a transfer and links it. Transactions imported earlier with a deposit or withdrawal count as already in Wealthfolio
 
 ### Changed
+- Ask for permission to add, change and link activities, and to read whether a transfer is linked, for using a bank account's rows
 
 ### Deprecated
 

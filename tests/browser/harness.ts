@@ -5,8 +5,10 @@
 // an import that stores rows the way Wealthfolio returns them. Wealthfolio's own checks are left
 // to the end-to-end run in the pull request.
 import type {
+  ActivityCreate,
   ActivityDetails,
   ActivityImport,
+  ActivityUpdate,
   AddonAssets,
   AddonContext,
   SnapshotHoldingInput,
@@ -29,6 +31,7 @@ const host = {
   failHistory: false,
   failDelete: false,
   rejectLine: undefined as number | undefined,
+  skipLine: undefined as number | undefined,
   // An invented second folio holding the fund with this ISIN, added to what the parser reads.
   sharedIsin: "",
   // Holdings dropped from a depository statement as if they had been sold.
@@ -47,6 +50,9 @@ const host = {
   held: {} as Record<string, string[]>,
   parsed: 0,
   toasts: [] as string[],
+  // Transfers already in a pair, and the pairs the add-on linked.
+  linked: [] as string[],
+  links: [] as [string, string][],
 };
 declare global {
   interface Window {
@@ -153,6 +159,7 @@ const api = {
   accounts: {
     getAll: async (includeArchived = false) => [
       account("account-1", "Mutual funds", "TRANSACTIONS"),
+      account("bank-1", "Savings", "TRANSACTIONS"),
       account("unset-1", "Not set", "NOT_SET"),
       account("holdings-1", "Demat", "HOLDINGS"),
       account("holdings-2", "Fund folios", "HOLDINGS"),
@@ -204,14 +211,34 @@ const api = {
     },
     import: async (rows: ActivityImport[]) => {
       await wait("import");
-      const accepted = rows.filter((r) => r.lineNumber !== host.rejectLine);
+      const skipped = (r: ActivityImport) => r.lineNumber === host.skipLine && !r.forceImport;
+      const accepted = rows.filter((r) => r.lineNumber !== host.rejectLine && !skipped(r));
       host.activities.push(...accepted.map(stored));
       const total = rows.length;
-      const summary = { total, imported: accepted.length, skipped: total - accepted.length, duplicates: 0, assetsCreated: 0, success: true };
+      const summary = { total, imported: accepted.length, skipped: total - accepted.length, duplicates: rows.filter(skipped).length, assetsCreated: 0, success: true };
       return {
-        activities: rows.map((r) => r.lineNumber === host.rejectLine ? { ...r, errors: { symbol: ["The fund could not be created."] } } : r),
+        activities: rows.map((r) => r.lineNumber === host.rejectLine
+          ? { ...r, errors: { symbol: ["The fund could not be created."] } }
+          : skipped(r) ? { ...r, duplicateOfId: "earlier-trade" } : r),
         importRunId: "run", summary,
       };
+    },
+    create: async (activity: ActivityCreate) => {
+      const row = stored({ ...activity, date: String(activity.activityDate), symbol: "" } as unknown as ActivityImport, 0);
+      host.activities.push(row);
+      return row;
+    },
+    // Only what the add-on changes.
+    update: async (activity: ActivityUpdate) => {
+      const row = host.activities.find((a) => a.id === activity.id)!;
+      Object.assign(row, { activityType: activity.activityType, comment: activity.comment ?? undefined });
+      return row;
+    },
+    getTransferPair: async (id: string) => (host.linked.includes(id) ? {} : null),
+    linkTransfer: async (a: string, b: string) => {
+      host.links.push([a, b]);
+      host.linked.push(a, b);
+      return [];
     },
   },
   market: { searchTicker: async (query: string) => {
