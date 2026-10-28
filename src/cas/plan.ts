@@ -1,5 +1,5 @@
-import type { ActivityDetails, ActivityImport } from "@wealthfolio/addon-sdk";
-import { abs, add, cmp, dec, type Dec, format, isZero, neg } from "./decimal.ts";
+import type { ActivityDetails, ActivityImport, ActivityType, AddonContext } from "@wealthfolio/addon-sdk";
+import { abs, add, cmp, dec, type Dec, div, format, isZero, neg } from "./decimal.ts";
 import type { FundAsset, MappedTransaction, Mapping } from "./mapping.ts";
 import type { CasData, CasFolio, CasScheme } from "./types.ts";
 
@@ -26,6 +26,8 @@ export interface PlannedRow {
   warnings: string[];
   /** The Wealthfolio activity this row equals. Each one is matched to one row at most. */
   existingId?: string;
+  /** The type of that activity, when it's the transaction's cash under the other type: a deposit for a transfer in, say. */
+  existingType?: ActivityType;
   /** The line of an earlier row of this import that this row equals. */
   repeatsLine?: number;
   /** checkImport found a duplicate. */
@@ -34,17 +36,22 @@ export interface PlannedRow {
 
 export interface PlannedTransaction {
   transaction: MappedTransaction;
-  /** The activity, then its cash. */
+  /** The activity, then its cash and the bank's side of it. */
   rows: PlannedRow[];
   status: Status;
 }
 
-/** The rows for checkImport, in the order `planImport` reads its results. */
-export const rowsOf = (mapping: Mapping) =>
-  mapping.transactions.flatMap((t) => (t.cash ? [t.activity, t.cash] : [t.activity]));
+const rowsOfTransaction = (t: MappedTransaction) => [t.activity, t.cash, t.bank].filter((row) => row !== undefined);
+
+/**
+ * The rows for checkImport and the import, in the order `planImport` reads its results. Each
+ * transaction's transfers stay together, so Wealthfolio's import links each pair, not two
+ * transactions' legs with the same day and amount.
+ */
+export const rowsOf = (mapping: Mapping) => mapping.transactions.flatMap(rowsOfTransaction);
 
 /** An activity's date as Wealthfolio's key reads it: the UTC day. */
-function day(date: Date | string | undefined) {
+export function day(date: Date | string | undefined) {
   if (date === undefined) return "";
   if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
   return new Date(date).toISOString().slice(0, 10);
@@ -84,6 +91,23 @@ function identity(
 const rowIdentity = (row: ActivityImport) =>
   identity(row.accountId, row.activityType, row.date, row.symbol?.trim() ? fundRef(row.symbol, row.exchangeMic) : "", row);
 
+/** A fund account's cash row as the other kind of import has it: a deposit for a transfer in, say. */
+const OTHER_CASH: Partial<Record<ActivityType, ActivityType>> = {
+  DEPOSIT: "TRANSFER_IN",
+  TRANSFER_IN: "DEPOSIT",
+  WITHDRAWAL: "TRANSFER_OUT",
+  TRANSFER_OUT: "WITHDRAWAL",
+};
+
+/** The row's identity, then a cash row's identity under the other type. */
+function cashIdentities(row: ActivityImport) {
+  const other = row.symbol?.trim() ? undefined : OTHER_CASH[row.activityType];
+  return [
+    { key: rowIdentity(row), type: undefined },
+    ...(other ? [{ key: rowIdentity({ ...row, activityType: other }), type: other }] : []),
+  ];
+}
+
 const activityIdentity = (a: ActivityDetails) =>
   identity(a.accountId, a.activityType, a.date, a.assetSymbol?.trim() ? fundRef(a.assetSymbol, a.exchangeMic) : "", a);
 
@@ -95,8 +119,8 @@ export function indexActivities(existing: ActivityDetails[]) {
     index.set(key, [...(index.get(key) ?? []), activity.id]);
   }
   return {
-    /** Whether Wealthfolio has an activity equal to this row. */
-    has: (row: ActivityImport) => index.has(rowIdentity(row)),
+    /** Whether Wealthfolio has an activity equal to this row; for a cash row, under either type. */
+    has: (row: ActivityImport) => cashIdentities(row).some(({ key }) => index.has(key)),
     index,
   };
 }
@@ -110,26 +134,36 @@ export function planImport(mapping: Mapping, existing: ActivityDetails[], checke
   const seen = new Map<string, number>();
   let position = 0;
   return mapping.transactions.map((transaction) => {
-    const rows = [transaction.activity, transaction.cash].flatMap((activity): PlannedRow[] => {
-      if (!activity) return [];
+    const plan = (activity: ActivityImport, settled = false): PlannedRow => {
       const result = checked[position++];
-      const key = rowIdentity(activity);
+      // A fund account's cash may have come in under the other type, from a v1 import or before a
+      // bank account was chosen; the bank's side never does: its deposits and withdrawals are the
+      // bank's own rows.
+      const keys = activity === transaction.cash ? cashIdentities(activity) : [{ key: rowIdentity(activity), type: undefined }];
+      const match = settled ? undefined : keys.find(({ key }) => available.get(key)?.length);
       const row: PlannedRow = {
         activity,
         errors: messages(result?.errors),
         warnings: messages(result?.warnings, "_duplicate"),
-        existingId: available.get(key)?.shift(),
-        repeatsLine: seen.get(key),
+        existingId: match && available.get(match.key)!.shift(),
+        existingType: match?.type,
+        repeatsLine: settled ? undefined : seen.get(keys[0].key),
         flagged: !!(result?.duplicateOfId || result?.duplicateOfLineNumber),
       };
       if (!result) row.errors.push("Wealthfolio didn't check this row.");
       else if (!result.isValid && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
-      if (!seen.has(key)) seen.set(key, activity.lineNumber ?? position);
-      return [row];
-    });
+      if (!settled && !seen.has(keys[0].key)) seen.set(keys[0].key, activity.lineNumber ?? position);
+      return row;
+    };
+    const rows = [plan(transaction.activity)];
+    if (transaction.cash) rows.push(plan(transaction.cash));
+    // Wealthfolio has the transaction when it has the trade and the fund account's cash, whatever
+    // the bank account shows.
+    const settled = rows.every((r) => r.existingId);
+    if (transaction.bank) rows.push(plan(transaction.bank, settled));
     const status: Status = rows.some((r) => r.errors.length)
       ? "invalid"
-      : rows.every((r) => r.existingId)
+      : settled
         ? "existing"
         : rows.some((r) => r.existingId || r.repeatsLine !== undefined || r.flagged)
           ? "duplicate"
@@ -138,13 +172,124 @@ export function planImport(mapping: Mapping, existing: ActivityDetails[], checke
   });
 }
 
-/** New transactions, plus the duplicates the user chose to import anyway. Both rows of a transaction or neither. */
-export function importRows(plan: PlannedTransaction[], importAnyway: (t: PlannedTransaction) => boolean) {
+/**
+ * New transactions, plus the duplicates the user chose to import anyway. All rows of a transaction
+ * or none, except that a transaction whose bank row the user chose to reuse sends only its trade:
+ * `linkBankRow` adds its cash afterwards.
+ */
+export function importRows(
+  plan: PlannedTransaction[],
+  importAnyway: (t: PlannedTransaction) => boolean,
+  reuseBankRow: (t: PlannedTransaction) => boolean = () => false,
+) {
   return plan.flatMap((t) => {
-    if (t.status === "new") return t.rows.map((r) => r.activity);
+    const rows = reuseBankRow(t) ? t.rows.filter((r) => r.activity === t.transaction.activity) : t.rows;
+    if (t.status === "new") return rows.map((r) => r.activity);
     if (t.status === "invalid" || !importAnyway(t)) return [];
-    return t.rows.map((r) => ({ ...r.activity, forceImport: true }));
+    return rows.map((r) => ({ ...r.activity, forceImport: true }));
   });
+}
+
+/** How many days before or after a transaction the bank's side of it may be. */
+export const BANK_DAYS = 7;
+const PAISA = (value: string) => format(div(abs(dec(value)), dec("1"), 2));
+const days = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / 86_400_000;
+
+/**
+ * Rows in the bank account that may be a new transaction's bank side, already in Wealthfolio: cash
+ * moving the same way, within `BANK_DAYS`, to the paisa of the transaction's cash, or of its printed
+ * amount with or without its charges, whichever way the statement prints it. A bank import usually
+ * records them as deposits and withdrawals. Transfers already linked can't be reused; the caller
+ * finds which those are.
+ */
+export function bankCandidates(t: PlannedTransaction, existing: ActivityDetails[]) {
+  const { bank, rows } = t.transaction;
+  if (!bank || t.status === "existing" || t.status === "invalid") return [];
+  const paid = bank.activityType === "TRANSFER_OUT";
+  const types: string[] = paid ? ["WITHDRAWAL", "TRANSFER_OUT"] : ["DEPOSIT", "TRANSFER_IN"];
+  const printed = abs(dec(rows[0].amount ?? "0"));
+  const charges = rows.slice(1).reduce((total, charge) => add(total, dec(charge.amount ?? "0")), dec("0"));
+  const amounts = new Set(
+    [String(bank.amount), format(printed), format(paid ? add(printed, charges) : add(printed, neg(charges)))].map(PAISA),
+  );
+  return existing.filter(
+    (a) =>
+      a.accountId === bank.accountId &&
+      a.status === "POSTED" &&
+      types.includes(a.activityType) &&
+      !a.assetSymbol?.trim() &&
+      a.currency === bank.currency &&
+      a.amount !== null &&
+      amounts.has(PAISA(a.amount)) &&
+      days(day(a.date), String(bank.date)) <= BANK_DAYS,
+  );
+}
+
+/** For each new transaction, the bank row to offer reusing: closest days first, each row offered once. */
+export function bankMatches(plan: PlannedTransaction[], existing: ActivityDetails[], linked: ReadonlySet<string>) {
+  const options = plan.flatMap((t, index) =>
+    bankCandidates(t, existing)
+      .filter((a) => !linked.has(a.id))
+      .map((activity) => ({ t, index, activity, apart: days(day(activity.date), String(t.transaction.bank!.date)) })),
+  );
+  options.sort((a, b) => a.apart - b.apart || a.index - b.index || day(a.activity.date).localeCompare(day(b.activity.date)));
+  const matches = new Map<PlannedTransaction, ActivityDetails>();
+  const used = new Set<string>();
+  for (const { t, activity } of options) {
+    if (matches.has(t) || used.has(activity.id)) continue;
+    matches.set(t, activity);
+    used.add(activity.id);
+  }
+  return matches;
+}
+
+type LinkApi = Pick<AddonContext["api"]["activities"], "create" | "update" | "linkTransfer">;
+
+/**
+ * After the import sent a transaction's trade, records its cash against the bank row the user chose
+ * to reuse: adds the fund account's transfer, changes a bank deposit or withdrawal into the
+ * matching transfer, and links the two. Returns what went wrong, if anything.
+ */
+export async function linkBankRow(activities: LinkApi, t: PlannedTransaction, bankRow: ActivityDetails) {
+  const cash = t.transaction.cash!;
+  const type = t.transaction.bank!.activityType;
+  const when = `on ${day(bankRow.date)}`;
+  let fundId: string;
+  try {
+    // Wealthfolio accepts this key even though ActivityCreate omits it; equal confirmed bank rows need distinct cash.
+    const transfer = {
+      accountId: cash.accountId,
+      activityType: cash.activityType,
+      activityDate: String(cash.date),
+      amount: cash.amount,
+      currency: cash.currency,
+      idempotencyKey: `cas-importer-bank:${bankRow.id}`,
+    };
+    ({ id: fundId } = await activities.create(transfer));
+  } catch (e) {
+    return `Couldn't add the fund account's transfer: ${String(e)}. The trade is in Wealthfolio without its cash.`;
+  }
+  if (bankRow.activityType !== type) {
+    try {
+      // Fields left out keep their values.
+      await activities.update({
+        id: bankRow.id,
+        accountId: bankRow.accountId,
+        activityType: type,
+        activityDate: bankRow.date,
+        currency: bankRow.currency,
+        comment: bankRow.comment ?? null,
+      });
+    } catch (e) {
+      return `Added the fund account's transfer, but couldn't change the bank's row ${when} into a transfer: ${String(e)}. Change it and link the two in Wealthfolio.`;
+    }
+  }
+  try {
+    await activities.linkTransfer(bankRow.id, fundId);
+  } catch (e) {
+    return `Added the fund account's transfer, but couldn't link it with the bank's row ${when}: ${String(e)}. Link the two in Wealthfolio.`;
+  }
+  return undefined;
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

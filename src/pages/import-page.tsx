@@ -1,4 +1,4 @@
-import type { Account, ActivityImport, AddonContext, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
+import type { Account, ActivityDetails, ActivityImport, AddonContext, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -6,10 +6,13 @@ import { type Holdings, readHoldings } from "../cas/holdings";
 import { closedScheme, type Mapping, mapStatement, withoutClosed } from "../cas/mapping";
 import { CasError } from "../cas/parser";
 import {
+  bankCandidates,
+  bankMatches,
   closingUnits,
   type FundUnits,
   importRows,
   indexActivities,
+  linkBankRow,
   openingUnits,
   planImport,
   type PlannedTransaction,
@@ -17,22 +20,36 @@ import {
   sameUnits,
 } from "../cas/plan";
 import { type CasData, type CasFolio, type CasScheme, isDepository, type Statement } from "../cas/types";
-import { type AccountChoices, AccountChoicesCard, accountFor } from "../components/account-choices";
+import { type AccountChoices, AccountChoicesCard, accountFor, BankChoicesCard, bankFor } from "../components/account-choices";
 import { type FundChoice, FundChoicesCard, fundItems, fundsOf } from "../components/fund-choices";
-import { ImportResult, Preview } from "../components/preview";
+import { type BankLink, ImportResult, Preview } from "../components/preview";
 import { StatementForm } from "../components/statement-form";
-import { folioKey, fundKey, investorKey, LEFT_OUT, panKey, readFund, saveFund, sourceKey } from "../lib/choices";
+import {
+  bankKey,
+  folioKey,
+  fundKey,
+  investorKey,
+  LEFT_OUT,
+  NO_BANK,
+  panKey,
+  readFund,
+  saveFund,
+  sourceKey,
+} from "../lib/choices";
 import { HoldingsImport, holdingItems } from "./holdings-import";
 
 interface Previewed {
   mapping: Mapping;
   plan: PlannedTransaction[];
+  /** The bank row each new transaction could use instead of a new one. */
+  matches: Map<PlannedTransaction, ActivityDetails>;
 }
 
 interface Imported {
   result: ImportActivitiesResult;
   sent: ActivityImport[];
   closing: FundUnits[];
+  links: BankLink[];
 }
 
 export function ImportPage({ ctx }: { ctx: AddonContext }) {
@@ -56,6 +73,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const choiceWrites = useRef(Promise.resolve());
   const [preview, setPreview] = useState<Previewed | null>(null);
   const [importAnyway, setImportAnyway] = useState<Set<PlannedTransaction>>(new Set());
+  // Transactions whose bank row in `preview.matches` the user chose to reuse.
+  const [reuse, setReuse] = useState<Set<PlannedTransaction>>(new Set());
   const [imported, setImported] = useState<Imported | null>(null);
   const [busy, setBusy] = useState<"" | "preview" | "import">("");
   const [error, setError] = useState("");
@@ -70,11 +89,13 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
 
   // Remembered accounts that no longer exist are ignored.
   const accountChoices: AccountChoices = Object.fromEntries(
-    Object.entries(remembered ?? {}).filter(([, id]) => id === LEFT_OUT || accounts?.some((a) => a.id === id)),
+    Object.entries(remembered ?? {}).filter(
+      ([, id]) => id === LEFT_OUT || id === NO_BANK || accounts?.some((a) => a.id === id),
+    ),
   );
-  // So are remembered PAN and folio accounts that track holdings; their rows say why.
+  // So are remembered PAN, folio and bank accounts that track holdings; their rows say why.
   const transactionChoices: AccountChoices = Object.fromEntries(
-    Object.entries(accountChoices).filter(([, id]) => transactionAccounts?.some((a) => a.id === id)),
+    Object.entries(accountChoices).filter(([, id]) => id === NO_BANK || transactionAccounts?.some((a) => a.id === id)),
   );
   const holdingsChoices: Record<string, string> = Object.fromEntries(
     Object.entries(accountChoices).flatMap(([key, id]) => {
@@ -86,11 +107,21 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const target = (folio: CasFolio, scheme: CasScheme) => {
     const accountId = accountFor(transactionChoices, folio);
     const choice = fundChoices[fundKey(scheme)];
-    return accountId && choice && "fund" in choice ? { accountId, asset: choice.fund } : undefined;
+    return accountId && choice && "fund" in choice
+      ? { accountId, asset: choice.fund, bankAccountId: bankFor(transactionChoices, folio) }
+      : undefined;
   };
 
+  // The funds' accounts and their bank accounts.
   const accountIds = () => [
-    ...new Set(data?.folios.flatMap((f) => f.schemes.flatMap((s) => target(f, s)?.accountId ?? [])) ?? []),
+    ...new Set(
+      data?.folios.flatMap((f) =>
+        f.schemes.flatMap((s) => {
+          const t = target(f, s);
+          return t ? [t.accountId, ...(t.bankAccountId ? [t.bankAccountId] : [])] : [];
+        }),
+      ) ?? [],
+    ),
   ];
 
   const clear = () => {
@@ -109,6 +140,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     if (!isDepository(full) && full.cas_type === "DETAILED") {
       const next = withoutClosed(full);
       keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : [])]))];
+      keys.push(...keys.map(bankKey));
       fundKeys = [...fundsOf(next).keys()];
     } else {
       try {
@@ -179,6 +211,17 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       )
     : true;
 
+  // A remembered bank account that tracks holdings needs choosing again, and a folio's cash can't
+  // move between its account and itself.
+  const bankUndecided =
+    data?.folios.some((f) => {
+      if (!f.schemes.some((s) => target(f, s))) return false;
+      const key = bankKey(folioKey(f));
+      const inherited = !transactionChoices[key] && f.PAN && bankKey(panKey(f.PAN)) in holdingsChoices;
+      const bank = bankFor(transactionChoices, f);
+      return key in holdingsChoices || inherited || (!!bank && bank === accountFor(transactionChoices, f));
+    }) ?? false;
+
   const runPreview = async () => {
     if (!data) return;
     setBusy("preview");
@@ -202,8 +245,20 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       });
       const rows = rowsOf(mapping);
       const checked = rows.length ? await api.activities.checkImport(rows) : [];
-      setPreview({ mapping, plan: planImport(mapping, existing, checked) });
+      const plan = planImport(mapping, existing, checked);
+      // A bank transfer already linked to another can't be reused.
+      const transfers = new Set(
+        plan.flatMap((t) => bankCandidates(t, existing)).flatMap((a) => (a.activityType.startsWith("TRANSFER") ? [a.id] : [])),
+      );
+      const linked = new Set<string>();
+      await Promise.all(
+        [...transfers].map(async (id) => {
+          if (await api.activities.getTransferPair(id)) linked.add(id);
+        }),
+      );
+      setPreview({ mapping, plan, matches: bankMatches(plan, existing, linked) });
       setImportAnyway(new Set());
+      setReuse(new Set());
     } catch (e) {
       setError(`Couldn't prepare the preview: ${String(e)}`);
     } finally {
@@ -211,20 +266,43 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     }
   };
 
+  const reused = (t: PlannedTransaction) => reuse.has(t) && !!preview?.matches.has(t);
+
   const runImport = async () => {
     if (!data || !preview) return;
-    const sent = importRows(preview.plan, (t) => importAnyway.has(t));
+    const sent = importRows(preview.plan, (t) => importAnyway.has(t), reused);
     setBusy("import");
     setError("");
     try {
       const result = await api.activities.import(sent);
       setPreview(null);
-      setImported({ result, sent, closing: [] });
+      setImported({ result, sent, closing: [], links: [] });
+      // Each reused bank row, once its transaction's trade is in.
+      const links: BankLink[] = [];
+      for (const t of preview.plan.filter((t) => reused(t) && (t.status === "new" || importAnyway.has(t)))) {
+        const bankRow = preview.matches.get(t)!;
+        const line = t.transaction.activity.lineNumber;
+        const trade = result.activities.find((a) => a.lineNumber === line);
+        const forced = sent.some((r) => r.lineNumber === line && r.forceImport);
+        const imported =
+          result.summary.success &&
+          trade &&
+          !Object.keys(trade.errors ?? {}).length &&
+          (forced || !(trade.duplicateOfId || trade.duplicateOfLineNumber));
+        links.push({
+          transaction: t,
+          bankRow,
+          error: imported
+            ? await linkBankRow(api.activities, t, bankRow)
+            : "The trade wasn't imported, so the bank's row was left as it is.",
+        });
+      }
+      setImported({ result, sent, closing: [], links });
       api.query.invalidateQueries([QueryKeys.ACTIVITY_DATA]);
       api.query.invalidateQueries([QueryKeys.ACTIVITIES]);
       try {
         const after = (await Promise.all(accountIds().map((id) => api.activities.getAll(id)))).flat();
-        setImported({ result, sent, closing: closingUnits(data, target, after) });
+        setImported({ result, sent, closing: closingUnits(data, target, after), links });
       } catch {
         setError("The import finished, but the closing units couldn't be checked. Check the holdings in Wealthfolio.");
       }
@@ -235,7 +313,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     }
   };
 
-  const sendCount = preview ? importRows(preview.plan, (t) => importAnyway.has(t)).length : 0;
+  const sendCount = preview ? importRows(preview.plan, (t) => importAnyway.has(t), reused).length : 0;
 
   return (
     <Page>
@@ -272,15 +350,24 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
                 holdingsChoices={holdingsChoices}
                 onChange={chooseAccount}
               />
+              <BankChoicesCard
+                data={data}
+                accounts={transactionAccounts}
+                choices={transactionChoices}
+                holdingsChoices={holdingsChoices}
+                onChange={chooseAccount}
+              />
               <FundChoicesCard ctx={ctx} items={fundItems(data)} choices={fundChoices} onChange={chooseFund} />
               <div className="flex flex-wrap items-center gap-3">
-                <Button type="button" disabled={undecided || busy !== ""} onClick={() => void runPreview()}>
+                <Button type="button" disabled={undecided || bankUndecided || busy !== ""} onClick={() => void runPreview()}>
                   {busy === "preview" && <Spinner />}
                   Preview the import
                 </Button>
-                {undecided && (
+                {(undecided || bankUndecided) && (
                   <span className="text-muted-foreground text-sm">
-                    Choose an account for each folio and a fund for each scheme first.
+                    {undecided
+                      ? "Choose an account for each folio and a fund for each scheme first."
+                      : "Choose the bank accounts again where they say so first."}
                   </span>
                 )}
               </div>
@@ -297,24 +384,30 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
               mapping={preview.mapping}
               plan={preview.plan}
               importAnyway={importAnyway}
-              onImportAnyway={(t, yes) =>
-                setImportAnyway((set) => {
-                  const next = new Set(set);
-                  if (yes) next.add(t);
-                  else next.delete(t);
-                  return next;
-                })
-              }
+              onImportAnyway={(t, yes) => setImportAnyway((set) => toggle(set, t, yes))}
+              matches={preview.matches}
+              reuse={reuse}
+              onReuse={(t, yes) => setReuse((set) => toggle(set, t, yes))}
+              accounts={allAccounts!}
               onImport={() => void runImport()}
               importing={busy === "import"}
               rowCount={sendCount}
             />
           )}
-          {imported && <ImportResult result={imported.result} sent={imported.sent} closing={imported.closing} />}
+          {imported && (
+            <ImportResult result={imported.result} sent={imported.sent} closing={imported.closing} links={imported.links} />
+          )}
         </fieldset>
       </PageContent>
     </Page>
   );
+}
+
+function toggle<T>(set: Set<T>, item: T, yes: boolean) {
+  const next = new Set(set);
+  if (yes) next.add(item);
+  else next.delete(item);
+  return next;
 }
 
 function StatementSummary({ data }: { data: CasData }) {

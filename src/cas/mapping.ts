@@ -1,4 +1,4 @@
-import type { ActivityImport } from "@wealthfolio/addon-sdk";
+import type { ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
 import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, step, sub } from "./decimal.ts";
 import type { CasData, CasFolio, CasScheme, CasTransaction, TransactionType } from "./types.ts";
 
@@ -20,6 +20,8 @@ export interface SchemeTarget {
   asset: FundAsset;
   /** Wealthfolio already has the units in `scheme.open`, with their original costs and dates. */
   openingCovered: boolean;
+  /** The Wealthfolio account purchases are paid from and redemptions and payouts paid into, if any. */
+  bankAccountId?: string;
 }
 
 export interface MappingInput {
@@ -35,8 +37,13 @@ export interface MappedTransaction {
   /** The statement's transaction, then the charges in its `tax`. */
   rows: CasTransaction[];
   activity: ActivityImport;
-  /** The DEPOSIT or WITHDRAWAL that balances `activity`. A reinvested dividend balances itself. */
+  /**
+   * The fund account's cash row that balances `activity`: a DEPOSIT or WITHDRAWAL, or a transfer
+   * from or to the bank account. A reinvested dividend balances itself.
+   */
   cash?: ActivityImport;
+  /** The bank account's side of a transfer in `cash`. Wealthfolio links the two when it imports them together. */
+  bank?: ActivityImport;
 }
 
 export interface MappingWarning {
@@ -80,6 +87,9 @@ const CHARGES: Partial<Record<TransactionType, { name: string; kinds: Kind[] }>>
   TDS_TAX: { name: "TDS", kinds: ["sell", "payout", "reinvest"] },
 };
 
+/** Rows whose money comes from or goes to the investor's bank account. */
+const BANKED = new Set<TransactionType>(["PURCHASE", "PURCHASE_SIP", "REDEMPTION", "DIVIDEND_PAYOUT"]);
+
 /** Rows #1 leaves for later. */
 const UNSUPPORTED: Partial<Record<TransactionType, string>> = {
   GIFT_IN: "Gifts aren't imported yet.",
@@ -91,6 +101,10 @@ const UNSUPPORTED: Partial<Record<TransactionType, string>> = {
 
 const MERGER_CAVEAT =
   "Imported like a switch, as a sale and a purchase: Wealthfolio may show a gain or loss that didn't happen, and the units' cost and purchase date restart.";
+
+/** Wealthfolio deletes both sides of a linked transfer, and the bank's side may be the user's own row. */
+const REVERSAL_CASH_NOTE =
+  "If that cash is a transfer, unlink it first: Wealthfolio deletes both sides of a linked transfer. Then delete the bank account's side too, unless it's a row from your bank statement.";
 
 interface Scheme {
   folio: CasFolio;
@@ -118,6 +132,7 @@ interface Entry {
   rows?: {
     activity: ActivityImport;
     cash?: ActivityImport;
+    bank?: ActivityImport;
     /** Imported, with this caveat. */
     note?: string;
   };
@@ -165,8 +180,14 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
       } else if (entry.problem) {
         warn(rows, entry.problem);
       } else if (entry.rows) {
-        const { activity, cash, note } = entry.rows;
-        mapping.transactions.push({ ...names, rows, activity: number(activity), cash: cash && number(cash) });
+        const { activity, cash, bank, note } = entry.rows;
+        mapping.transactions.push({
+          ...names,
+          rows,
+          activity: number(activity),
+          cash: cash && number(cash),
+          bank: bank && number(bank),
+        });
         if (note) warn(rows, note, false);
         if (entry.partner) warn(rows, MERGER_CAVEAT, false);
       }
@@ -273,8 +294,8 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
     } else {
       reversal.problem =
         candidates.length === 0
-          ? "This reversal's purchase isn't in the statement, so the reversal isn't imported. If Wealthfolio has that purchase, delete it and its deposit."
-          : `${candidates.length} purchases in the statement could be the one this reverses, so the reversal isn't imported. Delete the reversed purchase and its deposit after importing.`;
+          ? `This reversal's purchase isn't in the statement, so the reversal isn't imported. If Wealthfolio has that purchase, delete it and its cash in the fund account. ${REVERSAL_CASH_NOTE}`
+          : `${candidates.length} purchases in the statement could be the one this reverses, so the reversal isn't imported. Delete the reversed purchase and its cash in the fund account after importing. ${REVERSAL_CASH_NOTE}`;
     }
   }
 
@@ -325,15 +346,15 @@ function reversalMessage(original: Entry, input: MappingInput) {
   if (original.kind === "sell") {
     const putBack = "A later row has the opposite units and amount to this redemption. This could be a reversal or a new purchase, so neither row is imported. Check the statement and handle these rows by hand.";
     if (rows && (input.alreadyImported(rows.activity) || (rows.cash && input.alreadyImported(rows.cash)))) {
-      return `${putBack} Wealthfolio has the sale or its withdrawal from an earlier import; delete them only if this is a reversal.`;
+      return `${putBack} Wealthfolio has the sale or its cash from an earlier import; delete the fund rows only if this is a reversal. ${REVERSAL_CASH_NOTE}`;
     }
-    return rows ? putBack : `${putBack} If Wealthfolio has the sale or its withdrawal from an earlier import, delete them only if this is a reversal.`;
+    return rows ? putBack : `${putBack} If Wealthfolio has the sale or its cash from an earlier import, delete the fund rows only if this is a reversal. ${REVERSAL_CASH_NOTE}`;
   }
   if (!rows) {
-    return "The statement reverses this purchase, so neither row is imported. If Wealthfolio has the purchase from an earlier import, delete it and its deposit.";
+    return `The statement reverses this purchase, so neither row is imported. If Wealthfolio has the purchase from an earlier import, delete it and its cash in the fund account. ${REVERSAL_CASH_NOTE}`;
   }
   if (input.alreadyImported(rows.activity) || (rows.cash && input.alreadyImported(rows.cash))) {
-    return "Wealthfolio has this purchase from an earlier import, but the statement reverses it. Delete that purchase and its deposit; neither row is imported.";
+    return `Wealthfolio has this purchase from an earlier import, but the statement reverses it. Delete that purchase and its cash in the fund account; neither row is imported. ${REVERSAL_CASH_NOTE}`;
   }
   return "The statement reverses this purchase, so neither row is imported.";
 }
@@ -377,12 +398,24 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
     providerSymbol: target.asset.providerSymbol,
     symbolName: entry.scheme.scheme.scheme,
   };
-  const cash = (activityType: "DEPOSIT" | "WITHDRAWAL", amount: Dec): ActivityImport => ({
-    ...base,
-    activityType,
-    symbol: "",
-    amount: format(amount),
-  });
+  // A purchase is paid from the bank account and a redemption or payout paid into it, when there
+  // is one; a switch's or merger's money stays with the fund house.
+  const bankAccountId = BANKED.has(row.type) ? target.bankAccountId : undefined;
+  /** The cash rows for `amount` moving into the fund account, or out of it. */
+  const cash = (into: boolean, amount: Dec) => {
+    const cashRow = (accountId: string, activityType: ActivityType): ActivityImport => ({
+      ...base,
+      accountId,
+      activityType,
+      symbol: "",
+      amount: format(amount),
+    });
+    if (!bankAccountId) return { cash: cashRow(target.accountId, into ? "DEPOSIT" : "WITHDRAWAL") };
+    return {
+      cash: cashRow(target.accountId, into ? "TRANSFER_IN" : "TRANSFER_OUT"),
+      bank: cashRow(bankAccountId, into ? "TRANSFER_OUT" : "TRANSFER_IN"),
+    };
+  };
 
   if (kind === "payout") {
     let gross = printed;
@@ -403,7 +436,7 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
     if (final.n < 0n) return "This transaction's charges exceed its proceeds.";
     return {
       activity: { ...base, ...asset, ...tax, activityType: "DIVIDEND", amount: format(final) },
-      cash: cash("WITHDRAWAL", final),
+      ...cash(false, final),
     };
   }
 
@@ -432,7 +465,7 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
   }
   return {
     activity: { ...trade, activityType: kind === "buy" ? "BUY" : "SELL", amount: format(final) },
-    cash: cash(kind === "buy" ? "DEPOSIT" : "WITHDRAWAL", final),
+    ...cash(kind === "buy", final),
     note,
   };
 }

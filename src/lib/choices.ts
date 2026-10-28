@@ -13,6 +13,10 @@ type Storage = AddonContext["api"]["storage"];
 
 export const panKey = (pan: string) => `pan:${sha256(`cas-importer pan ${pan.trim().toUpperCase()}`)}`;
 export const folioKey = (folio: CasFolio) => `folio:${sha256(`cas-importer folio ${folio.amc}|${folio.folio}`)}`;
+/** The bank account for a PAN's or folio's cash, keyed by `panKey` or `folioKey`, or `NO_BANK`. */
+export const bankKey = (key: string) => `bank-${key}`;
+/** A folio's cash comes from and goes outside Wealthfolio, whatever its PAN's bank account. */
+export const NO_BANK = "outside";
 /** Funds are found by the printed ISIN, or by the registrar's scheme code when there's none. */
 export const fundKey = (scheme: CasScheme) => holdingKey({ isin: scheme.isin, rta: scheme.rta, rtaCode: scheme.rta_code });
 

@@ -6,9 +6,12 @@ import { describe, test } from "node:test";
 import { format } from "../src/cas/decimal.ts";
 import { mapStatement } from "../src/cas/mapping.ts";
 import {
+  bankCandidates,
+  bankMatches,
   closingUnits,
   importRows,
   indexActivities,
+  linkBankRow,
   openingUnits,
   planImport,
   rowsOf,
@@ -62,9 +65,9 @@ const target = (folio, s) => ({
   asset: { symbol: s.rta_code.toLowerCase(), exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND" },
 });
 
-const map = (data, existing = []) =>
+const map = (data, existing = [], bankAccountId = undefined) =>
   mapStatement(data, {
-    target: (folio, s) => ({ ...target(folio, s), openingCovered: true }),
+    target: (folio, s) => ({ ...target(folio, s), openingCovered: true, bankAccountId }),
     alreadyImported: indexActivities(existing).has,
   });
 
@@ -96,8 +99,8 @@ const stored = (row) => ({
   exchangeMic: row.exchangeMic ?? null,
 });
 
-const plan = (data, existing = [], errors = {}) => {
-  const mapping = map(data, existing);
+const plan = (data, existing = [], errors = {}, bankAccountId = undefined) => {
+  const mapping = map(data, existing, bankAccountId);
   return planImport(mapping, existing, check(rowsOf(mapping), errors));
 };
 
@@ -219,6 +222,185 @@ describe("duplicates", () => {
     const mapping = map(statement(scheme("A", [...purchase, tx("2024-01-15", "REVERSAL", "-999.95", "-99.995", "10.0000")])), earlier);
     assert.deepEqual(mapping.transactions, []);
     assert.match(mapping.warnings[0].message, /^Wealthfolio has this purchase from an earlier import/);
+  });
+});
+
+describe("bank account", () => {
+  const BANK = "bank-1";
+  const banked = (data, existing = [], errors = {}) => plan(data, existing, errors, BANK);
+  const redemption = (date, amount = "-3000.00") => tx(date, "REDEMPTION", amount, "-61.000", "49.1803");
+  const data = statement(
+    scheme("A", [...sip("2023-04-10"), redemption("2023-06-01")]),
+    scheme("B", [tx("2023-12-28", "DIVIDEND_PAYOUT", "7276.48")]),
+  );
+  const rowText = (r) => `${r.activityType} ${r.accountId}`;
+
+  /** Wealthfolio 3.11.0's link_imported_transfer_pairs: each transfer in takes the first unused transfer out in another account with the same day, currency, symbol and amount. */
+  function linkedPairs(rows) {
+    const key = (r) => [r.date, r.currency, r.symbol, r.amount].join("|");
+    const used = new Set();
+    return rows.flatMap((r, i) => {
+      if (r.activityType !== "TRANSFER_IN") return [];
+      const j = rows.findIndex((o, k) => o.activityType === "TRANSFER_OUT" && !used.has(k) && key(o) === key(r) && o.accountId !== r.accountId);
+      if (j < 0) return [];
+      used.add(j);
+      return [[Math.min(i, j), Math.max(i, j)]];
+    });
+  }
+
+  test("purchases, redemptions and payouts move cash between the bank and the fund account", () => {
+    const rows = importRows(banked(data), () => false);
+    assert.deepEqual(rows.map(rowText), [
+      "BUY account-1", "TRANSFER_IN account-1", "TRANSFER_OUT bank-1",
+      "SELL account-1", "TRANSFER_OUT account-1", "TRANSFER_IN bank-1",
+      "DIVIDEND account-1", "TRANSFER_OUT account-1", "TRANSFER_IN bank-1",
+    ]);
+    assert.deepEqual(linkedPairs(rows), [[1, 2], [4, 5], [7, 8]]);
+  });
+
+  test("each transaction's legs link to each other, even when another moves the same amount the same day", () => {
+    // A purchase in one folio and a redemption of the same amount in another, on one day.
+    const twin = statement(
+      scheme("A", sip("2023-04-10", "5000.00", "100.000", "50.0000")),
+      scheme("B", [tx("2023-04-10", "REDEMPTION", "-5000.25", "-100.005", "50.0000")]),
+    );
+    const mapping = mapStatement(twin, {
+      target: (folio, s) => ({ ...target(folio, s), accountId: `account-${s.scheme}`, openingCovered: true, bankAccountId: BANK }),
+      alreadyImported: () => false,
+    });
+    const rows = rowsOf(mapping);
+    assert.equal(new Set(rows.filter((r) => r.activityType.startsWith("TRANSFER")).map((r) => r.amount)).size, 1);
+    assert.deepEqual(linkedPairs(rows), [[1, 2], [4, 5]]);
+  });
+
+  test("a v1 import's deposits and withdrawals are the transactions' cash", () => {
+    const v1 = importRows(plan(data), () => false).map(stored);
+    const planned = banked(data, v1);
+    assert.deepEqual(statuses(planned), ["existing", "existing", "existing"]);
+    assert.deepEqual(planned.map((t) => t.rows[1].existingType), ["DEPOSIT", "WITHDRAWAL", "WITHDRAWAL"]);
+    assert.ok(planned.every((t) => t.rows[2].existingId === undefined), "the bank's side isn't looked for");
+    assert.deepEqual(importRows(planned, () => false), []);
+    // And the other way round, once the bank account is no longer chosen.
+    const transfers = importRows(banked(data), () => false).map(stored);
+    assert.deepEqual(statuses(plan(data, transfers)), ["existing", "existing", "existing"]);
+  });
+
+  test("a second import finds the transfers, and the bank's side doesn't matter once the fund's is in", () => {
+    const rows = importRows(banked(data), () => false).map(stored);
+    assert.deepEqual(statuses(banked(data, rows)), ["existing", "existing", "existing"]);
+    // A reused bank row keeps its own day and amount.
+    const fundSide = rows.filter((r) => r.accountId !== BANK);
+    const bankSide = rows.filter((r) => r.accountId === BANK).map((r) => ({ ...r, amount: "1", date: "2023-01-01T00:00:00+00:00" }));
+    assert.deepEqual(statuses(banked(data, [...fundSide, ...bankSide])), ["existing", "existing", "existing"]);
+  });
+
+  test("a bank transfer Wealthfolio already has makes a new transaction a possible duplicate", () => {
+    const [, , bankLeg] = importRows(banked(statement(scheme("A", sip("2023-04-10")))), () => false);
+    const planned = banked(statement(scheme("B", sip("2023-04-10"))), [stored(bankLeg)]);
+    assert.equal(planned[0].status, "duplicate");
+    assert.ok(planned[0].rows[2].existingId);
+  });
+
+  test("reusing a bank row sends only the trade", () => {
+    const planned = banked(data);
+    assert.deepEqual(importRows(planned, () => false, (t) => t === planned[1]).map(rowText), [
+      "BUY account-1", "TRANSFER_IN account-1", "TRANSFER_OUT bank-1",
+      "SELL account-1",
+      "DIVIDEND account-1", "TRANSFER_OUT account-1", "TRANSFER_IN bank-1",
+    ]);
+  });
+
+  const bankRow = (activityType, amount, date, extra = {}) => ({
+    id: `bank-${++id}`, accountId: BANK, activityType, subtype: null, status: "POSTED", date: `${date}T00:00:00+00:00`,
+    quantity: null, unitPrice: null, amount, fee: null, currency: "INR", needsReview: false, comment: "ACH D- FUND HOUSE",
+    assetId: "", assetSymbol: "", ...extra,
+  });
+
+  test("bank rows that may be a transaction's bank side", () => {
+    // The statement prints ₹4,999.75 after ₹0.25 stamp duty; the bank paid ₹5,000.
+    const purchase = statement(scheme("A", sip("2023-04-10")));
+    const [t] = banked(purchase);
+    const ids = (rows) => bankCandidates(t, rows).map((r) => r.amount);
+    assert.equal(t.transaction.cash.amount, "5000.018");
+    assert.deepEqual(ids([bankRow("WITHDRAWAL", "5000.00", "2023-04-08"), bankRow("TRANSFER_OUT", "5000.02", "2023-04-17"), bankRow("WITHDRAWAL", "4999.75", "2023-04-03")]), ["5000.00", "5000.02", "4999.75"]);
+    assert.deepEqual(ids([
+      bankRow("DEPOSIT", "5000.00", "2023-04-10"),
+      bankRow("WITHDRAWAL", "5000.01", "2023-04-10"),
+      bankRow("WITHDRAWAL", "5000.00", "2023-04-18"),
+      bankRow("WITHDRAWAL", "5000.00", "2023-04-10", { accountId: "account-1" }),
+      bankRow("WITHDRAWAL", "5000.00", "2023-04-10", { status: "DRAFT" }),
+      bankRow("WITHDRAWAL", "5000.00", "2023-04-10", { currency: "USD" }),
+      bankRow("WITHDRAWAL", "5000.00", "2023-04-10", { assetSymbol: "FUND" }),
+    ]), [], "other directions, amounts, days, accounts, statuses, currencies and assets");
+    // A redemption printed before STT is paid in without it.
+    const [sale] = banked(statement(scheme("A", [redemption("2023-06-01"), tx("2023-06-01", "STT_TAX", "0.03")])));
+    assert.deepEqual(bankCandidates(sale, [bankRow("DEPOSIT", "2999.97", "2023-06-03"), bankRow("WITHDRAWAL", "2999.97", "2023-06-03")]).map((r) => r.activityType), ["DEPOSIT"]);
+    // Existing transactions and those without a bank account have nothing to match.
+    const existing = importRows(banked(purchase), () => false).map(stored);
+    assert.deepEqual(bankCandidates(banked(purchase, existing)[0], [bankRow("WITHDRAWAL", "5000.00", "2023-04-10")]), []);
+    assert.deepEqual(bankCandidates(plan(purchase)[0], [bankRow("WITHDRAWAL", "5000.00", "2023-04-10")]), []);
+  });
+
+  test("each bank row is offered for one transaction, closest days first, and linked transfers never", () => {
+    const planned = banked(statement(scheme("A", [...sip("2023-04-05", "5000.00", "100.000", "49.9975"), ...sip("2023-04-06", "5000.00", "100.000", "49.9975")])));
+    const early = bankRow("WITHDRAWAL", "5000.00", "2023-04-04");
+    const same = bankRow("WITHDRAWAL", "5000.00", "2023-04-06");
+    const linked = bankRow("TRANSFER_OUT", "5000.00", "2023-04-05");
+    const matches = bankMatches(planned, [early, same, linked], new Set([linked.id]));
+    assert.equal(matches.get(planned[1]), same);
+    assert.equal(matches.get(planned[0]), early);
+    assert.equal(bankMatches(planned, [same], new Set()).size, 1);
+  });
+
+  test("using a bank row adds the fund's transfer, changes a withdrawal into a transfer and links them", async () => {
+    const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
+    const calls = [];
+    const api = {
+      create: async (a) => (calls.push(["create", a]), { id: "fund-leg" }),
+      update: async (a) => void calls.push(["update", a]),
+      linkTransfer: async (a, b) => void calls.push(["link", a, b]),
+    };
+    const withdrawal = bankRow("WITHDRAWAL", "5000.00", "2023-04-08");
+    assert.equal(await linkBankRow(api, t, withdrawal), undefined);
+    assert.deepEqual(calls, [
+      ["create", { accountId: "account-1", activityType: "TRANSFER_IN", activityDate: "2023-04-10", amount: "5000.018", currency: "INR", idempotencyKey: `cas-importer-bank:${withdrawal.id}` }],
+      ["update", { id: withdrawal.id, accountId: BANK, activityType: "TRANSFER_OUT", activityDate: withdrawal.date, currency: "INR", comment: "ACH D- FUND HOUSE" }],
+      ["link", withdrawal.id, "fund-leg"],
+    ]);
+    // A transfer keeps its type.
+    calls.length = 0;
+    assert.equal(await linkBankRow(api, t, bankRow("TRANSFER_OUT", "5000.00", "2023-04-08")), undefined);
+    assert.deepEqual(calls.map(([step]) => step), ["create", "link"]);
+    // Each step's failure says what's left to do.
+    const failing = (step) => ({ ...api, [step]: async () => { throw new Error("nope"); } });
+    assert.match(await linkBankRow(failing("create"), t, withdrawal), /^Couldn't add the fund account's transfer: Error: nope\. The trade is in Wealthfolio without its cash\.$/);
+    assert.match(await linkBankRow(failing("update"), t, withdrawal), /couldn't change the bank's row on 2023-04-08 into a transfer: Error: nope\. Change it and link the two in Wealthfolio\.$/);
+    assert.match(await linkBankRow(failing("linkTransfer"), t, withdrawal), /couldn't link it with the bank's row on 2023-04-08: Error: nope\. Link the two in Wealthfolio\.$/);
+  });
+
+  test("equal confirmed bank rows get distinct cash, including Import anyway, but retries cannot create it twice", async () => {
+    const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
+    const keys = new Set();
+    const api = {
+      create: async (a) => {
+        // Wealthfolio computes a content key when none is supplied, then rejects an existing key.
+        const key = a.idempotencyKey ?? JSON.stringify(a);
+        if (keys.has(key)) throw new Error("Duplicate activity");
+        keys.add(key);
+        return { id: key };
+      },
+      update: async () => {},
+      linkTransfer: async () => {},
+    };
+    const first = bankRow("WITHDRAWAL", "5000.00", "2023-04-10");
+    const second = bankRow("WITHDRAWAL", "5000.00", "2023-04-10");
+    assert.equal(await linkBankRow(api, t, first), undefined);
+    const duplicate = { ...t, status: "duplicate" };
+    assert.deepEqual(importRows([duplicate], () => true, () => true), [{ ...t.transaction.activity, forceImport: true }]);
+    assert.equal(await linkBankRow(api, duplicate, second), undefined);
+    assert.equal(keys.size, 2);
+    assert.match(await linkBankRow(api, t, first), /Duplicate activity/);
+    assert.equal(keys.size, 2);
   });
 });
 

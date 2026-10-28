@@ -115,7 +115,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText(/2 folios, 7 schemes, 78 rows\. Skipping 2 closed schemes, with no units and nothing to import\./).waitFor({ timeout: 180_000 });
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
 
-    await frame.getByLabel("PAN ABCDE1234F").click();
+    await frame.getByLabel("PAN ABCDE1234F", { exact: true }).click();
     // Only accounts that track transactions, which in Wealthfolio include NOT_SET.
     await frame.getByRole("option", { name: "Not set (INR)" }).waitFor();
     assert.equal(await frame.getByRole("option", { name: "Demat (INR)" }).count(), 0);
@@ -212,7 +212,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await waiting();
     assert.equal(await frame.getByRole("button", { name: "Import 23 activities" }).count(), 0);
     assert.equal(await frame.locator("#cas-file").isDisabled(), true);
-    assert.equal(await frame.getByLabel("PAN ABCDE1234F").isDisabled(), true);
+    assert.equal(await frame.getByLabel("PAN ABCDE1234F", { exact: true }).isDisabled(), true);
     assert.equal(await remember.isDisabled(), true);
     assert.equal(await frame.getByRole("button", { name: "Change", exact: true }).first().isDisabled(), true);
     await resume();
@@ -232,6 +232,101 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).isDisabled(), true);
+
+    // With a bank account chosen, the deposits and withdrawals imported before are the transactions' cash.
+    const bankChoice = frame.getByLabel("Bank account for PAN ABCDE1234F");
+    const beforeBank = await host();
+    await bankChoice.click();
+    assert.equal(await frame.getByRole("option", { name: "Demat (INR)" }).count(), 0);
+    await frame.getByRole("option", { name: "Savings (INR)" }).click();
+    await frame.getByText("Same as PAN (Savings)").first().waitFor();
+    const [[bankKey, bankId]] = (await host()).storage.filter(([key]) => !beforeBank.storage.some(([other]) => other === key));
+    assert.match(bankKey, /^bank-pan:[0-9a-f]{64}$/);
+    assert.equal(bankId, "bank-1");
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    await frame.getByText("Wealthfolio already has this transfer in, as a deposit.").first().waitFor();
+
+    // Otherwise purchases, redemptions and payouts come with transfers from and to the bank account,
+    // and a withdrawal it already has can stand in for one; a transfer already linked can't.
+    await tab.frames()[1].evaluate(() => {
+      const bankRow = (id, activityType, amount, date, comment) => ({
+        id, accountId: "bank-1", activityType, subtype: null, status: "POSTED", date: `${date}T00:00:00+00:00`, quantity: null,
+        unitPrice: null, amount, fee: null, currency: "INR", needsReview: false, comment, assetId: "", assetSymbol: "",
+      });
+      window.host.activities = [
+        bankRow("bank-neft", "WITHDRAWAL", "25000.00", "2023-05-04", "NEFT FICTIVA MF"),
+        bankRow("bank-linked", "TRANSFER_IN", "7276.48", "2023-12-28", "IDCW"),
+      ];
+      window.host.linked = ["bank-linked"];
+    });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    await frame.getByText(
+      "Savings has a withdrawal of 25000.00 on 2023-05-04 (NEFT FICTIVA MF). If you use it, the add-on changes it into a transfer out and links it with this transfer in.",
+    ).waitFor();
+    const reuseBankRow = frame.getByRole("checkbox", { name: "Use it instead of a new transfer out" });
+    assert.equal(await reuseBankRow.count(), 1);
+    const bankRows = await tab.frames()[1].evaluate(() => window.host.activities);
+    // A trade rejected or skipped after preview must leave its chosen bank row and fund cash alone.
+    for (const outcome of ["rejectLine", "skipLine"]) {
+      await tab.frames()[1].evaluate(([rows, outcome]) => {
+        window.host.activities = rows;
+        window.host[outcome] = 1;
+      }, [bankRows, outcome]);
+      await frame.getByRole("button", { name: "Preview the import" }).click();
+      await reuseBankRow.waitFor({ state: "attached" });
+      await reuseBankRow.dispatchEvent("click");
+      await frame.getByRole("button", { name: "Import 30 activities" }).click();
+      await frame.getByText("Imported 29 of 30 activities").waitFor();
+      await frame.getByText(/The trade wasn't imported, so the bank's row was left as it is\./).waitFor();
+      const unchanged = await tab.frames()[1].evaluate(() => ({
+        bank: window.host.activities.find((a) => a.id === "bank-neft"),
+        fundRows: window.host.activities.filter((a) => a.accountId === "account-1" && a.date.startsWith("2023-05-05")),
+        links: window.host.links,
+      }));
+      assert.deepEqual(unchanged, { bank: bankRows[0], fundRows: [], links: [] });
+      await tab.frames()[1].evaluate(() => {
+        window.host.rejectLine = undefined;
+        window.host.skipLine = undefined;
+      });
+    }
+    await tab.frames()[1].evaluate((rows) => { window.host.activities = rows; }, bankRows);
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await reuseBankRow.waitFor({ state: "attached" });
+    await frame.getByRole("button", { name: "Import 32 activities" }).waitFor();
+    await reuseBankRow.dispatchEvent("click");
+    await frame.getByRole("button", { name: "Import 30 activities" }).click();
+    await frame.getByText("Imported 30 of 30 activities").waitFor();
+    await frame.getByText("Linked 1 of 1 bank rows you chose with their transactions.").waitFor();
+    const banked = await tab.frames()[1].evaluate(() => ({ activities: window.host.activities, links: window.host.links }));
+    const byId = Object.fromEntries(banked.activities.map((a) => [a.id, a]));
+    assert.equal(banked.links.length, 1);
+    const [[bankRowId, fundLegId]] = banked.links;
+    assert.equal(bankRowId, "bank-neft");
+    assert.deepEqual(
+      [byId["bank-neft"].activityType, byId["bank-neft"].comment, byId["bank-neft"].amount],
+      ["TRANSFER_OUT", "NEFT FICTIVA MF", "25000.00"],
+    );
+    const fundLeg = byId[fundLegId];
+    assert.deepEqual(
+      [fundLeg.accountId, fundLeg.activityType, fundLeg.amount, fundLeg.date.slice(0, 10)],
+      ["account-1", "TRANSFER_IN", "25001.1470564", "2023-05-05"],
+    );
+    const count = (accountId, type) => banked.activities.filter((a) => a.accountId === accountId && a.activityType === type).length;
+    assert.deepEqual(
+      [count("bank-1", "TRANSFER_OUT"), count("bank-1", "TRANSFER_IN"), count("account-1", "TRANSFER_IN"), count("account-1", "TRANSFER_OUT")],
+      [4, 6, 4, 5],
+    );
+    assert.equal(count("account-1", "DEPOSIT"), 1, "the switch's purchase keeps its deposit");
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    // Back to outside Wealthfolio, which forgets the choice.
+    await bankChoice.click();
+    await frame.getByRole("option", { name: "Outside Wealthfolio" }).click();
+    await frame.getByText("Same as PAN (Outside Wealthfolio)").first().waitFor();
+    await tab.frames()[1].waitForFunction((key) => !window.host.storage.has(key), bankKey);
+    assert.deepEqual(await host(), beforeBank);
 
     // Selecting a file clears the previous statement and preview, even before the next read.
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-mismatch.pdf");
@@ -281,8 +376,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // A remembered PAN or folio account that tracks holdings is ignored, and its row says why. The
     // folio's own account needs choosing again, even to go with its PAN.
-    const panAccount = frame.getByLabel("PAN ABCDE1234F");
-    const fictiva = frame.getByLabel("Fictiva Mutual Fund, folio 91234567 / 12");
+    const panAccount = frame.getByLabel("PAN ABCDE1234F", { exact: true });
+    const fictiva = frame.getByLabel("Fictiva Mutual Fund, folio 91234567 / 12", { exact: true });
     const accountKeys = [await panAccount.getAttribute("id"), await fictiva.getAttribute("id")];
     const beforeHoldings = await storage();
     await tab.frames()[1].evaluate(([pan, folio]) => {
@@ -308,6 +403,35 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.frames()[1].waitForFunction(([pan, folio]) =>
       window.host.storage.get(pan) === "account-1" && !window.host.storage.has(folio), accountKeys);
     assert.deepEqual(await storage(), beforeHoldings);
+
+    // Folio bank choices override a stale PAN default, and unused defaults cannot report a conflict.
+    const beforeBankValidation = await storage();
+    const bankFolios = expected.folios.map((f) => frame.getByLabel(`Bank account for ${f.amc}, folio ${f.folio}`, { exact: true }));
+    await tab.frames()[1].evaluate((key) => { window.host.storage.set(key, "holdings-1"); }, bankKey);
+    await readAgain();
+    assert.equal(await previewButton.isDisabled(), true);
+    await bankFolios[0].click();
+    await frame.getByRole("option", { name: "Outside Wealthfolio", exact: true }).click();
+    assert.equal(await previewButton.isDisabled(), true, "the other folio still inherits the stale default");
+    await bankFolios[1].click();
+    await frame.getByRole("option", { name: "Savings (INR)" }).click();
+    assert.equal(await previewButton.isDisabled(), false);
+    await bankChoice.click();
+    await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
+    assert.equal(await previewButton.isDisabled(), false);
+    assert.equal(await frame.getByText(/This is also the account for the funds/).count(), 0);
+
+    // A folio whose funds are all left out cannot block the other folio's valid import.
+    await bankFolios[0].click();
+    await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).click();
+    assert.equal(await previewButton.isDisabled(), true);
+    for (const isin of ["INFZ90K01FC8", "INFZ90K01LQ6", "INFZ90K01BA1"]) {
+      await leaveOut(frame.locator("section").filter({ hasText: `ISIN ${isin}` }));
+    }
+    assert.equal(await previewButton.isDisabled(), false);
+    await tab.frames()[1].evaluate((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeBankValidation);
+    await readAgain();
+    assert.deepEqual(await storage(), beforeBankValidation);
 
     // Change alone keeps the saved fund, so reading again confirms it again.
     const flexi = frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" });
