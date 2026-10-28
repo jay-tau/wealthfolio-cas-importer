@@ -49,13 +49,31 @@ or withdrawal count as already in Wealthfolio, and the add-on leaves those rows 
 casparser returns holdings for these statements, including depository statements with transaction
 sections. The add-on saves the holdings as a snapshot, an account's holdings and cash on the
 statement's date, in Wealthfolio accounts that track holdings.
-Choose such an account for the whole statement, and a different one or "Leave out" for any folio or
-demat account. Demat labels use their order on the statement and broker name, without account numbers.
-Confirm the Wealthfolio fund or share for each holding: shares are searched by their
-ISIN too, and a fund confirmed for a detailed statement is already confirmed here. Bonds and
-National Pension System (NPS) holdings are left out for now; any that casparser returns are listed
-as left out even before a preview. If no holdings account is offered, create one in Wealthfolio
-and reopen the add-on.
+Choose such an account for the whole statement, and a different one or "Leave out" for any folio,
+demat account or National Pension System (NPS) account. Demat labels use their order on the statement and
+broker name, without account numbers; an NPS account's label is its PRAN as printed, masked.
+Confirm the Wealthfolio asset for each holding: shares and bonds are searched by their
+ISIN too, and a fund confirmed for a detailed statement is already confirmed here. If no holdings
+account is offered, create one in Wealthfolio and reopen the add-on.
+
+A bond or NPS scheme that no search result fits can use the statement's prices instead. The add-on
+then creates a Wealthfolio asset priced by hand, and the next statement finds it again:
+
+- A bond is a `BOND` asset with its ISIN as the symbol. Its cost defaults to the face value times
+  the number of bonds when the statement prints a face value (NSDL demat accounts do); CDSL demat
+  accounts on NSDL statements print a market price instead. casparser 1.4.1 returns no bonds for
+  CDSL statements.
+- An NPS scheme is one asset however many PRANs hold it; Tier I and Tier II are separate schemes.
+  Statements print no scheme code, so its symbol comes from the printed name, without the words
+  every scheme name repeats: "NPS TRUST- A/C SBI PENSION FUNDS PRIVATE LIMITED SCHEME E - TIER I" is
+  `NPS-SBI-E-TIER-I`. Its name is the printed one. casparser 1.4.1 returns NPS holdings for CDSL
+  statements only. An NPS account goes by its PRAN as printed (masked), or by the investor when
+  none is printed.
+- After saving, the add-on keeps the statement's details on the asset's metadata: as printed under
+  `casStatement`, and for a bond asset, the ISIN, maturity date, coupon rate, face value and
+  coupon frequency Wealthfolio's bond fields don't have yet. A frequency Wealthfolio's bond pricer
+  doesn't know, such as "On Maturity", stays only in the printed details. If you later switch the
+  asset to market prices, a data source that knows the ISIN or the scheme has what it needs.
 
 Check each summary folio's funds against the PDF. On made-up CAMS and KFintech statements,
 casparser 1.4.1 merges identical printed folio numbers from different AMCs under the first AMC,
@@ -79,22 +97,32 @@ account's complete snapshot before anything is saved:
 - A folio's fund that an account tracking transactions already holds, most likely from a detailed
   statement, is left out by default so it isn't counted twice. Another account holding a fund or
   share gets a warning.
-- The cost is the one printed on the statement. When none is available, the cost is the account's
-  average cost in INR in Wealthfolio for the statement's units, or whatever you type in INR. An
-  existing cost in another currency leaves the statement cost unknown with a note. A printed zero is
-  treated as unknown. Left blank, it's unknown: Wealthfolio stores it as zero and counts the
-  holding's whole value as gain.
+- The cost is the one printed on the statement. Otherwise, the preview tries the account's average
+  cost in INR for the statement's units, then a bond's face value times its units. You can change
+  that proposed amount or leave it blank. An existing cost in another currency is not reused and
+  gets a note. A printed zero is treated as unknown. Left blank, it's unknown: Wealthfolio stores
+  it as zero and counts the holding's whole value as gain.
 - Replacing a snapshot Wealthfolio already has for that date needs your confirmation.
-- A nonzero cost for a holding known to use manual prices blocks saving: Wealthfolio would also
-  use its average cost as its price. Clear an editable cost, leave the holding out and remove any
-  kept position for it, or change its pricing mode in Wealthfolio, reconfirm the fund or share if
-  needed, and preview again.
+- Saving a snapshot makes Wealthfolio write the average cost of each holding priced by hand as its
+  price on the snapshot's date. Right after saving, the add-on writes the statement's price there
+  instead for each such holding included from the statement. A kept holding uses that price too
+  when another imported account includes it; otherwise it keeps its latest price on or before that
+  date. If neither price is available, the preview warns that its average cost becomes its price.
+  An existing quote on that date keeps its notes. A kept price also keeps the quote's other fields.
+  If a snapshot fails after writing prices, the add-on still attempts price repair. Any price or
+  detail it can't save is listed after the import.
 
-The manual-price check uses the snapshot being carried over, returned portfolio holdings, pricing
-information in search results, and the latest readable snapshot of each archived account when one
-is available. Those archived snapshots supply pricing information only, not current overlap
-warnings. SDK 3.11.0 can't list every existing asset: an asset absent from these results, including
-one in an archived account with no readable snapshot, can have manual pricing that goes undetected.
+Whether a holding is priced by hand comes from the snapshot being carried over, returned portfolio
+holdings, pricing information in search results, and the latest readable snapshot of each archived
+account when one is available. Those archived snapshots supply pricing information only, not
+current overlap warnings. SDK 3.11.0 can't list every existing asset: an asset absent from these
+results, including one in an archived account with no readable snapshot, can be priced by hand
+without the add-on knowing, and then takes its average cost as its price on the snapshot's date.
+For a statement-price or other manual-priced choice, the add-on also searches for its existing
+asset and reads its profile. An existing market-priced asset keeps market pricing, even if no
+account holds it. If that lookup fails for a choice that would use manual prices, the preview
+stops. A known manually priced asset must also be found before saving, so its existing quote can
+be kept. Try the preview again.
 
 Wealthfolio counts units added or removed between two snapshots as money put in or taken out, at
 the later snapshot's prices.
@@ -108,12 +136,13 @@ the later snapshot's prices.
   delete it, the add-on says so and it can come back. "Left out" itself isn't kept: the next read
   searches for the fund again.
 - Also in add-on storage, for summary and depository statements: the account chosen for the
-  statement and for each folio or demat account, keyed by a hash of the PAN, email address or investor
-  name; the folio number and parsed AMC (summary) or ISIN issuer (depository); or the demat account's DP and
-  client IDs. Summary and depository folio account overrides are separate.
-- Dated records of which funds and shares each holdings import added, with both their ISIN and
-  registrar scheme code when available, keyed by a hash of the folio or demat account and the
-  Wealthfolio account. Hashed links join summary and depository records when an ISIN establishes
+  statement and for each folio, demat account or NPS account, keyed by a hash of the PAN, email address or investor
+  name; the folio number and parsed AMC (summary) or ISIN issuer (depository); the demat account's DP and
+  client IDs; or the PRAN as printed. Summary and depository folio account overrides are separate.
+  The asset confirmed for a bond is kept under its ISIN, and for an NPS scheme under a hash of its symbol.
+- Dated records of which holdings each holdings import added, with both their ISIN and
+  registrar scheme code when available, or an NPS scheme's symbol, keyed by a hash of the folio,
+  demat account or PRAN and the Wealthfolio account. Hashed links join summary and depository records when an ISIN establishes
   the same folio number and issuer; learned links remain when a later summary omits the ISIN,
   but stop being used if it names more than one issuer.
   Importing an earlier date preserves the records for later dates.
@@ -123,7 +152,7 @@ the later snapshot's prices.
 These hashes keep PANs and folio numbers out of casual view; they don't make them secret.
 PANs are few enough to brute-force.
 
-Fund and share searches send the printed ISIN, the name from the statement when the ISIN finds
+Searches send the printed ISIN, the name from the statement when the ISIN finds
 nothing or none is printed, or what you type, to Wealthfolio's market-data providers. The
 PDF, its password and your PAN never leave Wealthfolio.
 

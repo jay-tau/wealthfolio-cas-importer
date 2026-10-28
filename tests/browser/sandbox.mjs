@@ -552,12 +552,24 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => {
       window.host.parseWarnings = ["MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail"];
       window.host.failHistory = false;
+      window.host.assetIds.INEZ91A07012 = "bond-created-001";
+      // An older remembered provider result has no ID and calls this fund MUTUALFUND.
+      window.host.storage.set("isin:INFZ91T01NF4", JSON.stringify({
+        symbol: "INFZ91T01NF4", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Fund INFZ91T01NF4",
+      }));
+      window.host.assets["older-fund-012"] = { symbol: "INFZ91T01NF4", exchangeMic: "XBOM", instrumentType: "EQUITY", name: "Fund INFZ91T01NF4" };
+      window.host.pricingModes.INFZ91T01NF4 = "MANUAL";
+      window.host.quotes["older-fund-012"] = [{
+        id: "legacy-fund-quote", assetId: "older-fund-012", timestamp: "2025-03-31T12:00:00Z", createdAt: "2025-03-31T13:00:00Z",
+        open: 100, high: 100, low: 100, close: 100, adjclose: 100, volume: 0, currency: "INR", dataSource: "MANUAL", notes: "Keep the older fund quote note",
+      }];
       // An account tracking transactions holds the Flexi Cap fund and a short share position.
       window.host.snapshots["account-1"] = {
         "2025-03-31": {
           holdings: [
             { symbol: "INFZ90K01FC8", quantity: "10", currency: "INR" },
             { symbol: "INEZ90B01015", quantity: "-10", currency: "INR" },
+            { assetId: "older-fund-012", symbol: "INFZ91T01NF4", quantity: "10", currency: "INR" },
           ],
           cash: {}, source: "CALCULATED",
         },
@@ -569,10 +581,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 13 holdings.").waitFor({ timeout: 180_000 });
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 17 holdings.").waitFor({ timeout: 180_000 });
     await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
     await frame.getByText("MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail", { exact: true }).waitFor();
-    assert.equal(await frame.getByText("Bonds aren't imported yet.", { exact: false }).count(), 4);
+    assert.equal(await frame.getByText("Left out", { exact: true }).count(), 0);
     const choose = async (label, option) => {
       await frame.getByLabel(label).click();
       // Only accounts that track holdings.
@@ -598,20 +610,28 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
     await choose(/^Folio 1040012345/, "Leave out");
     const preview = frame.getByRole("button", { name: "Preview the snapshots" });
-    assert.equal(await frame.locator("section").count(), 12);
+    assert.equal(await frame.locator("section").count(), 16);
     for (const section of await frame.locator("section").all()) {
       if (await section.getByText("PLACEHOLDER PHARMA LIMITED").count()) {
         await section.getByRole("button", { name: "Leave this share out" }).click();
         continue;
       }
-      const use = section.getByRole("button", { name: /^Use this (fund|share)$/ });
-      await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).first().waitFor();
+      const use = section.getByRole("button", { name: /^Use this (fund|share|bond)$/ });
+      const nothing = section.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/);
+      await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).or(nothing).first().waitFor();
       if (await section.getByText("Confirmed", { exact: true }).count()) continue;
-      if (await use.isDisabled()) await section.getByRole("radio").first().click();
-      await use.click();
+      // Bonds the search can't find use the statement's prices; the one it finds is used as found.
+      if (await nothing.count()) await section.getByRole("button", { name: "Use the statement's prices" }).click();
+      else {
+        if (await use.isDisabled()) await section.getByRole("radio").first().click();
+        await use.click();
+      }
       await section.getByText("Confirmed", { exact: true }).waitFor();
     }
-    // A known MANUAL asset in an inactive account is unsafe even when the target starts empty.
+    await frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" }).getByText("INEZ91A07012 · BOND · INR · priced from statements").waitFor();
+    await frame.locator("section").filter({ hasText: "ISIN INEZ93A08016" }).getByText("Democorp Infra 7.60% 2033").waitFor();
+    // A known MANUAL asset in an inactive account gets the statement's price, even when the target starts empty.
+    const priced = "Priced by hand: saving also saves the statement's price as its price on this date.";
     await hosted(() => {
       window.host.held["archived-1"] = ["INFZ90K01LQ6"];
       window.host.pricingModes.INFZ90K01LQ6 = "MANUAL";
@@ -620,21 +640,26 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const demat = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-03-31" });
     const folios = frame.locator("section").filter({ hasText: "Fund folios: snapshot of 2025-03-31" });
     await demat.waitFor();
-    await folios.getByText("Fund INFZ90K01LQ6 uses a manual price", { exact: true }).waitFor();
-    assert.equal(await frame.getByRole("button", { name: "Save 2 snapshots" }).isDisabled(), true);
+    await folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" }).getByText(priced, { exact: true }).waitFor();
     await hosted(() => { window.host.pricingModes.INFZ90K01LQ6 = "MARKET"; });
     await preview.click();
-    await folios.getByText("Fund INFZ90K01LQ6 uses a manual price", { exact: true }).waitFor({ state: "hidden" });
+    await folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" }).getByText(priced, { exact: true }).waitFor({ state: "hidden" });
     await frame.getByText("PLACEHOLDER PHARMA LIMITED, CDSL Demat Account 2, TESTBRIDGE BROKING LIMITED: You left this share out.").waitFor();
-    await frame.getByText(/^Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout, Folio 1040012345: Its folio or demat account is left out\.$/).waitFor();
-    assert.equal(await frame.getByText("Bonds aren't imported yet.", { exact: false }).count(), 4);
+    await frame.getByText(/^Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout, Folio 1040012345: Its folio, demat account or PRAN is left out\.$/).waitFor();
     const nsdl = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
     const rendered = await frame.locator("body").innerText();
     for (const number of nsdl.accounts.flatMap((a) => [a.dp_id, a.client_id]).filter(Boolean)) {
       assert.equal(rendered.includes(number), false, `A depository identifier is visible: ${number}`);
     }
-    // Shares print no cost: typed, or blank for unknown.
-    assert.equal(await demat.getByRole("row").count(), 8);
+    // Shares print no cost: typed, or blank for unknown. A bond's cost defaults to its face value.
+    assert.equal(await demat.getByRole("row").count(), 12);
+    const faceRow = demat.getByRole("row").filter({ hasText: "SAMPLE HOUSING FINANCE LIMITED 7.95 NCD 20JN28" });
+    await faceRow.getByText("From the face value", { exact: true }).waitFor();
+    assert.equal(await demat.getByLabel("Total cost of SAMPLE HOUSING FINANCE LIMITED 7.95 NCD 20JN28").inputValue(), "200000");
+    await faceRow.getByText(priced, { exact: true }).waitFor();
+    // Below the statement's price, so the price saved after the snapshot must win over the average cost.
+    await demat.getByLabel("Total cost of FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").fill("45000");
+    assert.equal(await demat.getByRole("row").filter({ hasText: "INEZ93A08016" }).getByText(priced, { exact: true }).count(), 0);
     await demat.getByText("150", { exact: true }).waitFor();
     await demat.getByText("520", { exact: true }).waitFor();
     const shortRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90B01015" });
@@ -676,11 +701,51 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         ["INEZ90B01015", "520", null],
         ["INEZ90C01021", "75", null],
         ["INFZ90K01NE8", "1200", null],
+        ["INEZ91A07012", "50", "900"],
+        ["INEZ91B07028", "2", "100000"],
         ["INEZ92A01013", "200", null],
         ["INFZ91T01NF4", "1523.456", null],
         ["INFZ91T01GE1", "300", null],
+        ["INEZ92A07036", "25", null],
+        ["INEZ93A08016", "5", null],
       ],
     );
+    // Bonds priced from statements are created priced by hand, with no exchange; the one found by search isn't.
+    assert.deepEqual(
+      first.holdings.filter((h) => h.instrumentType === "BOND").map((h) => [h.symbol, h.exchangeMic ?? null, h.dataSource ?? null]),
+      [["INEZ91A07012", null, "MANUAL"], ["INEZ91B07028", null, "MANUAL"], ["INEZ92A07036", null, "MANUAL"], ["INEZ93A08016", null, null]],
+    );
+    const fromHost = await hosted(() => ({ quotes: window.host.quotes, assets: window.host.assets, modes: window.host.pricingModes }));
+    const closes = (id) => (fromHost.quotes[id] ?? []).map((q) => [q.timestamp.slice(0, 10), q.close, q.dataSource]);
+    // The statement's price, over the average cost the save wrote; NSDL prints value ÷ bonds, CDSL the market price.
+    assert.deepEqual(closes("bond-created-001"), [["2025-03-31", 1000, "MANUAL"]]);
+    assert.equal(fromHost.quotes["bond-created-001"][0].id, "bond-created-001_2025-03-31_MANUAL");
+    assert.deepEqual(closes("asset-INEZ91B07028"), [["2025-03-31", 100000, "MANUAL"]]);
+    assert.deepEqual(closes("asset-INEZ92A07036"), [["2025-03-31", 1012.4, "MANUAL"]]);
+    assert.deepEqual(closes("asset-INEZ93A08016"), []);
+    // The printed details are on the asset, and its name and pricing mode are unchanged.
+    const ncd = fromHost.assets["bond-created-001"];
+    assert.equal(ncd.name, "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31");
+    assert.equal(ncd.notes, "");
+    assert.equal(fromHost.modes.INEZ91A07012, "MANUAL");
+    assert.deepEqual(ncd.metadata.bond, { isin: "INEZ91A07012", maturityDate: "2031-04-15", couponRate: 0.081, couponFrequency: "ANNUAL", faceValue: 1000 });
+    assert.equal(ncd.metadata.casStatement.couponFrequency, "Once a year");
+    assert.equal(fromHost.assets["asset-INEZ91B07028"].metadata.casStatement.couponFrequency, "On Maturity");
+    assert.equal(fromHost.assets["asset-INEZ91B07028"].metadata.bond.couponFrequency, undefined);
+    assert.deepEqual(fromHost.assets["asset-INEZ93A08016"].metadata, {
+      casStatement: { name: "DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33", isin: "INEZ93A08016" }, bond: { isin: "INEZ93A08016" },
+    });
+    assert.equal(fromHost.modes.INEZ93A08016, "MARKET");
+    // The host's local result is EQUITY: resolve the old MUTUALFUND choice before saving its quote.
+    assert.equal(JSON.parse((await storage())["isin:INFZ91T01NF4"]).assetId, undefined);
+    assert.equal(JSON.parse((await storage())["isin:INFZ91T01NF4"]).instrumentType, "MUTUALFUND");
+    assert.equal(first.holdings.find((h) => h.symbol === "INFZ91T01NF4").assetId, "older-fund-012");
+    assert.deepEqual(fromHost.quotes["older-fund-012"].map((q) => [q.close, q.notes]), [[
+      Number(nsdl.accounts.flatMap((a) => a.mutual_funds).find((h) => h.isin === "INFZ91T01NF4").nav), "Keep the older fund quote note",
+    ]]);
+    assert.deepEqual(Object.entries(fromHost.assets).filter(([, a]) => a.symbol === "INFZ91T01NF4").map(([id]) => id), ["older-fund-012"]);
+    assert.equal(fromHost.modes.INFZ91T01NF4, "MANUAL");
+    assert.equal(JSON.parse((await storage())["isin:INEZ91A07012"]).statementPrices, true);
     const funds = await snapshot("holdings-2", "2025-03-31");
     assert.deepEqual(funds.cash, { INR: "1500" });
     assert.deepEqual(
@@ -707,7 +772,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Replacing a snapshot on the same date needs confirming; Wealthfolio's cost carries over.
     await hosted(() => { window.host.soldIsins = ["INFZ90K01LQ6"]; });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 12 holdings.").waitFor({ timeout: 180_000 });
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 16 holdings.").waitFor({ timeout: 180_000 });
     await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
     await preview.click();
     await demat.waitFor();
@@ -715,7 +780,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await sold.getByText("Not on the statement any more. An earlier import of Folio 91234567/12 added it.").waitFor();
     assert.equal(await sold.getByText("Removed", { exact: true }).count(), 1);
     assert.equal(await demat.getByLabel("Total cost of Fund INEZ90A01017").inputValue(), "185175");
-    await demat.getByText("From the account's average cost in Wealthfolio").waitFor();
+    await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText("From the account's average cost in Wealthfolio").waitFor();
     assert.equal(await save.isDisabled(), true);
     await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
     await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
@@ -726,40 +791,74 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ["asset-gilt", "asset-INFZ90K01BA1"],
     );
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, "1234.5");
-    // An empty demat account still reconciles its sold holdings. Manual assets with known cost
-    // block Save: an editable statement cost can be cleared; a kept holding must be removed.
+    // An empty demat account still reconciles its sold holdings. After saving, a manual-priced
+    // holding on the statement gets its printed price, and a kept one the price it had, not their
+    // average costs.
     await hosted(() => {
-      window.host.soldIsins.push("INEZ90A01017", "INEZ90B01015", "INEZ90C01021", "INFZ90K01NE8");
+      window.host.soldIsins.push("INEZ90A01017", "INEZ90B01015", "INEZ90C01021", "INFZ90K01NE8", "INEZ91A07012", "INEZ91B07028");
       const share = window.host.snapshots["holdings-1"]["2025-03-31"].holdings.find((h) => h.symbol === "INEZ92A01013");
       window.host.pricingModes.INEZ92A01013 = "MANUAL";
       share.averageCost = "12";
+      window.host.quotes["asset-INEZ92A01013"] = [
+        { id: "share-provider", assetId: "asset-INEZ92A01013", timestamp: "2025-03-31T16:00:00Z", createdAt: "2025-03-31T16:30:00Z", open: 790, high: 810, low: 780, close: 800, adjclose: 795, volume: 420, currency: "INR", dataSource: "YAHOO", notes: "Keep the share's quote note" },
+      ];
       const gilt = window.host.snapshots["holdings-2"]["2025-03-31"].holdings.find((h) => h.symbol === "GILT");
       window.host.pricingModes.GILT = "MANUAL";
       gilt.averageCost = "3";
+      window.host.quotes["asset-gilt"] = [
+        { id: "q1", assetId: "asset-gilt", timestamp: "2025-02-28T12:00:00Z", createdAt: "", open: 105, high: 105, low: 105, close: 105, adjclose: 105, volume: 0, currency: "INR", dataSource: "MANUAL" },
+        { id: "provider", assetId: "asset-gilt", timestamp: "2025-02-28T16:00:00Z", createdAt: "", open: 115, high: 115, low: 115, close: 115, adjclose: 115, volume: 0, currency: "INR", dataSource: "YAHOO" },
+        { id: "q2", assetId: "asset-gilt", timestamp: "2025-04-30T12:00:00Z", createdAt: "", open: 110, high: 110, low: 110, close: 110, adjclose: 110, volume: 0, currency: "INR", dataSource: "MANUAL" },
+        { id: "legacy-gilt-quote", assetId: "asset-gilt", timestamp: "2025-03-31T09:15:00Z", createdAt: "2025-03-31T09:20:00Z", open: 107, high: 109, low: 106, close: 108.25, adjclose: 107.75, volume: 321, currency: "INR", dataSource: "MANUAL", notes: "Keep the gilt's full quote" },
+        { id: "gilt-provider", assetId: "asset-gilt", timestamp: "2025-03-31T16:00:00Z", createdAt: "2025-03-31T16:20:00Z", open: 111, high: 114, low: 110, close: 112, adjclose: 111.5, volume: 640, currency: "INR", dataSource: "YAHOO", notes: "Keep the provider row too" },
+      ];
+      window.host.snapshots["holdings-2"]["2025-03-31"].holdings.push({ assetId: "asset-earlier", symbol: "EARLIER", quantity: "1", averageCost: "2", currency: "INR" });
+      window.host.pricingModes.EARLIER = "MANUAL";
+      window.host.quotes["asset-earlier"] = [
+        { id: "earlier-price", assetId: "asset-earlier", timestamp: "2025-02-28T12:00:00Z", createdAt: "", open: 7, high: 7, low: 7, close: 7, adjclose: 7, volume: 0, currency: "INR", dataSource: "MANUAL" },
+        { id: "future-price", assetId: "asset-earlier", timestamp: "2025-04-30T12:00:00Z", createdAt: "", open: 9, high: 9, low: 9, close: 9, adjclose: 9, volume: 0, currency: "INR", dataSource: "MANUAL" },
+      ];
+      window.host.snapshots["holdings-2"]["2025-03-31"].holdings.push({ assetId: "asset-provider", symbol: "PROVIDER", quantity: "2", averageCost: "3", currency: "INR" });
+      window.host.pricingModes.PROVIDER = "MANUAL";
+      window.host.quotes["asset-provider"] = [
+        { id: "provider-only", assetId: "asset-provider", timestamp: "2025-03-31T16:00:00Z", createdAt: "2025-03-31T16:30:00Z", open: 18, high: 22, low: 17, close: 20, adjclose: 19.5, volume: 123, currency: "INR", dataSource: "YAHOO", notes: "Keep the original provider quote" },
+      ];
     });
+    const quotesBeforeSave = await hosted(() => window.host.quotes);
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 7 holdings.").waitFor({ timeout: 180_000 });
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 9 holdings.").waitFor({ timeout: 180_000 });
     await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
     await frame.getByLabel(/^NSDL Demat Account 1,/).getByText("Demat (INR)").waitFor();
     await preview.click();
     await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText("Removed", { exact: true }).waitFor();
     await demat.getByRole("row").filter({ hasText: "Fund INFZ90K01NE8" }).getByText("Removed", { exact: true }).waitFor();
-    await demat.getByText("Fund INEZ92A01013 uses a manual price", { exact: true }).waitFor();
-    await folios.getByText("Fund GILT uses a manual price", { exact: true }).waitFor();
+    await demat.getByRole("row").filter({ hasText: "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31" }).getByText("Removed", { exact: true }).waitFor();
+    await demat.getByRole("row").filter({ hasText: "Fund INEZ92A01013" }).getByText(priced, { exact: true }).waitFor();
+    assert.equal(await folios.getByRole("row").filter({ hasText: "Gilt fund" }).getByText("Kept", { exact: true }).count(), 1);
     await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
     await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
-    assert.equal(await save.isDisabled(), true);
-    await demat.getByLabel("Total cost of Fund INEZ92A01013").fill("");
-    assert.equal(await save.isDisabled(), true);
-    await folios.getByRole("row").filter({ hasText: "Fund GILT" }).getByRole("checkbox", { name: "Keep", exact: true }).dispatchEvent("click");
     assert.equal(await save.isDisabled(), false);
     await save.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
-    assert.deepEqual((await snapshot("holdings-1", "2025-03-31")).holdings.map((h) => h.symbol), ["INEZ92A01013", "INFZ91T01NF4", "INFZ91T01GE1"]);
-    assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, undefined);
-    assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.symbol), ["INFZ90K01BA1"]);
+    assert.deepEqual((await snapshot("holdings-1", "2025-03-31")).holdings.map((h) => h.symbol), ["INEZ92A01013", "INFZ91T01NF4", "INFZ91T01GE1", "INEZ92A07036", "INEZ93A08016"]);
+    assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, "12");
+    assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.symbol), ["GILT", "EARLIER", "PROVIDER", "INFZ90K01BA1"]);
     assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).cash, { INR: "1500" });
-    assert.equal(await hosted(() => window.host.pricingModes.INEZ92A01013), "MANUAL");
+    const after = await hosted(() => ({ quotes: window.host.quotes, modes: window.host.pricingModes }));
+    const on = (id, day) => after.quotes[id].filter((q) => q.timestamp.startsWith(day) && q.dataSource === "MANUAL").map((q) => q.close);
+    assert.deepEqual(on("asset-INEZ92A01013", "2025-03-31"), [845.2]);
+    assert.equal(after.quotes["asset-INEZ92A01013"].find((q) => q.dataSource === "MANUAL").notes, "Keep the share's quote note");
+    // Both provider rows survive; the kept manual quote retains every original field and its legacy ID.
+    assert.deepEqual(after.quotes["asset-INEZ92A01013"].find((q) => q.id === "share-provider"), quotesBeforeSave["asset-INEZ92A01013"][0]);
+    for (const original of quotesBeforeSave["asset-gilt"]) assert.deepEqual(after.quotes["asset-gilt"].find((q) => q.id === original.id), original);
+    assert.deepEqual(on("asset-gilt", "2025-03-31"), [108.25]);
+    // Without an exact-day quote, carry the earlier price and retain the future quote untouched.
+    assert.deepEqual(on("asset-earlier", "2025-03-31"), [7]);
+    for (const original of quotesBeforeSave["asset-earlier"]) assert.deepEqual(after.quotes["asset-earlier"].find((q) => q.id === original.id), original);
+    const [providerOnly] = quotesBeforeSave["asset-provider"];
+    assert.deepEqual(after.quotes["asset-provider"].find((q) => q.id === providerOnly.id), providerOnly);
+    assert.deepEqual(after.quotes["asset-provider"].find((q) => q.dataSource === "MANUAL"), { ...providerOnly, id: "asset-provider_2025-03-31_MANUAL", dataSource: "MANUAL" });
+    assert.equal(after.modes.INEZ92A01013, "MANUAL");
 
     // The target's current, later snapshot can expose a MANUAL asset absent from the baseline.
     await hosted(() => {
@@ -772,11 +871,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       };
     });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 9 holdings.").waitFor({ timeout: 180_000 });
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 11 holdings.").waitFor({ timeout: 180_000 });
     await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
     await preview.click();
-    await demat.getByLabel("Total cost of Fund INEZ90B01015").fill("1000");
-    await demat.getByText("Fund INEZ90B01015 uses a manual price", { exact: true }).waitFor();
+    const sharesRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90B01015" });
+    await sharesRow.getByText(priced, { exact: true }).waitFor();
     const manualShare = frame.locator("section").filter({ hasText: "ISIN INEZ90B01015" });
     await manualShare.getByRole("button", { name: "Change", exact: true }).click();
     await manualShare.getByRole("button", { name: "Use this share" }).click();
@@ -786,17 +885,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const laterSnapshot = await snapshot("holdings-1", "2025-04-30");
     await hosted(() => { delete window.host.snapshots["holdings-1"]["2025-04-30"]; });
     await preview.click();
-    await demat.getByLabel("Total cost of Fund INEZ90B01015").fill("1000");
-    await demat.getByText("Fund INEZ90B01015 uses a manual price", { exact: true }).waitFor();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
-    assert.equal(await save.isDisabled(), true);
+    await sharesRow.getByText(priced, { exact: true }).waitFor();
     // A live mode change overrides the mode the search result supplied earlier.
     await hosted((later) => {
       window.host.snapshots["holdings-1"]["2025-04-30"] = later;
       window.host.pricingModes.INEZ90B01015 = "MARKET";
     }, laterSnapshot);
     await preview.click();
+    await sharesRow.getByText(priced, { exact: true }).waitFor({ state: "hidden" });
     await demat.getByLabel("Total cost of Fund INEZ90B01015").fill("1000");
     await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
     await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
@@ -804,6 +900,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await save.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-04-30")).holdings[0].averageCost, "20");
+    assert.equal(await hosted(() => window.host.quotes["asset-INEZ90B01015"]), undefined);
 
     // Archived accounts are absent from portfolio.getHoldings, but their saved assets still use
     // their global pricing mode. Reload the account inventory after archiving the hidden account.
@@ -815,7 +912,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         "2025-03-31": { holdings: [{ symbol: "INEZ90A01017", quantity: "1", averageCost: "20", currency: "INR" }], cash: {}, source: "CALCULATED" },
       };
       window.host.reopen();
-    }, nsdl.accounts.flatMap((a) => [...a.equities, ...a.mutual_funds].map((h) => h.isin)));
+    }, nsdl.accounts.flatMap((a) => [...a.equities, ...a.mutual_funds, ...a.bonds].map((h) => h.isin)));
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
     await frame.locator("#cas-password").fill("ABCDE1234F");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
@@ -824,20 +921,350 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
     const saveOne = frame.getByRole("button", { name: "Save 1 snapshot", exact: true });
     assert.equal(await saveOne.isDisabled(), false);
-    await demat.getByLabel("Total cost of Fund INEZ90A01017").fill("1500");
-    await demat.getByText("Fund INEZ90A01017 uses a manual price", { exact: true }).waitFor();
-    assert.equal(await saveOne.isDisabled(), true);
+    await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText(priced, { exact: true }).waitFor();
+
+    // An NPS account's schemes: searched by name first, then priced from the statement, one asset
+    // per scheme. A scheme without units is left out.
+    const scheme = "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME E - TIER I";
+    await hosted(() => {
+      window.host.onlyNps = [
+        { scheme: "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME E - TIER I", units: "40" },
+        { scheme: "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I", units: "0" },
+      ];
+      window.host.assetIds["NPS-TEST-E-TIER-I"] = "pension-created-007";
+      // A lone same-symbol bond must not replace the new EQUITY choice priced from statements.
+      window.host.assets["unrelated-bond-013"] = {
+        symbol: "NPS-TEST-E-TIER-I", exchangeMic: null, instrumentType: "BOND", name: "Different bond",
+      };
+    });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I, NPS, PRAN XXXXXXXX9001: No units on the statement.", { exact: true }).waitFor({ timeout: 180_000 });
+    const npsSection = frame.locator("section").filter({ hasText: scheme });
+    await npsSection.getByText(/^No ISIN on the statement, and nothing found for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
+    await npsSection.getByRole("button", { name: "Use the statement's prices" }).click();
+    await npsSection.getByText("NPS-TEST-E-TIER-I · EQUITY · INR · priced from statements").waitFor();
+    // Its investor is the statement's name, not the PAN of the earlier statements, so nothing is remembered yet.
+    await choose(/^NPS, PRAN XXXXXXXX9001/, "Fund folios (INR)");
+    await preview.click();
+    const npsRow = folios.getByRole("row").filter({ hasText: scheme });
+    await npsRow.getByText(priced, { exact: true }).waitFor();
+    await npsRow.getByText("New", { exact: true }).waitFor();
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    const pension = (await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I");
+    assert.deepEqual([pension.quantity, pension.name, pension.instrumentType, pension.dataSource, pension.exchangeMic ?? null], ["40", scheme, "EQUITY", "MANUAL", null]);
+    const npsHost = await hosted(() => ({ quotes: window.host.quotes["pension-created-007"], asset: window.host.assets["pension-created-007"] }));
+    assert.deepEqual(npsHost.quotes.map((q) => [q.timestamp, q.close, q.dataSource, q.currency]), [["2025-03-31T12:00:00.000Z", 25.5, "MANUAL", "INR"]]);
+    assert.deepEqual(npsHost.asset.metadata, { casStatement: { scheme, fundManager: "TEST PENSION FUND LIMITED", tier: "I", assetClass: "E" } });
+    assert.equal(npsHost.quotes[0].id, "pension-created-007_2025-03-31_MANUAL");
+    assert.equal(await hosted(() => window.host.quotes["unrelated-bond-013"]), undefined);
+    assert.equal(await hosted(() => window.host.assets["unrelated-bond-013"].instrumentType), "BOND");
+    await hosted(() => { delete window.host.assets["unrelated-bond-013"]; });
+    assert.ok(Object.keys(await storage()).some((key) => /^nps:[0-9a-f]{64}$/.test(key)));
+
+    const readHoldingsAgain = async () => {
+      const previous = await hosted(() => window.host.parsed);
+      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+      await tab.frames()[1].waitForFunction((n) => window.host.parsed > n, previous, { timeout: 180_000 });
+      await frame.getByText("Accounts", { exact: true }).waitFor();
+    };
+    // The same date replaces the snapshot and quote, without creating another asset or changing its quote ID.
+    await readHoldingsAgain();
+    await npsSection.getByText("Confirmed", { exact: true }).waitFor();
+    await preview.click();
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    assert.deepEqual(await hosted(() => window.host.quotes["pension-created-007"].map((q) => [q.id, q.timestamp, q.close])), npsHost.quotes.map((q) => [q.id, q.timestamp, q.close]));
+    assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").assetId, "pension-created-007");
+
+    // Another PRAN shares the scheme's asset; a later statement adds a dated quote and preserves the earlier snapshot.
+    await hosted(() => {
+      window.host.statementDate = "30-Apr-2025";
+      window.host.npsPran = "XXXXXXXX9002";
+      window.host.onlyNps = [{ scheme: "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME E - TIER I", units: "50" }];
+    });
+    await readHoldingsAgain();
+    await choose(/^NPS, PRAN XXXXXXXX9002/, "Demat (INR)");
+    await preview.click();
+    const laterPension = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-04-30" });
+    await laterPension.getByLabel(`Total cost of ${scheme}`).fill("500");
+    await laterPension.getByRole("checkbox", { name: "Replace the snapshot of 2025-04-30" }).dispatchEvent("click");
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    assert.equal((await snapshot("holdings-1", "2025-04-30")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").assetId, "pension-created-007");
+    assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").quantity, "40");
+    assert.deepEqual(await hosted(() => window.host.quotes["pension-created-007"].map((q) => [q.timestamp.slice(0, 10), q.close, q.id])), [
+      ["2025-03-31", 25.5, "pension-created-007_2025-03-31_MANUAL"], ["2025-04-30", 25.5, "pension-created-007_2025-04-30_MANUAL"],
+    ]);
+    assert.equal(await hosted(() => Object.values(window.host.assets).filter((a) => a.symbol === "NPS-TEST-E-TIER-I").length), 1);
 
     // Exclusions are visible even when the statement has nothing that could reach a preview.
-    await hosted(() => { window.host.onlyNps = true; });
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("Test NPS Scheme, National Pension System: NPS holdings aren't imported yet.", { exact: true }).waitFor({ timeout: 180_000 });
+    await frame.getByLabel(/^NPS, PRAN XXXXXXXX9002/).click();
+    await frame.getByRole("option", { name: "Leave out" }).click();
+    await frame.getByText(`${scheme}, NPS, PRAN XXXXXXXX9002: Its folio, demat account or PRAN is left out.`, { exact: true }).waitFor();
     assert.equal(await preview.isDisabled(), true);
     assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+
+    // An unheld remembered fallback that the user switched to MARKET keeps its mode and profile.
+    await hosted(() => {
+      window.host.snapshots = {};
+      window.host.held = {};
+      window.host.statementDate = "31-Mar-2025";
+      window.host.npsPran = "XXXXXXXX9001";
+      window.host.pricingModes["NPS-TEST-E-TIER-I"] = "MARKET";
+      Object.assign(window.host.assets["pension-created-007"], {
+        displayCode: "MY-PENSION", name: "My pension", notes: "Keep these notes", kind: "OTHER",
+        providerConfig: { preferred_provider: "CUSTOM", overrides: { CUSTOM: { symbol: "pension" } } },
+        metadata: { custom: { keep: true } },
+      });
+    });
+    await readHoldingsAgain();
+    await choose(/^NPS, PRAN XXXXXXXX9001/, "Demat (INR)");
+    // A failed lookup cannot treat an unheld MARKET asset as a new manual-priced one.
+    for (const failure of ["search", "profile"]) {
+      await hosted((failure) => {
+        window.host.failSearchQueries = failure === "search" ? ["NPS-TEST-E-TIER-I"] : [];
+        window.host.failGetProfileIds = failure === "profile" ? ["pension-created-007"] : [];
+      }, failure);
+      const saves = await hosted(() => window.host.saves.length);
+      await preview.click();
+      await frame.getByText(/Couldn't verify pricing for/).waitFor();
+      assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+      assert.equal(await hosted(() => window.host.saves.length), saves);
+      assert.equal(await hosted(() => window.host.pricingModes["NPS-TEST-E-TIER-I"]), "MARKET");
+    }
+    await hosted(() => { window.host.failSearchQueries = []; window.host.failGetProfileIds = []; });
+    await preview.click();
+    await demat.getByRole("row").filter({ hasText: scheme }).waitFor();
+    assert.equal(await demat.getByText(priced, { exact: true }).count(), 0);
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    const unheld = await hosted(() => ({ asset: window.host.assets["pension-created-007"], mode: window.host.pricingModes["NPS-TEST-E-TIER-I"] }));
+    assert.equal(unheld.mode, "MARKET");
+    assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].dataSource, undefined);
+    assert.deepEqual([unheld.asset.name, unheld.asset.displayCode, unheld.asset.notes, unheld.asset.kind, unheld.asset.providerConfig], [
+      "My pension", "MY-PENSION", "Keep these notes", "OTHER", { preferred_provider: "CUSTOM", overrides: { CUSTOM: { symbol: "pension" } } },
+    ]);
+    assert.deepEqual(unheld.asset.metadata.custom, { keep: true });
+    assert.equal(unheld.asset.metadata.casStatement.scheme, scheme);
+    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+
+    // An observed MARKET mode remains usable when the extra lookup fails.
+    await hosted(() => {
+      window.host.assets["pension-created-007"].displayCode = "NPS-TEST-E-TIER-I";
+      window.host.failSearchQueries = ["NPS-TEST-E-TIER-I"];
+    });
+    await preview.click();
+    await demat.getByRole("row").filter({ hasText: "My pension" }).waitFor();
+    assert.equal(await demat.getByText(priced, { exact: true }).count(), 0);
+    await hosted(() => { window.host.failSearchQueries = []; });
+
+    // A manual asset held only elsewhere still needs its ID to keep the quote's notes.
+    const beforeLookupFailures = await hosted(() => window.host.snapshots);
+    await hosted(() => {
+      window.host.snapshots = { "holdings-2": { "2025-03-31": {
+        holdings: [{ assetId: "pension-created-007", symbol: "NPS-TEST-E-TIER-I", quantity: "40", currency: "INR" }], cash: {},
+      } } };
+      window.host.pricingModes["NPS-TEST-E-TIER-I"] = "MANUAL";
+      window.host.quotes["pension-created-007"][0].notes = "Keep the other account's quote notes";
+    });
+    for (const failure of ["search", "profile", "no match"]) {
+      await hosted((failure) => {
+        window.host.failSearchQueries = failure === "search" ? ["NPS-TEST-E-TIER-I"] : [];
+        window.host.failGetProfileIds = failure === "profile" ? ["pension-created-007"] : [];
+        window.host.emptySearchQueries = failure === "no match" ? ["NPS-TEST-E-TIER-I"] : [];
+      }, failure);
+      const saves = await hosted(() => window.host.saves.length);
+      await preview.click();
+      await frame.getByText(/Couldn't verify pricing for/).waitFor();
+      assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+      assert.equal(await hosted(() => window.host.saves.length), saves);
+      assert.equal(await hosted(() => window.host.quotes["pension-created-007"][0].notes), "Keep the other account's quote notes");
+    }
+    await hosted((snapshots) => {
+      window.host.snapshots = snapshots;
+      window.host.pricingModes["NPS-TEST-E-TIER-I"] = "MARKET";
+      window.host.failSearchQueries = [];
+      window.host.failGetProfileIds = [];
+      window.host.emptySearchQueries = [];
+    }, beforeLookupFailures);
+
+    // A selected existing asset has an opaque ID and display code; adding details must also preserve GBp.
+    const marketScheme = "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME M - TIER I";
+    await hosted((scheme) => {
+      window.host.onlyNps = [{ scheme, units: "10" }];
+      window.host.assets["market-profile-011"] = {
+        symbol: "NPS-TEST-M-TIER-I", exchangeMic: "XLON", instrumentType: "EQUITY", name: "Provider pension",
+        displayCode: "MY-LONDON-PENSION", notes: "Provider notes", kind: "OTHER", quoteCcy: "GBp",
+        providerConfig: { preferred_provider: "YAHOO", overrides: { YAHOO: { symbol: "PENSION.L" } } },
+        metadata: { custom: { keep: 42 }, casStatement: { earlier: "kept" } },
+      };
+      window.host.pricingModes["NPS-TEST-M-TIER-I"] = "MANUAL";
+    }, marketScheme);
+    await readHoldingsAgain();
+    const marketSection = frame.locator("section").filter({ hasText: marketScheme });
+    await marketSection.getByLabel("Search for the NPS scheme").fill("NPS-TEST-M-TIER-I");
+    await marketSection.getByLabel("Search for the NPS scheme").press("Enter");
+    await marketSection.getByRole("button", { name: "Use this NPS scheme", exact: true }).click();
+    // A fresh search choice's manual mode can go stale before preview, too.
+    await hosted(() => {
+      window.host.pricingModes["NPS-TEST-M-TIER-I"] = "MARKET";
+      window.host.failGetProfileIds = ["market-profile-011"];
+    });
+    await preview.click();
+    await frame.getByText(/Couldn't verify pricing for/).waitFor();
+    assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+    await hosted(() => { window.host.failGetProfileIds = []; });
+    await preview.click();
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    const marketProfile = await hosted(() => window.host.assets["market-profile-011"]);
+    assert.deepEqual(marketProfile, {
+      symbol: "NPS-TEST-M-TIER-I", exchangeMic: "XLON", instrumentType: "EQUITY", name: "Provider pension",
+      displayCode: "MY-LONDON-PENSION", notes: "Provider notes", kind: "OTHER", quoteCcy: "GBp",
+      providerConfig: { preferred_provider: "YAHOO", overrides: { YAHOO: { symbol: "PENSION.L" } } },
+      metadata: { custom: { keep: 42 }, casStatement: { earlier: "kept", scheme: marketScheme, fundManager: "TEST PENSION FUND LIMITED", tier: "I", assetClass: "E" } },
+    });
+    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+
+    // A missing ordinary remembered ID is dropped, then its fields find the existing asset.
+    await hosted(() => {
+      window.host.snapshots = {};
+      window.host.assets["market-profile-011"].displayCode = "NPS-TEST-M-TIER-I";
+      for (const [key, value] of window.host.storage) {
+        if (!key.startsWith("nps:")) continue;
+        const choice = JSON.parse(value);
+        if (choice?.assetId !== "market-profile-011") continue;
+        window.host.storage.set(key, JSON.stringify({ ...choice, assetId: "deleted-profile-012" }));
+      }
+      window.host.failGetProfileIds = ["deleted-profile-012"];
+    });
+    await readHoldingsAgain();
+    await preview.click();
+    await demat.getByRole("row").filter({ hasText: "Provider pension" }).waitFor();
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, undefined);
+    assert.equal(await hosted(() => window.host.assets["deleted-profile-012"]), undefined);
+    assert.equal(await hosted(() => window.host.pricingModes["NPS-TEST-M-TIER-I"]), "MARKET");
+    assert.equal(await hosted(() => window.host.quotes["market-profile-011"]), undefined);
+    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    await hosted(() => { window.host.failGetProfileIds = []; });
+
+    // ECNQUOTE, like MUTUALFUND above, is an older provider label for a canonical EQUITY asset.
+    await hosted(() => {
+      for (const [key, value] of window.host.storage) {
+        if (!key.startsWith("nps:")) continue;
+        const choice = JSON.parse(value);
+        if (choice?.symbol !== "NPS-TEST-M-TIER-I") continue;
+        window.host.storage.set(key, JSON.stringify({ ...choice, assetId: undefined, instrumentType: "ECNQUOTE" }));
+      }
+      window.host.pricingModes["NPS-TEST-M-TIER-I"] = "MANUAL";
+    });
+    await readHoldingsAgain();
+    await preview.click();
+    await demat.getByRole("row").filter({ hasText: "Provider pension" }).getByText(priced, { exact: true }).waitFor();
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, "market-profile-011");
+    // A type label the add-on doesn't know still finds the one asset with that symbol and exchange.
+    await hosted(() => {
+      for (const [key, value] of window.host.storage) {
+        if (!key.startsWith("nps:")) continue;
+        const choice = JSON.parse(value);
+        if (choice?.symbol === "NPS-TEST-M-TIER-I") window.host.storage.set(key, JSON.stringify({ ...choice, instrumentType: "SOMETHING_NEW" }));
+      }
+    });
+    await readHoldingsAgain();
+    await preview.click();
+    await demat.getByRole("row").filter({ hasText: "Provider pension" }).getByText(priced, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/Couldn't verify pricing/).count(), 0);
+
+    // Legacy untyped assets are returned as OTHER; their exact remembered match still wins.
+    await hosted(() => {
+      delete window.host.assets["market-profile-011"].instrumentType;
+      for (const [key, value] of window.host.storage) {
+        if (!key.startsWith("nps:")) continue;
+        const choice = JSON.parse(value);
+        if (choice?.symbol === "NPS-TEST-M-TIER-I") window.host.storage.set(key, JSON.stringify({ ...choice, instrumentType: "OTHER" }));
+      }
+    });
+    await readHoldingsAgain();
+    await preview.click();
+    await demat.getByRole("row").filter({ hasText: "Provider pension" }).getByText(priced, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/Couldn't verify pricing/).count(), 0);
+    await hosted(() => { window.host.assets["market-profile-011"].instrumentType = "EQUITY"; });
+
+    // A failed first account can already have written prices. Repair known ones; a new asset the failed
+    // save left in no snapshot isn't reported again. Continue the next account and every quote/detail
+    // write after an individual failure.
+    await hosted(() => {
+      window.host.statementDate = "31-May-2025";
+      window.host.onlyNps = [
+        { scheme: "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I", units: "5" },
+        { scheme: "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME C - TIER I", units: "6" },
+      ];
+      window.host.depositoryAccounts = [{
+        name: "FAILURE TEST BROKER", type: "NSDL Demat Account", dp_id: "IN900001", client_id: "90000003", folios: 0, balance: "75", owners: [], equities: [], mutual_funds: [],
+        bonds: [{ isin: "INEZ91C07034", name: "FAILURE TEST BOND", num_bonds: "5", value: "75", face_value: "10", coupon_rate: null, coupon_frequency: null, maturity_date: null, market_price: "15" }],
+      }];
+      window.host.pricingModes["NPS-TEST-E-TIER-I"] = "MANUAL";
+      window.host.snapshots = { "holdings-1": { "2025-04-30": {
+        holdings: [{ assetId: "pension-created-007", symbol: "NPS-TEST-E-TIER-I", quantity: "50", averageCost: "10", currency: "INR" }], cash: {},
+      } } };
+      Object.assign(window.host.assetIds, { INEZ91C07034: "failed-bond-008", "NPS-TEST-G-TIER-I": "pension-g-009", "NPS-TEST-C-TIER-I": "pension-c-010" });
+      window.host.failSnapshotAccounts = ["holdings-1"];
+      window.host.failQuoteIds = ["pension-g-009"];
+      window.host.failProfileIds = ["pension-g-009"];
+    });
+    await readHoldingsAgain();
+    for (const section of await frame.locator("section").all()) {
+      await section.getByRole("button", { name: "Use the statement's prices", exact: true }).click();
+    }
+    await choose("All of this statement", "Fund folios (INR)");
+    await choose(/^NSDL Demat Account 1, FAILURE TEST BROKER/, "Demat (INR)");
+    // An earlier source override still points at Demat; the new statement's NPS goes to the second account.
+    await choose(/^NPS, PRAN XXXXXXXX9001/, "Fund folios (INR)");
+    await preview.click();
+    const continuedNps = frame.locator("section").filter({ hasText: "Fund folios: snapshot of 2025-05-31" });
+    await continuedNps.getByLabel("Total cost of NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I").fill("100");
+    await frame.getByRole("button", { name: "Save 2 snapshots", exact: true }).click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Wealthfolio didn't save these snapshots", { exact: true }).waitFor();
+    await frame.getByText("Demat: Error: Snapshot storage unavailable after writing quotes", { exact: true }).waitFor();
+    await frame.getByText(/Fund folios, NPS TRUST- A\/C TEST PENSION FUND LIMITED SCHEME G - TIER I: Wealthfolio may value it at its average cost/).waitFor();
+    await frame.getByText(/Fund folios, NPS TRUST- A\/C TEST PENSION FUND LIMITED SCHEME G - TIER I: the statement's details/).waitFor();
+    assert.equal(await frame.getByText(/FAILURE TEST BOND: Wealthfolio may value it/).count(), 0);
+    const partial = await hosted(() => ({ quotes: window.host.quotes, assets: window.host.assets, snapshots: window.host.snapshots }));
+    assert.equal(partial.snapshots["holdings-1"]["2025-05-31"], undefined);
+    assert.equal(partial.snapshots["holdings-2"]["2025-05-31"].holdings.length, 2);
+    assert.equal(partial.quotes["pension-created-007"].find((q) => q.timestamp.startsWith("2025-05-31")).close, 25.5);
+    assert.equal(partial.quotes["pension-g-009"].find((q) => q.timestamp.startsWith("2025-05-31")).close, 20);
+    assert.equal(partial.quotes["pension-c-010"].find((q) => q.timestamp.startsWith("2025-05-31")).close, 25.5);
+    assert.equal(partial.assets["pension-g-009"].metadata, undefined);
+    assert.equal(partial.assets["pension-c-010"].metadata.casStatement.assetClass, "E");
+
+    // Re-importing retries each incomplete write and reuses the already-created assets.
+    await hosted(() => { window.host.failSnapshotAccounts = []; window.host.failQuoteIds = []; window.host.failProfileIds = []; });
+    await readHoldingsAgain();
+    await preview.click();
+    await continuedNps.getByRole("checkbox", { name: "Replace the snapshot of 2025-05-31" }).dispatchEvent("click");
+    await frame.getByRole("button", { name: "Save 2 snapshots", exact: true }).click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    assert.equal(await hosted(() => window.host.quotes["failed-bond-008"].find((q) => q.timestamp.startsWith("2025-05-31")).close), 15);
+    assert.equal(await hosted(() => window.host.quotes["pension-g-009"].find((q) => q.timestamp.startsWith("2025-05-31")).close), 25.5);
+    assert.equal(await hosted(() => window.host.assets["pension-g-009"].metadata.casStatement.assetClass), "E");
     await hosted(() => {
       window.host.soldIsins = [];
       window.host.parseWarnings = [];
-      window.host.onlyNps = false;
+      window.host.onlyNps = undefined;
+      window.host.depositoryAccounts = undefined;
+      window.host.statementDate = "";
     });
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-summary-cams.pdf");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();

@@ -2,7 +2,9 @@
 // packaged files as Blobs; this stands in for ctx.assets and drives the real CasParser, then
 // mounts the import page on a fake host: an account tracking transactions and two tracking
 // holdings, in-memory storage, secrets and snapshots, a fund search, recorded error toasts, and
-// an import that stores rows the way Wealthfolio returns them. Wealthfolio's own checks are left
+// an import that stores rows the way Wealthfolio returns them. Snapshot saves write a manual
+// asset's average cost as its quote for the day, and profile updates store every field as sent,
+// both as Wealthfolio does. Wealthfolio's own checks are left
 // to the end-to-end run in the pull request.
 import type {
   ActivityCreate,
@@ -11,6 +13,7 @@ import type {
   ActivityUpdate,
   AddonAssets,
   AddonContext,
+  Quote,
   SnapshotHoldingInput,
   SymbolSearchResult,
 } from "@wealthfolio/addon-sdk";
@@ -19,6 +22,20 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { CasError, CasParser } from "../../src/cas/parser";
 import { ImportPage } from "../../src/pages/import-page";
+import type { DematAccount } from "../../src/cas/types";
+
+interface HostAsset {
+  symbol: string;
+  exchangeMic: string | null;
+  instrumentType?: string;
+  name?: string | null;
+  notes?: string | null;
+  displayCode?: string | null;
+  kind?: string;
+  quoteCcy?: string;
+  providerConfig?: unknown;
+  metadata?: unknown;
+}
 
 const host = {
   storage: new Map<string, string>(),
@@ -37,12 +54,29 @@ const host = {
   // Holdings dropped from a depository statement as if they had been sold.
   soldIsins: [] as string[],
   parseWarnings: [] as string[],
-  onlyNps: false,
+  // The statement has only an NPS account, with these schemes.
+  onlyNps: undefined as { scheme: string; units: string }[] | undefined,
+  npsPran: "XXXXXXXX9001",
+  statementDate: "",
+  depositoryAccounts: undefined as DematAccount[] | undefined,
   ambiguousSummary: false,
   archiveOtherAccount: false,
   reopen: () => {},
   // Asset pricing mode belongs to the asset, independently of any account or snapshot.
   pricingModes: {} as Record<string, string>,
+  // Assets a save created or a profile update changed, by ID: what `snapshots.getByDate` and
+  // `assets.getProfile` return. Others are funds on XBOM.
+  assets: {} as Record<string, HostAsset>,
+  // Forced opaque IDs verify that the add-on finds IDs returned by the host after saving.
+  assetIds: {} as Record<string, string>,
+  // Each asset's quotes, one per day and source.
+  quotes: {} as Record<string, Quote[]>,
+  failQuoteIds: [] as string[],
+  failSearchQueries: [] as string[],
+  emptySearchQueries: [] as string[],
+  failGetProfileIds: [] as string[],
+  failProfileIds: [] as string[],
+  failSnapshotAccounts: [] as string[],
   // Each account's snapshots by date, as saved.
   snapshots: {} as Record<string, Record<string, { holdings: SnapshotHoldingInput[]; cash: Record<string, string>; source?: string }>>,
   saves: [] as { accountId: string; date: string }[],
@@ -99,16 +133,19 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
   data.parse_warnings.push(...host.parseWarnings);
   host.parsed++;
   if (!("folios" in data)) {
+    if (host.statementDate) data.statement_period.to = host.statementDate;
     if (host.onlyNps) return {
       ...data,
-      accounts: [],
+      accounts: host.depositoryAccounts ?? [],
       nps: {
-        pran: null, nps_sp: null, value: "100",
-        schemes: [{ scheme: "Test NPS Scheme", fund_manager: "Test manager", tier: "Tier I", asset_class: "E", units: "1", nav: "100", value: "100" }],
+        pran: host.npsPran, nps_sp: "TCRA", value: "100",
+        schemes: host.onlyNps.map(({ scheme, units }) => ({
+          scheme, fund_manager: "TEST PENSION FUND LIMITED", tier: "I", asset_class: "E", units, nav: "25.5", value: String(Number(units) * 25.5),
+        })),
       },
     };
     const sold = (h: { isin: string }) => !host.soldIsins.includes(h.isin);
-    const accounts = data.accounts.map((a) => ({ ...a, equities: a.equities.filter(sold), mutual_funds: a.mutual_funds.filter(sold) }));
+    const accounts = data.accounts.map((a) => ({ ...a, equities: a.equities.filter(sold), mutual_funds: a.mutual_funds.filter(sold), bonds: a.bonds.filter(sold) }));
     return { ...data, accounts };
   }
   if (host.ambiguousSummary && data.cas_type === "SUMMARY") {
@@ -138,13 +175,17 @@ const snapshotHoldings = (accountId: string, date: string) => {
   const { holdings, cash } = host.snapshots[accountId][date];
   return [
     ...holdings.map((h) => {
-      const symbol = h.symbol.toUpperCase();
+      const a = assetOf(assetId(h));
+      const symbol = a.displayCode ?? h.symbol.toUpperCase();
       const quantity = Number(h.quantity);
       return {
         id: `${accountId}-${symbol}`,
         holdingType: "security",
         accountId,
-        instrument: { id: h.assetId ?? `asset-${symbol}`, symbol, name: h.name ?? `Fund ${symbol}`, currency: "INR", exchangeMic: h.exchangeMic ?? "XBOM", pricingMode: host.pricingModes[symbol] ?? "MARKET" },
+        instrument: {
+          id: assetId(h), symbol, name: a.name ?? h.name ?? `Fund ${symbol}`, currency: a.quoteCcy ?? "INR",
+          exchangeMic: a.exchangeMic, pricingMode: host.pricingModes[a.symbol] ?? "MARKET",
+        },
         quantity,
         localCurrency: h.currency,
         costBasis: { local: h.averageCost ? quantity * Number(h.averageCost) : 0, base: 0 },
@@ -154,6 +195,36 @@ const snapshotHoldings = (accountId: string, date: string) => {
   ];
 };
 const latest = (accountId: string) => Object.keys(host.snapshots[accountId] ?? {}).sort().pop();
+
+// Wealthfolio stores provider equity labels, including MUTUALFUND and ETF, as EQUITY.
+const instrumentType = (type: string | undefined) => /^(EQUITY|STOCK|ETF|MUTUALFUND|MUTUAL FUND|INDEX|ECNQUOTE)$/.test(type ?? "") ? "EQUITY" : type;
+const assetId = (h: SnapshotHoldingInput) => h.assetId ?? Object.entries(host.assets).find(([, a]) =>
+  a.symbol === h.symbol.toUpperCase() && a.exchangeMic === (h.exchangeMic ?? null) && (!h.instrumentType || instrumentType(a.instrumentType) === instrumentType(h.instrumentType)),
+)?.[0] ?? host.assetIds[h.symbol.toUpperCase()] ?? `asset-${h.symbol.toUpperCase()}`;
+const assetOf = (id: string): HostAsset => host.assets[id] ?? { symbol: id.replace(/^asset-/, "").toUpperCase(), exchangeMic: "XBOM" };
+
+// Wealthfolio keeps assets after their last holding is removed; materialize implicit fixture assets.
+const knownAssets = () => {
+  for (const symbol of Object.values(host.held).flat()) {
+    const id = `asset-${symbol}`;
+    host.assets[id] ??= { symbol, exchangeMic: "XBOM", instrumentType: "EQUITY", name: `Fund ${symbol}` };
+  }
+  for (const h of Object.values(host.snapshots).flatMap((dates) => Object.values(dates).flatMap((s) => s.holdings))) {
+    const id = assetId(h);
+    host.assets[id] ??= { symbol: h.symbol.toUpperCase(), exchangeMic: h.exchangeMic ?? "XBOM", instrumentType: instrumentType(h.instrumentType) ?? "EQUITY", name: h.name ?? `Fund ${h.symbol.toUpperCase()}`, quoteCcy: h.quoteCcy };
+  }
+  return new Map(Object.entries(host.assets));
+};
+// Wealthfolio's `quote_id`. The snapshot save's own ID goes through `update_quote`, which replaces it with this one.
+const manualId = (id: string, day: string) => `${id}_${day}_MANUAL`;
+
+// One quote per asset, day and source, as Wealthfolio's quote store keeps them.
+function saveQuote(quote: Quote) {
+  const day = quote.timestamp.slice(0, 10);
+  const before = (host.quotes[quote.assetId] ?? []).find((q) => q.timestamp.slice(0, 10) === day && q.dataSource === quote.dataSource);
+  const quotes = (host.quotes[quote.assetId] ??= []).filter((q) => q.timestamp.slice(0, 10) !== day || q.dataSource !== quote.dataSource);
+  host.quotes[quote.assetId] = [...quotes, { ...quote, id: before?.id ?? quote.id }];
+}
 
 const api = {
   accounts: {
@@ -197,7 +268,67 @@ const api = {
     save: async (accountId: string, holdings: SnapshotHoldingInput[], cash: Record<string, string>, date: string) => {
       await wait("snapshot");
       host.saves.push({ accountId, date });
+      for (const h of holdings) {
+        const id = assetId(h);
+        const symbol = h.symbol.toUpperCase();
+        if (!h.assetId && !host.assets[id]) {
+          host.assets[id] = { symbol, exchangeMic: h.exchangeMic ?? null, instrumentType: instrumentType(h.instrumentType), name: h.name, displayCode: symbol, kind: "INVESTMENT", quoteCcy: h.quoteCcy ?? "INR" };
+        }
+        if (h.dataSource === "MANUAL") host.pricingModes[symbol] = "MANUAL";
+        if (host.pricingModes[symbol] === "MANUAL" && h.averageCost && Number(h.averageCost) !== 0) {
+          const price = Number(h.averageCost);
+          saveQuote({
+            id: manualId(id, date), assetId: id, timestamp: `${date}T12:00:00Z`, createdAt: "",
+            open: price, high: price, low: price, close: price, adjclose: price, volume: 0, currency: h.currency, dataSource: "MANUAL",
+          });
+        }
+      }
+      if (host.failSnapshotAccounts.includes(accountId)) throw new Error("Snapshot storage unavailable after writing quotes");
       (host.snapshots[accountId] ??= {})[date] = { holdings, cash };
+    },
+  },
+  quotes: {
+    update: async (id: string, quote: Quote) => {
+      if (host.failQuoteIds.includes(id)) throw new Error("Quotes unavailable");
+      const canonicalId = quote.dataSource === "MANUAL" ? manualId(id, quote.timestamp.slice(0, 10)) : quote.id;
+      // Wealthfolio deletes the supplied ID before changing it to the canonical MANUAL ID.
+      if (quote.id !== canonicalId) {
+        for (const assetId of Object.keys(host.quotes)) host.quotes[assetId] = host.quotes[assetId].filter((q) => q.id !== quote.id);
+      }
+      saveQuote({ ...quote, id: canonicalId, assetId: id });
+    },
+    getHistory: async (id: string) => {
+      const priority = (q: Quote) => q.dataSource === "MANUAL" ? 1 : q.dataSource === "BROKER" ? 3 : 2;
+      const best = new Map<string, Quote>();
+      for (const q of host.quotes[id] ?? []) {
+        const day = q.timestamp.slice(0, 10);
+        const old = best.get(day);
+        if (!old || priority(q) < priority(old) || (priority(q) === priority(old) && q.timestamp > old.timestamp)) best.set(day, q);
+      }
+      return [...best.values()].sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+    },
+  },
+  assets: {
+    getProfile: async (id: string) => {
+      if (host.failGetProfileIds.includes(id)) throw new Error("Profile unavailable");
+      const a = knownAssets().get(id);
+      if (!a) throw new Error("Asset not found");
+      return { id, ...a, instrumentSymbol: a.symbol, instrumentExchangeMic: a.exchangeMic, quoteMode: host.pricingModes[a.symbol] ?? "MARKET", kind: a.kind ?? "INVESTMENT", quoteCcy: a.quoteCcy ?? "INR" };
+    },
+    // Like Wealthfolio, fields left out are cleared and the pricing mode goes back to market.
+    updateProfile: async (payload: { id: string; name?: string | null; displayCode?: string | null; notes: string; kind?: string; quoteMode?: string; quoteCcy?: string; instrumentExchangeMic?: string | null; providerConfig?: unknown; metadata?: unknown }) => {
+      if (typeof payload.notes !== "string") throw new Error("missing field `notes`");
+      if (host.failProfileIds.includes(payload.id)) throw new Error("Profile unavailable");
+      const a = assetOf(payload.id);
+      // The service refreshes a market equity's currency from its venue when the MIC is omitted.
+      const refreshCcy = payload.quoteMode === "MARKET" && !payload.quoteCcy && !payload.instrumentExchangeMic && a.exchangeMic && a.instrumentType === "EQUITY";
+      host.assets[payload.id] = {
+        ...a, name: payload.name ?? null, displayCode: payload.displayCode ?? null, notes: payload.notes,
+        kind: payload.kind ?? a.kind, providerConfig: payload.providerConfig ?? null, metadata: payload.metadata ?? a.metadata,
+        quoteCcy: payload.quoteCcy ?? (refreshCcy ? (a.exchangeMic === "XLON" ? "GBP" : "INR") : a.quoteCcy),
+      };
+      host.pricingModes[a.symbol] = payload.quoteMode ?? "MARKET";
+      return host.assets[payload.id];
     },
   },
   activities: {
@@ -245,7 +376,21 @@ const api = {
     host.searches.push(query);
     await wait("market");
     await wait(query);
-    if (query === "FAIL") throw new Error("Search unavailable");
+    if (query === "FAIL" || host.failSearchQueries.includes(query)) throw new Error("Search unavailable");
+    if (host.emptySearchQueries.includes(query)) return [];
+    // Existing assets are returned even when no account currently holds them.
+    const existing = [...knownAssets()].filter(([, a]) =>
+      [a.symbol, a.displayCode, a.name].some((s) => s?.toUpperCase().includes(query.toUpperCase())),
+    ).map(([id, a]) => ({
+      ...fund(a.symbol), symbol: a.displayCode ?? a.symbol, canonicalSymbol: a.symbol,
+      canonicalExchangeMic: a.exchangeMic ?? undefined, exchangeMic: a.exchangeMic ?? undefined,
+      quoteType: instrumentType(a.instrumentType) ?? "OTHER", currency: a.quoteCcy ?? "INR", longName: a.name ?? a.symbol,
+      quoteMode: host.pricingModes[a.symbol] ?? "MARKET", isExisting: true, existingAssetId: id,
+    }));
+    if (existing.length) return existing;
+    // Like Yahoo, no NPS schemes and few Indian bonds. One bond is listed under its ISIN.
+    if (query === "INEZ93A08016") return [{ ...fund(query), canonicalExchangeMic: undefined, exchangeMic: undefined, quoteType: "BOND", longName: "Democorp Infra 7.60% 2033" }];
+    if (/^INE\w{4}0[78]\d{3}$/.test(query) || /\b(NCD|BD)\b/.test(query) || query.startsWith("NPS TRUST")) return [];
     // Like Yahoo with some funds, the Corporate Bond fund is listed under neither its ISIN nor its
     // full scheme name.
     if (query === "INFZ91T01CB6" || query.includes(" - ")) return [];

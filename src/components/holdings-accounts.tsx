@@ -7,7 +7,7 @@ import { AccountSelect } from "./account-choices";
 /** Remembered or chosen: investor key or source key → account ID, or `LEFT_OUT` for a source. */
 export type HoldingsAccountChoices = Record<string, string>;
 
-/** The account a folio or demat account goes to; undefined leaves it out. */
+/** The account a folio, demat account or PRAN goes to; undefined leaves it out. */
 export function accountForSource(choices: HoldingsAccountChoices, holdings: Holdings, source: Source) {
   const own = choices[sourceKey(source)];
   if (own === LEFT_OUT) return undefined;
@@ -34,8 +34,9 @@ export function HoldingsAccountsCard({
         <CardTitle>Accounts</CardTitle>
         <p className="text-muted-foreground text-sm">
           This statement's holdings go to Wealthfolio accounts that track holdings, as a snapshot of each account on the
-          statement's date. Each folio or demat account goes to one account, or is left out. The add-on remembers your
-          choices, keyed by hashes of the PAN, email or name, and of the folio with its fund issuer or the demat account.
+          statement's date. Each folio, demat account or NPS account (PRAN) goes to one account, or is left out. The
+          add-on remembers your choices, keyed by hashes of the PAN, email or name, and of the folio with its fund issuer,
+          the demat account or the PRAN.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">

@@ -25,7 +25,6 @@ import {
   type Choices,
   costOf,
   included,
-  manualPriceChange,
   type PlannedPosition,
   replacesSnapshot,
   validCost,
@@ -38,7 +37,6 @@ export const ready = (plans: AccountPlan[], choices: ReadonlyMap<string, Choices
   plans.every((plan) => {
     const chosen = choices.get(plan.accountId) ?? noChoices();
     return (!replacesSnapshot(plan) || confirmed.has(plan.accountId)) &&
-      !manualPriceChange(plan, chosen) &&
       plan.positions.every((position) => !position.lines.length || !included(position, chosen) ||
         position.cost?.from === "statement" || validCost(chosen.costs.get(position.key) ?? ""));
   });
@@ -87,6 +85,8 @@ function Cost({
         <span className="text-destructive text-xs">Type an amount like 12345.67, or leave it blank.</span>
       ) : typed === undefined && position.cost?.from === "wealthfolio" ? (
         <span className="text-muted-foreground text-xs">From the account's average cost in Wealthfolio</span>
+      ) : typed === undefined && position.cost?.from === "face" ? (
+        <span className="text-muted-foreground text-xs">From the face value</span>
       ) : null}
     </div>
   );
@@ -116,7 +116,6 @@ function AccountPreview({
   const unknown = plan.positions.some(
     (p) => p.lines.length > 0 && included(p, choices) && !costOf(p, choices.costs.get(p.key)),
   );
-  const manual = manualPriceChange(plan, choices);
   return (
     <section className="space-y-4">
       <h3 className="font-medium">
@@ -146,19 +145,6 @@ function AccountPreview({
           <AlertDescription>
             Its current holdings come from the snapshot of {existing.later[existing.later.length - 1]}, so this import only
             changes its history before {existing.later[0]}.
-          </AlertDescription>
-        </Alert>
-      )}
-      {manual && (
-        <Alert variant="warning">
-          <AlertTitle>{manual.name} uses a manual price</AlertTitle>
-          <AlertDescription>
-            Saving its cost would replace Wealthfolio's manual price with its average cost.{" "}
-            {!manual.lines.length
-              ? "Untick Keep for this holding before saving."
-              : included(manual, choices) && manual.cost?.from !== "statement"
-                ? "Clear its total cost before saving."
-                : "Change its price mode in Wealthfolio, reconfirm the fund or share, and preview again."}
           </AlertDescription>
         </Alert>
       )}
@@ -289,11 +275,20 @@ export function HoldingsPreview({
   );
 }
 
+/** A saved snapshot's holding whose price or printed details didn't reach Wealthfolio. */
+export interface Unfinished {
+  accountId: string;
+  name: string;
+  what: "price" | "details";
+  date: string;
+}
+
 export interface SavedSnapshots {
   saved: { accountId: string; date: string; holdings: number }[];
   failed: { accountId: string; error: string }[];
-  /** The snapshots saved, but the add-on couldn't remember what each folio or demat account added. */
+  /** The snapshots saved, but the add-on couldn't remember what each folio, demat account or PRAN added. */
   unremembered: boolean;
+  unfinished: Unfinished[];
 }
 
 export function HoldingsResult({ result, accounts }: { result: SavedSnapshots; accounts: Account[] }) {
@@ -334,11 +329,28 @@ export function HoldingsResult({ result, accounts }: { result: SavedSnapshots; a
             </AlertDescription>
           </Alert>
         )}
+        {result.unfinished.length > 0 && (
+          <Alert variant="warning">
+            <AlertTitle>Some prices or details weren't saved</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc ps-4">
+                {result.unfinished.map((u, i) => (
+                  <li key={i}>
+                    {name(u.accountId)}, {u.name}:{" "}
+                    {u.what === "price"
+                      ? `Wealthfolio may value it at its average cost on ${u.date}. Enter its price for ${u.date} on its asset page.`
+                      : "the statement's details (ISIN, coupon, maturity and face value, or the scheme's fund manager and tier) aren't on its asset. Importing the statement again retries."}
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
         {result.unremembered && (
           <Alert variant="warning">
             <AlertTitle>Some import history could not be saved</AlertTitle>
             <AlertDescription>
-              The next preview may not know which holdings these folios or demat accounts added. Check which holdings
+              The next preview may not know which holdings these folios, demat accounts or PRANs added. Check which holdings
               it proposes to keep or remove before saving.
             </AlertDescription>
           </Alert>

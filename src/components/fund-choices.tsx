@@ -24,6 +24,7 @@ export type FundChoice = { fund: ChosenFund } | { leftOut: true };
 function toFund(result: SymbolSearchResult): ChosenFund {
   const mode = result as SymbolSearchResult & { pricingMode?: string | null; quoteMode?: string | null };
   return {
+    assetId: result.existingAssetId,
     symbol: (result.canonicalSymbol || result.symbol).trim().toUpperCase(),
     exchangeMic: result.canonicalExchangeMic || result.exchangeMic,
     // Statements are in rupees; a result without a currency is taken to be one too.
@@ -36,13 +37,15 @@ function toFund(result: SymbolSearchResult): ChosenFund {
   };
 }
 
-const pickHint = (noun: FundItem["noun"]) =>
-  noun === "fund"
+const pickHint = (item: FundItem) =>
+  item.noun === "fund"
     ? "Pick one with the statement's fund name, plan and option, or leave this fund out."
-    : "Pick one with the statement's company name, or leave this share out.";
+    : item.noun === "share"
+      ? "Pick one with the statement's company name, or leave this share out."
+      : `Pick one with the statement's ${item.noun} name, use the statement's prices, or leave this ${item.noun} out.`;
 
 const describe = (fund: ChosenFund) =>
-  [fund.symbol, fund.exchangeMic, fund.instrumentType, fund.quoteCcy].filter(Boolean).join(" · ");
+  [fund.symbol, fund.exchangeMic, fund.instrumentType, fund.quoteCcy, fund.statementPrices && "priced from statements"].filter(Boolean).join(" · ");
 
 /** The statement's funds, one entry per fund however many folios hold it. */
 export function fundsOf(data: CasData) {
@@ -60,9 +63,11 @@ export interface FundItem {
   isin: string | null;
   /** As printed. */
   name: string;
-  noun: "fund" | "share";
+  noun: "fund" | "share" | "bond" | "NPS scheme";
   /** Where else the statement lists it, e.g. "in 2 folios". */
   where?: string;
+  /** The asset priced by hand from statements, offered when no search result fits. */
+  statementAsset?: ChosenFund;
 }
 
 export const fundItems = (data: CasData): FundItem[] =>
@@ -88,7 +93,7 @@ function FundSearch({
   // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing or isn't
   // printed, or what the user types is sent to market-data providers.
   const name = fundName(item.name);
-  const { isin, noun } = item;
+  const { isin, noun, statementAsset } = item;
   const [query, setQuery] = useState(isin ?? name);
   const [results, setResults] = useState<SymbolSearchResult[] | null>(null);
   const [picked, setPicked] = useState<string>("");
@@ -159,15 +164,17 @@ function FundSearch({
         <p className="text-muted-foreground text-sm">
           {isin
             ? results.length
-              ? `Nothing found for the ISIN; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(noun)}`
-              : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker.`
+              ? `Nothing found for the ISIN; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(item)}`
+              : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker${statementAsset ? ", or use the statement's prices" : ""}.`
             : results.length
-              ? `No ISIN on the statement; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(noun)}`
-              : `No ISIN on the statement, and nothing found for "${byName}". Try another name or a ticker.`}
+              ? `No ISIN on the statement; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(item)}`
+              : `No ISIN on the statement, and nothing found for "${byName}". Try another name or a ticker${statementAsset ? ", or use the statement's prices" : ""}.`}
         </p>
       )}
       {results?.length === 0 && !byName && (
-        <p className="text-muted-foreground text-sm">Nothing found. Try the {noun}'s name.</p>
+        <p className="text-muted-foreground text-sm">
+          Nothing found. Try the {noun}'s name{statementAsset ? ", or use the statement's prices" : ""}.
+        </p>
       )}
       {results && results.length > 0 && (
         <RadioGroup value={picked} onValueChange={(value) => setPicked(String(value))} className="grid gap-2">
@@ -185,6 +192,11 @@ function FundSearch({
         <Button type="button" disabled={!result} onClick={() => result && onChoose(toFund(result))}>
           Use this {noun}
         </Button>
+        {statementAsset && (
+          <Button type="button" variant="outline" onClick={() => onChoose(statementAsset)}>
+            Use the statement's prices
+          </Button>
+        )}
         <Button type="button" variant="ghost" onClick={onLeaveOut}>
           Leave this {noun} out
         </Button>
