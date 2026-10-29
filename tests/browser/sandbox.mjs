@@ -630,6 +630,62 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }
     await frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" }).getByText("INEZ91A07012 · BOND · INR · priced from statements").waitFor();
     await frame.locator("section").filter({ hasText: "ISIN INEZ93A08016" }).getByText("Democorp Infra 7.60% 2033").waitFor();
+
+    // A remembered demat account that doesn't track holdings, NOT_SET included, is ignored, and its
+    // row says why. It needs choosing again, even to go with the statement's account.
+    const placeholder = frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" });
+    const statementAccount = frame.getByLabel("All of this statement");
+    const nsdlDemat = frame.getByLabel(/^NSDL Demat Account 1,/);
+    const cdslDemat = frame.getByLabel(/^CDSL Demat Account 2,/);
+    const otherFolio = frame.getByLabel(/^Folio 91234567\/12/);
+    const sourceKeys = await Promise.all([nsdlDemat, cdslDemat, otherFolio].map((select) => select.getAttribute("id")));
+    const beforeIgnored = await storage();
+    await hosted(([nsdl, cdsl]) => {
+      window.host.storage.set(nsdl, "account-1");
+      window.host.storage.set(cdsl, "unset-1");
+    }, sourceKeys);
+    await readAgain();
+    const notHoldings = ", which doesn't track holdings. A snapshot saved there wouldn't change its holdings, so choose again.";
+    await frame.getByText(`Chosen before: Mutual funds${notHoldings}`, { exact: true }).waitFor();
+    await frame.getByText(`Chosen before: Not set${notHoldings}`, { exact: true }).waitFor();
+    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
+    assert.equal(await preview.isDisabled(), true);
+    assert.match(await nsdlDemat.textContent(), /Choose an account/);
+    assert.match(await cdslDemat.textContent(), /Choose an account/);
+    assert.match(await otherFolio.textContent(), /Same as the statement \(Fund folios\)/);
+    await choose(/^NSDL Demat Account 1,/, "Demat (INR)");
+    assert.equal(await frame.getByText(/^Chosen before: Mutual funds/).count(), 0);
+    assert.equal(await preview.isDisabled(), true, "the CDSL account's own account needs choosing again");
+    await choose(/^CDSL Demat Account 2,/, "Same as the statement (Fund folios)");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.equal(await preview.isDisabled(), false);
+    await tab.frames()[1].waitForFunction((key) => !window.host.storage.has(key), sourceKeys[1]);
+    await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
+
+    // So is a remembered account for the whole statement, which isn't needed while each folio and
+    // demat account has its own account or is left out.
+    await tab.frames()[1].waitForFunction(([nsdl, cdsl]) =>
+      window.host.storage.get(nsdl) === "holdings-1" && window.host.storage.get(cdsl) === "holdings-1", sourceKeys);
+    await hosted((key) => { window.host.storage.set(key, "unset-1"); }, statementKey);
+    await readAgain();
+    await frame.getByText(`Chosen before: Not set${notHoldings}`, { exact: true }).waitFor();
+    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
+    assert.match(await statementAccount.textContent(), /Choose an account/);
+    assert.match(await otherFolio.textContent(), /Same as the statement/);
+    assert.doesNotMatch(await otherFolio.textContent(), /Fund folios/);
+    assert.equal(await preview.isDisabled(), true, "the folio goes with the statement, which has no account");
+    await choose(/^Folio 91234567\/12/, "Fund folios (INR)");
+    assert.equal(await preview.isDisabled(), false);
+    await frame.getByText(`Chosen before: Not set${notHoldings}`, { exact: true }).waitFor();
+    await choose(/^Folio 91234567\/12/, "Same as the statement");
+    assert.equal(await preview.isDisabled(), true);
+    await choose("All of this statement", "Fund folios (INR)");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.equal(await preview.isDisabled(), false);
+    await tab.frames()[1].waitForFunction(([statement, folio]) =>
+      window.host.storage.get(statement) === "holdings-2" && !window.host.storage.has(folio), [statementKey, sourceKeys[2]]);
+    assert.deepEqual(await storage(), beforeIgnored);
+
     // A known MANUAL asset in an inactive account gets the statement's price, even when the target starts empty.
     const priced = "Priced by hand: saving also saves the statement's price as its price on this date.";
     await hosted(() => {

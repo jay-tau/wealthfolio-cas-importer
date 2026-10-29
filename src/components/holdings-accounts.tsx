@@ -18,16 +18,26 @@ export function HoldingsAccountsCard({
   holdings,
   accounts,
   choices,
+  ignored,
   onChange,
 }: {
   holdings: Holdings;
   /** Accounts that track holdings. */
   accounts: Account[];
   choices: HoldingsAccountChoices;
+  /** Remembered choices of an account that doesn't track holdings, ignored: key → the account's name. */
+  ignored: Record<string, string>;
   onChange: (key: string, value: string) => void;
 }) {
   const statementKey = investorKey(holdings.investor);
   const statementAccount = accounts.find((a) => a.id === choices[statementKey])?.name;
+  const chooseAgain = (key: string) =>
+    key in ignored && (
+      <p className="text-muted-foreground w-full text-sm">
+        Chosen before: {ignored[key]}, which doesn't track holdings. A snapshot saved there wouldn't change its holdings,
+        so choose again.
+      </p>
+    );
   return (
     <Card>
       <CardHeader>
@@ -52,10 +62,12 @@ export function HoldingsAccountsCard({
                 value={choices[statementKey]}
                 onChange={(id) => onChange(statementKey, id)}
               />
+              {chooseAgain(statementKey)}
             </div>
             <div className="grid gap-4">
               {holdings.sources.map((source) => {
                 const key = sourceKey(source);
+                // Shown unchosen when its remembered account is ignored, so even going with the statement is a new choice.
                 return (
                   <div key={key} className="flex flex-wrap items-center justify-between gap-2">
                     <Label htmlFor={key}>
@@ -68,11 +80,12 @@ export function HoldingsAccountsCard({
                     <AccountSelect
                       id={key}
                       accounts={accounts}
-                      value={choices[key]}
+                      value={key in ignored ? null : choices[key]}
                       onChange={(id) => onChange(key, id)}
                       inherit={`Same as the statement${statementAccount ? ` (${statementAccount})` : ""}`}
                       leaveOut={LEFT_OUT}
                     />
+                    {chooseAgain(key)}
                   </div>
                 );
               })}

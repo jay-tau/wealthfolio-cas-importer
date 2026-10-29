@@ -274,9 +274,15 @@ export function HoldingsImport({
 }) {
   const { api } = ctx;
   const targets = accounts.filter((a) => a.trackingMode === "HOLDINGS");
-  // A remembered account that no longer tracks holdings is ignored.
+  // A remembered account that no longer tracks holdings is ignored, and its row says why.
   const usable: HoldingsAccountChoices = Object.fromEntries(
     Object.entries(accountChoices).filter(([, id]) => id === LEFT_OUT || targets.some((a) => a.id === id)),
+  );
+  const ignored: Record<string, string> = Object.fromEntries(
+    Object.entries(accountChoices).flatMap(([key, id]) => {
+      const account = accounts.find((a) => a.id === id && a.trackingMode !== "HOLDINGS");
+      return account ? [[key, account.name]] : [];
+    }),
   );
   const [preview, setPreview] = useState<Previewed | null>(null);
   const [choices, setChoices] = useState<Map<string, Choices>>(new Map());
@@ -285,7 +291,8 @@ export function HoldingsImport({
   const [error, setError] = useState("");
   const items = holdingItems(holdings);
 
-  const accountOf = (source: Source) => accountForSource(usable, holdings, source);
+  // A source whose own account is ignored needs choosing again, even to go with the statement.
+  const accountOf = (source: Source) => sourceKey(source) in ignored ? undefined : accountForSource(usable, holdings, source);
   const assetOf = (h: StatementHolding) => {
     const choice = fundChoices[holdingKey(h)];
     return choice && "fund" in choice ? choice.fund : undefined;
@@ -477,6 +484,7 @@ export function HoldingsImport({
         holdings={holdings}
         accounts={targets}
         choices={usable}
+        ignored={ignored}
         onChange={(key, value) => {
           changed();
           onAccount(key, value);
