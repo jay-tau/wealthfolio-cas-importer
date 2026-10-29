@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Leave out a detailed statement's fund whose rows don't add up to its printed closing balance, by more than casparser's 0.005 units, instead of importing the rows casparser read: the preview gives both figures and the difference, still says how to correct earlier imports of its reversed purchases, and can import the fund anyway
 - Offer only accounts that track transactions for a detailed statement, since Wealthfolio doesn't update the holdings of an account that tracks holdings from its transactions; a PAN or folio account chosen before that tracks holdings is ignored, and its row says why to choose again
+- Say why an account chosen before is ignored when it's hidden or archived in Wealthfolio, or no longer available, instead of ignoring it silently, even when no account tracks holdings. A folio, demat account or PRAN whose own account is ignored needs choosing again instead of going with the PAN's or statement's account, and so does the bank account of a folio whose own or PAN's bank account is ignored, instead of using the PAN's bank account or Outside Wealthfolio
 
 ### Security
 

@@ -468,6 +468,122 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readAgain();
     assert.deepEqual(await storage(), beforeBankValidation);
 
+    // Remembered accounts that are hidden, archived or no longer listed are ignored too, and their rows
+    // say why. A folio's own choice needs making again, even to go with its PAN.
+    const testbridge = frame.getByLabel("Testbridge Mutual Fund, folio 1040012345", { exact: true });
+    const [testbridgeKey, ...folioBankKeys] = await Promise.all([testbridge, ...bankFolios].map((select) => select.getAttribute("id")));
+    const rowOf = (select) => frame.locator("div.justify-between").filter({ has: select });
+    const unavailable = (account) => `Chosen before: ${account}, so choose again.`;
+    const missing = unavailable("an account that's no longer available");
+    const pick = async (select, option) => {
+      await select.click();
+      await frame.getByRole("option", { name: option, exact: true }).click();
+    };
+    const saveChoices = (choices) => tab.frames()[1].evaluate((choices) => {
+      for (const [key, id] of choices) window.host.storage.set(key, id);
+    }, choices);
+    const restoreChoices = async (saved) => {
+      await tab.frames()[1].evaluate((saved) => { window.host.storage = new Map(Object.entries(saved)); }, saved);
+      await readAgain();
+      assert.deepEqual(await storage(), saved);
+    };
+    const beforeUnavailable = await storage();
+    const hiddenFunds = unavailable("Hidden funds, which is hidden in Wealthfolio");
+    const oldFunds = unavailable("Old funds, which is archived in Wealthfolio");
+    await saveChoices([[accountKeys[1], "hidden-1"], [testbridgeKey, "gone-1"], [folioBankKeys[0], "archived-2"], [folioBankKeys[1], "hidden-1"], [bankKey, "bank-1"]]);
+    await readAgain();
+    await rowOf(fictiva).getByText(hiddenFunds, { exact: true }).waitFor();
+    await rowOf(testbridge).getByText(missing, { exact: true }).waitFor();
+    await rowOf(bankFolios[0]).getByText(oldFunds, { exact: true }).waitFor();
+    await rowOf(bankFolios[1]).getByText(hiddenFunds, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 4);
+    for (const select of [fictiva, testbridge, ...bankFolios]) assert.match(await select.textContent(), /Choose an account/);
+    assert.match(await panAccount.textContent(), /Mutual funds/);
+    assert.match(await bankChoice.textContent(), /Savings/);
+    assert.equal(await previewButton.isDisabled(), true);
+    await fictiva.click();
+    await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).waitFor();
+    assert.equal(await frame.getByRole("option", { name: /^(Hidden|Old) (funds|demat) / }).count(), 0);
+    await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).click();
+    await pick(testbridge, "Not set (INR)");
+    assert.equal(await previewButton.isDisabled(), true, "the folios' bank accounts need choosing again");
+    await pick(bankFolios[0], "Outside Wealthfolio");
+    assert.equal(await previewButton.isDisabled(), true, "so does the other folio's, even to go with the PAN");
+    await pick(bankFolios[1], "Same as PAN (Savings)");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.equal(await previewButton.isDisabled(), false);
+    // Each folio's rows go to the accounts chosen now: Fictiva's with deposits and withdrawals in
+    // Mutual funds, Testbridge's in Not set, with transfers from and to Savings.
+    const beforeImport = await tab.frames()[1].evaluate(() =>
+      ({ activities: window.host.activities, failHistory: window.host.failHistory, rejectLine: window.host.rejectLine }));
+    await tab.frames()[1].evaluate(() => {
+      window.host.activities = [];
+      window.host.failHistory = false;
+      window.host.rejectLine = undefined;
+    });
+    await previewButton.click();
+    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
+    await frame.getByText(/^Imported (\d+) of \1 activities/).waitFor();
+    const routed = await tab.frames()[1].evaluate(() => window.host.activities.map((a) => [a.accountId, a.activityType, a.assetSymbol]));
+    const rowCount = (accountId, type) => routed.filter(([id, t]) => id === accountId && (!type || t === type)).length;
+    assert.deepEqual([...new Set(routed.map(([id]) => id))].sort(), ["account-1", "bank-1", "unset-1"]);
+    for (const [id, , symbol] of routed.filter(([, , symbol]) => symbol)) {
+      assert.equal(id, symbol.startsWith("INFZ90K01") ? "account-1" : "unset-1", symbol);
+    }
+    assert.equal(rowCount("account-1", "TRANSFER_IN") + rowCount("account-1", "TRANSFER_OUT"), 0);
+    assert.ok(rowCount("account-1", "DEPOSIT") > 0 && rowCount("unset-1", "TRANSFER_IN") > 0);
+    assert.deepEqual(
+      [rowCount("bank-1", "TRANSFER_OUT"), rowCount("bank-1", "TRANSFER_IN"), rowCount("bank-1")],
+      [rowCount("unset-1", "TRANSFER_IN"), rowCount("unset-1", "TRANSFER_OUT"), rowCount("unset-1", "TRANSFER_IN") + rowCount("unset-1", "TRANSFER_OUT")],
+    );
+    await tab.frames()[1].evaluate((state) => Object.assign(window.host, state), beforeImport);
+    await restoreChoices(beforeUnavailable);
+
+    // So are the PAN's own: an archived account and a missing bank account. A folio that goes with
+    // them needs a choice, unless its funds are left out; folios with their own choices don't.
+    await saveChoices([[accountKeys[0], "archived-2"], [bankKey, "gone-1"], [accountKeys[1], "account-1"], [folioBankKeys[0], "outside"]]);
+    await readAgain();
+    await rowOf(panAccount).getByText(oldFunds, { exact: true }).waitFor();
+    await rowOf(bankChoice).getByText(missing, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 2);
+    assert.match(await panAccount.textContent(), /Choose an account/);
+    assert.match(await bankChoice.textContent(), /Choose an account/);
+    for (const select of [testbridge, bankFolios[1]]) {
+      assert.match(await select.textContent(), /Same as PAN/);
+      assert.doesNotMatch(await select.textContent(), /\(/, "nothing is chosen for the PAN");
+    }
+    assert.match(await fictiva.textContent(), /Mutual funds/);
+    assert.match(await bankFolios[0].textContent(), /Outside Wealthfolio/);
+    assert.equal(await previewButton.isDisabled(), true);
+    await pick(testbridge, "Mutual funds (INR)");
+    assert.equal(await previewButton.isDisabled(), true, "the folio's bank account still goes with the PAN");
+    await leaveOut(byName);
+    await leaveOut(noIsin);
+    assert.equal(await previewButton.isDisabled(), false);
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 2);
+    await restoreChoices(beforeUnavailable);
+
+    // A folio printed without a PAN has none to go with.
+    await tab.frames()[1].evaluate(() => { window.host.noPanFolio = "1040012345"; });
+    await saveChoices([[testbridgeKey, "hidden-1"], [folioBankKeys[1], "gone-1"]]);
+    await readAgain();
+    const noPan = frame.getByLabel("Testbridge Mutual Fund, folio 1040012345 (no PAN printed)", { exact: true });
+    await rowOf(noPan).getByText(hiddenFunds, { exact: true }).waitFor();
+    await rowOf(bankFolios[1]).getByText(missing, { exact: true }).waitFor();
+    assert.match(await noPan.textContent(), /Choose an account/);
+    assert.match(await bankFolios[1].textContent(), /Choose an account/);
+    assert.equal(await previewButton.isDisabled(), true);
+    await noPan.click();
+    await frame.getByRole("option", { name: "Mutual funds (INR)" }).waitFor();
+    assert.equal(await frame.getByRole("option", { name: /^Same as PAN/ }).count(), 0);
+    await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
+    assert.equal(await previewButton.isDisabled(), true);
+    await pick(bankFolios[1], "Outside Wealthfolio");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.equal(await previewButton.isDisabled(), false);
+    await tab.frames()[1].evaluate(() => { window.host.noPanFolio = ""; });
+    await restoreChoices(beforeUnavailable);
+
     // Change alone keeps the saved fund, so reading again confirms it again.
     const flexi = frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" });
     const remembered = await storage();
@@ -622,9 +738,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText("Left out", { exact: true }).count(), 0);
     const choose = async (label, option) => {
       await frame.getByLabel(label).click();
-      // Only accounts that track holdings.
+      await frame.getByRole("option", { name: option }).waitFor();
+      // Only active, unarchived accounts that track holdings.
       assert.equal(await frame.getByRole("option", { name: "Mutual funds (INR)" }).count(), 0);
-      assert.equal(await frame.getByRole("option", { name: "Archived funds (INR)" }).count(), 0);
+      assert.equal(await frame.getByRole("option", { name: /^(Archived funds|Hidden demat|Old demat) / }).count(), 0);
       await frame.getByRole("option", { name: option }).click();
     };
     // A delayed account A write cannot overwrite the later B choice, and a reread waits for both.
@@ -719,6 +836,107 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await preview.isDisabled(), false);
     await tab.frames()[1].waitForFunction(([statement, folio]) =>
       window.host.storage.get(statement) === "holdings-2" && !window.host.storage.has(folio), [statementKey, sourceKeys[2]]);
+    assert.deepEqual(await storage(), beforeIgnored);
+
+    // So are remembered accounts that are hidden, archived or no longer listed. A folio's or demat
+    // account's own choice needs making again unless it's left out, and the snapshots go where chosen.
+    const leftOutFolio = frame.getByLabel(/^Folio 1040012345/);
+    const hiddenDemat = unavailable("Hidden demat, which is hidden in Wealthfolio");
+    const oldDemat = unavailable("Old demat, which is hidden and archived in Wealthfolio");
+    const beforeUnavailableHoldings = await hosted(() => JSON.stringify({
+      snapshots: window.host.snapshots, saves: window.host.saves, assets: window.host.assets, quotes: window.host.quotes,
+      pricingModes: window.host.pricingModes, storage: [...window.host.storage],
+    }));
+    await saveChoices([[sourceKeys[0], "hidden-2"], [sourceKeys[1], "archived-3"], [sourceKeys[2], "gone-1"]]);
+    await readAgain();
+    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
+    await rowOf(nsdlDemat).getByText(hiddenDemat, { exact: true }).waitFor();
+    await rowOf(cdslDemat).getByText(oldDemat, { exact: true }).waitFor();
+    await rowOf(otherFolio).getByText(missing, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
+    for (const select of [nsdlDemat, cdslDemat, otherFolio]) assert.match(await select.textContent(), /Choose an account/);
+    assert.match(await leftOutFolio.textContent(), /Leave out/);
+    assert.match(await statementAccount.textContent(), /Fund folios/);
+    assert.equal(await preview.isDisabled(), true);
+    await choose(/^NSDL Demat Account 1,/, "Demat (INR)");
+    await choose(/^CDSL Demat Account 2,/, "Same as the statement (Fund folios)");
+    assert.equal(await preview.isDisabled(), true, "the folio's own account needs choosing again");
+    await choose(/^Folio 91234567\/12/, "Leave out");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.equal(await preview.isDisabled(), false);
+    const depository = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
+    const isins = (type) => depository.accounts.find((a) => a.type === type).equities
+      .concat(...["mutual_funds", "bonds"].map((kind) => depository.accounts.find((a) => a.type === type)[kind])).map((h) => h.isin);
+    const savesBefore = JSON.parse(beforeUnavailableHoldings).saves.length;
+    await preview.click();
+    await frame.getByRole("button", { name: "Save 2 snapshots" }).click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    const savedTo = await hosted(() => ({ saves: window.host.saves, snapshots: window.host.snapshots }));
+    assert.deepEqual(savedTo.saves.slice(savesBefore).map((s) => [s.accountId, s.date]).sort(), [["holdings-1", "2025-03-31"], ["holdings-2", "2025-03-31"]]);
+    for (const [accountId, own] of [["holdings-1", isins("NSDL Demat Account")], ["holdings-2", [...isins("CDSL Demat Account"), "GILT"]]]) {
+      const symbols = savedTo.snapshots[accountId]["2025-03-31"].holdings.map((h) => h.symbol);
+      assert.ok(symbols.length > 1 && symbols.every((symbol) => own.includes(symbol)), `${accountId}: ${symbols}`);
+    }
+    await hosted((state) => {
+      const { storage, ...saved } = JSON.parse(state);
+      Object.assign(window.host, saved, { storage: new Map(storage) });
+    }, beforeUnavailableHoldings);
+    await readAgain();
+    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
+    assert.deepEqual(await storage(), beforeIgnored);
+
+    // The statement's own ignored account is needed only by the rows that go with it.
+    await saveChoices([[statementKey, "hidden-2"]]);
+    await hosted((key) => { window.host.storage.delete(key); }, sourceKeys[1]);
+    await readAgain();
+    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
+    await rowOf(statementAccount).getByText(hiddenDemat, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 1);
+    assert.match(await statementAccount.textContent(), /Choose an account/);
+    for (const select of [cdslDemat, otherFolio]) {
+      assert.match(await select.textContent(), /Same as the statement/);
+      assert.doesNotMatch(await select.textContent(), /\(/, "nothing is chosen for the statement");
+    }
+    assert.equal(await preview.isDisabled(), true);
+    await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
+    assert.equal(await preview.isDisabled(), true, "the folio still goes with the statement");
+    await choose(/^Folio 91234567\/12/, "Leave out");
+    assert.equal(await preview.isDisabled(), false);
+    await hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeIgnored);
+    await readAgain();
+    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
+    assert.deepEqual(await storage(), beforeIgnored);
+
+    // With no account left that tracks holdings, the card still says why each choice is ignored.
+    const readNsdl = async (text) => {
+      await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
+      await frame.locator("#cas-password").fill("ABCDE1234F");
+      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+      await frame.getByText(text, { exact: true }).waitFor({ timeout: 180_000 });
+    };
+    await hosted(() => {
+      window.host.hideHoldingsAccounts = true;
+      window.host.reopen();
+    });
+    await readNsdl("No account tracks holdings. Add one in Wealthfolio, set to track holdings, then close and reopen the add-on.");
+    assert.equal(await statementAccount.count(), 0);
+    const card = await frame.locator("body").innerText();
+    for (const [label, note] of [
+      ["All of this statement", unavailable("Fund folios, which is hidden in Wealthfolio")],
+      ["NSDL Demat Account 1, FICTIVA SECURITIES PRIVATE LIMITED", unavailable("Demat, which is hidden in Wealthfolio")],
+      ["CDSL Demat Account 2, TESTBRIDGE BROKING LIMITED", unavailable("Demat, which is hidden in Wealthfolio")],
+    ]) {
+      assert.ok(card.includes(`${label}\n${note}`) || card.includes(`${label}\n\n${note}`), `${label}: ${card}`);
+    }
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
+    assert.equal(await preview.isDisabled(), true);
+    await hosted(() => {
+      window.host.hideHoldingsAccounts = false;
+      window.host.reopen();
+    });
+    await readNsdl("Accounts");
+    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
+    assert.equal(await preview.isDisabled(), false);
     assert.deepEqual(await storage(), beforeIgnored);
 
     // A known MANUAL asset in an inactive account gets the statement's price, even when the target starts empty.
@@ -1034,7 +1252,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await npsSection.getByText(/^No ISIN on the statement, and nothing found for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
     await npsSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await npsSection.getByText("NPS-TEST-E-TIER-I · EQUITY · INR · priced from statements").waitFor();
-    // Its investor is the statement's name, not the PAN of the earlier statements, so nothing is remembered yet.
+    // A PRAN's remembered account that's archived is ignored too, though it doesn't track holdings either.
+    const pran = frame.getByLabel(/^NPS, PRAN XXXXXXXX9001/);
+    await saveChoices([[await pran.getAttribute("id"), "archived-2"]]);
+    await readAgain();
+    await rowOf(pran).getByText(oldFunds, { exact: true }).waitFor();
+    assert.match(await pran.textContent(), /Choose an account/);
+    assert.equal(await preview.isDisabled(), true);
+    // Its investor is the statement's name, not the PAN of the earlier statements, so nothing else is remembered.
     await choose(/^NPS, PRAN XXXXXXXX9001/, "Fund folios (INR)");
     await preview.click();
     const npsRow = folios.getByRole("row").filter({ hasText: scheme });

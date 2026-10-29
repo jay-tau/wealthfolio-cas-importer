@@ -2,7 +2,7 @@ import type { Account } from "@wealthfolio/addon-sdk";
 import { Card, CardContent, CardHeader, CardTitle, Label } from "@wealthfolio/ui";
 import type { Holdings, Source } from "../cas/holdings";
 import { investorKey, LEFT_OUT, sourceKey } from "../lib/choices";
-import { AccountSelect } from "./account-choices";
+import { AccountSelect, ChooseAgain, type Ignored } from "./account-choices";
 
 /** Remembered or chosen: investor key or source key → account ID, or `LEFT_OUT` for a source. */
 export type HoldingsAccountChoices = Record<string, string>;
@@ -25,19 +25,18 @@ export function HoldingsAccountsCard({
   /** Accounts that track holdings. */
   accounts: Account[];
   choices: HoldingsAccountChoices;
-  /** Remembered choices of an account that doesn't track holdings, ignored: key → the account's name. */
-  ignored: Record<string, string>;
+  /** Remembered choices that are ignored: key → the account. */
+  ignored: Record<string, Ignored>;
   onChange: (key: string, value: string) => void;
 }) {
   const statementKey = investorKey(holdings.investor);
   const statementAccount = accounts.find((a) => a.id === choices[statementKey])?.name;
-  const chooseAgain = (key: string) =>
-    key in ignored && (
-      <p className="text-muted-foreground w-full text-sm">
-        Chosen before: {ignored[key]}, which doesn't track holdings. A snapshot saved there wouldn't change its holdings,
-        so choose again.
-      </p>
-    );
+  const chooseAgain = (key: string) => (
+    <ChooseAgain
+      ignored={ignored[key]}
+      mode="doesn't track holdings. A snapshot saved there wouldn't change its holdings"
+    />
+  );
   return (
     <Card>
       <CardHeader>
@@ -51,7 +50,19 @@ export function HoldingsAccountsCard({
       </CardHeader>
       <CardContent className="space-y-6">
         {accounts.length === 0 ? (
-          <p>No account tracks holdings. Add one in Wealthfolio, set to track holdings, then close and reopen the add-on.</p>
+          <>
+            <p>No account tracks holdings. Add one in Wealthfolio, set to track holdings, then close and reopen the add-on.</p>
+            {/* Still say why the accounts chosen before are ignored. */}
+            {[[statementKey, "All of this statement"], ...holdings.sources.map((s) => [sourceKey(s), s.label])].map(
+              ([key, label]) =>
+                key in ignored && (
+                  <div key={key}>
+                    <p>{label}</p>
+                    {chooseAgain(key)}
+                  </div>
+                ),
+            )}
+          </>
         ) : (
           <>
             <div className="flex flex-wrap items-center justify-between gap-2">

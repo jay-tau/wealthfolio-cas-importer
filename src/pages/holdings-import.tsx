@@ -24,6 +24,7 @@ import {
 } from "../cas/holdings";
 import { fundRef } from "../cas/plan";
 import type { Statement } from "../cas/types";
+import type { Ignored } from "../components/account-choices";
 import { type FundChoice, FundChoicesCard, type FundItem } from "../components/fund-choices";
 import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } from "../components/holdings-accounts";
 import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
@@ -245,6 +246,7 @@ export function HoldingsImport({
   accounts,
   allAccounts,
   accountChoices,
+  unavailable,
   onAccount,
   fundChoices,
   onFund,
@@ -257,7 +259,10 @@ export function HoldingsImport({
   /** Active accounts. */
   accounts: Account[];
   allAccounts: Account[];
+  /** Remembered choices of active, unarchived accounts, or `LEFT_OUT`. */
   accountChoices: HoldingsAccountChoices;
+  /** Remembered choices of hidden, archived or missing accounts, ignored: key → the account. */
+  unavailable: Record<string, Ignored>;
   onAccount: (key: string, value: string) => void;
   fundChoices: Record<string, FundChoice | undefined>;
   onFund: (key: string, choice: FundChoice | undefined) => void;
@@ -266,16 +271,20 @@ export function HoldingsImport({
 }) {
   const { api } = ctx;
   const targets = accounts.filter((a) => a.trackingMode === "HOLDINGS");
-  // A remembered account that no longer tracks holdings is ignored, and its row says why.
+  // Like a hidden, archived or missing one, a remembered account that no longer tracks holdings is
+  // ignored, and its row says why.
   const usable: HoldingsAccountChoices = Object.fromEntries(
     Object.entries(accountChoices).filter(([, id]) => id === LEFT_OUT || targets.some((a) => a.id === id)),
   );
-  const ignored: Record<string, string> = Object.fromEntries(
-    Object.entries(accountChoices).flatMap(([key, id]) => {
-      const account = accounts.find((a) => a.id === id && a.trackingMode !== "HOLDINGS");
-      return account ? [[key, account.name]] : [];
-    }),
-  );
+  const ignored: Record<string, Ignored> = {
+    ...unavailable,
+    ...Object.fromEntries(
+      Object.entries(accountChoices).flatMap(([key, id]) => {
+        const account = accounts.find((a) => a.id === id && a.trackingMode !== "HOLDINGS");
+        return account ? [[key, { name: account.name }]] : [];
+      }),
+    ),
+  };
   const [preview, setPreview] = useState<Previewed | null>(null);
   const [choices, setChoices] = useState<Map<string, Choices>>(new Map());
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());

@@ -1,7 +1,7 @@
 // Runs inside the sandboxed iframe that tests/browser/sandbox.mjs builds. The page posts the
 // packaged files as Blobs; this stands in for ctx.assets and drives the real CasParser, then
-// mounts the import page on a fake host: an account tracking transactions and two tracking
-// holdings, in-memory storage, secrets and snapshots, a fund search, recorded error toasts, and
+// mounts the import page on a fake host: accounts tracking transactions or holdings, some of them
+// hidden or archived, in-memory storage, secrets and snapshots, a fund search, recorded error toasts, and
 // an import that stores rows the way Wealthfolio returns them. Snapshot saves write a manual
 // asset's average cost as its quote for the day, and profile updates store every field as sent,
 // both as Wealthfolio does. Wealthfolio's own checks are left
@@ -51,6 +51,8 @@ const host = {
   skipLine: undefined as number | undefined,
   // An invented second folio holding the fund with this ISIN, added to what the parser reads.
   sharedIsin: "",
+  // A detailed statement's folio printed without a PAN.
+  noPanFolio: "",
   // Holdings dropped from a depository statement as if they had been sold.
   soldIsins: [] as string[],
   parseWarnings: [] as string[],
@@ -63,6 +65,8 @@ const host = {
   // Summary statements print no ISIN for the funds with these.
   summaryWithoutIsin: [] as string[],
   archiveOtherAccount: false,
+  // Hides both accounts that track holdings, after a reopen.
+  hideHoldingsAccounts: false,
   reopen: () => {},
   // Asset pricing mode belongs to the asset, independently of any account or snapshot.
   pricingModes: {} as Record<string, string>,
@@ -159,6 +163,7 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
     const [first, second, third, ...rest] = data.folios;
     return { ...data, folios: [{ ...first, schemes: [...first.schemes, ...third.schemes] }, second, ...rest] };
   }
+  if (host.noPanFolio) data.folios = data.folios.map((f) => (f.folio === host.noPanFolio ? { ...f, PAN: null } : f));
   const [folio] = data.folios;
   const scheme = folio.schemes.find((s) => s.isin === host.sharedIsin);
   return scheme ? { ...data, folios: [...data.folios, { ...folio, folio: "91234568 / 34", schemes: [scheme] }] } : data;
@@ -239,9 +244,13 @@ const api = {
       account("account-1", "Mutual funds", "TRANSACTIONS"),
       account("bank-1", "Savings", "TRANSACTIONS"),
       account("unset-1", "Not set", "NOT_SET"),
-      account("holdings-1", "Demat", "HOLDINGS"),
-      account("holdings-2", "Fund folios", "HOLDINGS"),
+      { ...account("holdings-1", "Demat", "HOLDINGS"), isActive: !host.hideHoldingsAccounts },
+      { ...account("holdings-2", "Fund folios", "HOLDINGS"), isActive: !host.hideHoldingsAccounts },
       { ...account("archived-1", "Archived funds", host.archiveOtherAccount ? "TRANSACTIONS" : "HOLDINGS"), isActive: false, isArchived: host.archiveOtherAccount },
+      { ...account("hidden-1", "Hidden funds", "TRANSACTIONS"), isActive: false },
+      { ...account("archived-2", "Old funds", "TRANSACTIONS"), isArchived: true },
+      { ...account("hidden-2", "Hidden demat", "HOLDINGS"), isActive: false },
+      { ...account("archived-3", "Old demat", "HOLDINGS"), isActive: false, isArchived: true },
     ].filter((a) => includeArchived || !a.isArchived),
   },
   portfolio: {
