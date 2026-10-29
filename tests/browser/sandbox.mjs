@@ -918,7 +918,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.hideHoldingsAccounts = true;
       window.host.reopen();
     });
-    await readNsdl("No account tracks holdings. Add one in Wealthfolio, set to track holdings, then close and reopen the add-on.");
+    await readNsdl("No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then close and reopen the add-on. The check against transactions below works without one.");
     assert.equal(await statementAccount.count(), 0);
     const card = await frame.locator("body").innerText();
     for (const [label, note] of [
@@ -1765,6 +1765,66 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.depositoryAccounts = undefined;
       window.host.statementDate = "";
     });
+
+    // With no account that tracks holdings, a summary statement is still checked against the
+    // accounts that track transactions, and the check saves nothing.
+    const flexiName = "Fictiva Flexi Cap Fund - Direct Plan - Growth";
+    const balancedName = "Fictiva Balanced Advantage Fund - Direct Plan - Income Distribution cum Capital Withdrawal Option - Reinvestment";
+    const liquidName = "Fictiva Liquid Fund - Direct Plan - Growth";
+    await hosted(() => {
+      // Activities show an asset's display code; the Balanced Advantage fund's was changed.
+      const posted = (accountId, activityType, date, symbol, quantity, displayCode = symbol) => ({
+        id: `checked-${date}-${accountId}-${symbol}`, accountId, activityType, subtype: null, status: "POSTED", date: `${date}T00:00:00+00:00`,
+        quantity, unitPrice: "10", amount: null, fee: null, currency: "INR", assetId: `asset-${symbol}`, assetSymbol: displayCode, exchangeMic: "XBOM",
+      });
+      for (const symbol of ["INFZ90K01FC8", "INFZ90K01BA1"]) {
+        window.host.assets[`asset-${symbol}`] = { symbol, exchangeMic: "XBOM", instrumentType: "EQUITY", name: `Fund ${symbol}` };
+      }
+      window.host.hideHoldingsAccounts = true;
+      window.host.activities = [
+        posted("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "2892.104"),
+        // After the statement's date: not counted.
+        posted("account-1", "BUY", "2025-04-01", "INFZ90K01FC8", "5"),
+        posted("account-1", "BUY", "2024-04-01", "INFZ90K01BA1", "3000", "MY-BALANCED"),
+        posted("unset-1", "BUY", "2024-04-01", "INFZ90K01BA1", "400", "MY-BALANCED"),
+      ];
+      window.host.reopen();
+    });
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-summary-cams.pdf");
+    await frame.locator("#cas-password").fill("ABCDE1234F");
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText(/^No account tracks holdings\. To save snapshots,/).waitFor({ timeout: 180_000 });
+    for (const section of await frame.locator("section").all()) {
+      await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).first().waitFor();
+      if (await section.getByText("Confirmed", { exact: true }).count()) continue;
+      await section.getByRole("radio").first().click();
+      await section.getByRole("button", { name: /^Use this / }).click();
+      await section.getByText("Confirmed", { exact: true }).waitFor();
+    }
+    assert.equal(await preview.isDisabled(), true);
+    await frame.getByText("No account tracks holdings, so there's nowhere to save a snapshot.", { exact: true }).waitFor();
+    const accountData = () => hosted(() => JSON.stringify({
+      saves: window.host.saves, snapshots: window.host.snapshots, storage: [...window.host.storage], activities: window.host.activities,
+      quotes: window.host.quotes, assets: window.host.assets, modes: window.host.pricingModes, links: window.host.links,
+    }));
+    const before = await accountData();
+    await frame.getByRole("button", { name: "Check units", exact: true }).click();
+    const checkRow = (name) => frame.getByRole("row").filter({ hasText: name });
+    await checkRow(flexiName).getByText("Needs review", { exact: true }).waitFor();
+    await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
+    assert.deepEqual(await checkRow(flexiName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "2892.104", "2892.104"]);
+    await checkRow(flexiName).getByRole("checkbox").dispatchEvent("click");
+    await checkRow(flexiName).getByText("Match", { exact: true }).waitFor();
+    // A fund in two accounts is summed once, and a gap shows once its accounts are confirmed.
+    assert.deepEqual(await checkRow(balancedName).getByRole("cell").allTextContents().then((cells) => cells.slice(2, 4).map((c) => c.trim())), ["3443.91", "3400"]);
+    await checkRow(balancedName).getByText("Mutual funds · 3000").waitFor();
+    await checkRow(balancedName).getByText("Not set · 400").waitFor();
+    await checkRow(balancedName).getByRole("checkbox").dispatchEvent("click");
+    await checkRow(balancedName).getByText("Differ", { exact: true }).waitFor();
+    await checkRow(liquidName).getByText("No account that tracks transactions has posted activities for it on or before 2025-03-31.", { exact: true }).waitFor();
+    assert.equal(await checkRow(liquidName).getByRole("checkbox").count(), 0);
+    assert.equal(await accountData(), before);
+    await hosted(() => { window.host.hideHoldingsAccounts = false; });
 
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });

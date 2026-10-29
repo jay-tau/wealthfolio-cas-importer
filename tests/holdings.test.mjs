@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { dec, div, format } from "../src/cas/decimal.ts";
 import {
   assetDetails,
+  checkUnits,
   importedRefs,
   included,
   keepsDetails,
@@ -16,6 +17,7 @@ import {
   snapshotOf,
   splitSince,
   statementAsset,
+  unitStatus,
   validCost,
 } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
@@ -158,6 +160,8 @@ test("reads a CDSL statement and its NPS schemes, and leaves out holdings withou
     ],
   );
   assert.deepEqual(holdings.leftOut.map((l) => l.reason), ["No units on the statement."]);
+  // Kept for the check against transactions, but not as a holding.
+  assert.deepEqual(holdings.sources.map((s) => (s.zero ?? []).map((h) => [h.kind, h.isin, h.units])), [[["share", "INEZ91B20013", "0"]], [], [], [], []]);
   const nps = holdings.sources[4];
   assert.equal(nps.kind, "nps");
   assert.equal(nps.label, "NPS, PRAN XXXXXXXX9001");
@@ -918,4 +922,149 @@ test("foreign costs stay in their currency when kept and do not become an INR fa
   assert.equal(typed.averageCost, "20");
   const [printed] = plan({ ...holdings, sources: [{ ...holdings.sources[0], holdings: [{ ...holding, cost: "600" }] }] }, { existing: () => existing });
   assert.equal(snapshotOf(printed, noChoices).holdings[0].averageCost, "30");
+});
+
+let activityId = 0;
+/** A Wealthfolio activity for a fund on XBOM, as `activities.getAll` returns it. */
+const activity = (accountId, activityType, date, isin, quantity, more = {}) => ({
+  id: `activity-${++activityId}`, accountId, activityType, subtype: null, status: "POSTED", date: `${date}T00:00:00+00:00`,
+  quantity, unitPrice: "10", amount: null, fee: null, currency: "INR", needsReview: false, assetId: `asset-${isin}`,
+  assetSymbol: isin, exchangeMic: "XBOM", ...more,
+});
+const transactionAccounts = [{ id: "account-1", name: "Mutual funds" }, { id: "unset-1", name: "Not set" }];
+/** Each activity's asset as its profile has it: by default, its display code is its symbol. */
+const identitiesOf = (activities) => new Map(Array.isArray(activities) ? activities.map((a) => [a.assetId, fundRef(a.assetSymbol, a.exchangeMic)]) : []);
+const check = (holdings, activities, more = {}) =>
+  checkUnits(holdings, { asset, accounts: transactionAccounts, activities, identities: identitiesOf(activities), ...more });
+const summarised = (checks) => checks.map((c) => [
+  c.ref, c.lines.map((l) => l.source.label), format(c.statement),
+  c.accounts.map((a) => [a.id, a.units === undefined ? null : format(a.units)]),
+  c.held === undefined ? null : format(c.held), c.problem ?? null,
+]);
+
+test("checks each holding's units against accounts that track transactions, each asset and account once", async () => {
+  const data = await fixture("made-up-summary-cams");
+  const [first] = data.folios;
+  // A second folio in the same account: one more Flexi Cap line, and the Liquid fund printed with zero units.
+  data.folios.push({ ...first, folio: "91234568 / 34", schemes: [{ ...first.schemes[0], close: "107.896" }, { ...first.schemes[1], close: "0.000" }] });
+  const holdings = readHoldings(data);
+  const activities = [
+    activity("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "2500"),
+    activity("account-1", "BUY", "2024-06-01", "INFZ90K01FC8", "600"),
+    // On the statement's date counts; the day after doesn't.
+    activity("account-1", "SELL", "2025-03-31", "INFZ90K01FC8", "100"),
+    activity("account-1", "BUY", "2025-04-01", "INFZ90K01FC8", "50"),
+    activity("account-1", "BUY", "2024-04-01", "INFZ90K01LQ6", "12.296"),
+    // A fund in two accounts, one of them NOT_SET.
+    activity("account-1", "BUY", "2024-04-01", "INFZ90K01BA1", "3000"),
+    activity("unset-1", "TRANSFER_IN", "2024-05-01", "INFZ90K01BA1", "443.91"),
+    activity("account-1", "BUY", "2024-04-01", "INFZ91T01CB6", "9500"),
+    // An account that tracks holdings, and an activity that isn't posted, don't count.
+    activity("holdings-1", "BUY", "2024-04-01", "INFZ91T01CB6", "11.474"),
+    activity("account-1", "BUY", "2024-04-02", "INFZ91T01CB6", "11.474", { status: "DRAFT" }),
+    // Bought only after the statement's date.
+    activity("account-1", "BUY", "2025-04-02", "INFZ91T01GL6", "845.512"),
+    activity("account-1", "BUY", "2024-04-01", "INFZ91T01FT1", "2500"),
+    activity("account-1", "SPLIT", "2025-01-01", "INFZ91T01FT1", null, { amount: "2" }),
+  ];
+  const checks = check(holdings, activities);
+  const fictiva = "Fictiva Mutual Fund, folio 91234567 / 12";
+  const second = "Fictiva Mutual Fund, folio 91234568 / 34";
+  const testbridge = "Testbridge Mutual Fund, folio 1040012345";
+  assert.deepEqual(summarised(checks), [
+    ["asset-INFZ90K01FC8", [fictiva, second], "3000", [["account-1", "3000"]], "3000", null],
+    ["asset-INFZ90K01LQ6", [fictiva, second], "12.296", [["account-1", "12.296"]], "12.296", null],
+    ["asset-INFZ90K01BA1", ["Fictiva Mutual Fund, folio 91234570/0"], "3443.91", [["account-1", "3000"], ["unset-1", "443.91"]], "3443.91", null],
+    ["asset-INFZ91T01CB6", [testbridge], "9511.474", [["account-1", "9500"]], "9500", null],
+    [ref("INFZ91T01GL6"), [testbridge], "845.512", [], null, "No account that tracks transactions has posted activities for it on or before 2025-03-31."],
+    ["asset-INFZ91T01FT1", [testbridge], "5000", [["account-1", null]], null, "A split or option expiry in Mutual funds needs Wealthfolio's portfolio engine to count its units."],
+  ]);
+  // Until the user confirms the accounts compared hold the same units, every row needs review.
+  assert.deepEqual(checks.map((c) => unitStatus(c, true)), ["match", "match", "match", "differ", "review", "review"]);
+  assert.deepEqual(checks.map((c) => unitStatus(c, false)), ["review", "review", "review", "review", "review", "review"]);
+  // The printed zero stays out of the snapshot.
+  const [snapshot] = plan(holdings);
+  assert.deepEqual(snapshot.positions.find((p) => p.ref === ref("INFZ90K01LQ6")).lines.map((l) => [l.source.label, l.holding.units]), [[fictiva, "12.296"]]);
+});
+
+test("a depository statement's printed zero and an asset in two demat accounts are checked", async () => {
+  const cdsl = readHoldings(await fixture("made-up-cdsl"));
+  const sold = [
+    activity("account-1", "BUY", "2025-01-10", "INEZ91B20013", "10"),
+    activity("account-1", "SELL", "2026-02-10", "INEZ91B20013", "10"),
+  ];
+  const [zero] = check(cdsl, sold).filter((c) => c.ref === "asset-INEZ91B20013");
+  assert.deepEqual(summarised([zero]), [["asset-INEZ91B20013", ["CDSL Demat Account 1, FICTIVA SECURITIES LIMITED"], "0", [["account-1", "0"]], "0", null]]);
+  assert.equal(unitStatus(zero, true), "match");
+  const stillHeld = check(cdsl, sold.slice(0, 1)).find((c) => c.ref === "asset-INEZ91B20013");
+  assert.equal(unitStatus(stillHeld, true), "differ");
+  // A printed zero is confirmed and checked, but never planned into a snapshot.
+  assert.equal(plan(cdsl)[0].positions.some((p) => p.ref === ref("INEZ91B20013")), false);
+  // Left out without a confirmed asset, it isn't checked.
+  assert.equal(check(cdsl, sold, { asset: (h) => (h.isin === "INEZ91B20013" ? undefined : asset(h)) }).some((c) => c.ref === "asset-INEZ91B20013"), false);
+
+  const nsdl = readHoldings(await fixture("made-up-nsdl"));
+  const shares = check(nsdl, [activity("unset-1", "BUY", "2024-01-01", "INEZ90B01015", "520")]);
+  const twice = shares.find((c) => c.ref === "asset-INEZ90B01015");
+  assert.deepEqual(twice.lines.map((l) => [l.source.label.replace(/,.*/, ""), l.holding.units]), [["NSDL Demat Account 1", "420"], ["CDSL Demat Account 2", "100.000"]]);
+  assert.equal(unitStatus(twice, true), "match");
+  // Holdings nobody bought in an account that tracks transactions need review, not a zero.
+  assert.ok(shares.filter((c) => c !== twice).every((c) => c.held === undefined && unitStatus(c, true) === "review"));
+
+  const unread = check(nsdl, { error: "Error: offline" });
+  assert.equal(unread.length, shares.length);
+  assert.ok(unread.every((c) => c.problem === "Couldn't read Wealthfolio's activities: Error: offline" && unitStatus(c, true) === "review"));
+});
+
+test("the check finds a holding's asset by its ID, or by the symbol and exchange on its Wealthfolio profile", async () => {
+  const data = await fixture("made-up-summary-cams");
+  const [first] = data.folios;
+  // The same fund in a second folio, printed without its ISIN and confirmed without an asset ID.
+  data.folios = [{ ...first, schemes: [{ ...first.schemes[0], close: "10" }] }, { ...first, folio: "91234568 / 34", schemes: [{ ...first.schemes[0], isin: null, close: "20" }] }];
+  const holdings = readHoldings(data);
+  const isin = first.schemes[0].isin;
+  const confirmed = (h, more = {}) => ({ ...asset(h), symbol: isin, ...more });
+  // Its display code was changed, so its activities don't show its symbol.
+  const renamed = [activity("account-1", "BUY", "2024-04-01", "MY-FUND", "30", { assetId: "fund-1" })];
+  const both = (h) => confirmed(h, holdings.sources[0].holdings.includes(h) ? { assetId: "fund-1" } : {});
+  assert.deepEqual(summarised(check(holdings, renamed, { asset: both, identities: new Map([["fund-1", ref(isin)]]) })), [
+    ["fund-1", [first.amc + ", folio 91234567 / 12", first.amc + ", folio 91234568 / 34"], "30", [["account-1", "30"]], "30", null],
+  ]);
+  assert.equal(format(check(holdings, renamed, { asset: confirmed, identities: new Map([["fund-1", ref(isin)]]) })[0].held), "30");
+  // Another asset whose display code is this fund's symbol supplies no history.
+  const other = [activity("account-1", "BUY", "2024-04-01", isin, "30", { assetId: "other" })];
+  const [notIt] = check(holdings, other, { asset: confirmed, identities: new Map([["other", ref("SOMETHING-ELSE")]]) });
+  assert.deepEqual([notIt.ref, notIt.held, notIt.problem], [ref(isin), undefined, "No account that tracks transactions has posted activities for it on or before 2025-03-31."]);
+  // Nor does it for a choice that has the asset's ID.
+  assert.equal(check(holdings, other, { asset: (h) => confirmed(h, { assetId: "fund-1" }) })[0].held, undefined);
+  // Two assets with its symbol and exchange, or one whose profile can't be read, need review.
+  const two = [...renamed, activity("unset-1", "BUY", "2024-04-01", isin, "1", { assetId: "fund-2" })];
+  const [ambiguous] = check(holdings, two, { asset: confirmed, identities: new Map([["fund-1", ref(isin)], ["fund-2", ref(isin)]]) });
+  assert.deepEqual([ambiguous.held, ambiguous.problem], [undefined, "Several Wealthfolio assets have its symbol and exchange. Choose the existing asset for it under Holdings."]);
+  const [unread] = check(holdings, other, { asset: confirmed, identities: new Map([["other", { error: "Error: gone" }]]) });
+  assert.equal(unread.problem, "Couldn't read a Wealthfolio asset's profile: Error: gone");
+  // An unreadable profile can hide another matching asset even when its display code was changed.
+  const partial = [...renamed, { ...other[0], assetSymbol: "RENAMED" }];
+  const identities = new Map([["fund-1", ref(isin)], ["other", { error: "Error: gone" }]]);
+  const [unreadRenamed] = check(holdings, partial, { asset: confirmed, identities });
+  assert.deepEqual([unreadRenamed.held, unreadRenamed.problem], [undefined, unread.problem]);
+  assert.ok([ambiguous, unread, unreadRenamed].every((c) => unitStatus(c, true) === "review"));
+  // An explicit ID establishes the asset without reading any profiles.
+  const [byId] = check(holdings, partial, { asset: (h) => confirmed(h, { assetId: "fund-1" }), identities });
+  assert.equal(unitStatus(byId, true), "match");
+});
+
+test("distinct assets with the same symbol and exchange are checked separately", async () => {
+  const holdings = readHoldings(await fixture("made-up-cdsl"));
+  const source = holdings.sources[0];
+  const [share, other] = source.holdings;
+  holdings.sources = [{ ...source, holdings: [{ ...share, units: "10" }, { ...other, kind: "bond", units: "20" }], zero: [] }];
+  const checks = check(holdings, [
+    activity("account-1", "BUY", "2025-01-01", "SAME", "10", { assetId: share.isin }),
+    activity("unset-1", "BUY", "2025-01-01", "SAME", "19", { assetId: other.isin }),
+  ], { asset: (h) => ({ ...asset(h), symbol: "SAME", assetId: h.isin }) });
+  assert.deepEqual(checks.map((c) => [c.ref, format(c.statement), format(c.held), unitStatus(c, true)]), [
+    [share.isin, "10", "10", "match"],
+    [other.isin, "20", "19", "differ"],
+  ]);
 });

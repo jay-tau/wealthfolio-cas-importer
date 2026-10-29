@@ -1,7 +1,7 @@
 import type { ActivityDetails, SnapshotHoldingInput } from "@wealthfolio/addon-sdk";
-import { add, dec, div, format, isZero, mul } from "./decimal.ts";
+import { add, dec, type Dec, div, format, isZero, mul } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
-import { fundRef, statementDay } from "./plan.ts";
+import { countUnits, day, fundRef, sameUnits, statementDay } from "./plan.ts";
 import { type CasData, type DepositoryData, isDepository, type Statement } from "./types.ts";
 
 // A summary or NSDL/CDSL statement's holdings → the snapshots saved to Wealthfolio accounts that
@@ -48,6 +48,8 @@ export interface Source {
   kind: "folio" | "demat" | "nps";
   label: string;
   holdings: StatementHolding[];
+  /** Holdings printed with zero units: checked against transactions, never put in a snapshot. */
+  zero?: StatementHolding[];
 }
 
 export interface LeftOutLine {
@@ -67,7 +69,16 @@ export interface Holdings {
 
 const positive = (value: string | null | undefined) => value != null && value !== "" && dec(value).n > 0n;
 const nonzero = (value: string | null | undefined) => value != null && value !== "" && !isZero(dec(value));
+const zero = (value: string | null | undefined) => value != null && value !== "" && isZero(dec(value));
 const printedCost = (value: string | null | undefined) => (positive(value) ? format(dec(value!)) : null);
+
+/** Whether the holding has units. One without is left out; a printed zero still gets checked. */
+function withUnits(leftOut: LeftOutLine[], label: string, source: Source, h: StatementHolding) {
+  if (positive(h.units)) return true;
+  leftOut.push({ source: label, name: h.name, reason: "No units on the statement." });
+  if (zero(h.units)) (source.zero ??= []).push(h);
+  return false;
+}
 
 /** Keep both identities: a later summary can omit an ISIN that was printed before. */
 export const security = (h: StatementHolding) => [
@@ -142,11 +153,7 @@ function readSummary(data: CasData): Holdings {
     source.aliases = issuers.size === 1 ? [`folio|${number}|${[...issuers][0]}`] : issuers.size > 1 ? [] : undefined;
     sources.set(id, source);
     for (const scheme of folio.schemes) {
-      if (!positive(scheme.close)) {
-        leftOut.push({ source: label, name: scheme.scheme, reason: "No units on the statement." });
-        continue;
-      }
-      source.holdings.push({
+      const holding: StatementHolding = {
         kind: "fund",
         isin: scheme.isin,
         rta: scheme.rta,
@@ -157,7 +164,8 @@ function readSummary(data: CasData): Holdings {
         value: scheme.valuation.value,
         cost: printedCost(scheme.valuation.cost),
         details: printed({ name: scheme.scheme, isin: scheme.isin, registrar: scheme.rta, schemeCode: scheme.rta_code }),
-      });
+      };
+      if (withUnits(leftOut, label, source, holding)) source.holdings.push(holding);
     }
   }
   return {
@@ -183,11 +191,6 @@ function readDepository(data: DepositoryData): Holdings {
     cost: printedCost(f.total_cost) ?? (positive(f.avg_cost) ? format(mul(dec(f.avg_cost!), dec(f.balance))) : null),
     details: printed({ name: f.name, isin: f.isin }),
   });
-  const held = (label: string, h: StatementHolding) => {
-    if (positive(h.units)) return true;
-    leftOut.push({ source: label, name: h.name, reason: "No units on the statement." });
-    return false;
-  };
   let dematNumber = 0;
 
   for (const account of data.accounts) {
@@ -199,14 +202,15 @@ function readDepository(data: DepositoryData): Holdings {
         const holding = fund(f);
         const id = `folio|${number}|${issuerOf(f.isin) ?? `isin:${f.isin}`}`;
         const source = folios.get(id) ?? { id, kind: "folio", label, holdings: [] };
-        if (held(label, holding)) source.holdings.push(holding);
+        if (withUnits(leftOut, label, source, holding)) source.holdings.push(holding);
         folios.set(id, source);
       }
       sources.push(...folios.values());
       continue;
     }
     const label = `${account.type} ${++dematNumber}, ${account.name}`.replace(/\s+/g, " ");
-    const holdings = [
+    const source: Source = { id: `demat|${account.dp_id ?? ""}|${account.client_id ?? ""}`, kind: "demat", label, holdings: [] };
+    source.holdings = [
       ...account.equities.map(
         (e): StatementHolding => ({
           kind: "share",
@@ -240,8 +244,8 @@ function readDepository(data: DepositoryData): Holdings {
           }),
         }),
       ),
-    ].filter((h) => held(label, h));
-    sources.push({ id: `demat|${account.dp_id ?? ""}|${account.client_id ?? ""}`, kind: "demat", label, holdings });
+    ].filter((h) => withUnits(leftOut, label, source, h));
+    sources.push(source);
   }
   const owner = data.accounts.flatMap((a) => a.owners)[0];
   const investor = (owner?.PAN || data.investor_info.name).trim().toUpperCase();
@@ -250,7 +254,8 @@ function readDepository(data: DepositoryData): Holdings {
     // one, the investor's: a person has one PRAN.
     const pran = data.nps.pran?.trim();
     const label = pran ? `NPS, PRAN ${pran}` : "National Pension System";
-    const holdings = data.nps.schemes.map(
+    const source: Source = { id: pran ? `nps|${pran}` : `nps|investor:${investor}`, kind: "nps", label, holdings: [] };
+    source.holdings = data.nps.schemes.map(
       (s): StatementHolding => ({
         kind: "nps",
         isin: null,
@@ -264,8 +269,8 @@ function readDepository(data: DepositoryData): Holdings {
         cost: null,
         details: printed({ scheme: s.scheme, fundManager: s.fund_manager, tier: s.tier, assetClass: s.asset_class }),
       }),
-    ).filter((h) => held(label, h));
-    sources.push({ id: pran ? `nps|${pran}` : `nps|investor:${investor}`, kind: "nps", label, holdings });
+    ).filter((h) => withUnits(leftOut, label, source, h));
+    sources.push(source);
   }
   return {
     date: statementDay(data.statement_period.to),
@@ -531,7 +536,7 @@ const pricedByHand = (p: PlannedPosition) => p.existing?.manual ?? p.asset?.manu
  */
 const keepsAverageCost = (p: ExistingPosition | undefined) => !!p?.manual && nonzero(p.units) && nonzero(p.cost);
 
-const names = (accounts: OtherAccount[]) => accounts.map((a) => a.name).join(", ");
+const names = (accounts: { name: string }[]) => accounts.map((a) => a.name).join(", ");
 
 /** The total cost a position goes in with, after the user's typing; undefined when unknown. */
 export function costOf(position: PlannedPosition, typed: string | undefined) {
@@ -672,6 +677,111 @@ export function pricesToSave(plan: AccountPlan, choices: Choices, listed: Readon
   }
   return [...prices.values()];
 }
+
+/** An account that tracks transactions, with its units of a holding on the statement's date. */
+export interface CheckedAccount {
+  id: string;
+  name: string;
+  /** Undefined when its history needs Wealthfolio's portfolio engine. */
+  units: Dec | undefined;
+}
+
+/** A holding's units on the statement against those of the accounts that track transactions. */
+export interface UnitCheck {
+  /** The Wealthfolio asset's ID, or `fundRef` of a choice whose identity couldn't be resolved. */
+  ref: string;
+  name: string;
+  /** The statement's lines for the asset, printed zeros included. */
+  lines: { source: Source; holding: StatementHolding }[];
+  /** Summed over its lines. */
+  statement: Dec;
+  /** Accounts with posted activities for the asset on or before the statement's date. */
+  accounts: CheckedAccount[];
+  /** Summed over its accounts; undefined when one can't be counted or there are none. */
+  held: Dec | undefined;
+  /** Why it needs review, whichever way the user confirms its accounts. */
+  problem?: string;
+}
+
+export interface CheckInput {
+  /** Undefined leaves the holding out. */
+  asset(holding: StatementHolding): ChosenAsset | undefined;
+  /** Accounts that track transactions, NOT_SET included, whose activities Wealthfolio shows. */
+  accounts: { id: string; name: string }[];
+  /** Wealthfolio's activities, or why they couldn't be read. */
+  activities: ActivityDetails[] | { error: string };
+  /**
+   * Asset ID → `fundRef` of the asset's symbol and exchange in Wealthfolio, or why its profile
+   * couldn't be read, for the assets of `activities`. Needed for choices without an asset ID.
+   */
+  identities?: ReadonlyMap<string, string | { error: string }>;
+}
+
+/**
+ * Each confirmed holding's units on the statement against what its accounts that track transactions
+ * add up to on the statement's date. An asset's lines are summed once however many folios, demat
+ * accounts or PRANs list it, and its accounts once however many of those they share. Only reads.
+ */
+export function checkUnits(holdings: Holdings, input: CheckInput): UnitCheck[] {
+  const { activities, identities = new Map() } = input;
+  const until = (d: string) => d <= holdings.date;
+  const accounts = new Set(input.accounts.map((a) => a.id));
+  const history = Array.isArray(activities)
+    ? activities.filter((a) => a.status === "POSTED" && a.assetId && accounts.has(a.accountId) && until(day(a.date)))
+    : [];
+  // Activities show an asset's display code, which the user can change, so a choice without an
+  // asset ID goes by the symbol and exchange on the asset's profile.
+  const identify = (asset: ChosenAsset): { ref: string; problem?: string } => {
+    if (asset.assetId) return { ref: asset.assetId };
+    const ref = fundRef(asset.symbol, asset.exchangeMic);
+    const ids = new Set<string>();
+    for (const a of history) {
+      const identity = identities.get(a.assetId);
+      if (identity === ref) ids.add(a.assetId);
+      else if (typeof identity !== "string") {
+        return { ref, problem: `Couldn't read a Wealthfolio asset's profile${identity ? `: ${identity.error}` : "."}` };
+      }
+    }
+    if (ids.size > 1) return { ref, problem: "Several Wealthfolio assets have its symbol and exchange. Choose the existing asset for it under Holdings." };
+    return { ref: ids.size ? [...ids][0] : ref };
+  };
+  const checks = new Map<string, UnitCheck>();
+  for (const source of holdings.sources) {
+    for (const holding of [...source.holdings, ...(source.zero ?? [])]) {
+      const asset = input.asset(holding);
+      if (!asset) continue;
+      const { ref, problem } = identify(asset);
+      const check = checks.get(ref) ?? { ref, name: holding.name, lines: [], statement: dec("0"), accounts: [], held: undefined };
+      check.problem ??= problem;
+      check.lines.push({ source, holding });
+      check.statement = add(check.statement, dec(holding.units));
+      checks.set(ref, check);
+    }
+  }
+  return [...checks.values()].map((check) => {
+    if (!Array.isArray(activities)) return { ...check, problem: `Couldn't read Wealthfolio's activities: ${activities.error}` };
+    if (check.problem) return check;
+    const rows = history.filter((a) => a.assetId === check.ref);
+    check.accounts = input.accounts
+      .filter((account) => rows.some((a) => a.accountId === account.id))
+      .map(({ id, name }) => ({ id, name, units: countUnits(rows.filter((a) => a.accountId === id), until) }));
+    const unknown = check.accounts.filter((a) => a.units === undefined);
+    if (!check.accounts.length) {
+      check.problem = `No account that tracks transactions has posted activities for it on or before ${holdings.date}.`;
+    } else if (unknown.length) {
+      check.problem = `A split or option expiry in ${names(unknown)} needs Wealthfolio's portfolio engine to count its units.`;
+    } else {
+      check.held = check.accounts.reduce((total, a) => add(total, a.units!), dec("0"));
+    }
+    return check;
+  });
+}
+
+export type UnitStatus = "match" | "differ" | "review";
+
+/** `same`: the user confirmed that the accounts compared hold the same units as the statement's lines. */
+export const unitStatus = (check: UnitCheck, same: boolean): UnitStatus =>
+  check.problem || !same ? "review" : sameUnits(check) ? "match" : "differ";
 
 // Wealthfolio's `BondSpec` (asset metadata `bond`) knows these coupon frequencies; its pricer
 // takes any other as semi-annual, so the rest stay only in the printed details.

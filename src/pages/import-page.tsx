@@ -85,7 +85,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   // Transactions whose bank row in `preview.matches` the user chose to reuse.
   const [reuse, setReuse] = useState<Set<PlannedTransaction>>(new Set());
   const [imported, setImported] = useState<Imported | null>(null);
-  const [busy, setBusy] = useState<"" | "preview" | "import">("");
+  const [busy, setBusy] = useState<"" | "preview" | "import" | "check">("");
   const [error, setError] = useState("");
 
   useEffect(() => {
