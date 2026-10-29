@@ -339,7 +339,7 @@ export function HoldingsResult({ result, accounts }: { result: SavedSnapshots; a
                     {name(u.accountId)}, {u.name}:{" "}
                     {u.what === "price"
                       ? `Wealthfolio may value it at its average cost on ${u.date}. Enter its price for ${u.date} on its asset page.`
-                      : "the statement's details (ISIN, coupon, maturity and face value, or the scheme's fund manager and tier) aren't on its asset. Importing the statement again retries."}
+                      : "the statement's details (its name and identifiers, a bond's coupon, maturity and face value, or an NPS scheme's fund manager and tier) aren't on its asset. Importing the statement again retries."}
                   </li>
                 ))}
               </ul>

@@ -60,6 +60,8 @@ const host = {
   statementDate: "",
   depositoryAccounts: undefined as DematAccount[] | undefined,
   ambiguousSummary: false,
+  // Summary statements print no ISIN for the funds with these.
+  summaryWithoutIsin: [] as string[],
   archiveOtherAccount: false,
   reopen: () => {},
   // Asset pricing mode belongs to the asset, independently of any account or snapshot.
@@ -134,19 +136,24 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
   host.parsed++;
   if (!("folios" in data)) {
     if (host.statementDate) data.statement_period.to = host.statementDate;
-    if (host.onlyNps) return {
+    if (host.onlyNps || host.depositoryAccounts) return {
       ...data,
       accounts: host.depositoryAccounts ?? [],
-      nps: {
+      nps: host.onlyNps ? {
         pran: host.npsPran, nps_sp: "TCRA", value: "100",
         schemes: host.onlyNps.map(({ scheme, units }) => ({
           scheme, fund_manager: "TEST PENSION FUND LIMITED", tier: "I", asset_class: "E", units, nav: "25.5", value: String(Number(units) * 25.5),
         })),
-      },
+      } : null,
     };
     const sold = (h: { isin: string }) => !host.soldIsins.includes(h.isin);
     const accounts = data.accounts.map((a) => ({ ...a, equities: a.equities.filter(sold), mutual_funds: a.mutual_funds.filter(sold), bonds: a.bonds.filter(sold) }));
     return { ...data, accounts };
+  }
+  if (data.cas_type === "SUMMARY" && host.summaryWithoutIsin.length) {
+    data.folios = data.folios.map((f) => ({
+      ...f, schemes: f.schemes.map((s) => (s.isin && host.summaryWithoutIsin.includes(s.isin) ? { ...s, isin: null } : s)),
+    }));
   }
   if (host.ambiguousSummary && data.cas_type === "SUMMARY") {
     const [first, second, third, ...rest] = data.folios;

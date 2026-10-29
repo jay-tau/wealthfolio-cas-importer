@@ -37,12 +37,10 @@ function toFund(result: SymbolSearchResult): ChosenFund {
   };
 }
 
-const pickHint = (item: FundItem) =>
-  item.noun === "fund"
-    ? "Pick one with the statement's fund name, plan and option, or leave this fund out."
-    : item.noun === "share"
-      ? "Pick one with the statement's company name, or leave this share out."
-      : `Pick one with the statement's ${item.noun} name, use the statement's prices, or leave this ${item.noun} out.`;
+const pickHint = (item: FundItem) => {
+  const name = item.noun === "fund" ? "fund name, plan and option" : item.noun === "share" ? "company name" : `${item.noun} name`;
+  return `Pick one with the statement's ${name}, ${item.statementAsset ? "use the statement's prices, " : ""}or leave this ${item.noun} out.`;
+};
 
 const describe = (fund: ChosenFund) =>
   [fund.symbol, fund.exchangeMic, fund.instrumentType, fund.quoteCcy, fund.statementPrices && "priced from statements"].filter(Boolean).join(" · ");

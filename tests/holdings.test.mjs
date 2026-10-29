@@ -6,13 +6,16 @@ import {
   assetDetails,
   importedRefs,
   included,
+  keepsDetails,
   npsSymbol,
   planSnapshots,
   pricesToSave,
   readHoldings,
+  registrarSymbol,
   replacesSnapshot,
   snapshotOf,
   splitSince,
+  statementAsset,
   validCost,
 } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
@@ -76,6 +79,7 @@ test("reads a summary statement's folios", async () => {
       price: "74.3120",
       value: "214918.03",
       cost: "154554",
+      details: { name: flexi.name, isin: "INFZ90K01FC8", registrar: "CAMS", schemeCode: "FFCDG" },
     });
     // The blank Cost Value cell.
     assert.equal(holdings.sources[2].holdings.find((h) => h.rtaCode === "TGLDG").cost, null);
@@ -591,11 +595,12 @@ test("bonds and NPS schemes priced from statements keep their identity and print
     symbol: h.isin ?? h.code, quoteCcy: "INR", instrumentType: h.kind === "bond" ? "BOND" : "EQUITY", name: h.name, manual: true, statementPrices: true,
   });
   for (const holdings of [nsdl, cdsl]) {
-    const sources = holdings.sources.filter((s) => s.holdings.some((h) => h.details));
-    const [account] = plan({ ...holdings, sources }, { asset: (h) => (h.details ? fromStatements(h) : undefined) });
+    const bondOrNps = (h) => h.kind === "bond" || h.kind === "nps";
+    const sources = holdings.sources.filter((s) => s.holdings.some(bondOrNps));
+    const [account] = plan({ ...holdings, sources }, { asset: (h) => (bondOrNps(h) ? fromStatements(h) : undefined) });
     const saved = snapshotOf(account, noChoices).holdings;
     const priced = new Map(pricesToSave(account, noChoices).map((p) => [p.ref, p.price]));
-    for (const h of sources.flatMap((s) => s.holdings.filter((h) => h.details))) {
+    for (const h of sources.flatMap((s) => s.holdings.filter(bondOrNps))) {
       const symbol = h.isin ?? h.code;
       const row = saved.find((s) => s.symbol === symbol);
       assert.equal(row.dataSource, "MANUAL", symbol);
@@ -607,6 +612,65 @@ test("bonds and NPS schemes priced from statements keep their identity and print
       for (const ids of Object.values(refs)) assert.ok(ids.every((id) => /^(INE|nps\|NPS-)/.test(id)), ids.join());
     }
   }
+});
+
+test("funds and shares the search can't find can be priced from statements", async () => {
+  const summary = readHoldings(await fixture("made-up-summary-cams"));
+  const nsdl = readHoldings(await fixture("made-up-nsdl"));
+  const cdsl = readHoldings(await fixture("made-up-cdsl"));
+  const [fund] = summary.sources[0].holdings;
+  const [share, dematFund, bond] = ["share", "fund", "bond"].map((kind) => nsdl.sources[0].holdings.find((h) => h.kind === kind));
+  const scheme = cdsl.sources.find((s) => s.kind === "nps").holdings[0];
+  const byHand = { quoteCcy: "INR", manual: true, statementPrices: true };
+  assert.deepEqual(statementAsset(fund), { symbol: fund.isin, instrumentType: "MUTUALFUND", name: fund.name, ...byHand });
+  assert.deepEqual(statementAsset(dematFund), { symbol: dematFund.isin, instrumentType: "MUTUALFUND", name: dematFund.name, ...byHand });
+  assert.deepEqual(statementAsset(share), { symbol: share.isin, instrumentType: "EQUITY", name: share.name, ...byHand });
+  assert.deepEqual(statementAsset(bond), { symbol: bond.isin, instrumentType: "BOND", name: bond.name, ...byHand });
+  assert.deepEqual(statementAsset(scheme), { symbol: scheme.code, instrumentType: "EQUITY", name: scheme.name, ...byHand });
+  // Without an ISIN, a summary statement's fund goes by its registrar and scheme code.
+  const noIsin = { ...fund, isin: null, details: { name: fund.name, registrar: "CAMS", schemeCode: "FFCDG" } };
+  assert.equal(statementAsset(noIsin).symbol, "MF-CAMS-FFCDG");
+  assert.equal(registrarSymbol("KFinTech", " 120 mg/pg "), "MF-KFINTECH-120-MG-PG");
+  for (const [rta, code] of [["CAMS", ""], ["CAMS", " / "], ["", "FFCDG"], [null, null]]) {
+    assert.equal(registrarSymbol(rta, code), undefined);
+    assert.equal(statementAsset({ ...noIsin, rta, rtaCode: code }), undefined);
+  }
+
+  // Saved as new INR assets priced by hand, then the printed price, not the average cost, on the statement's date.
+  const funds = { ...summary, sources: [{ ...summary.sources[0], holdings: [fund, noIsin] }] };
+  const [account] = plan(funds, { asset: statementAsset });
+  const saved = snapshotOf(account, noChoices).holdings;
+  assert.deepEqual(saved.map((h) => [h.symbol, h.exchangeMic, h.quoteCcy, h.instrumentType, h.dataSource, h.quantity]), [
+    [fund.isin, undefined, "INR", "MUTUALFUND", "MANUAL", "2892.104"],
+    ["MF-CAMS-FFCDG", undefined, "INR", "MUTUALFUND", "MANUAL", "2892.104"],
+  ]);
+  assert.equal(format(div(dec("154554"), dec("2892.104"), 20)), saved[0].averageCost);
+  assert.notEqual(Number(saved[0].averageCost), Number(fund.price));
+  assert.deepEqual(pricesToSave(account, noChoices).map((p) => [p.ref, p.price, p.from]), [
+    [fundRef(fund.isin), "74.3120", "statement"], [fundRef("MF-CAMS-FFCDG"), "74.3120", "statement"],
+  ]);
+  // Its identifiers are remembered, so the next statement finds what this import added.
+  assert.deepEqual(importedRefs(account, noChoices)[0].refs, { [fundRef(fund.isin)]: [fund.isin, "CAMS|FFCDG"], [fundRef("MF-CAMS-FFCDG")]: ["CAMS|FFCDG"] });
+  // The printed name and identifiers go on the asset; a fund or share found by search keeps its own.
+  assert.ok(account.positions.every(keepsDetails));
+  assert.deepEqual(assetDetails(noIsin, { other: 1 }, "EQUITY"), { other: 1, casStatement: noIsin.details });
+  const [market] = plan(funds);
+  assert.ok(!market.positions.some(keepsDetails));
+  const [shares] = plan({ ...nsdl, sources: [nsdl.sources[0]] });
+  assert.deepEqual(shares.positions.filter(keepsDetails).map((p) => p.lines[0].holding.kind), ["bond", "bond"]);
+  const [byStatement] = plan({ ...nsdl, sources: [nsdl.sources[0]] }, { asset: statementAsset });
+  assert.ok(byStatement.positions.every(keepsDetails));
+
+  // A later statement reuses the asset the account holds, and gives it that statement's price.
+  const later = { ...funds, date: "2025-04-30", sources: [{ ...funds.sources[0], holdings: [{ ...fund, price: "80" }] }] };
+  const [again] = plan(later, {
+    asset: (h) => ({ ...statementAsset(h), assetId: "fund-001" }),
+    existing: () => ({ ...none, date: "2025-03-31", positions: [{
+      assetId: "fund-001", ref: fundRef(fund.isin), symbol: fund.isin, name: fund.name, units: "2892.104", cost: "154554", currency: "INR", manual: true,
+    }] }),
+  });
+  assert.deepEqual(snapshotOf(again, noChoices).holdings.map((h) => [h.assetId, h.dataSource]), [["fund-001", undefined]]);
+  assert.deepEqual(pricesToSave(again, noChoices).map((p) => [p.assetId, p.price]), [["fund-001", "80"]]);
 });
 
 test("npsSymbol builds one symbol per scheme from its printed name", () => {
@@ -719,8 +783,9 @@ test("assetDetails adds printed details without overwriting Wealthfolio's or the
   const cdsl = readHoldings(await fixture("made-up-cdsl"));
   const scheme = cdsl.sources.find((s) => s.kind === "nps").holdings[0];
   assert.deepEqual(assetDetails(scheme, null, "EQUITY"), { casStatement: scheme.details });
-  // Funds and shares carry no details.
-  assert.equal(assetDetails(nsdl.sources[0].holdings[0], undefined, "EQUITY"), undefined);
+  // A share's or fund's details are its printed name and identifiers.
+  const share = nsdl.sources[0].holdings[0];
+  assert.deepEqual(assetDetails(share, undefined, "EQUITY"), { casStatement: { name: share.name, isin: share.isin } });
 });
 
 test("a still-listed left-out summary fund survives losing its printed ISIN", async () => {

@@ -59,9 +59,16 @@ Confirm the Wealthfolio asset for each holding: shares and bonds are searched by
 ISIN too, and a fund confirmed for a detailed statement is already confirmed here. If no holdings
 account is offered, create one in Wealthfolio and reopen the add-on.
 
-A bond or NPS scheme that no search result fits can use the statement's prices instead. The add-on
-then creates a Wealthfolio asset priced by hand, and the next statement finds it again:
+A holding that no search result fits, including when the search finds only other funds or shares,
+can use the statement's prices instead. The add-on then creates an INR asset priced by hand, and the
+next statement finds it again. Its price comes from the statements you import and the prices you
+enter, not from market data:
 
+- A fund or share has its ISIN as the symbol. A summary statement's fund without an ISIN goes by
+  its registrar and scheme code: KFintech's `TONDG` is `MF-KFINTECH-TONDG`. A fund's type is sent
+  as `MUTUALFUND`, which Wealthfolio stores as `EQUITY` like a share's, and its automatic
+  classification files both under common stock; change a fund's instrument type on its asset page.
+  Detailed statements don't preconfirm this choice: reading one searches for the fund again.
 - A bond is a `BOND` asset with its ISIN as the symbol. Its cost defaults to the face value times
   the number of bonds when the statement prints a face value (NSDL demat accounts do); CDSL demat
   accounts on NSDL statements print a market price instead. casparser 1.4.1 returns no bonds for
@@ -73,10 +80,12 @@ then creates a Wealthfolio asset priced by hand, and the next statement finds it
   statements only. An NPS account goes by its PRAN as printed (masked), or by the investor when
   none is printed.
 - After saving, the add-on keeps the statement's details on the asset's metadata: as printed under
-  `casStatement`, and for a bond asset, the ISIN, maturity date, coupon rate, face value and
+  `casStatement` (a fund's or share's name, ISIN, registrar and scheme code, as printed), and for a
+  bond asset, the ISIN, maturity date, coupon rate, face value and
   coupon frequency Wealthfolio's bond fields don't have yet. A frequency Wealthfolio's bond pricer
   doesn't know, such as "On Maturity", stays only in the printed details. If you later switch the
-  asset to market prices, a data source that knows the ISIN or the scheme has what it needs.
+  asset to market prices, a data source that knows the ISIN, scheme code or scheme has what it needs.
+  A bond's or NPS scheme's asset found by search gets these details too; a fund's or share's doesn't.
 
 Check each summary folio's funds against the PDF. On made-up CAMS and KFintech statements,
 casparser 1.4.1 merges identical printed folio numbers from different AMCs under the first AMC,
@@ -143,6 +152,7 @@ the later snapshot's prices.
   name; the folio number and parsed AMC (summary) or ISIN issuer (depository); the demat account's DP and
   client IDs; or the PRAN as printed. Summary and depository folio account overrides are separate.
   The asset confirmed for a bond is kept under its ISIN, and for an NPS scheme under a hash of its symbol.
+  A fund or share priced from statements is kept like any confirmed fund, but detailed imports don't preconfirm this choice.
 - Dated records of which holdings each holdings import added, with both their ISIN and
   registrar scheme code when available, or an NPS scheme's symbol, keyed by a hash of the folio,
   demat account or PRAN and the Wealthfolio account. Hashed links join summary and depository records when an ISIN establishes
