@@ -63,7 +63,17 @@ function reasons(row: PlannedRow) {
   return [duplicate, ...row.errors, ...row.warnings].filter(Boolean);
 }
 
-function Warnings({ title, warnings }: { title: string; warnings: MappingWarning[] }) {
+function Warnings({
+  title,
+  warnings,
+  onImportUnbalanced,
+  importing,
+}: {
+  title: string;
+  warnings: MappingWarning[];
+  onImportUnbalanced: (w: MappingWarning, yes: boolean) => void;
+  importing: boolean;
+}) {
   if (!warnings.length) return null;
   return (
     <Alert variant="warning">
@@ -74,6 +84,12 @@ function Warnings({ title, warnings }: { title: string; warnings: MappingWarning
             <li key={i}>
               {w.scheme}, folio {w.folio}
               {w.rows.length > 0 && `, ${w.rows[0].date} ${w.rows[0].description}`}: {w.message}
+              {w.unbalanced && (
+                <Label className="mt-1 flex items-center gap-2 font-normal">
+                  <Checkbox disabled={importing} checked={!w.leftOut} onCheckedChange={(yes) => onImportUnbalanced(w, yes)} />
+                  Import this fund anyway
+                </Label>
+              )}
             </li>
           ))}
         </ul>
@@ -87,6 +103,7 @@ export function Preview({
   plan,
   importAnyway,
   onImportAnyway,
+  onImportUnbalanced,
   onImport,
   importing,
   rowCount,
@@ -99,6 +116,8 @@ export function Preview({
   plan: PlannedTransaction[];
   importAnyway: Set<PlannedTransaction>;
   onImportAnyway: (t: PlannedTransaction, yes: boolean) => void;
+  /** Includes or leaves out a scheme whose rows don't add up to its closing balance, and previews again. */
+  onImportUnbalanced: (w: MappingWarning, yes: boolean) => void;
   onImport: () => void;
   importing: boolean;
   rowCount: number;
@@ -126,7 +145,18 @@ export function Preview({
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
-        <Warnings title="Left out" warnings={mapping.warnings.filter((w) => w.leftOut)} />
+        <Warnings
+          title="Left out"
+          warnings={mapping.warnings.filter((w) => w.leftOut)}
+          onImportUnbalanced={onImportUnbalanced}
+          importing={importing}
+        />
+        <Warnings
+          title="Imported anyway"
+          warnings={caveats.filter((w) => w.unbalanced)}
+          onImportUnbalanced={onImportUnbalanced}
+          importing={importing}
+        />
         {count("duplicate") + count("existing") > 0 && (
           <p className="text-sm">
             Transactions marked as duplicates are skipped unless you tick "Import anyway", for example for two equal

@@ -406,7 +406,7 @@ describe("bank account", () => {
 
 describe("units", () => {
   const opening = (open, close, transactions) =>
-    statement(scheme("A", transactions, { open, close }));
+    statement(scheme("A", transactions, { open, close, close_calculated: close }));
 
   test("statement dates", () => {
     assert.equal(statementDay("01-Apr-2023"), "2023-04-01");

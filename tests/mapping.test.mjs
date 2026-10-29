@@ -734,10 +734,11 @@ describe("bank account", () => {
   });
 });
 
+const units = (activity) =>
+  activity.activityType === "SELL" ? sub(dec("0"), dec(activity.quantity)) : dec(activity.quantity ?? "0");
+
 describe("the made-up statement", async () => {
   const data = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
-  const units = (activity) =>
-    activity.activityType === "SELL" ? sub(dec("0"), dec(activity.quantity)) : dec(activity.quantity ?? "0");
 
   test("maps every row, ending each scheme at its closing balance", () => {
     const mapping = map(data);
@@ -781,6 +782,99 @@ describe("the made-up statement", async () => {
     assert.deepEqual(rows["2023-09-25 INFZ90K01BA1"], ["84.054", "15.6145", "1312.461183", "0.07"]);
     assert.deepEqual(rows["2023-12-28 INFZ91T01CB6"], ["", "", "7276.48", "808.5"]);
     assert.deepEqual(rows["2025-03-10 TONDG"], ["6.250", "1306.9834", "8168.64625", ""]);
+  });
+});
+
+describe("rows that don't add up to the closing balance", async () => {
+  // The made-up statement without one of the Flexi Cap fund's purchases.
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cas-mismatch.json", "utf8"));
+  const flexi = data.folios[0].schemes[0];
+  const anyway = { target: (folio, s) => ({ ...input().target(folio, s), importUnbalanced: true }) };
+  const gap =
+    "The rows take the unit balance from 1250 to 2798.066, but the statement's closing balance is 2892.104, 94.038 units apart: a row was probably dropped or misread.";
+
+  test("leave out the fund's rows, with both figures", () => {
+    const mapping = map(data);
+    assert.equal(mapping.transactions.length, 13);
+    assert.ok(mapping.transactions.every((t) => t.scheme !== flexi.scheme));
+    // The removed purchase's stamp duty is part of the gap, so it gets no warning of its own.
+    assert.deepEqual(
+      mapping.warnings.map((w) => [w.scheme, w.folio, w.rows, w.leftOut, w.unbalanced, w.message]),
+      [[
+        "Fictiva Flexi Cap Fund - Direct Plan - Growth",
+        "91234567 / 12",
+        [],
+        true,
+        true,
+        `${gap} None of this fund's rows are imported. Tick "Import this fund anyway" to list them below and check them against the PDF.`,
+      ]],
+    );
+  });
+
+  test("the user can import them anyway, with a caveat", () => {
+    const mapping = map(data, anyway);
+    const rows = mapping.transactions.filter((t) => t.scheme === flexi.scheme);
+    assert.equal(rows.length, 25);
+    assert.equal(mapping.transactions.length, 38);
+    assert.equal(format(rows.reduce((sum, t) => add(sum, units(t.activity)), dec(flexi.open))), flexi.close_calculated);
+    assert.deepEqual(
+      mapping.warnings.map((w) => [w.leftOut, w.unbalanced ?? false, w.message]),
+      [
+        [false, true, `${gap} Its rows are imported anyway: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`],
+        [true, false, "There's no transaction on this day to add this stamp duty to."],
+      ],
+    );
+  });
+
+  test("they add up within casparser's 0.005 units", () => {
+    const purchase = tx("2024-01-10", "PURCHASE", "1000.00", "100.000", "10.0000");
+    for (const [close, apart] of [["100.005", ""], ["99.995", ""], ["100.006", "0.006"], ["99.994", "0.006"]]) {
+      const mapping = map(statement(scheme("A", [purchase], { close, close_calculated: "100.000" })));
+      assert.equal(mapping.transactions.length, apart ? 0 : 1, close);
+      assert.deepEqual(
+        mapping.warnings.map((w) => w.message.split(":")[0]),
+        apart ? [`The rows take the unit balance from 0 to 100, but the statement's closing balance is ${close}, ${apart} units apart`] : [],
+        close,
+      );
+    }
+  });
+
+  test("a fund left out still says how to correct earlier imports", () => {
+    const purchase = tx("2024-01-10", "PURCHASE_SIP", "999.95", "99.995", "10.0000");
+    const reversal = tx("2024-01-15", "REVERSAL", "-999.95", "-99.995", "10.0000");
+    const orphan = tx("2024-02-15", "REVERSAL", "-300.00", "-30.000", "10.0000");
+    const redemption = tx("2024-04-01", "REDEMPTION", "-500.00", "-50.000", "10.0000");
+    const putBack = tx("2024-04-05", "PURCHASE", "500.00", "50.000", "10.0000");
+    const gift = tx("2024-05-01", "GIFT_IN", "0", "10.000");
+    const rows = [purchase, reversal, orphan, redemption, putBack, gift];
+    const mapping = map(statement(scheme("A", rows, { close: "1" })), {
+      alreadyImported: (activity) => activity.activityType === "BUY" || activity.activityType === "SELL",
+    });
+    assert.deepEqual(mapping.transactions, []);
+    assert.deepEqual(
+      mapping.warnings.map((w) => [w.rows.map((row) => row.date), w.leftOut, w.unbalanced ?? false]),
+      [
+        [[], true, true],
+        [["2024-01-10", "2024-01-15"], true, false],
+        [["2024-02-15"], true, false],
+        [["2024-04-01", "2024-04-05"], true, false],
+      ],
+    );
+    assert.match(mapping.warnings[1].message, /^Wealthfolio has this purchase from an earlier import, but the statement reverses it\. Delete/);
+    assert.match(mapping.warnings[2].message, /^This reversal's purchase isn't in the statement/);
+    assert.match(mapping.warnings[3].message, /Wealthfolio has the sale or its cash from an earlier import/);
+  });
+
+  test("a merger's other half is left out with the fund", () => {
+    const out = tx("2024-08-01", "SWITCH_OUT_MERGER", "-1000.00", "-100.000", "10.0000");
+    const into = tx("2024-08-01", "SWITCH_IN_MERGER", "1000.00", "50.000", "20.0000");
+    const mapping = map(statement(scheme("A", [out], { close: "1" }), scheme("B", [into])));
+    assert.deepEqual(mapping.transactions, []);
+    assert.deepEqual(
+      mapping.warnings.map((w) => [w.scheme, w.unbalanced ?? false]),
+      [["A", true], ["B", false]],
+    );
+    assert.equal(mapping.warnings[1].message, "The other half of this merger can't be imported, so neither half is.");
   });
 });
 

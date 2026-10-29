@@ -73,6 +73,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const choiceWrites = useRef(Promise.resolve());
   const [preview, setPreview] = useState<Previewed | null>(null);
   const [importAnyway, setImportAnyway] = useState<Set<PlannedTransaction>>(new Set());
+  // Folios' schemes whose rows the user chose to import though they don't add up to the closing balance.
+  const [unbalanced, setUnbalanced] = useState<Set<string>>(new Set());
   // Transactions whose bank row in `preview.matches` the user chose to reuse.
   const [reuse, setReuse] = useState<Set<PlannedTransaction>>(new Set());
   const [imported, setImported] = useState<Imported | null>(null);
@@ -127,6 +129,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const clear = () => {
     setStatement(null);
     setHoldings(null);
+    setUnbalanced(new Set());
     setPreview(null);
     setImported(null);
     setError("");
@@ -165,6 +168,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     ]);
     setFundChoices(funds);
     setRemembered(choices);
+    setUnbalanced(new Set());
     setHoldings(held);
     setStatement(full);
     setReads((n) => n + 1);
@@ -222,7 +226,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       return key in holdingsChoices || inherited || (!!bank && bank === accountFor(transactionChoices, f));
     }) ?? false;
 
-  const runPreview = async () => {
+  const runPreview = async (importUnbalanced = unbalanced) => {
     if (!data) return;
     setBusy("preview");
     setError("");
@@ -239,7 +243,11 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       const mapping = mapStatement(data, {
         target: (folio, scheme) => {
           const t = target(folio, scheme);
-          return t && { ...t, openingCovered: covered.has(scheme) };
+          return t && {
+            ...t,
+            openingCovered: covered.has(scheme),
+            importUnbalanced: importUnbalanced.has(schemeKey(folio.folio, scheme.scheme)),
+          };
         },
         alreadyImported: indexActivities(existing).has,
       });
@@ -385,6 +393,11 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
               plan={preview.plan}
               importAnyway={importAnyway}
               onImportAnyway={(t, yes) => setImportAnyway((set) => toggle(set, t, yes))}
+              onImportUnbalanced={(w, yes) => {
+                const next = toggle(unbalanced, schemeKey(w.folio, w.scheme), yes);
+                setUnbalanced(next);
+                void runPreview(next);
+              }}
               matches={preview.matches}
               reuse={reuse}
               onReuse={(t, yes) => setReuse((set) => toggle(set, t, yes))}
@@ -402,6 +415,9 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     </Page>
   );
 }
+
+/** A folio's scheme, as a mapping warning names it. */
+const schemeKey = (folio: string, scheme: string) => JSON.stringify([folio, scheme]);
 
 function toggle<T>(set: Set<T>, item: T, yes: boolean) {
   const next = new Set(set);
@@ -423,9 +439,11 @@ function StatementSummary({ data }: { data: CasData }) {
       </p>
       {data.parse_warnings.length > 0 && (
         <Alert variant="warning">
-          <AlertTitle>casparser found rows that don't add up</AlertTitle>
+          <AlertTitle>casparser reported warnings</AlertTitle>
           <AlertDescription>
-            A row was probably dropped or misread. Check these schemes against the PDF before importing.
+            A row or a whole scheme may have been dropped or misread. By default, the preview leaves out each fund
+            whose rows don't add up to its closing balance; check anything else these name against the PDF before
+            importing.
             <ul className="list-disc ps-4">
               {data.parse_warnings.map((warning) => (
                 <li key={warning}>{warning}</li>

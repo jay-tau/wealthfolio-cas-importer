@@ -22,6 +22,8 @@ export interface SchemeTarget {
   openingCovered: boolean;
   /** The Wealthfolio account purchases are paid from and redemptions and payouts paid into, if any. */
   bankAccountId?: string;
+  /** The user chose to import the scheme's rows even though they don't add up to its closing balance. */
+  importUnbalanced?: boolean;
 }
 
 export interface MappingInput {
@@ -54,6 +56,8 @@ export interface MappingWarning {
   message: string;
   /** False for a caveat on rows that are imported. */
   leftOut: boolean;
+  /** The scheme's rows don't add up to its closing balance; `SchemeTarget.importUnbalanced` imports them anyway. */
+  unbalanced?: true;
 }
 
 export interface Mapping {
@@ -65,6 +69,8 @@ const CURRENCY = "INR";
 const PAISA = dec("0.01");
 const HALF = dec("0.5");
 const ZERO = dec("0");
+/** casparser's tolerance when it checks the rows against the printed unit balances. */
+const UNIT_TOLERANCE = dec("0.005");
 
 type Kind = "buy" | "sell" | "payout" | "reinvest";
 
@@ -112,6 +118,8 @@ interface Scheme {
   target?: SchemeTarget;
   /** Leaves out the whole scheme. */
   problem?: string;
+  /** How the rows miss the closing balance. Leaves out the scheme's rows unless `target.importUnbalanced`. */
+  unbalanced?: string;
   entries: Entry[];
 }
 
@@ -150,7 +158,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
     if (typeof rows === "string") entry.problem = rows;
     else entry.rows = rows;
   }
-  const fails = (entry: Entry) => !!(entry.problem || entry.scheme.problem);
+  const fails = (entry: Entry) => !!(entry.problem || entry.scheme.problem || heldBack(entry.scheme));
   for (const scheme of schemes) {
     for (const entry of scheme.entries) {
       if (entry.partner && !fails(entry) && fails(entry.partner)) {
@@ -162,13 +170,21 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   const mapping: Mapping = { transactions: [], warnings: [] };
   let lineNumber = 0;
   const number = (activity: ActivityImport) => ({ ...activity, lineNumber: ++lineNumber });
-  for (const { folio, scheme, problem, entries } of schemes) {
+  for (const state of schemes) {
+    const { folio, scheme, problem, unbalanced, entries } = state;
     const names = { folio: folio.folio, scheme: scheme.scheme };
     const warn = (rows: CasTransaction[], message: string, leftOut = true) =>
       mapping.warnings.push({ ...names, rows, message, leftOut });
     if (problem) {
       warn([], problem);
       continue;
+    }
+    const held = heldBack(state);
+    if (unbalanced) {
+      const message = held
+        ? `${unbalanced} None of this fund's rows are imported. Tick "Import this fund anyway" to list them below and check them against the PDF.`
+        : `${unbalanced} Its rows are imported anyway: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`;
+      mapping.warnings.push({ ...names, rows: [], message, leftOut: held, unbalanced: true });
     }
     for (const entry of entries) {
       const rows = [entry.row, ...entry.charges];
@@ -177,6 +193,9 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
         warn([original.row, ...original.charges, ...rows], reversalMessage(original, input));
       } else if (entry.reversedBy || entry.attached) {
         continue;
+      } else if (held) {
+        // A scheme left out still says how to correct earlier imports.
+        if (entry.problem && entry.row.type === "REVERSAL") warn(rows, entry.problem);
       } else if (entry.problem) {
         warn(rows, entry.problem);
       } else if (entry.rows) {
@@ -195,6 +214,9 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   }
   return mapping;
 }
+
+/** The scheme's rows don't add up to its closing balance, and the user didn't choose to import them anyway. */
+const heldBack = (scheme: Scheme) => !!scheme.unbalanced && !scheme.target?.importUnbalanced;
 
 /** Event-only rows, such as a nominee registration, and payments that failed. */
 function recordsNothing(row: CasTransaction) {
@@ -233,6 +255,12 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
     state.problem = "No Wealthfolio account or fund is chosen for this scheme, so its transactions are left out.";
   } else if (!isZero(dec(scheme.open)) && !target.openingCovered) {
     state.problem = `The statement starts with ${scheme.open} units bought before ${from}. Import that earlier history, or add the units with their original costs and dates, before this scheme's transactions.`;
+  }
+  // casparser's close_calculated is the opening units plus every row's units.
+  const calculated = dec(scheme.close_calculated);
+  const gap = abs(sub(dec(scheme.close), calculated));
+  if (cmp(gap, UNIT_TOLERANCE) > 0) {
+    state.unbalanced = `The rows take the unit balance from ${format(dec(scheme.open))} to ${format(calculated)}, but the statement's closing balance is ${format(dec(scheme.close))}, ${format(gap)} units apart: a row was probably dropped or misread.`;
   }
 
   scheme.transactions.forEach((row, index) => {
