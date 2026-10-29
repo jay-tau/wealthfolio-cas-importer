@@ -15,7 +15,7 @@
     "dev:server": "wealthfolio-addon dev",
     "clean": "rm -rf dist",
     "package": "node scripts/package.mjs",
-    "bundle": "pnpm clean && pnpm runtime && pnpm build && pnpm package && pnpm check:package",
+    "bundle": "pnpm runtime && pnpm build && pnpm package && pnpm check:package",
     "check:package": "node scripts/check-package.mjs",
     "lint": "tsc --noEmit",
     "type-check": "tsc --noEmit",
