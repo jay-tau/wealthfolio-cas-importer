@@ -66,7 +66,7 @@
     {
       "category": "assets",
       "functions": ["getProfile", "updateProfile"],
-      "purpose": "Read assets' current pricing mode and keep bonds' and NPS schemes' printed details on their Wealthfolio assets"
+      "purpose": "Read assets' current pricing mode, and keep the printed details of bonds, NPS schemes, and funds and shares priced from statements on their Wealthfolio assets"
     },
     {
       "category": "secrets",

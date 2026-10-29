@@ -32,7 +32,10 @@ export interface StatementHolding {
   value: string;
   /** Printed total cost. A printed zero is taken as unknown. */
   cost: string | null;
-  /** What else the statement prints about a bond or NPS scheme, as printed. */
+  /**
+   * What the statement prints about the holding, as printed, to keep on its asset: a bond's or NPS
+   * scheme's details, and a fund's or share's name and identifiers.
+   */
   details?: Record<string, string>;
 }
 
@@ -88,6 +91,29 @@ export function npsSymbol(scheme: string) {
   return ["NPS", ...kept].join("-");
 }
 
+/**
+ * The symbol of a summary statement's fund without an ISIN, priced from statements: its registrar
+ * and scheme code, "KFINTECH" and "TONDG" → "MF-KFINTECH-TONDG". Undefined without both.
+ */
+export function registrarSymbol(rta: string | null, code: string | null) {
+  const parts = [rta, code].map((part) => (part ?? "").toUpperCase().replace(/[^A-Z0-9]+/g, "-").replace(/^-+|-+$/g, ""));
+  return parts.every(Boolean) ? ["MF", ...parts].join("-") : undefined;
+}
+
+// Wealthfolio stores funds as EQUITY too; MUTUALFUND is what its search calls them.
+const TYPES: Record<HoldingKind, string> = { fund: "MUTUALFUND", share: "EQUITY", bond: "BOND", nps: "EQUITY" };
+
+/**
+ * The INR asset priced by hand from statements, offered when no search result fits: a fund, share
+ * or bond by its ISIN, a summary statement's fund without one by its registrar and scheme code,
+ * and an NPS scheme by its symbol.
+ */
+export function statementAsset(h: StatementHolding): ChosenAsset | undefined {
+  const symbol = h.kind === "nps" ? h.code : (h.isin ?? (h.kind === "fund" ? registrarSymbol(h.rta, h.rtaCode) : undefined));
+  if (!symbol) return undefined;
+  return { symbol, quoteCcy: CURRENCY, instrumentType: TYPES[h.kind], name: h.name, manual: true, statementPrices: true };
+}
+
 /** Printed details, without the ones the statement leaves blank. */
 const printed = (details: Record<string, string | null | undefined>) =>
   Object.fromEntries(Object.entries(details).filter((e): e is [string, string] => typeof e[1] === "string" && e[1].trim() !== ""));
@@ -130,6 +156,7 @@ function readSummary(data: CasData): Holdings {
         price: scheme.valuation.nav,
         value: scheme.valuation.value,
         cost: printedCost(scheme.valuation.cost),
+        details: printed({ name: scheme.scheme, isin: scheme.isin, registrar: scheme.rta, schemeCode: scheme.rta_code }),
       });
     }
   }
@@ -154,6 +181,7 @@ function readDepository(data: DepositoryData): Holdings {
     price: f.nav,
     value: f.value,
     cost: printedCost(f.total_cost) ?? (positive(f.avg_cost) ? format(mul(dec(f.avg_cost!), dec(f.balance))) : null),
+    details: printed({ name: f.name, isin: f.isin }),
   });
   const held = (label: string, h: StatementHolding) => {
     if (positive(h.units)) return true;
@@ -190,6 +218,7 @@ function readDepository(data: DepositoryData): Holdings {
           price: e.price,
           value: e.value,
           cost: null,
+          details: printed({ name: e.name, isin: e.isin }),
         }),
       ),
       ...account.mutual_funds.map(fund),
@@ -486,6 +515,13 @@ function settleOther(position: PlannedPosition, sources: Source[], accountId: st
   }
 }
 
+/**
+ * Whether saving gives its asset the statement's details: a bond's or NPS scheme's always, a fund's
+ * or share's when it's priced from statements.
+ */
+export const keepsDetails = (position: PlannedPosition) =>
+  position.lines.some(({ holding }) => holding.details && (holding.kind === "bond" || holding.kind === "nps" || position.asset?.statementPrices));
+
 /** The account's pricing mode for the asset, else the confirmed asset's. */
 const pricedByHand = (p: PlannedPosition) => p.existing?.manual ?? p.asset?.manual;
 
@@ -649,8 +685,8 @@ const record = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 
 /**
- * The asset's metadata with a bond's or NPS scheme's printed details: as printed under
- * `casStatement`, and for a bond asset, any `bond` fields Wealthfolio doesn't have yet.
+ * The asset's metadata with the holding's printed details: as printed under `casStatement`, and
+ * for a bond asset, any `bond` fields Wealthfolio doesn't have yet.
  * Undefined when nothing changes.
  */
 export function assetDetails(holding: StatementHolding, metadata: unknown, instrumentType: string | null | undefined) {

@@ -11,6 +11,7 @@ import {
   type Holdings,
   importedRefs,
   included,
+  keepsDetails,
   type LeftOutLine,
   type OtherAccount,
   planSnapshots,
@@ -18,6 +19,7 @@ import {
   snapshotOf,
   type Source,
   splitSince,
+  statementAsset,
   type StatementHolding,
 } from "../cas/holdings";
 import { fundRef } from "../cas/plan";
@@ -47,17 +49,6 @@ const instrumentType = (value: string) => {
 };
 
 const NOUNS: Record<HoldingKind, FundItem["noun"]> = { fund: "fund", share: "share", bond: "bond", nps: "NPS scheme" };
-
-/** A bond or NPS scheme priced by hand from statements: a bond by its ISIN, a scheme by its symbol. */
-function statementAsset(h: StatementHolding) {
-  if (h.kind === "bond" && h.isin) {
-    return { symbol: h.isin, quoteCcy: "INR", instrumentType: "BOND", name: h.name, manual: true, statementPrices: true };
-  }
-  if (h.kind === "nps" && h.code) {
-    return { symbol: h.code, quoteCcy: "INR", instrumentType: "EQUITY", name: h.name, manual: true, statementPrices: true };
-  }
-  return undefined;
-}
 
 /** The statement's holdings, one entry each however many folios, demat accounts or PRANs hold it. */
 export function holdingItems(holdings: Holdings): FundItem[] {
@@ -146,13 +137,14 @@ const manualQuote = (assetId: string, date: string, price: string, currency: str
 /**
  * After the account's snapshot is saved: each manual-priced holding gets the statement's price, or
  * the price it had, on the snapshot's date, over the average cost the save wrote there
- * (wealthfolio/wealthfolio#2331); each bond's and NPS scheme's asset gets the statement's details.
+ * (wealthfolio/wealthfolio#2331); each bond's and NPS scheme's asset, and each asset of a fund or
+ * share priced from statements, gets the statement's details.
  * Returns what didn't work.
  */
 async function afterSave(api: Api, plan: AccountPlan, chosen: Choices, listed: ReadonlyMap<string, string>, quotes: ReadonlyMap<string, Quote>, snapshotSaved = true): Promise<Unfinished[]> {
   const unfinished: Unfinished[] = [];
   const prices = pricesToSave(plan, chosen, listed);
-  const described = snapshotSaved ? plan.positions.filter((p) => p.lines.length && included(p, chosen) && p.lines.some((l) => l.holding.details)) : [];
+  const described = snapshotSaved ? plan.positions.filter((p) => p.lines.length && included(p, chosen) && keepsDetails(p)) : [];
   if (!prices.length && !described.length) return unfinished;
   const ids = new Map<string, string>();
   try {
@@ -499,7 +491,7 @@ export function HoldingsImport({
           onFund(key, choice);
         }}
         title="Holdings"
-        intro="Confirm the Wealthfolio asset for each holding. Holdings are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed. A bond or NPS scheme that no result fits can use the statement's prices: the add-on creates an asset you price by hand, saves the statement's price on its date, and keeps the printed details on the asset. The add-on remembers what you confirm for each ISIN or scheme, for detailed statements too."
+        intro="Confirm the Wealthfolio asset for each holding. Holdings are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed. A holding that no result fits can use the statement's prices: the add-on creates an asset priced by hand, saves the statement's price on its date, and keeps the printed name, identifiers and details on the asset. Its price then changes only with the statements you import or the prices you enter, not with market data. The add-on remembers what you confirm for each ISIN or scheme, for detailed statements too, except the statement's prices, which detailed statements don't use."
       />
       <div className="flex flex-wrap items-center gap-3">
         <Button type="button" disabled={undecided || nothing || busy !== ""} onClick={() => void runPreview()}>

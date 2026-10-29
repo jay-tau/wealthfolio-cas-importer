@@ -140,7 +140,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     let keys: string[];
     let fundKeys: string[];
     let held: Holdings | null = null;
-    if (!isDepository(full) && full.cas_type === "DETAILED") {
+    const isDetailed = !isDepository(full) && full.cas_type === "DETAILED";
+    if (isDetailed) {
       const next = withoutClosed(full);
       keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : [])]))];
       keys.push(...keys.map(bankKey));
@@ -163,7 +164,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       }),
       ...fundKeys.map(async (key) => {
         const fund = await readFund(api.storage, key);
-        if (fund) funds[key] = { fund };
+        // A holdings import's asset priced from statements isn't for transactions: search for the fund again.
+        if (fund && !(isDetailed && fund.statementPrices)) funds[key] = { fund };
       }),
     ]);
     setFundChoices(funds);

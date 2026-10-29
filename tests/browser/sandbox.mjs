@@ -1367,6 +1367,180 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByRole("button", { name: "Preview the snapshots" }).count(), 1);
     await hosted(() => { window.host.ambiguousSummary = false; });
 
+    // Funds and shares that no search result fits can use the statement's prices too: a summary
+    // fund whose search finds only another fund, one with no ISIN whose search finds nothing, and a
+    // depository fund and share. The first save can't write one price and one asset's details.
+    const corporate = "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout";
+    const gilt = "Testbridge Gilt Fund - Direct Plan - Growth";
+    await hosted(() => {
+      window.host.snapshots = {};
+      window.host.held = {};
+      window.host.summaryWithoutIsin = ["INFZ91T01GL6"];
+      window.host.emptySearchQueries = ["Testbridge Gilt Fund"];
+      window.host.storage.delete("isin:INFZ91T01CB6");
+      Object.assign(window.host.assetIds, { INFZ91T01CB6: "fund-priced-014", "MF-KFINTECH-TGLDG": "fund-priced-015" });
+      window.host.failQuoteIds = ["fund-priced-015"];
+      window.host.failProfileIds = ["fund-priced-014"];
+    });
+    await readHoldingsAgain();
+    const corporateSection = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
+    await corporateSection.getByText(`Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund". These results can be other funds. Pick one with the statement's fund name, plan and option, use the statement's prices, or leave this fund out.`, { exact: true }).waitFor();
+    await corporateSection.getByRole("radio").first().waitFor({ state: "attached" });
+    await corporateSection.getByRole("button", { name: "Use the statement's prices" }).click();
+    await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
+    const giltSection = frame.locator("section").filter({ hasText: gilt });
+    await giltSection.getByText("No ISIN printed", { exact: true }).waitFor();
+    await giltSection.getByText(`No ISIN on the statement, and nothing found for "Testbridge Gilt Fund". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
+    await giltSection.getByRole("button", { name: "Use the statement's prices" }).click();
+    await giltSection.getByText("MF-KFINTECH-TGLDG · MUTUALFUND · INR · priced from statements").waitFor();
+    for (const section of await frame.locator("section").all()) {
+      await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).first().waitFor();
+      if (await section.getByText("Confirmed", { exact: true }).count()) continue;
+      await section.getByRole("radio").first().click();
+      await section.getByRole("button", { name: "Use this fund" }).click();
+      await section.getByText("Confirmed", { exact: true }).waitFor();
+    }
+    await choose("All of this statement", "Fund folios (INR)");
+    await preview.click();
+    await folios.getByRole("row").filter({ hasText: corporate }).getByText(priced, { exact: true }).waitFor();
+    await folios.getByRole("row").filter({ hasText: gilt }).getByText(priced, { exact: true }).waitFor();
+    // The Gilt fund prints no cost: one below its price, so the price saved afterwards must win.
+    await folios.getByLabel(`Total cost of ${gilt}`).fill("40000");
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Some prices or details weren't saved", { exact: true }).waitFor();
+    await frame.getByText(`Fund folios, ${gilt}: Wealthfolio may value it at its average cost on 2025-03-31. Enter its price for 2025-03-31 on its asset page.`, { exact: true }).waitFor();
+    await frame.getByText(`Fund folios, ${corporate}: the statement's details (its name and identifiers, a bond's coupon, maturity and face value, or an NPS scheme's fund manager and tier) aren't on its asset. Importing the statement again retries.`, { exact: true }).waitFor();
+    const statementFunds = () => hosted(() => ({
+      holdings: window.host.snapshots["holdings-2"]["2025-03-31"].holdings, assets: window.host.assets, quotes: window.host.quotes,
+      modes: window.host.pricingModes, storage: Object.fromEntries(window.host.storage),
+    }));
+    const firstFunds = await statementFunds();
+    const fundRow = (symbol) => firstFunds.holdings.find((h) => h.symbol === symbol);
+    assert.deepEqual(["INFZ91T01CB6", "MF-KFINTECH-TGLDG"].map((symbol) => {
+      const h = fundRow(symbol);
+      return [h.assetId ?? null, h.name, h.quantity, h.exchangeMic ?? null, h.quoteCcy, h.instrumentType, h.dataSource];
+    }), [
+      [null, corporate, "9511.474", null, "INR", "MUTUALFUND", "MANUAL"],
+      [null, gilt, "845.512", null, "INR", "MUTUALFUND", "MANUAL"],
+    ]);
+    assert.equal((9511.474 * Number(fundRow("INFZ91T01CB6").averageCost)).toFixed(2), "99995.00");
+    assert.equal((845.512 * Number(fundRow("MF-KFINTECH-TGLDG").averageCost)).toFixed(2), "40000.00");
+    for (const [id, symbol, name] of [["fund-priced-014", "INFZ91T01CB6", corporate], ["fund-priced-015", "MF-KFINTECH-TGLDG", gilt]]) {
+      const a = firstFunds.assets[id];
+      assert.deepEqual([a.symbol, a.name, a.instrumentType, a.quoteCcy, firstFunds.modes[symbol]], [symbol, name, "EQUITY", "INR", "MANUAL"]);
+    }
+    const fundCloses = (funds, id) => (funds.quotes[id] ?? []).map((q) => [q.id, q.timestamp.slice(0, 10), q.close, q.dataSource]);
+    // The printed price replaces the average cost the save wrote; the Gilt fund's failed write leaves its average cost.
+    assert.deepEqual(fundCloses(firstFunds, "fund-priced-014"), [["fund-priced-014_2025-03-31_MANUAL", "2025-03-31", 10.7432, "MANUAL"]]);
+    assert.deepEqual(fundCloses(firstFunds, "fund-priced-015").map(([, day, close]) => [day, close.toFixed(4)]), [["2025-03-31", (40000 / 845.512).toFixed(4)]]);
+    // The printed name and identifiers go on the asset; funds found by search get none.
+    assert.equal(firstFunds.assets["fund-priced-014"].metadata, undefined);
+    assert.deepEqual(firstFunds.assets["fund-priced-015"].metadata, { casStatement: { name: gilt, registrar: "KFINTECH", schemeCode: "TGLDG" } });
+    assert.equal(firstFunds.holdings.length, 6);
+    for (const h of firstFunds.holdings.filter((h) => h.dataSource !== "MANUAL")) {
+      const a = firstFunds.assets[h.assetId] ?? Object.values(firstFunds.assets).find((a) => a.symbol === h.symbol && a.exchangeMic === (h.exchangeMic ?? null));
+      assert.equal(a.metadata?.casStatement, undefined, h.symbol);
+    }
+    // Remembered for the next holdings import: by ISIN, or by registrar and scheme code.
+    assert.equal(JSON.parse(firstFunds.storage["isin:INFZ91T01CB6"]).statementPrices, true);
+    assert.ok(Object.entries(firstFunds.storage).some(([key, value]) =>
+      /^fund:[0-9a-f]{64}$/.test(key) && JSON.parse(value).symbol === "MF-KFINTECH-TGLDG" && JSON.parse(value).statementPrices));
+
+    // The next import finds both choices and assets again, and finishes the incomplete writes.
+    await hosted(() => { window.host.failQuoteIds = []; window.host.failProfileIds = []; });
+    await readHoldingsAgain();
+    await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
+    await giltSection.getByText("MF-KFINTECH-TGLDG · MUTUALFUND · INR · priced from statements").waitFor();
+    await preview.click();
+    await folios.getByRole("row").filter({ hasText: gilt }).getByText("From the account's average cost in Wealthfolio").waitFor();
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    const againFunds = await statementFunds();
+    assert.deepEqual(["INFZ91T01CB6", "MF-KFINTECH-TGLDG"].map((symbol) => againFunds.holdings.find((h) => h.symbol === symbol).assetId), ["fund-priced-014", "fund-priced-015"]);
+    assert.equal(Object.values(againFunds.assets).filter((a) => ["INFZ91T01CB6", "MF-KFINTECH-TGLDG"].includes(a.symbol)).length, 2);
+    assert.deepEqual(fundCloses(againFunds, "fund-priced-014"), fundCloses(firstFunds, "fund-priced-014"));
+    assert.deepEqual(fundCloses(againFunds, "fund-priced-015"), [["fund-priced-015_2025-03-31_MANUAL", "2025-03-31", 54.0912, "MANUAL"]]);
+    assert.deepEqual(againFunds.assets["fund-priced-014"].metadata, {
+      casStatement: { name: corporate, isin: "INFZ91T01CB6", registrar: "KFINTECH", schemeCode: "TCBRP" },
+    });
+    assert.deepEqual(["INFZ91T01CB6", "MF-KFINTECH-TGLDG"].map((symbol) => againFunds.modes[symbol]), ["MANUAL", "MANUAL"]);
+
+    // A depository statement's share and fund: the share's ISIN finds only another fund, the fund's nothing.
+    const textiles = "IMAGINARY TEXTILES LIMITED";
+    const smallCap = "PRETEND SMALL CAP FUND - DIRECT PLAN - GROWTH";
+    await hosted(([textiles, smallCap]) => {
+      window.host.statementDate = "30-Apr-2025";
+      window.host.emptySearchQueries = ["INFZ92P01SC5", "PRETEND SMALL CAP FUND"];
+      Object.assign(window.host.assetIds, { INEZ94A01017: "share-priced-016", INFZ92P01SC5: "fund-priced-017" });
+      window.host.depositoryAccounts = [{
+        name: "PRETEND BROKING LIMITED", type: "CDSL Demat Account", dp_id: "12099900", client_id: "00000004", folios: 0, balance: "8045", owners: [],
+        equities: [{ isin: "INEZ94A01017", name: textiles, num_shares: "40", price: "125.50", value: "5020.00", symbol: null, exchange: null }],
+        mutual_funds: [{
+          isin: "INFZ92P01SC5", name: smallCap, amfi: null, type: null, balance: "100", nav: "30.25", value: "3025.00", avg_cost: "28", total_cost: null,
+          ucc: null, folio: null, pnl: null, return: null,
+        }],
+        bonds: [],
+      }];
+    }, [textiles, smallCap]);
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
+    await frame.locator("#cas-password").fill("ABCDE1234F");
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 30-Apr-2025: 1 demat accounts, 0 folios, 2 holdings.").waitFor({ timeout: 180_000 });
+    const textilesSection = frame.locator("section").filter({ hasText: textiles });
+    await textilesSection.getByText("Fund INEZ94A01017").waitFor();
+    assert.equal(await textilesSection.getByRole("button", { name: "Use this share" }).isDisabled(), false);
+    await textilesSection.getByRole("button", { name: "Use the statement's prices" }).click();
+    await textilesSection.getByText("INEZ94A01017 · EQUITY · INR · priced from statements").waitFor();
+    const smallCapSection = frame.locator("section").filter({ hasText: smallCap });
+    await smallCapSection.getByText(`Nothing found for the ISIN or for "PRETEND SMALL CAP FUND". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
+    await smallCapSection.getByRole("button", { name: "Use the statement's prices" }).click();
+    await smallCapSection.getByText("INFZ92P01SC5 · MUTUALFUND · INR · priced from statements").waitFor();
+    await choose(/^CDSL Demat Account 1, PRETEND BROKING LIMITED/, "Demat (INR)");
+    await preview.click();
+    const pretendDemat = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-04-30" });
+    await pretendDemat.getByRole("row").filter({ hasText: textiles }).getByText(priced, { exact: true }).waitFor();
+    await pretendDemat.getByRole("row").filter({ hasText: smallCap }).getByText(priced, { exact: true }).waitFor();
+    await pretendDemat.getByLabel(`Total cost of ${textiles}`).fill("4000");
+    await saveOne.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    const pretend = await hosted(() => ({
+      holdings: window.host.snapshots["holdings-1"]["2025-04-30"].holdings, assets: window.host.assets, quotes: window.host.quotes, modes: window.host.pricingModes,
+    }));
+    assert.deepEqual(pretend.holdings.map((h) => [h.symbol, h.quantity, Number(h.averageCost), h.exchangeMic ?? null, h.quoteCcy, h.instrumentType, h.dataSource]), [
+      ["INEZ94A01017", "40", 100, null, "INR", "EQUITY", "MANUAL"],
+      ["INFZ92P01SC5", "100", 28, null, "INR", "MUTUALFUND", "MANUAL"],
+    ]);
+    assert.deepEqual(fundCloses(pretend, "share-priced-016").map((q) => q.slice(1)), [["2025-04-30", 125.5, "MANUAL"]]);
+    assert.deepEqual(fundCloses(pretend, "fund-priced-017").map((q) => q.slice(1)), [["2025-04-30", 30.25, "MANUAL"]]);
+    assert.deepEqual(pretend.assets["share-priced-016"].metadata, { casStatement: { name: textiles, isin: "INEZ94A01017" } });
+    assert.deepEqual(pretend.assets["fund-priced-017"].metadata, { casStatement: { name: smallCap, isin: "INFZ92P01SC5" } });
+    assert.deepEqual([["INEZ94A01017", "share-priced-016"], ["INFZ92P01SC5", "fund-priced-017"]].map(([symbol, id]) =>
+      [pretend.modes[symbol], pretend.assets[id].instrumentType, pretend.assets[id].quoteCcy]), [["MANUAL", "EQUITY", "INR"], ["MANUAL", "EQUITY", "INR"]]);
+
+    // A detailed statement searches for that fund again instead of using the asset priced from statements.
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
+    await frame.locator("#cas-password").fill("ABCDE1234F");
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
+    const detailedCorporate = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
+    await detailedCorporate.getByLabel("Search for the fund").waitFor();
+    assert.equal(await detailedCorporate.getByLabel("Search for the fund").inputValue(), "INFZ91T01CB6");
+    assert.equal(await detailedCorporate.getByText("Confirmed", { exact: true }).count(), 0);
+    assert.equal(await frame.getByRole("button", { name: "Use the statement's prices" }).count(), 0);
+    await frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" }).getByText("Confirmed", { exact: true }).waitFor();
+    // Reading it changes nothing remembered for holdings imports.
+    assert.equal(JSON.parse((await storage())["isin:INFZ91T01CB6"]).statementPrices, true);
+    await hosted(() => {
+      window.host.summaryWithoutIsin = [];
+      window.host.emptySearchQueries = [];
+      window.host.depositoryAccounts = undefined;
+      window.host.statementDate = "";
+    });
+
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });
     assert.deepEqual((await host()).secrets, []);
