@@ -51,7 +51,7 @@
     {
       "category": "activities",
       "functions": ["getAll", "checkImport", "import", "create", "update", "getTransferPair", "linkTransfer"],
-      "purpose": "Check transactions before importing activities, and stock splits before carrying holdings into a snapshot. When you choose to use a bank account's deposit or withdrawal for a fund's cash, add the fund's transfer, change the bank's row into a transfer if it isn't one, and link the two; transfers already linked aren't offered"
+      "purpose": "Check transactions before importing activities, a summary or depository statement's units against accounts that track transactions, and stock splits before carrying holdings into a snapshot. When you choose to use a bank account's deposit or withdrawal for a fund's cash, add the fund's transfer, change the bank's row into a transfer if it isn't one, and link the two; transfers already linked aren't offered"
     },
     {
       "category": "market-data",
@@ -66,7 +66,7 @@
     {
       "category": "assets",
       "functions": ["getProfile", "updateProfile"],
-      "purpose": "Read assets' current pricing mode, and keep the printed details of bonds, NPS schemes, and funds and shares priced from statements on their Wealthfolio assets"
+      "purpose": "Read assets' current pricing mode and, to check a statement's units, the symbol and exchange of the assets in accounts that track transactions, and keep the printed details of bonds, NPS schemes, and funds and shares priced from statements on their Wealthfolio assets"
     },
     {
       "category": "secrets",

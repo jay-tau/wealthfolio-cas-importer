@@ -314,10 +314,14 @@ export function unitsHeld(
   range: (day: string) => boolean,
 ) {
   const ref = fundRef(asset.symbol, asset.exchangeMic);
+  return countUnits(activities.filter((a) => a.accountId === accountId && a.assetSymbol && fundRef(a.assetSymbol, a.exchangeMic) === ref), range);
+}
+
+/** `unitsHeld` for activities already narrowed to one asset in one account. */
+export function countUnits(activities: ActivityDetails[], range: (day: string) => boolean) {
   let units = dec("0");
   for (const a of activities) {
-    if (a.status !== "POSTED" || a.accountId !== accountId || !a.assetSymbol || fundRef(a.assetSymbol, a.exchangeMic) !== ref) continue;
-    if (!range(day(a.date))) continue;
+    if (a.status !== "POSTED" || !range(day(a.date))) continue;
     if (a.activityType === "SPLIT" || (a.activityType === "ADJUSTMENT" && a.subtype === "OPTION_EXPIRY")) return undefined;
     if (!a.quantity) continue;
     const q = abs(dec(a.quantity));
@@ -381,4 +385,4 @@ export function closingUnits(data: CasData, target: Target, activities: Activity
   }));
 }
 
-export const sameUnits = (f: FundUnits) => f.held !== undefined && cmp(f.statement, f.held) === 0;
+export const sameUnits = (f: Pick<FundUnits, "statement" | "held">) => f.held !== undefined && cmp(f.statement, f.held) === 0;

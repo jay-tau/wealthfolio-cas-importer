@@ -1,10 +1,11 @@
-import type { Account, AddonContext, Holding, Quote, UpdateAssetProfile } from "@wealthfolio/addon-sdk";
+import type { Account, ActivityDetails, AddonContext, Holding, Quote, UpdateAssetProfile } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Spinner } from "@wealthfolio/ui";
 import { useState } from "react";
 import {
   type AccountPlan,
   assetDetails,
+  checkUnits,
   type Choices,
   type ExistingSnapshot,
   type HoldingKind,
@@ -28,6 +29,7 @@ import type { Ignored } from "../components/account-choices";
 import { type FundChoice, FundChoicesCard, type FundItem } from "../components/fund-choices";
 import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } from "../components/holdings-accounts";
 import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
+import { type Checked, UnitsCheckCard } from "../components/units-check";
 import { holdingKey, LEFT_OUT, readImported, saveImported, sourceKey } from "../lib/choices";
 
 type Api = AddonContext["api"];
@@ -51,18 +53,28 @@ const instrumentType = (value: string) => {
 
 const NOUNS: Record<HoldingKind, FundItem["noun"]> = { fund: "fund", share: "share", bond: "bond", nps: "NPS scheme" };
 
-/** The statement's holdings, one entry each however many folios, demat accounts or PRANs hold it. */
+/**
+ * The statement's holdings, one entry each however many folios, demat accounts or PRANs hold it.
+ * Printed zeros are confirmed too, for the check.
+ */
 export function holdingItems(holdings: Holdings): FundItem[] {
-  const items = new Map<string, FundItem & { count: number }>();
-  for (const h of holdings.sources.flatMap((s) => s.holdings)) {
+  const items = new Map<string, FundItem & { count: number; units: boolean }>();
+  for (const [h, units] of holdings.sources.flatMap((s) => [
+    ...s.holdings.map((h) => [h, true] as const),
+    ...(s.zero ?? []).map((h) => [h, false] as const),
+  ])) {
     const key = holdingKey(h);
-    const item = items.get(key) ?? { key, isin: h.isin, name: h.name, noun: NOUNS[h.kind], statementAsset: statementAsset(h), count: 0 };
+    const item = items.get(key) ?? { key, isin: h.isin, name: h.name, noun: NOUNS[h.kind], statementAsset: statementAsset(h), count: 0, units };
     item.count++;
+    item.units ||= units;
     items.set(key, item);
   }
-  return [...items.values()].map(({ count, ...item }) => ({
+  return [...items.values()].map(({ count, units, ...item }) => ({
     ...item,
-    where: count > 1 ? `in ${count} folios, demat accounts or PRANs` : undefined,
+    where: [
+      count > 1 && `in ${count} folios, demat accounts or PRANs`,
+      !units && "no units on the statement, so only checked against transactions",
+    ].filter(Boolean).join(" · ") || undefined,
   }));
 }
 
@@ -266,8 +278,8 @@ export function HoldingsImport({
   onAccount: (key: string, value: string) => void;
   fundChoices: Record<string, FundChoice | undefined>;
   onFund: (key: string, choice: FundChoice | undefined) => void;
-  busy: "" | "preview" | "import";
-  setBusy: (busy: "" | "preview" | "import") => void;
+  busy: "" | "preview" | "import" | "check";
+  setBusy: (busy: "" | "preview" | "import" | "check") => void;
 }) {
   const { api } = ctx;
   const targets = accounts.filter((a) => a.trackingMode === "HOLDINGS");
@@ -290,7 +302,12 @@ export function HoldingsImport({
   const [confirmed, setConfirmed] = useState<Set<string>>(new Set());
   const [result, setResult] = useState<SavedSnapshots | null>(null);
   const [error, setError] = useState("");
+  const [checked, setChecked] = useState<Checked | null>(null);
+  // Holdings whose accounts compared the user confirmed hold the same units as the statement, by `ref`.
+  const [same, setSame] = useState<Set<string>>(new Set());
   const items = holdingItems(holdings);
+  // Printed zeros never go in a snapshot, so the snapshot preview doesn't wait for them.
+  const snapshotKeys = new Set(holdings.sources.flatMap((s) => s.holdings.map(holdingKey)));
 
   // A source whose own account is ignored needs choosing again, even to go with the statement.
   const accountOf = (source: Source) => sourceKey(source) in ignored ? undefined : accountForSource(usable, holdings, source);
@@ -307,7 +324,7 @@ export function HoldingsImport({
   // Empty sources still reconcile what an earlier import added to their account.
   const decided = (s: Source) => usable[sourceKey(s)] === LEFT_OUT || accountOf(s) !== undefined;
   const undecided =
-    items.some((item) => !fundChoices[item.key]) || holdings.sources.some((s) => !decided(s));
+    items.some((item) => snapshotKeys.has(item.key) && !fundChoices[item.key]) || holdings.sources.some((s) => !decided(s));
   const nothing = !undecided && !holdings.sources.some((s) => accountOf(s));
   const leftOut: LeftOutLine[] = [
     ...holdings.leftOut,
@@ -463,6 +480,50 @@ export function HoldingsImport({
     }
   };
 
+  const runCheck = async () => {
+    setBusy("check");
+    setError("");
+    setChecked(null);
+    setSame(new Set());
+    try {
+      const tracked = allAccounts.filter((a) => a.trackingMode !== "HOLDINGS");
+      const accounts = tracked.filter((a) => !a.isArchived);
+      let activities: ActivityDetails[] | { error: string };
+      try {
+        activities = await api.activities.getAll();
+      } catch (e) {
+        activities = { error: String(e) };
+      }
+      // A choice without an asset ID is matched by the symbol and exchange on each asset's profile.
+      const identities = new Map<string, string | { error: string }>();
+      const unidentified = holdings.sources.some((s) => [...s.holdings, ...(s.zero ?? [])].some((h) => assetOf(h) && !assetOf(h)!.assetId));
+      if (Array.isArray(activities) && unidentified) {
+        const ids = new Set(activities.filter((a) => a.assetId && accounts.some((account) => account.id === a.accountId)).map((a) => a.assetId));
+        await Promise.all([...ids].map(async (id) => {
+          try {
+            const profile = await api.assets.getProfile(id);
+            identities.set(id, fundRef(profile.instrumentSymbol ?? "", profile.instrumentExchangeMic));
+          } catch (e) {
+            identities.set(id, { error: String(e) });
+          }
+        }));
+      }
+      setChecked({
+        // Wealthfolio shows add-ons no activities of archived accounts.
+        checks: checkUnits(holdings, { asset: assetOf, accounts, activities, identities }),
+        archived: tracked.filter((a) => a.isArchived).map((a) => a.name),
+      });
+    } catch (e) {
+      setError(`Couldn't check the units: ${String(e)}`);
+    } finally {
+      setBusy("");
+    }
+  };
+  const confirmedAny = items.some((item) => {
+    const choice = fundChoices[item.key];
+    return choice && "fund" in choice;
+  });
+
   const update = (accountId: string, change: (c: Choices) => Choices) =>
     setChoices((all) => new Map(all).set(accountId, change(all.get(accountId) ?? noChoices())));
 
@@ -497,10 +558,32 @@ export function HoldingsImport({
         choices={fundChoices}
         onChange={(key, choice) => {
           changed();
+          setChecked(null);
           onFund(key, choice);
         }}
         title="Holdings"
         intro="Confirm the Wealthfolio asset for each holding. Holdings are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed. A holding that no result fits can use the statement's prices: the add-on creates an asset priced by hand, saves the statement's price on its date, and keeps the printed name, identifiers and details on the asset. Its price then changes only with the statements you import or the prices you enter, not with market data. The add-on remembers what you confirm for each ISIN or scheme, for detailed statements too, except the statement's prices, which detailed statements don't use."
+      />
+      <UnitsCheckCard
+        checked={checked}
+        same={same}
+        checking={busy === "check"}
+        blocked={
+          items.some((item) => !fundChoices[item.key])
+            ? "Confirm or leave out each holding first."
+            : !confirmedAny
+              ? "Every holding is left out, so there's nothing to check."
+              : ""
+        }
+        onCheck={() => void runCheck()}
+        onSame={(ref, yes) =>
+          setSame((set) => {
+            const next = new Set(set);
+            if (yes) next.add(ref);
+            else next.delete(ref);
+            return next;
+          })
+        }
       />
       <div className="flex flex-wrap items-center gap-3">
         <Button type="button" disabled={undecided || nothing || busy !== ""} onClick={() => void runPreview()}>
@@ -509,9 +592,11 @@ export function HoldingsImport({
         </Button>
         {(undecided || nothing) && (
           <span className="text-muted-foreground text-sm">
-            {undecided
-              ? "Confirm or leave out each holding, and choose an account for each folio, demat account and PRAN first."
-              : "Everything is left out, so there's nothing to import."}
+            {targets.length === 0
+              ? "No account tracks holdings, so there's nowhere to save a snapshot."
+              : undecided
+                ? "Confirm or leave out each holding, and choose an account for each folio, demat account and PRAN first."
+                : "Everything is left out, so there's nothing to import."}
           </span>
         )}
       </div>

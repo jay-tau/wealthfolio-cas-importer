@@ -93,6 +93,23 @@ without a warning. A folio whose funds' ISINs name more than one fund house, fro
 from fund houses merging, is still imported, but what its imports add isn't shared with the same
 folio's imports from depository statements.
 
+Check units compares the statement with Wealthfolio accounts that track transactions (Not set
+included), once each holding is confirmed or left out. It needs no account that tracks holdings,
+and saves nothing. Each holding's printed units are summed over its folios, demat accounts and
+PRANs, holdings printed with zero units included: those are confirmed for the check, but never go in
+a snapshot. Against them go the units that the posted activities of accounts with any for its asset
+by the statement's date add up to on that date, summed over those accounts. A row shows Match or
+Differ once you tick Same holdings, confirming that those accounts hold its units only for the
+statement's folios, demat accounts and PRANs, and all of them. A difference can mean a purchase or
+redemption that wasn't imported, bonus units or shares, a transfer, or shares from a demerger. A
+holding with no such activities, one with a split or option expiry, which only Wealthfolio's
+portfolio engine can count, and every holding when activities can't be read need review. Wealthfolio
+doesn't show add-ons the activities of archived accounts, so those aren't compared. Activities show
+an asset's display code, which can be changed, so a holding goes by its asset's ID, or for a choice
+remembered without one, by the symbol and exchange on each asset's profile. For a choice without an
+ID, several assets with that symbol and exchange, or an unreadable profile that could hide another
+matching asset, need review.
+
 Wealthfolio's snapshot is the account's whole state on its date, so the preview shows each
 account's complete snapshot before anything is saved:
 
