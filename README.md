@@ -21,6 +21,9 @@ fund name, plan and option, or leave the fund out. Closed schemes, with no units
 nothing to import, are skipped. The preview lists every activity with its
 cash deposit or withdrawal (or [bank transfer](#bank-account)), the rows left out and why, and anything Wealthfolio already has. After
 the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
+A fund whose rows don't add up to its closing balance is left out unless you tick "Import this
+fund anyway"; then check its rows against the PDF and add or correct the missing ones in
+Wealthfolio after importing.
 
 Importing the same statement again, or an overlapping one, adds only what's new: the add-on compares
 each row with the account's activities. Wealthfolio's own duplicate check misses the trades of a fund

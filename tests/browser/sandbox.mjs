@@ -332,6 +332,41 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-mismatch.pdf");
     await frame.getByText("Preview", { exact: true }).waitFor({ state: "hidden" });
     assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
+
+    // A fund whose rows don't add up to its closing balance is left out, even with its opening units in
+    // Wealthfolio, unless the user imports it anyway.
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
+    await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
+    assert.equal(await frame.getByText("Confirmed", { exact: true }).count(), 5);
+    const flexiOpening = {
+      id: "flexi-opening", accountId: "account-1", activityType: "BUY", subtype: null, status: "POSTED",
+      date: "2023-03-01T00:00:00+00:00", quantity: "1250", unitPrice: "40", amount: "50000", fee: null, currency: "INR",
+      needsReview: false, comment: null, assetId: "asset-INFZ90K01FC8", assetSymbol: "INFZ90K01FC8", exchangeMic: "XBOM",
+    };
+    await tab.frames()[1].evaluate((opening) => { window.host.activities = [opening]; }, flexiOpening);
+    const gap = /^Fictiva Flexi Cap Fund - Direct Plan - Growth, folio 91234567 \/ 12: The rows take the unit balance from 1250 to 2798\.066, but the statement's closing balance is 2892\.104, 94\.038 units apart/;
+    const leftOutAlert = frame.getByRole("alert").filter({ hasText: /^Left out/ });
+    const anywayAlert = frame.getByRole("alert").filter({ hasText: /^Imported anyway/ });
+    const importFlexi = frame.getByRole("checkbox", { name: "Import this fund anyway" });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    await leftOutAlert.getByText(gap).waitFor();
+    assert.equal(await importFlexi.getAttribute("aria-checked"), "false");
+    await importFlexi.dispatchEvent("click");
+    await frame.getByText(/^38 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    await anywayAlert.getByText(gap).waitFor();
+    assert.equal(await leftOutAlert.getByText(gap).count(), 0);
+    await frame.getByRole("button", { name: "Import 73 activities" }).waitFor();
+    await importFlexi.dispatchEvent("click");
+    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    await leftOutAlert.getByText(gap).waitFor();
+    assert.equal(await anywayAlert.count(), 0);
+    await frame.getByRole("button", { name: "Import 23 activities" }).click();
+    await frame.getByText("Imported 23 of 23 activities").waitFor();
+    const afterGap = await tab.frames()[1].evaluate(() => window.host.activities);
+    assert.deepEqual(afterGap.filter((a) => a.assetSymbol === "INFZ90K01FC8").map((a) => a.id), ["flexi-opening"]);
+    assert.equal(afterGap.length, 24);
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
