@@ -20,7 +20,14 @@ import {
   sameUnits,
 } from "../cas/plan";
 import { type CasData, type CasFolio, type CasScheme, isDepository, type Statement } from "../cas/types";
-import { type AccountChoices, AccountChoicesCard, accountFor, BankChoicesCard, bankFor } from "../components/account-choices";
+import {
+  type AccountChoices,
+  AccountChoicesCard,
+  accountFor,
+  BankChoicesCard,
+  bankFor,
+  type Ignored,
+} from "../components/account-choices";
 import { type FundChoice, FundChoicesCard, fundItems, fundsOf } from "../components/fund-choices";
 import { type BankLink, ImportResult, Preview } from "../components/preview";
 import { StatementForm } from "../components/statement-form";
@@ -89,22 +96,34 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     );
   }, [api]);
 
-  // Remembered accounts that no longer exist are ignored.
+  // Remembered accounts that are hidden, archived or no longer listed are ignored, and their rows say why.
   const accountChoices: AccountChoices = Object.fromEntries(
     Object.entries(remembered ?? {}).filter(
       ([, id]) => id === LEFT_OUT || id === NO_BANK || accounts?.some((a) => a.id === id),
     ),
   );
-  // So are remembered PAN, folio and bank accounts that track holdings; their rows say why.
+  const unavailable: Record<string, Ignored> = Object.fromEntries(
+    Object.entries(remembered ?? {}).flatMap(([key, id]) => {
+      // Empty goes with the PAN or the statement.
+      if (!allAccounts || !id || key in accountChoices) return [];
+      const account = allAccounts.find((a) => a.id === id);
+      const state = account && [!account.isActive && "hidden", account.isArchived && "archived"].filter(Boolean).join(" and ");
+      return [[key, account ? { name: account.name, state } : {}]];
+    }),
+  );
+  // So are remembered PAN, folio and bank accounts that track holdings.
   const transactionChoices: AccountChoices = Object.fromEntries(
     Object.entries(accountChoices).filter(([, id]) => id === NO_BANK || transactionAccounts?.some((a) => a.id === id)),
   );
-  const holdingsChoices: Record<string, string> = Object.fromEntries(
-    Object.entries(accountChoices).flatMap(([key, id]) => {
-      const account = accounts?.find((a) => a.id === id && a.trackingMode === "HOLDINGS");
-      return account ? [[key, account.name]] : [];
-    }),
-  );
+  const ignored: Record<string, Ignored> = {
+    ...unavailable,
+    ...Object.fromEntries(
+      Object.entries(accountChoices).flatMap(([key, id]) => {
+        const account = accounts?.find((a) => a.id === id && a.trackingMode === "HOLDINGS");
+        return account ? [[key, { name: account.name }]] : [];
+      }),
+    ),
+  };
 
   const target = (folio: CasFolio, scheme: CasScheme) => {
     const accountId = accountFor(transactionChoices, folio);
@@ -210,22 +229,22 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     ? data.folios.some((f) =>
         f.schemes.some((s) => {
           const choice = fundChoices[fundKey(s)];
-          // A folio whose remembered account tracks holdings needs choosing again, even to go with its PAN.
-          const account = folioKey(f) in holdingsChoices ? undefined : accountFor(transactionChoices, f);
+          // A folio whose remembered account is ignored needs choosing again, even to go with its PAN.
+          const account = folioKey(f) in ignored ? undefined : accountFor(transactionChoices, f);
           return !choice || ("fund" in choice && !account);
         }),
       )
     : true;
 
-  // A remembered bank account that tracks holdings needs choosing again, and a folio's cash can't
-  // move between its account and itself.
+  // A remembered bank account that's ignored needs choosing again, and a folio's cash can't move
+  // between its account and itself.
   const bankUndecided =
     data?.folios.some((f) => {
       if (!f.schemes.some((s) => target(f, s))) return false;
       const key = bankKey(folioKey(f));
-      const inherited = !transactionChoices[key] && f.PAN && bankKey(panKey(f.PAN)) in holdingsChoices;
+      const inherited = !transactionChoices[key] && f.PAN && bankKey(panKey(f.PAN)) in ignored;
       const bank = bankFor(transactionChoices, f);
-      return key in holdingsChoices || inherited || (!!bank && bank === accountFor(transactionChoices, f));
+      return key in ignored || inherited || (!!bank && bank === accountFor(transactionChoices, f));
     }) ?? false;
 
   const runPreview = async (importUnbalanced = unbalanced) => {
@@ -344,6 +363,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
               accounts={accounts}
               allAccounts={allAccounts!}
               accountChoices={accountChoices}
+              unavailable={unavailable}
               onAccount={chooseAccount}
               fundChoices={fundChoices}
               onFund={chooseFund}
@@ -357,14 +377,14 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
                 data={data}
                 accounts={transactionAccounts}
                 choices={transactionChoices}
-                holdingsChoices={holdingsChoices}
+                ignored={ignored}
                 onChange={chooseAccount}
               />
               <BankChoicesCard
                 data={data}
                 accounts={transactionAccounts}
                 choices={transactionChoices}
-                holdingsChoices={holdingsChoices}
+                ignored={ignored}
                 onChange={chooseAccount}
               />
               <FundChoicesCard ctx={ctx} items={fundItems(data)} choices={fundChoices} onChange={chooseFund} />

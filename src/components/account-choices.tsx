@@ -16,6 +16,25 @@ export function bankFor(choices: AccountChoices, folio: CasFolio) {
   return id && id !== NO_BANK ? id : undefined;
 }
 
+/**
+ * A remembered account that can't be chosen now: its name, unless Wealthfolio no longer lists it,
+ * and whether it's hidden or archived there. Without either state, it tracks the wrong thing.
+ */
+export interface Ignored {
+  name?: string;
+  state?: string;
+}
+
+/** Why a remembered account is ignored. `mode` finishes "which …" for one that tracks the wrong thing. */
+export function ChooseAgain({ ignored, mode }: { ignored: Ignored | undefined; mode: string }) {
+  if (!ignored) return null;
+  const account =
+    ignored.name === undefined
+      ? "an account that's no longer available"
+      : `${ignored.name}, which ${ignored.state ? `is ${ignored.state} in Wealthfolio` : mode}`;
+  return <p className="text-muted-foreground w-full text-sm">Chosen before: {account}, so choose again.</p>;
+}
+
 const SAME_AS_PAN = "same-as-pan";
 
 export function AccountSelect({
@@ -67,26 +86,25 @@ export function AccountChoicesCard({
   data,
   accounts,
   choices,
-  holdingsChoices,
+  ignored,
   onChange,
 }: {
   data: CasData;
   /** Accounts that track transactions. */
   accounts: Account[];
   choices: AccountChoices;
-  /** Remembered choices of an account that tracks holdings, ignored: key → the account's name. */
-  holdingsChoices: Record<string, string>;
+  /** Remembered choices that are ignored: key → the account. */
+  ignored: Record<string, Ignored>;
   onChange: (key: string, accountId: string) => void;
 }) {
   const pans = [...new Set(data.folios.flatMap((f) => (f.PAN ? [f.PAN] : [])))];
   const name = (id: string | undefined) => accounts.find((a) => a.id === id)?.name;
-  const chooseAgain = (key: string) =>
-    key in holdingsChoices && (
-      <p className="text-muted-foreground w-full text-sm">
-        Chosen before: {holdingsChoices[key]}, which tracks holdings. Transactions imported there wouldn't change its
-        holdings, so choose again.
-      </p>
-    );
+  const chooseAgain = (key: string) => (
+    <ChooseAgain
+      ignored={ignored[key]}
+      mode="tracks holdings. Transactions imported there wouldn't change its holdings"
+    />
+  );
   return (
     <Card>
       <CardHeader>
@@ -131,7 +149,7 @@ export function AccountChoicesCard({
                 <AccountSelect
                   id={key}
                   accounts={accounts}
-                  value={key in holdingsChoices ? null : choices[key]}
+                  value={key in ignored ? null : choices[key]}
                   onChange={(id) => onChange(key, id)}
                   inherit={folio.PAN ? `Same as PAN${panAccount ? ` (${panAccount})` : ""}` : undefined}
                 />
@@ -151,27 +169,22 @@ export function BankChoicesCard({
   data,
   accounts,
   choices,
-  holdingsChoices,
+  ignored,
   onChange,
 }: {
   data: CasData;
   /** Accounts that track transactions. */
   accounts: Account[];
   choices: AccountChoices;
-  /** Remembered choices of an account that tracks holdings, ignored: key → the account's name. */
-  holdingsChoices: Record<string, string>;
+  /** Remembered choices that are ignored: key → the account. */
+  ignored: Record<string, Ignored>;
   onChange: (key: string, accountId: string) => void;
 }) {
   const pans = [...new Set(data.folios.flatMap((f) => (f.PAN ? [f.PAN] : [])))];
   const name = (id: string | undefined) => accounts.find((a) => a.id === id)?.name;
   const notes = (key: string, accountId?: string, bankId?: string) => (
     <>
-      {key in holdingsChoices && (
-        <p className="text-muted-foreground w-full text-sm">
-          Chosen before: {holdingsChoices[key]}, which tracks holdings. Transfers imported there wouldn't change its
-          cash, so choose again.
-        </p>
-      )}
+      <ChooseAgain ignored={ignored[key]} mode="tracks holdings. Transfers imported there wouldn't change its cash" />
       {bankId && bankId === accountId && (
         <p className="text-destructive w-full text-sm">
           This is also the account for the funds, and cash can't move from an account to itself. Choose another account,
@@ -203,7 +216,7 @@ export function BankChoicesCard({
                 <AccountSelect
                   id={key}
                   accounts={accounts}
-                  value={key in holdingsChoices ? null : choices[key]}
+                  value={key in ignored ? null : choices[key]}
                   onChange={(next) => onChange(key, next)}
                   inherit={OUTSIDE}
                 />
@@ -215,7 +228,9 @@ export function BankChoicesCard({
         <div className="grid gap-4">
           {data.folios.map((folio) => {
             const key = bankKey(folioKey(folio));
-            const panBank = folio.PAN ? choices[bankKey(panKey(folio.PAN))] : undefined;
+            const panBankKey = folio.PAN && bankKey(panKey(folio.PAN));
+            // An ignored PAN bank account is unchosen, so neither it nor Outside Wealthfolio is named.
+            const panBank = panBankKey && !(panBankKey in ignored) ? (name(choices[panBankKey]) ?? OUTSIDE) : undefined;
             return (
               <div key={key} className="flex flex-wrap items-center justify-between gap-2">
                 <Label htmlFor={key}>
@@ -225,9 +240,9 @@ export function BankChoicesCard({
                 <AccountSelect
                   id={key}
                   accounts={accounts}
-                  value={key in holdingsChoices ? null : choices[key]}
+                  value={key in ignored ? null : choices[key]}
                   onChange={(next) => onChange(key, next)}
-                  inherit={folio.PAN ? `Same as PAN (${name(panBank) ?? OUTSIDE})` : OUTSIDE}
+                  inherit={folio.PAN ? `Same as PAN${panBank ? ` (${panBank})` : ""}` : OUTSIDE}
                   leaveOut={folio.PAN ? NO_BANK : undefined}
                   leaveOutLabel={OUTSIDE}
                 />
