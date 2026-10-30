@@ -59,7 +59,7 @@ export function fundsOf(data: CasData) {
 export interface FundItem {
   key: string;
   isin: string | null;
-  /** As printed. */
+  /** As printed, except a CDSL folio's leading scheme code. */
   name: string;
   noun: "fund" | "share" | "bond" | "NPS scheme";
   /** Where else the statement lists it, e.g. "in 2 folios". */

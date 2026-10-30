@@ -129,6 +129,13 @@ export function statementAsset(h: StatementHolding): ChosenAsset | undefined {
 const printed = (details: Record<string, string | null | undefined>) =>
   Object.fromEntries(Object.entries(details).filter((e): e is [string, string] => typeof e[1] === "string" && e[1].trim() !== ""));
 
+/**
+ * A CDSL statement prints a folio's fund as "<scheme code> - <scheme name>", and casparser keeps
+ * the code, which it finds with the same pattern. "FMCDG - Fictiva Midcap Fund - Direct Plan -
+ * Growth" → "Fictiva Midcap Fund - Direct Plan - Growth".
+ */
+const withoutSchemeCode = (name: string) => name.replace(/^\s*[A-Z0-9]+\s*-\s*/, "") || name;
+
 /** The same folio prints as `91234567 / 12` on CAMS statements and `91234567/12` on NSDL ones. */
 export const folioNumber = (folio: string) => folio.replace(/\s+/g, "");
 
@@ -200,6 +207,8 @@ function readDepository(data: DepositoryData): Holdings {
         const number = folioNumber(f.folio ?? "");
         const label = number ? `Folio ${number}` : "Mutual fund folios";
         const holding = fund(f);
+        // The search and a new asset go by the scheme name; the printed details keep the code.
+        if (data.file_type === "CDSL" && f.name) holding.name = withoutSchemeCode(f.name);
         const id = `folio|${number}|${issuerOf(f.isin) ?? `isin:${f.isin}`}`;
         const source = folios.get(id) ?? { id, kind: "folio", label, holdings: [] };
         if (withUnits(leftOut, label, source, holding)) source.holdings.push(holding);
@@ -415,8 +424,10 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     plan.sources.push(source);
     plan.remembered.set(source.id, input.remembered(source, accountId));
     for (const holding of source.holdings) {
-      const asset = input.asset(holding);
-      if (!asset) continue;
+      const chosen = input.asset(holding);
+      if (!chosen) continue;
+      // A remembered statement-price choice can predate a corrected statement name.
+      const asset = chosen.statementPrices ? { ...chosen, name: holding.name } : chosen;
       const ref = fundRef(asset.symbol, asset.exchangeMic);
       // The host's holding symbol can be a custom display code. A resolved asset ID wins.
       const existing = plan.existing.positions.find((p) => asset.assetId ? p.assetId === asset.assetId : p.ref === ref);
