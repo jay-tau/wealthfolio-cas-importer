@@ -9,6 +9,8 @@ import {
   bankCandidates,
   bankMatches,
   closingUnits,
+  fundRef,
+  fundRefs,
   importRows,
   indexActivities,
   linkBankRow,
@@ -65,10 +67,15 @@ const target = (folio, s) => ({
   asset: { symbol: s.rta_code.toLowerCase(), exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND" },
 });
 
-const map = (data, existing = [], bankAccountId = undefined) =>
+/** Each stored asset's profile: `fundRef` of the symbol and exchange the import created it with. */
+const profiles = new Map();
+/** Which fund each stored asset is. `target` confirms funds without asset IDs, so they go by profile. */
+const fundsOf = (data) => fundRefs(data.folios.flatMap((f) => f.schemes.map((s) => target(f, s).asset)), profiles);
+
+const map = (data, existing = [], bankAccountId = undefined, funds = fundsOf(data)) =>
   mapStatement(data, {
     target: (folio, s) => ({ ...target(folio, s), openingCovered: true, bankAccountId }),
-    alreadyImported: indexActivities(existing).has,
+    alreadyImported: indexActivities(existing, funds).has,
   });
 
 /** Wealthfolio's checkImport, without its duplicate check: every row valid unless `errors` names its line. */
@@ -79,29 +86,38 @@ const check = (rows, errors = {}) =>
 
 let id = 0;
 /** How Wealthfolio stores and returns an imported row (Wealthfolio 3.11.0's web API). */
-const stored = (row) => ({
-  id: `activity-${++id}`,
-  accountId: row.accountId,
-  activityType: row.activityType,
-  subtype: row.subtype ?? null,
-  status: "POSTED",
-  date: `${row.date}T00:00:00+00:00`,
-  quantity: row.quantity ? `${row.quantity}000` : null,
-  unitPrice: row.unitPrice ?? null,
-  amount: row.activityType === "BUY" || row.activityType === "SELL" ? `${row.amount}0000` : row.amount,
-  fee: null,
-  tax: row.tax ?? null,
-  currency: row.currency,
-  needsReview: false,
-  comment: null,
-  assetId: row.symbol ? `uuid-${row.symbol}` : "",
-  assetSymbol: row.symbol ? row.symbol.toUpperCase() : "",
-  exchangeMic: row.exchangeMic ?? null,
-});
+const stored = (row) => {
+  if (row.symbol) profiles.set(`uuid-${row.symbol}`, fundRef(row.symbol, row.exchangeMic));
+  return {
+    id: `activity-${++id}`,
+    accountId: row.accountId,
+    activityType: row.activityType,
+    subtype: row.subtype ?? null,
+    status: "POSTED",
+    date: `${row.date}T00:00:00+00:00`,
+    quantity: row.quantity ? `${row.quantity}000` : null,
+    unitPrice: row.unitPrice ?? null,
+    amount: row.activityType === "BUY" || row.activityType === "SELL" ? `${row.amount}0000` : row.amount,
+    fee: null,
+    tax: row.tax ?? null,
+    currency: row.currency,
+    needsReview: false,
+    comment: null,
+    assetId: row.symbol ? `uuid-${row.symbol}` : "",
+    assetSymbol: row.symbol ? row.symbol.toUpperCase() : "",
+    exchangeMic: row.exchangeMic ?? null,
+  };
+};
 
-const plan = (data, existing = [], errors = {}, bankAccountId = undefined) => {
-  const mapping = map(data, existing, bankAccountId);
-  return planImport(mapping, existing, check(rowsOf(mapping), errors));
+/** `activity` moved to another asset, with its own profile. */
+const otherFund = (activity, symbol = "OTHER") => {
+  profiles.set(`uuid-${symbol}`, fundRef(symbol, "XBOM"));
+  return { ...activity, assetId: `uuid-${symbol}`, assetSymbol: symbol };
+};
+
+const plan = (data, existing = [], errors = {}, bankAccountId = undefined, funds = fundsOf(data)) => {
+  const mapping = map(data, existing, bankAccountId, funds);
+  return planImport(mapping, existing, check(rowsOf(mapping), errors), funds);
 };
 
 const statuses = (planned) => planned.map((t) => t.status);
@@ -190,7 +206,7 @@ describe("duplicates", () => {
     const checked = check(rowsOf(mapping)).map((r) =>
       r.lineNumber === 2 ? { ...r, duplicateOfId: "elsewhere", warnings: { _duplicate: ["Duplicate activity already exists"] } } : r,
     );
-    const planned = planImport(mapping, [], checked);
+    const planned = planImport(mapping, [], checked, fundsOf(data));
     assert.equal(planned[0].status, "duplicate");
     assert.deepEqual(planned[0].rows[1].warnings, [], "the duplicate warning is shown as a reason, not repeated");
   });
@@ -199,7 +215,7 @@ describe("duplicates", () => {
     const rows = importRows(plan(data), () => false);
     const elsewhere = [
       { ...stored(rows[0]), accountId: "account-2" },
-      { ...stored(rows[0]), assetSymbol: "OTHER" },
+      otherFund(stored(rows[0])),
       { ...stored(rows[1]), comment: "Salary" },
       { ...stored(rows[1]), date: "2023-04-11T00:00:00+00:00" },
     ];
@@ -404,6 +420,86 @@ describe("bank account", () => {
   });
 });
 
+describe("display codes", () => {
+  // Activities show each asset's display code, which the user can change.
+  const renamed = (activities, code = "My Flexi Cap") => activities.map((a) => (a.assetId ? { ...a, assetSymbol: code } : a));
+  const balanced = (open, close, transactions) => scheme("A", transactions, { open, close, close_calculated: close });
+  /** `target`'s funds chosen from existing assets: by ID, with no profiles read. */
+  const byId = (data) =>
+    fundRefs(data.folios.flatMap((f) => f.schemes.map((s) => ({ ...target(f, s).asset, assetId: `uuid-${target(f, s).asset.symbol}` }))), new Map());
+
+  for (const [how, fundsFor] of [["without an asset ID", fundsOf], ["with an asset ID", byId]]) {
+    test(`a fund chosen ${how} is found under another display code`, () => {
+      const drip = tx("2023-09-25", "DIVIDEND_REINVEST", "731.39", "15.054", "48.5844");
+      const data = statement(balanced("0", "118.142", [...sip("2023-04-10"), drip]));
+      const existing = renamed(importRows(plan(data), () => false).map(stored));
+      const planned = plan(data, existing, {}, undefined, fundsFor(data));
+      assert.deepEqual(statuses(planned), ["existing", "existing"], "the reinvested dividend has no cash row to match");
+      assert.deepEqual(importRows(planned, () => false), []);
+      assert.ok(sameUnits(closingUnits(data, target, existing, fundsFor(data))[0]));
+    });
+
+    test(`a fund chosen ${how} covers its opening units under another display code`, () => {
+      const earlier = renamed(importRows(plan(statement(scheme("A", sip("2023-03-10")))), () => false).map(stored));
+      const data = statement(balanced("103.088", "206.176", sip("2023-04-10")));
+      const [fund] = openingUnits(data, target, earlier, fundsFor(data));
+      assert.equal(format(fund.held), "103.088");
+      assert.ok(sameUnits(fund));
+    });
+
+    test(`a reversed purchase of a fund chosen ${how} is found under another display code`, () => {
+      const purchase = sip("2024-01-10", "999.95", "99.995", "10.0000");
+      const [trade] = renamed(importRows(plan(statement(scheme("A", purchase))), () => false).map(stored));
+      const data = statement(scheme("A", [...purchase, tx("2024-01-15", "REVERSAL", "-999.95", "-99.995", "10.0000")]));
+      const mapping = map(data, [trade], undefined, fundsFor(data));
+      assert.match(mapping.warnings[0].message, /^Wealthfolio has this purchase from an earlier import/);
+    });
+  }
+
+  test("two assets sharing a display code keep their own units", () => {
+    const data = statement(
+      balanced("0", "103.088", sip("2023-04-10")),
+      { ...balanced("0", "10", sip("2023-04-10", "999.95", "10.000", "99.9950")), scheme: "B", rta_code: "B", isin: "INF-B" },
+    );
+    // B's display code is A's symbol.
+    const existing = importRows(plan(data), () => false).map(stored).map((a) => (a.assetId === "uuid-b" ? { ...a, assetSymbol: "A" } : a));
+    for (const funds of [fundsOf(data), byId(data)]) {
+      assert.deepEqual(closingUnits(data, target, existing, funds).map((f) => format(f.held)), ["103.088", "10"]);
+    }
+  });
+
+  test("a fund chosen with an asset ID goes by that ID alone", () => {
+    const data = statement(balanced("0", "103.088", sip("2023-04-10")));
+    const [trade] = importRows(plan(data), () => false).map(stored);
+    // Another asset with the fund's symbol and exchange, and the fund's own asset given another symbol.
+    const lookalike = { ...trade, id: "lookalike", assetId: "uuid-lookalike" };
+    const profiles = new Map([["uuid-lookalike", fundRef("a", "XBOM")], ["uuid-a", fundRef("A2", "XBOM")]]);
+    const funds = fundRefs(data.folios[0].schemes.map((s) => ({ ...target(data.folios[0], s).asset, assetId: "uuid-a" })), profiles);
+    assert.equal(format(closingUnits(data, target, [trade, lookalike], funds)[0].held), "103.088");
+  });
+
+  test("several assets with the symbol and exchange of a fund without an asset ID need a choice", () => {
+    const fund = { symbol: "A", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Fictiva Flexi Cap Fund" };
+    const profiles = new Map([["uuid-1", fundRef("a", "XBOM")], ["uuid-2", fundRef(" A", "XBOM")], ["uuid-3", fundRef("A", "XNSE")]]);
+    assert.throws(
+      () => fundRefs([fund], profiles),
+      /Several Wealthfolio assets have the symbol and exchange of Fictiva Flexi Cap Fund \(A on XBOM\)\. Under Funds, choose Change, search for A and pick the asset to import into\./,
+    );
+    assert.deepEqual(fundRefs([{ ...fund, assetId: "uuid-2" }], profiles), new Map([["uuid-2", "A@XBOM"]]));
+    assert.deepEqual(fundRefs([fund], new Map([...profiles].slice(1))), new Map([["uuid-2", "A@XBOM"]]));
+  });
+
+  test("choices with and without IDs cannot combine different assets under one import key", () => {
+    const fund = { symbol: "A", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND" };
+    const chosen = { ...fund, assetId: "chosen" };
+    const profiles = new Map([["chosen", "A@XBOM"], ["other", "A@XBOM"]]);
+    assert.throws(() => fundRefs([chosen, fund], profiles), /Several Wealthfolio assets/);
+    assert.throws(() => fundRefs([chosen, { ...fund, assetId: "other" }], profiles), /Several Wealthfolio assets/);
+    assert.deepEqual(fundRefs([chosen, fund], new Map([["chosen", "A@XBOM"]])), new Map([["chosen", "A@XBOM"]]));
+    assert.deepEqual(fundRefs([chosen, chosen], profiles), new Map([["chosen", "A@XBOM"]]));
+  });
+});
+
 describe("units", () => {
   const opening = (open, close, transactions) =>
     statement(scheme("A", transactions, { open, close, close_calculated: close }));
@@ -421,19 +517,19 @@ describe("units", () => {
     const earlier = importRows(plan(statement(scheme("A", sip("2023-03-10")))), () => false).map(stored);
     const later = importRows(plan(statement(scheme("A", sip("2023-04-10")))), () => false).map(stored);
     const data = opening("103.088", "206.176", sip("2023-04-10"));
-    const [fund] = openingUnits(data, target, [...earlier, ...later]);
+    const [fund] = openingUnits(data, target, [...earlier, ...later], fundsOf(data));
     assert.equal(format(fund.statement), "103.088");
     assert.equal(format(fund.held), "103.088", "only activities before the statement count");
     assert.ok(sameUnits(fund));
-    assert.ok(!sameUnits(openingUnits(data, target, later)[0]));
+    assert.ok(!sameUnits(openingUnits(data, target, later, fundsOf(data))[0]));
   });
 
   test("only posted activities count towards opening and closing units", () => {
     const [buy] = importRows(plan(statement(scheme("A", sip("2023-03-10")))), () => false).map(stored);
     const data = opening("103.088", "103.088", []);
     const activities = [buy, ...["DRAFT", "PENDING", "VOID"].map((status) => ({ ...buy, status, quantity: "999" }))];
-    assert.ok(sameUnits(openingUnits(data, target, activities)[0]));
-    assert.ok(sameUnits(closingUnits(data, target, activities)[0]));
+    assert.ok(sameUnits(openingUnits(data, target, activities, fundsOf(data))[0]));
+    assert.ok(sameUnits(closingUnits(data, target, activities, fundsOf(data))[0]));
   });
 
   test("asset income and security transfers contribute their received or delivered units", () => {
@@ -446,7 +542,8 @@ describe("units", () => {
       { ...buy, activityType: "DIVIDEND", subtype: null, quantity: "100" },
       { ...buy, activityType: "ADJUSTMENT", subtype: "RETURN_OF_CAPITAL", quantity: "100" },
     ];
-    assert.ok(sameUnits(closingUnits(opening("0", "13", []), target, activities)[0]));
+    const data = opening("0", "13", []);
+    assert.ok(sameUnits(closingUnits(data, target, activities, fundsOf(data))[0]));
   });
 
   test("splits and option expiry leave units unknown only within the matching posted history", () => {
@@ -456,7 +553,7 @@ describe("units", () => {
     const expiry = { ...buy, activityType: "ADJUSTMENT", subtype: "OPTION_EXPIRY", quantity: "10" };
     for (const row of [split, expiry]) {
       for (const count of [openingUnits, closingUnits]) {
-        const [fund] = count(data, target, [buy, row]);
+        const [fund] = count(data, target, [buy, row], fundsOf(data));
         assert.equal(fund.held, undefined);
         assert.ok(!sameUnits(fund));
       }
@@ -465,12 +562,12 @@ describe("units", () => {
       { ...split, status: "DRAFT" },
       { ...split, date: "2025-04-01" },
       { ...split, accountId: "another-account" },
-      { ...split, assetSymbol: "ANOTHER-FUND" },
+      otherFund(split, "ANOTHER-FUND"),
     ];
-    assert.ok(sameUnits(closingUnits(data, target, [buy, ...irrelevant])[0]));
+    assert.ok(sameUnits(closingUnits(data, target, [buy, ...irrelevant], fundsOf(data))[0]));
     const during = { ...split, date: "2023-04-01" };
-    assert.ok(sameUnits(openingUnits(data, target, [buy, during])[0]));
-    assert.equal(closingUnits(data, target, [buy, during])[0].held, undefined);
+    assert.ok(sameUnits(openingUnits(data, target, [buy, during], fundsOf(data))[0]));
+    assert.equal(closingUnits(data, target, [buy, during], fundsOf(data))[0].held, undefined);
   });
 
   test("sales and reinvested dividends count, cash and other funds don't", () => {
@@ -480,8 +577,8 @@ describe("units", () => {
       tx("2023-09-25", "DIVIDEND_REINVEST", "731.39", "15.054", "48.5844"),
     ]);
     const rows = importRows(plan(data), () => false);
-    const other = { ...stored(rows[0]), assetSymbol: "OTHER" };
-    const [fund] = closingUnits(data, target, [...rows.map(stored), other]);
+    const other = otherFund(stored(rows[0]));
+    const [fund] = closingUnits(data, target, [...rows.map(stored), other], fundsOf(data));
     assert.equal(format(fund.held), "57.142");
     assert.ok(sameUnits(fund));
   });

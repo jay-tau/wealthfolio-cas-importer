@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Detailed imports find a fund's earlier activities and count its opening and closing units after its display code changes in Wealthfolio: they go by the fund's asset ID, or for a fund confirmed without one, by the symbol and exchange on each asset's profile. Before, a renamed fund's trades and reinvested dividends were offered as new and its units counted as zero, and another asset whose display code was the fund's symbol added its units to the fund's. A fund confirmed from an existing asset that was since deleted, or whose symbol, exchange or type changed, has to be confirmed again. If its type isn't set, set it in Wealthfolio first
 
 ### Security
 
