@@ -232,6 +232,85 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).isDisabled(), true);
+    // So it does when activities show display codes other than the funds' symbols: each fund goes by
+    // the symbol and exchange on its asset's profile.
+    const renameFunds = (prefix) => tab.frames()[1].evaluate((prefix) => {
+      for (const a of window.host.activities) if (a.assetId) a.assetSymbol = `${prefix}${a.symbol}`;
+    }, prefix);
+    await renameFunds("My ");
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    // A symbol-only match must have the import's type too, or new rows could reach another asset.
+    await tab.frames()[1].evaluate(() => {
+      const a = window.host.activities.find((a) => a.assetId);
+      window.host.assets[a.assetId] = { symbol: a.symbol, exchangeMic: a.exchangeMic, instrumentType: "METAL" };
+    });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
+    await tab.frames()[1].evaluate(() => { delete window.host.assets[window.host.activities.find((a) => a.assetId).assetId].instrumentType; });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/The type of .+ isn't set in Wealthfolio/).waitFor();
+    await tab.frames()[1].evaluate(() => { delete window.host.assets[window.host.activities.find((a) => a.assetId).assetId]; });
+    await renameFunds("");
+
+    // A profile failure stops a symbol-only match instead of offering the trade again.
+    await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = [window.host.activities.find((a) => a.assetId).assetId]; });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/Couldn't read a Wealthfolio asset's profile/).waitFor();
+    assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).count(), 0);
+    await tab.frames()[1].evaluate((symbol) => { window.host.failGetProfileIds = []; window.host.assets["chosen-fund"] = { symbol, exchangeMic: "XBOM" }; }, expected.folios[0].schemes[0].isin);
+    // Search lists an untyped asset as OTHER, but symbol-based imports cannot target it.
+    await firstFund.getByRole("button", { name: "Change", exact: true }).click();
+    await firstFund.getByLabel("Search for the fund").fill(expected.folios[0].schemes[0].isin);
+    await firstFund.getByLabel("Search for the fund").press("Enter");
+    await firstFund.getByRole("radio").first().dispatchEvent("click");
+    await firstFund.getByRole("button", { name: "Use this fund" }).click();
+    await firstFund.getByText("Confirmed").waitFor();
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/The type of .+ isn't set in Wealthfolio\. Set its type there/).waitFor();
+    assert.equal(await frame.getByText(/^\d+ new transactions, \d+ already in Wealthfolio/).count(), 0);
+    // Set its type and confirm it again, then change its identity and remove it entirely.
+    await tab.frames()[1].evaluate(() => { window.host.assets["chosen-fund"].instrumentType = "EQUITY"; });
+    await firstFund.getByRole("button", { name: "Change", exact: true }).click();
+    await firstFund.getByLabel("Search for the fund").fill(expected.folios[0].schemes[0].isin);
+    await firstFund.getByLabel("Search for the fund").press("Enter");
+    await firstFund.getByRole("radio").first().dispatchEvent("click");
+    await firstFund.getByRole("button", { name: "Use this fund" }).click();
+    await firstFund.getByText("Confirmed").waitFor();
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^\d+ new transactions, \d+ already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    assert.equal(await frame.getByText(/changed in Wealthfolio/).count(), 0);
+    await tab.frames()[1].evaluate(() => { window.host.assets["chosen-fund"].symbol = "B2"; });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
+    // A fresh confirmation of the same ID for another scheme cannot hide the stale one.
+    await byName.getByRole("button", { name: "Change", exact: true }).click();
+    await byName.getByLabel("Search for the fund").fill("B2");
+    await byName.getByLabel("Search for the fund").press("Enter");
+    await byName.getByRole("radio").first().dispatchEvent("click");
+    await byName.getByRole("button", { name: "Use this fund" }).click();
+    await byName.getByText("Confirmed").waitFor();
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
+    await byName.getByRole("button", { name: "Change", exact: true }).click();
+    await byName.getByLabel("Search for the fund").fill("Testbridge Corporate Bond Fund");
+    await byName.getByLabel("Search for the fund").press("Enter");
+    await byName.getByRole("radio").first().dispatchEvent("click");
+    await byName.getByRole("button", { name: "Use this fund" }).click();
+    await byName.getByText("Confirmed").waitFor();
+    await tab.frames()[1].evaluate((symbol) => { Object.assign(window.host.assets["chosen-fund"], { symbol, instrumentType: "METAL" }); }, expected.folios[0].schemes[0].isin);
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
+    await tab.frames()[1].evaluate(() => { delete window.host.assets["chosen-fund"]; });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/If the asset was deleted, choose its replacement under Funds/).waitFor();
+    // Reconfirm the original symbol-only choice for the remaining checks.
+    await firstFund.getByRole("button", { name: "Change", exact: true }).click();
+    await firstFund.getByLabel("Search for the fund").fill(expected.folios[0].schemes[0].isin);
+    await firstFund.getByLabel("Search for the fund").press("Enter");
+    await firstFund.getByRole("radio").first().dispatchEvent("click");
+    await firstFund.getByRole("button", { name: "Use this fund" }).click();
+    await firstFund.getByText("Confirmed").waitFor();
 
     // With a bank account chosen, the deposits and withdrawals imported before are the transactions' cash.
     const bankChoice = frame.getByLabel("Bank account for PAN ABCDE1234F");

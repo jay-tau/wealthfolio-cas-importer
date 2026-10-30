@@ -31,6 +31,11 @@ that an earlier import created, because an add-on can't create the fund before i
 Wealthfolio's CSV import does. A fund whose statement starts with units needs those units in
 Wealthfolio first, from an earlier statement or entered by hand.
 The units check counts posted account history; splits or option expiry in that history need review.
+Activities show an asset's display code, which can be changed, so rows and units go by the fund's
+asset ID, or for a fund confirmed without one, by the symbol and exchange on each asset's profile.
+When several assets have that symbol and exchange, the preview asks you to choose one under Funds.
+If a chosen asset was deleted or its symbol, exchange or type changed, confirm the fund again under Funds.
+If its type isn't set, set it in Wealthfolio before confirming it again.
 
 ### Bank account
 

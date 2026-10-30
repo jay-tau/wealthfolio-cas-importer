@@ -174,6 +174,8 @@ const stored = (row: ActivityImport, i: number) =>
     ...row,
     id: `activity-${host.activities.length + i}`,
     date: `${row.date}T00:00:00+00:00`,
+    // Wealthfolio finds or creates the row's asset by its symbol and exchange.
+    assetId: row.symbol ? assetId({ symbol: row.symbol, exchangeMic: row.exchangeMic, instrumentType: row.instrumentType } as SnapshotHoldingInput) : "",
     assetSymbol: row.symbol ?? "",
     status: "POSTED",
     fee: null,
@@ -213,7 +215,7 @@ const instrumentType = (type: string | undefined) => /^(EQUITY|STOCK|ETF|MUTUALF
 const assetId = (h: SnapshotHoldingInput) => h.assetId ?? Object.entries(host.assets).find(([, a]) =>
   a.symbol === h.symbol.toUpperCase() && a.exchangeMic === (h.exchangeMic ?? null) && (!h.instrumentType || instrumentType(a.instrumentType) === instrumentType(h.instrumentType)),
 )?.[0] ?? host.assetIds[h.symbol.toUpperCase()] ?? `asset-${h.symbol.toUpperCase()}`;
-const assetOf = (id: string): HostAsset => host.assets[id] ?? { symbol: id.replace(/^asset-/, "").toUpperCase(), exchangeMic: "XBOM" };
+const assetOf = (id: string): HostAsset => host.assets[id] ?? { symbol: id.replace(/^asset-/, "").toUpperCase(), exchangeMic: "XBOM", instrumentType: "EQUITY" };
 
 // Wealthfolio keeps assets after their last holding is removed; materialize implicit fixture assets.
 const knownAssets = () => {
@@ -327,7 +329,8 @@ const api = {
   assets: {
     getProfile: async (id: string) => {
       if (host.failGetProfileIds.includes(id)) throw new Error("Profile unavailable");
-      const a = knownAssets().get(id);
+      // An activity's asset exists too, whether or not a holding lists it.
+      const a = knownAssets().get(id) ?? (host.activities.some((x) => x.assetId === id) ? assetOf(id) : undefined);
       if (!a) throw new Error("Asset not found");
       return { id, ...a, instrumentSymbol: a.symbol, instrumentExchangeMic: a.exchangeMic, quoteMode: host.pricingModes[a.symbol] ?? "MARKET", kind: a.kind ?? "INVESTMENT", quoteCcy: a.quoteCcy ?? "INR" };
     },

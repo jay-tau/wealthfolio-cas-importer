@@ -31,6 +31,7 @@ import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } f
 import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
 import { type Checked, UnitsCheckCard } from "../components/units-check";
 import { holdingKey, LEFT_OUT, readImported, saveImported, sourceKey } from "../lib/choices";
+import { instrumentType } from "../lib/instrument-type";
 
 type Api = AddonContext["api"];
 type HostInstrument = NonNullable<Holding["instrument"]> & {
@@ -40,16 +41,6 @@ type HostInstrument = NonNullable<Holding["instrument"]> & {
 };
 const isManual = (instrument: HostInstrument) => (instrument.pricingMode ?? instrument.quoteMode) === "MANUAL";
 
-// Wealthfolio stores canonical types, while remembered provider results can use aliases.
-const instrumentType = (value: string) => {
-  const type = value.trim().toUpperCase();
-  if (/^(STOCK|ETF|MUTUAL[_ ]?FUND|INDEX|ECNQUOTE|FUTURES?)$/.test(type)) return "EQUITY";
-  if (type === "CRYPTOCURRENCY") return "CRYPTO";
-  if (/^(FOREX|CURRENCY)$/.test(type)) return "FX";
-  if (type === "COMMODITY") return "METAL";
-  if (/^(FIXED_?INCOME|DEBT|MONEYMARKET)$/.test(type)) return "BOND";
-  return type;
-};
 
 const NOUNS: Record<HoldingKind, FundItem["noun"]> = { fund: "fund", share: "share", bond: "bond", nps: "NPS scheme" };
 

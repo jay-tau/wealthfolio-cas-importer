@@ -108,14 +108,51 @@ function cashIdentities(row: ActivityImport) {
   ];
 }
 
-const activityIdentity = (a: ActivityDetails) =>
-  identity(a.accountId, a.activityType, a.date, a.assetSymbol?.trim() ? fundRef(a.assetSymbol, a.exchangeMic) : "", a);
+/**
+ * Asset ID → `fundRef` of the confirmed fund the asset is. Activities show an asset's display code,
+ * which the user can change, so a fund chosen with an asset ID goes by that ID, and one without by
+ * the symbol and exchange on each asset's profile, as `checkUnits` does.
+ */
+export type FundRefs = ReadonlyMap<string, string>;
+
+/**
+ * `FundRefs` for the confirmed funds. `profiles` has `fundRef` of the symbol and exchange on each
+ * profile of the activities' assets. Throws when one import key resolves to several assets.
+ */
+export function fundRefs(funds: (FundAsset & { assetId?: string; name?: string })[], profiles: ReadonlyMap<string, string>) {
+  const refs = new Map<string, string>();
+  const found = new Map<string, string>();
+  const add = (id: string, ref: string, fund: (typeof funds)[number]) => {
+    if (found.has(ref) && found.get(ref) !== id) {
+      const symbol = [fund.symbol, fund.exchangeMic].filter(Boolean).join(" on ");
+      throw new Error(
+        `Several Wealthfolio assets have the symbol and exchange of ${fund.name ?? symbol} (${symbol}). Under Funds, choose Change, search for ${fund.symbol} and pick the asset to import into.`,
+      );
+    }
+    found.set(ref, id);
+    refs.set(id, ref);
+  };
+  for (const f of funds) if (f.assetId) add(f.assetId, fundRef(f.symbol, f.exchangeMic), f);
+  const byProfile = new Map(funds.filter((f) => !f.assetId).map((f) => [fundRef(f.symbol, f.exchangeMic), f]));
+  for (const [id, ref] of profiles) {
+    const fund = byProfile.get(ref);
+    if (fund) add(id, ref, fund);
+  }
+  return refs;
+}
+
+/** Undefined for an activity of an asset that isn't a confirmed fund. */
+function activityIdentity(a: ActivityDetails, funds: FundRefs) {
+  const fund = a.assetId ? funds.get(a.assetId) : "";
+  return fund === undefined ? undefined : identity(a.accountId, a.activityType, a.date, fund, a);
+}
 
 /** Wealthfolio's activities by identity. */
-export function indexActivities(existing: ActivityDetails[]) {
+export function indexActivities(existing: ActivityDetails[], funds: FundRefs) {
   const index = new Map<string, string[]>();
   for (const activity of existing) {
-    const key = activityIdentity(activity);
+    const key = activityIdentity(activity, funds);
+    if (key === undefined) continue;
     index.set(key, [...(index.get(key) ?? []), activity.id]);
   }
   return {
@@ -129,8 +166,13 @@ const messages = (record: Record<string, string[]> | undefined, skip?: string) =
   Object.entries(record ?? {}).flatMap(([field, list]) => (field === skip ? [] : list));
 
 /** `checked` is checkImport's answer for `rowsOf(mapping)`. */
-export function planImport(mapping: Mapping, existing: ActivityDetails[], checked: ActivityImport[]): PlannedTransaction[] {
-  const available = indexActivities(existing).index;
+export function planImport(
+  mapping: Mapping,
+  existing: ActivityDetails[],
+  checked: ActivityImport[],
+  funds: FundRefs,
+): PlannedTransaction[] {
+  const available = indexActivities(existing, funds).index;
   const seen = new Map<string, number>();
   let position = 0;
   return mapping.transactions.map((transaction) => {
@@ -311,10 +353,11 @@ export function unitsHeld(
   activities: ActivityDetails[],
   accountId: string,
   asset: Pick<FundAsset, "symbol" | "exchangeMic">,
+  funds: FundRefs,
   range: (day: string) => boolean,
 ) {
   const ref = fundRef(asset.symbol, asset.exchangeMic);
-  return countUnits(activities.filter((a) => a.accountId === accountId && a.assetSymbol && fundRef(a.assetSymbol, a.exchangeMic) === ref), range);
+  return countUnits(activities.filter((a) => a.accountId === accountId && a.assetId && funds.get(a.assetId) === ref), range);
 }
 
 /** `unitsHeld` for activities already narrowed to one asset in one account. */
@@ -366,22 +409,22 @@ function byFund(data: CasData, target: Target) {
 const sum = (values: string[]) => values.reduce((total, v) => add(total, dec(v)), dec("0"));
 
 /** Opening units against what Wealthfolio holds before the statement starts. */
-export function openingUnits(data: CasData, target: Target, activities: ActivityDetails[]): FundUnits[] {
+export function openingUnits(data: CasData, target: Target, activities: ActivityDetails[], funds: FundRefs): FundUnits[] {
   const from = statementDay(data.statement_period.from);
   return byFund(data, target).map((f) => ({
     ...f,
     statement: sum(f.schemes.map((s) => s.open)),
-    held: unitsHeld(activities, f.accountId, f.asset, (d) => d < from),
+    held: unitsHeld(activities, f.accountId, f.asset, funds, (d) => d < from),
   }));
 }
 
 /** Closing units against what Wealthfolio holds at the statement's end. */
-export function closingUnits(data: CasData, target: Target, activities: ActivityDetails[]): FundUnits[] {
+export function closingUnits(data: CasData, target: Target, activities: ActivityDetails[], funds: FundRefs): FundUnits[] {
   const to = statementDay(data.statement_period.to);
   return byFund(data, target).map((f) => ({
     ...f,
     statement: sum(f.schemes.map((s) => s.close)),
-    held: unitsHeld(activities, f.accountId, f.asset, (d) => d <= to),
+    held: unitsHeld(activities, f.accountId, f.asset, funds, (d) => d <= to),
   }));
 }
 

@@ -9,6 +9,8 @@ import {
   bankCandidates,
   bankMatches,
   closingUnits,
+  fundRef,
+  fundRefs,
   type FundUnits,
   importRows,
   indexActivities,
@@ -43,6 +45,7 @@ import {
   saveFund,
   sourceKey,
 } from "../lib/choices";
+import { instrumentType } from "../lib/instrument-type";
 import { HoldingsImport, holdingItems } from "./holdings-import";
 
 interface Previewed {
@@ -144,6 +147,46 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       ) ?? [],
     ),
   ];
+
+  // Which confirmed fund each asset of `activities` is. A fund without an asset ID goes by the symbol
+  // and exchange on each asset's profile; one with an ID needs its asset to still have the symbol,
+  // exchange and type its rows are imported with. Either match needs the import's type.
+  const fundsIn = async (activities: ActivityDetails[]) => {
+    const targets = data?.folios.flatMap((f) => f.schemes.flatMap((s) => target(f, s) ?? [])) ?? [];
+    const funds = targets.map((t) => t.asset);
+    const accounts = new Set(targets.map((t) => t.accountId));
+    const ids = new Set(funds.flatMap((f) => f.assetId ? [f.assetId] : []));
+    if (funds.some((f) => !f.assetId)) {
+      for (const a of activities) if (a.assetId && accounts.has(a.accountId)) ids.add(a.assetId);
+    }
+    const profiles = new Map(await Promise.all(
+      [...ids].map(async (id) => {
+        try {
+          const profile = await api.assets.getProfile(id);
+          return [id, profile] as const;
+        } catch (e) {
+          throw new Error(`Couldn't read a Wealthfolio asset's profile: ${String(e)}. Try the preview again. If the asset was deleted, choose its replacement under Funds.`);
+        }
+      }),
+    ));
+    const refs = fundRefs(funds, new Map([...profiles].map(([id, p]) => [id, fundRef(p.instrumentSymbol ?? "", p.instrumentExchangeMic)])));
+    const byFund = new Map([...refs].map(([id, ref]) => [ref, id]));
+    for (const f of funds) {
+      const id = f.assetId || byFund.get(fundRef(f.symbol, f.exchangeMic));
+      if (!id) continue;
+      const profile = profiles.get(id)!;
+      if (!profile.instrumentType) {
+        throw new Error(`The type of ${f.name} isn't set in Wealthfolio. Set its type there, then under Funds choose Change and confirm the fund again.`);
+      }
+      if (
+        fundRef(profile.instrumentSymbol ?? "", profile.instrumentExchangeMic) !== fundRef(f.symbol, f.exchangeMic) ||
+        instrumentType(profile.instrumentType) !== instrumentType(f.instrumentType)
+      ) {
+        throw new Error(`The symbol, exchange or type of ${f.name} changed in Wealthfolio. Under Funds, choose Change and confirm the fund again.`);
+      }
+    }
+    return refs;
+  };
 
   const clear = () => {
     setStatement(null);
@@ -255,9 +298,10 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     setImported(null);
     try {
       const existing = (await Promise.all(accountIds().map((id) => api.activities.getAll(id)))).flat();
+      const funds = await fundsIn(existing);
       // A fund that starts with units needs Wealthfolio to hold exactly those before the statement.
       const covered = new Set(
-        openingUnits(data, target, existing)
+        openingUnits(data, target, existing, funds)
           .filter(sameUnits)
           .flatMap((f) => f.schemes),
       );
@@ -270,11 +314,11 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
             importUnbalanced: importUnbalanced.has(schemeKey(folio.folio, scheme.scheme)),
           };
         },
-        alreadyImported: indexActivities(existing).has,
+        alreadyImported: indexActivities(existing, funds).has,
       });
       const rows = rowsOf(mapping);
       const checked = rows.length ? await api.activities.checkImport(rows) : [];
-      const plan = planImport(mapping, existing, checked);
+      const plan = planImport(mapping, existing, checked, funds);
       // A bank transfer already linked to another can't be reused.
       const transfers = new Set(
         plan.flatMap((t) => bankCandidates(t, existing)).flatMap((a) => (a.activityType.startsWith("TRANSFER") ? [a.id] : [])),
@@ -331,7 +375,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       api.query.invalidateQueries([QueryKeys.ACTIVITIES]);
       try {
         const after = (await Promise.all(accountIds().map((id) => api.activities.getAll(id)))).flat();
-        setImported({ result, sent, closing: closingUnits(data, target, after), links });
+        setImported({ result, sent, closing: closingUnits(data, target, after, await fundsIn(after)), links });
       } catch {
         setError("The import finished, but the closing units couldn't be checked. Check the holdings in Wealthfolio.");
       }
