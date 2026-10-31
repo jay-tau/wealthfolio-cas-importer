@@ -393,7 +393,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   return (
     <Page>
       <PageHeader
-        heading="CAS Importer"
+        heading="CAS Importer (India)"
         text="Import a CAMS, KFintech, NSDL or CDSL statement (CAS PDF). The PDF is read on this device."
       />
       <PageContent>
