@@ -26,6 +26,7 @@ import type { DematAccount } from "../../src/cas/types";
 
 interface HostAsset {
   symbol: string;
+  instrumentSymbol?: string | null;
   exchangeMic: string | null;
   instrumentType?: string;
   name?: string | null;
@@ -262,7 +263,7 @@ const api = {
       if (date) return snapshotHoldings(accountId, date);
       return (host.held[accountId] ?? []).map((symbol) => ({
         holdingType: "security",
-        instrument: { id: `asset-${symbol}`, symbol, exchangeMic: "XBOM", quoteMode: host.pricingModes[symbol] ?? "MARKET" },
+        instrument: { id: `asset-${symbol}`, symbol: host.assets[`asset-${symbol}`]?.displayCode ?? symbol, exchangeMic: "XBOM", quoteMode: host.pricingModes[symbol] ?? "MARKET" },
         quantity: 10,
       }));
     },
@@ -332,7 +333,7 @@ const api = {
       // An activity's asset exists too, whether or not a holding lists it.
       const a = knownAssets().get(id) ?? (host.activities.some((x) => x.assetId === id) ? assetOf(id) : undefined);
       if (!a) throw new Error("Asset not found");
-      return { id, ...a, instrumentSymbol: a.symbol, instrumentExchangeMic: a.exchangeMic, quoteMode: host.pricingModes[a.symbol] ?? "MARKET", kind: a.kind ?? "INVESTMENT", quoteCcy: a.quoteCcy ?? "INR" };
+      return { id, ...a, instrumentSymbol: a.instrumentSymbol !== undefined ? a.instrumentSymbol : a.symbol, instrumentExchangeMic: a.exchangeMic, quoteMode: host.pricingModes[a.symbol] ?? "MARKET", kind: a.kind ?? "INVESTMENT", quoteCcy: a.quoteCcy ?? "INR" };
     },
     // Like Wealthfolio, fields left out are cleared and the pricing mode goes back to market.
     updateProfile: async (payload: { id: string; name?: string | null; displayCode?: string | null; notes: string; kind?: string; quoteMode?: string; quoteCcy?: string; instrumentExchangeMic?: string | null; providerConfig?: unknown; metadata?: unknown }) => {

@@ -156,7 +156,9 @@ For a statement-price or other manual-priced choice, the add-on also searches fo
 asset and reads its profile. An existing market-priced asset keeps market pricing, even if no
 account holds it. If that lookup fails for a choice that would use manual prices, the preview
 stops. A known manually priced asset must also be found before saving, so its existing quote can
-be kept. Try the preview again.
+be kept. Holdings show an asset's display code, which can be changed, so the account's holdings and
+other accounts' go by the symbol and exchange on each asset's profile, and the preview stops when a
+profile can't be read. Try the preview again.
 
 Wealthfolio counts units added or removed between two snapshots as money put in or taken out, at
 the later snapshot's prices.

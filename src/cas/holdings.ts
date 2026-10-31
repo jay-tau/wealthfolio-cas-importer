@@ -429,7 +429,7 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
       // A remembered statement-price choice can predate a corrected statement name.
       const asset = chosen.statementPrices ? { ...chosen, name: holding.name } : chosen;
       const ref = fundRef(asset.symbol, asset.exchangeMic);
-      // The host's holding symbol can be a custom display code. A resolved asset ID wins.
+      // A resolved asset ID wins over the symbol and exchange.
       const existing = plan.existing.positions.find((p) => asset.assetId ? p.assetId === asset.assetId : p.ref === ref);
       if (existing && existing.ref !== ref && !plan.byRef.get(existing.ref)?.lines.length) plan.byRef.delete(existing.ref);
       const overlap = source.kind === "folio" && input.heldElsewhere(ref, accountId).some((o) => o.tracksTransactions);
