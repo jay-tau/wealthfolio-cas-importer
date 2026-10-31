@@ -1024,6 +1024,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.held["archived-1"] = ["INFZ90K01LQ6"];
       window.host.pricingModes.INFZ90K01LQ6 = "MANUAL";
     });
+    // Holdings show an asset's display code, which the user can change, so each is matched by the
+    // symbol and exchange on its asset's profile: other accounts' holdings and pricing modes, and an
+    // existing bond that the save finds for a choice without an asset ID. Restored after the save.
+    const renamed = ["asset-INFZ90K01LQ6", "asset-INFZ90K01FC8", "asset-INEZ90B01015", "older-fund-012", "asset-INEZ93A08016"];
+    await hosted((renamed) => {
+      window.host.assets["asset-INEZ93A08016"] = { symbol: "INEZ93A08016", exchangeMic: null, instrumentType: "BOND", name: "Democorp Infra 7.60% 2033" };
+      for (const id of renamed) {
+        const symbol = id.replace(/^asset-/, "");
+        const asset = window.host.assets[id] ?? { symbol, exchangeMic: "XBOM", instrumentType: "EQUITY", name: `Fund ${symbol}` };
+        window.host.assets[id] = { ...asset, displayCode: `MY ${asset.symbol}` };
+      }
+    }, renamed);
     await preview.click();
     const demat = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-03-31" });
     const folios = frame.locator("section").filter({ hasText: "Fund folios: snapshot of 2025-03-31" });
@@ -1145,6 +1157,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ],
     );
     assert.equal(funds.holdings.find((h) => h.symbol === "GILT").averageCost, "100");
+    await hosted((renamed) => { for (const id of renamed) window.host.assets[id].displayCode = window.host.assets[id].symbol; }, renamed);
 
     // Leaving a still-listed fund out keeps both its units and the earlier import's provenance.
     await leaveOut(frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" }));
@@ -1157,8 +1170,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
 
     // Once that fund is no longer listed, the remembered import still removes it by default.
-    // Replacing a snapshot on the same date needs confirming; Wealthfolio's cost carries over.
-    await hosted(() => { window.host.soldIsins = ["INFZ90K01LQ6"]; });
+    // Replacing a snapshot on the same date needs confirming; Wealthfolio's cost carries over, also
+    // to a holding whose display code was changed.
+    await hosted(() => {
+      window.host.soldIsins = ["INFZ90K01LQ6"];
+      window.host.assets["asset-INEZ90A01017"].displayCode = "MY SHARE";
+    });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 16 holdings.").waitFor({ timeout: 180_000 });
     await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
@@ -1169,6 +1186,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await sold.getByText("Removed", { exact: true }).count(), 1);
     assert.equal(await demat.getByLabel("Total cost of Fund INEZ90A01017").inputValue(), "185175");
     await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText("From the account's average cost in Wealthfolio").waitFor();
+    assert.equal(await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).count(), 1);
     assert.equal(await save.isDisabled(), true);
     await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
     await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
@@ -1179,6 +1197,25 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ["asset-gilt", "asset-INFZ90K01BA1"],
     );
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, "1234.5");
+    await hosted(() => { window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90A01017"; });
+    // A resolved choice still supplies its symbol when its profile has none, even when the display
+    // code matches another asset's symbol. Restore the remembered choice before the next read.
+    const shareChoiceBefore = (await storage())["isin:INEZ90A01017"];
+    const shareChoice = frame.locator("section").filter({ hasText: "ISIN INEZ90A01017" });
+    await shareChoice.getByRole("button", { name: "Change", exact: true }).click();
+    await shareChoice.getByRole("button", { name: "Use this share", exact: true }).click();
+    await hosted(() => {
+      window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90C01021";
+      window.host.assets["asset-INEZ90A01017"].instrumentSymbol = null;
+    });
+    await preview.click();
+    assert.equal(await demat.getByLabel("Total cost of Fund INEZ90A01017").inputValue(), "185175");
+    assert.equal(await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).count(), 1);
+    await hosted((choice) => {
+      window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90A01017";
+      delete window.host.assets["asset-INEZ90A01017"].instrumentSymbol;
+      window.host.storage.set("isin:INEZ90A01017", choice);
+    }, shareChoiceBefore);
     // An empty demat account still reconciles its sold holdings. After saving, a manual-priced
     // holding on the statement gets its printed price, and a kept one the price it had, not their
     // average costs.
@@ -1473,7 +1510,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }, failure);
       const saves = await hosted(() => window.host.saves.length);
       await preview.click();
-      await frame.getByText(/Couldn't verify pricing for/).waitFor();
+      // The other account's holding can't be matched without its profile, so that stops the preview first.
+      await frame.getByText(failure === "profile" ? /Couldn't read the Wealthfolio profile of My pension: .+ Try the preview again\./ : /Couldn't verify pricing for/).waitFor();
       assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
       assert.equal(await hosted(() => window.host.saves.length), saves);
       assert.equal(await hosted(() => window.host.quotes["pension-created-007"][0].notes), "Keep the other account's quote notes");
@@ -1627,6 +1665,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await preview.click();
     const continuedNps = frame.locator("section").filter({ hasText: "Fund folios: snapshot of 2025-05-31" });
     await continuedNps.getByLabel("Total cost of NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I").fill("100");
+    // A profile can fail after preview; the readable scheme still gets its price and details.
+    await hosted(() => { window.host.failGetProfileIds = ["pension-g-009"]; });
     await frame.getByRole("button", { name: "Save 2 snapshots", exact: true }).click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     await frame.getByText("Wealthfolio didn't save these snapshots", { exact: true }).waitFor();
@@ -1644,7 +1684,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(partial.assets["pension-c-010"].metadata.casStatement.assetClass, "E");
 
     // Re-importing retries each incomplete write and reuses the already-created assets.
-    await hosted(() => { window.host.failSnapshotAccounts = []; window.host.failQuoteIds = []; window.host.failProfileIds = []; });
+    await hosted(() => { window.host.failSnapshotAccounts = []; window.host.failQuoteIds = []; window.host.failProfileIds = []; window.host.failGetProfileIds = []; });
     await readHoldingsAgain();
     await preview.click();
     await continuedNps.getByRole("checkbox", { name: "Replace the snapshot of 2025-05-31" }).dispatchEvent("click");
