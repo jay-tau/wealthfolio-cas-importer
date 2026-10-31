@@ -1,4 +1,4 @@
-import type { Account, ActivityDetails, AddonContext, Holding, Quote, UpdateAssetProfile } from "@wealthfolio/addon-sdk";
+import type { Account, ActivityDetails, AddonContext, Asset, Holding, Quote, UpdateAssetProfile } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Spinner } from "@wealthfolio/ui";
 import { useState } from "react";
@@ -15,6 +15,7 @@ import {
   keepsDetails,
   type LeftOutLine,
   type OtherAccount,
+  type PlannedPosition,
   planSnapshots,
   pricesToSave,
   snapshotOf,
@@ -41,6 +42,32 @@ type HostInstrument = NonNullable<Holding["instrument"]> & {
 };
 const isManual = (instrument: HostInstrument) => (instrument.pricingMode ?? instrument.quoteMode) === "MANUAL";
 
+type Profiles = (assetId: string) => Promise<Asset>;
+/** Reads each asset's profile once. */
+const profiles = (api: Api): Profiles => {
+  const read = new Map<string, Promise<Asset>>();
+  return (id) => {
+    if (!read.has(id)) read.set(id, api.assets.getProfile(id));
+    return read.get(id)!;
+  };
+};
+
+/**
+ * Asset ID → `fundRef` of the symbol and exchange on its profile, for each security of `holdings`.
+ * A holding shows its asset's display code, which the user can change.
+ */
+async function refsOf(profileOf: Profiles, holdings: Holding[]) {
+  const instruments = holdings.flatMap((h) => (h.holdingType !== "cash" && h.instrument?.id ? [h.instrument as HostInstrument] : []));
+  return new Map(await Promise.all(instruments.map(async (instrument) => {
+    let asset: Asset;
+    try {
+      asset = await profileOf(instrument.id);
+    } catch (e) {
+      throw new Error(`Couldn't read the Wealthfolio profile of ${instrument.name || instrument.symbol}: ${String(e)}. Try the preview again.`);
+    }
+    return [instrument.id, fundRef(asset.instrumentSymbol || instrument.symbol, asset.instrumentExchangeMic)] as const;
+  })));
+}
 
 const NOUNS: Record<HoldingKind, FundItem["noun"]> = { fund: "fund", share: "share", bond: "bond", nps: "NPS scheme" };
 
@@ -78,13 +105,15 @@ async function snapshotDates(api: Api, accountId: string, holdings = true) {
 }
 
 /** The account's latest snapshot on or before `date`, as `planSnapshots` reads it. */
-async function readExisting(api: Api, accountId: string, date: string): Promise<ExistingSnapshot> {
+async function readExisting(api: Api, profileOf: Profiles, accountId: string, date: string): Promise<ExistingSnapshot> {
   const dates = await snapshotDates(api, accountId);
   const base = dates.filter((d) => d <= date).pop() ?? null;
   const later = dates.filter((d) => d > date);
   if (!base) return { date: null, positions: [], cash: {}, later };
   const existing: ExistingSnapshot = { date: base, positions: [], cash: {}, later };
-  for (const h of await api.snapshots.getByDate(accountId, base)) {
+  const holdings = await api.snapshots.getByDate(accountId, base);
+  const refs = await refsOf(profileOf, holdings);
+  for (const h of holdings) {
     if (h.holdingType === "cash") {
       existing.cash[h.localCurrency] = text(h.quantity);
       continue;
@@ -96,7 +125,7 @@ async function readExisting(api: Api, accountId: string, date: string): Promise<
     existing.positions.push({
       assetId: instrument.id,
       symbol: instrument.symbol,
-      ref: fundRef(instrument.symbol, instrument.exchangeMic),
+      ref: refs.get(instrument.id)!,
       name: instrument.name || instrument.symbol,
       units: text(h.quantity),
       cost: cost !== 0 ? text(h.costBasis!.local) : null,
@@ -150,14 +179,22 @@ async function afterSave(api: Api, plan: AccountPlan, chosen: Choices, listed: R
   const prices = pricesToSave(plan, chosen, listed);
   const described = snapshotSaved ? plan.positions.filter((p) => p.lines.length && included(p, chosen) && keepsDetails(p)) : [];
   if (!prices.length && !described.length) return unfinished;
+  const idOf = (p: PlannedPosition) => p.existing?.assetId ?? p.asset?.assetId;
+  // An asset the save created or found: `fundRef` → ID.
   const ids = new Map<string, string>();
-  try {
-    for (const h of await api.snapshots.getByDate(plan.accountId, plan.date)) {
-      const instrument = h.instrument as HostInstrument | null | undefined;
-      if (instrument?.id && instrument.symbol) ids.set(fundRef(instrument.symbol, instrument.exchangeMic), instrument.id);
+  if (prices.some((p) => !p.assetId) || described.some((p) => !idOf(p))) {
+    try {
+      const profileOf = profiles(api);
+      await Promise.all((await api.snapshots.getByDate(plan.accountId, plan.date)).map(async (h) => {
+        try {
+          for (const [id, ref] of await refsOf(profileOf, [h])) ids.set(ref, id);
+        } catch {
+          // Keep readable assets' IDs; each unresolved holding below is reported.
+        }
+      }));
+    } catch {
+      // Each holding below is reported.
     }
-  } catch {
-    // Each holding below is reported.
   }
   for (const p of prices) {
     const assetId = p.assetId ?? ids.get(p.ref);
@@ -180,7 +217,7 @@ async function afterSave(api: Api, plan: AccountPlan, chosen: Choices, listed: R
     }
   }
   for (const position of described) {
-    const assetId = position.existing?.assetId ?? position.asset?.assetId ?? ids.get(position.ref);
+    const assetId = idOf(position) ?? ids.get(position.ref);
     try {
       if (!assetId) throw new Error("not in the saved snapshot");
       const profile = await api.assets.getProfile(assetId);
@@ -207,7 +244,7 @@ async function afterSave(api: Api, plan: AccountPlan, chosen: Choices, listed: R
 }
 
 /** Which accounts hold each asset now: `fundRef` → accounts. */
-async function holders(api: Api, accounts: Account[]) {
+async function holders(api: Api, profileOf: Profiles, accounts: Account[]) {
   const held = new Map<string, (OtherAccount & { id: string })[]>();
   const modes = new Map<string, boolean>();
   await Promise.all(
@@ -218,10 +255,11 @@ async function holders(api: Api, accounts: Account[]) {
         const date = (await snapshotDates(api, account.id, account.trackingMode === "HOLDINGS")).pop();
         positions = date ? await api.snapshots.getByDate(account.id, date) : [];
       }
+      const refs = await refsOf(profileOf, positions);
       for (const h of positions) {
         const instrument = h.instrument as HostInstrument | null | undefined;
-        if (h.holdingType === "cash" || !instrument?.symbol) continue;
-        const ref = fundRef(instrument.symbol, instrument.exchangeMic);
+        const ref = instrument && refs.get(instrument.id);
+        if (!ref) continue;
         const mode = instrument.pricingMode ?? instrument.quoteMode;
         if (mode) modes.set(ref, modes.get(ref) === true || mode === "MANUAL");
         const quantity = Number(h.quantity);
@@ -340,9 +378,10 @@ export function HoldingsImport({
         return accountId ? [{ source, accountId }] : [];
       });
       const ids = [...new Set(bySource.map((s) => s.accountId))];
+      const profileOf = profiles(api);
       const [existing, { held, modes }] = await Promise.all([
-        Promise.all(ids.map(async (id) => [id, await readExisting(api, id, holdings.date)] as const)).then((e) => new Map(e)),
-        holders(api, allAccounts),
+        Promise.all(ids.map(async (id) => [id, await readExisting(api, profileOf, id, holdings.date)] as const)).then((e) => new Map(e)),
+        holders(api, profileOf, allAccounts),
       ]);
       const resolved = new Map<string, { assetId: string; symbol: string; exchangeMic?: string; manual: boolean }>();
       const assets = new Map(bySource.flatMap(({ source }) => source.holdings.flatMap((h) => {
@@ -365,7 +404,7 @@ export function HoldingsImport({
           if (!assetId && modes.get(ref)) throw new Error("Existing manual asset not found");
           if (!assetId) return;
           // Throws for an asset deleted since it was chosen.
-          const profile = await api.assets.getProfile(assetId);
+          const profile = await profileOf(assetId);
           const current = {
             assetId, symbol: profile.instrumentSymbol || asset.symbol, exchangeMic: profile.instrumentExchangeMic ?? undefined,
             manual: profile.quoteMode === "MANUAL",
