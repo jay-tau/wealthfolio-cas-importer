@@ -1,7 +1,18 @@
 // The name searched when a fund's printed ISIN finds nothing.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { fundName } from "../src/lib/fund-name.ts";
+
+test("detailed CAMS and KFintech schemes keep their search names", async () => {
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
+  const schemes = data.folios.flatMap((f) => f.schemes);
+  assert.deepEqual([...new Set(schemes.map((s) => s.rta))], ["CAMS", "KFINTECH"]);
+  assert.deepEqual(schemes.map((s) => fundName(s.scheme)), [
+    "Fictiva Flexi Cap Fund", "Fictiva Liquid Fund", "Fictiva Balanced Advantage Fund", "Fictiva Midcap Fund",
+    "Testbridge Corporate Bond Fund", "Testbridge Overnight Fund", "Testbridge Gilt Fund",
+  ]);
+});
 
 test("keeps the name before the plan and option", () => {
   assert.equal(fundName("Fictiva Flexi Cap Fund - Direct Plan - Growth"), "Fictiva Flexi Cap Fund");

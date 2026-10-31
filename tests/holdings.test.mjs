@@ -21,6 +21,7 @@ import {
   validCost,
 } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
+import { fundName } from "../src/lib/fund-name.ts";
 
 const fixture = async (name) => JSON.parse(await readFile(`tests/fixtures/${name}.json`, "utf8"));
 
@@ -675,6 +676,70 @@ test("funds and shares the search can't find can be priced from statements", asy
   });
   assert.deepEqual(snapshotOf(again, noChoices).holdings.map((h) => [h.assetId, h.dataSource]), [["fund-001", undefined]]);
   assert.deepEqual(pricesToSave(again, noChoices).map((p) => [p.assetId, p.price]), [["fund-001", "80"]]);
+});
+
+test("a CDSL statement's folio funds are searched and named without the printed scheme code", async () => {
+  const data = await fixture("made-up-cdsl");
+  const cdsl = readHoldings(data);
+  const folios = cdsl.sources.filter((s) => s.kind === "folio");
+  const funds = folios.flatMap((s) => s.holdings);
+  // The searched name, and the printed name kept in the details.
+  assert.deepEqual(funds.map((h) => [h.name, fundName(h.name), h.details.name]), [
+    ["Fictiva Flexi Cap Fund - Direct Plan - Growth", "Fictiva Flexi Cap Fund", "FFCDG - Fictiva Flexi Cap Fund - Direct Plan - Growth"],
+    ["Fictiva Midcap Fund - Direct Plan - Growth", "Fictiva Midcap Fund", "FMCDG - Fictiva Midcap Fund - Direct Plan - Growth"],
+    ["Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout", "Testbridge Corporate Bond Fund", "TCBRP - Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout"],
+    ["Testbridge Gilt Fund - Direct Plan - Growth", "Testbridge Gilt Fund", "TGLDG - Testbridge Gilt Fund - Direct Plan - Growth"],
+  ]);
+  // A new asset uses the scheme name, even with a choice remembered before this fix.
+  const remembered = (h) => ({ ...statementAsset(h), name: h.details.name });
+  for (const asset of [statementAsset, remembered]) {
+    const [account] = plan({ ...cdsl, sources: folios }, { asset });
+    assert.deepEqual(account.positions.map((p) => p.name), funds.map((h) => h.name));
+    assert.deepEqual(snapshotOf(account, noChoices).holdings.map((h) => [h.symbol, h.name]), funds.map((h) => [h.isin, h.name]));
+  }
+  for (const h of funds) assert.equal(assetDetails(h, {}, "EQUITY").casStatement.name, h.details.name);
+
+  // Existing coded assets are reused by identity, without sending a replacement name.
+  const [again] = plan({ ...cdsl, sources: folios }, {
+    asset: remembered,
+    existing: () => ({ ...none, positions: funds.map((h) => ({
+      assetId: h.isin, symbol: h.isin, ref: fundRef(h.isin), name: h.details.name, units: h.units, cost: h.cost, currency: "INR", manual: true,
+    })) }),
+  });
+  assert.deepEqual(snapshotOf(again, noChoices).holdings.map((h) => [h.assetId, h.name]), funds.map((h) => [h.isin, undefined]));
+
+  // Other statements, and CDSL demat accounts, keep their names as printed, even ones that look coded.
+  const coded = (name) => `ABC12 - ${name}`;
+  for (const f of data.accounts.flatMap((a) => a.mutual_funds)) f.name = coded(f.name);
+  const nsdl = await fixture("made-up-nsdl");
+  for (const f of nsdl.accounts.flatMap((a) => a.mutual_funds)) f.name = coded(f.name);
+  const summaries = await Promise.all(["made-up-summary-cams", "made-up-summary-kfintech"].map(fixture));
+  for (const s of summaries.flatMap((d) => d.folios.flatMap((f) => f.schemes))) s.scheme = coded(s.scheme);
+  const kept = (statement, keep = () => true) => readHoldings(statement).sources.filter(keep).flatMap((s) => s.holdings).filter((h) => h.kind === "fund");
+  const unchanged = [...kept(data, (s) => s.kind === "demat"), ...kept(nsdl), ...summaries.flatMap((d) => kept(d))];
+  assert.equal(unchanged.length, 20);
+  for (const h of unchanged) assert.equal(h.name, h.details.name);
+  for (const h of unchanged) assert.match(h.name, /^ABC12 - /);
+});
+
+test("CDSL folio scheme codes can contain digits and leave the rest of the name intact", async () => {
+  const data = await fixture("made-up-cdsl");
+  const folio = data.accounts.find((a) => a.type === "Mutual Fund Folios");
+  const fund = folio.mutual_funds[0];
+  data.accounts = [folio];
+  folio.mutual_funds = [fund];
+  for (const [printed, expected] of [
+    ["  AB12\t- Fictiva Multi-Asset Fund - Direct Plan - Growth", "Fictiva Multi-Asset Fund - Direct Plan - Growth"],
+    ["123-Fictiva Midcap Fund", "Fictiva Midcap Fund"],
+    ["Fictiva Multi-Asset Fund - Direct Plan - Growth", "Fictiva Multi-Asset Fund - Direct Plan - Growth"],
+    ["AB12 - ", "AB12 - "],
+    [null, fund.isin],
+  ]) {
+    fund.name = printed;
+    const holding = readHoldings(data).sources[0].holdings[0];
+    assert.equal(holding.name, expected);
+    assert.equal(holding.details.name, printed ?? undefined);
+  }
 });
 
 test("npsSymbol builds one symbol per scheme from its printed name", () => {
