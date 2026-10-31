@@ -1000,7 +1000,7 @@ const transactionAccounts = [{ id: "account-1", name: "Mutual funds" }, { id: "u
 /** Each activity's asset as its profile has it: by default, its display code is its symbol. */
 const identitiesOf = (activities) => new Map(Array.isArray(activities) ? activities.map((a) => [a.assetId, fundRef(a.assetSymbol, a.exchangeMic)]) : []);
 const check = (holdings, activities, more = {}) =>
-  checkUnits(holdings, { asset, accounts: transactionAccounts, activities, identities: identitiesOf(activities), ...more });
+  checkUnits(holdings, { asset, accounts: transactionAccounts, activities, identities: identitiesOf(activities), timeZone: "UTC", ...more });
 const summarised = (checks) => checks.map((c) => [
   c.ref, c.lines.map((l) => l.source.label), format(c.statement),
   c.accounts.map((a) => [a.id, a.units === undefined ? null : format(a.units)]),
@@ -1050,6 +1050,32 @@ test("checks each holding's units against accounts that track transactions, each
   // The printed zero stays out of the snapshot.
   const [snapshot] = plan(holdings);
   assert.deepEqual(snapshot.positions.find((p) => p.ref === ref("INFZ90K01LQ6")).lines.map((l) => [l.source.label, l.holding.units]), [[fictiva, "12.296"]]);
+});
+
+test("activities count towards the statement's date on their day in Wealthfolio's timezone, whatever the device's", async () => {
+  const holdings = readHoldings(await fixture("made-up-summary-cams"));
+  const bought = activity("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "3000");
+  // Entered in Wealthfolio's form at 02:00 on 01-Apr-2025 in India, and at 21:00 on 31-Mar-2025 in Toronto.
+  const india = { ...activity("account-1", "BUY", "2025-04-01", "INFZ90K01FC8", "1"), date: "2025-03-31T20:30:00+00:00" };
+  const toronto = { ...activity("account-1", "BUY", "2025-03-31", "INFZ90K01FC8", "2"), date: "2025-04-01T01:00:00+00:00" };
+  const bare = (date) => ({ ...activity("account-1", "BUY", date, "INFZ90K01FC8", "4"), date });
+  const held = (row, timeZone) => format(check(holdings, [bought, row], { timeZone }).find((c) => c.ref === "asset-INFZ90K01FC8").held);
+  const saved = process.env.TZ;
+  try {
+    for (const local of ["Pacific/Kiritimati", "Pacific/Pago_Pago"]) {
+      process.env.TZ = local;
+      assert.equal(held(india, "Asia/Kolkata"), "3000");
+      assert.equal(held(toronto, "America/Toronto"), "3002");
+      assert.equal(held(india, "UTC"), "3001");
+      assert.equal(held(toronto, "UTC"), "3000");
+      // A bare date stays as given, not UTC midnight on it.
+      assert.equal(held(bare("2025-03-31"), "America/Toronto"), "3004");
+      assert.equal(held(bare("2025-04-01"), "America/Toronto"), "3000");
+    }
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
 });
 
 test("a depository statement's printed zero and an asset in two demat accounts are checked", async () => {

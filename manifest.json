@@ -54,6 +54,11 @@
       "purpose": "Check transactions before importing activities, a summary or depository statement's units against accounts that track transactions, and stock splits before carrying holdings into a snapshot. When you choose to use a bank account's deposit or withdrawal for a fund's cash, add the fund's transfer, change the bank's row into a transfer if it isn't one, and link the two; transfers already linked aren't offered"
     },
     {
+      "category": "settings",
+      "functions": ["get"],
+      "purpose": "Read Wealthfolio's timezone, so a statement's units are checked against activities on the days Wealthfolio counts them"
+    },
+    {
       "category": "market-data",
       "functions": ["searchTicker"],
       "purpose": "Find each asset by the ISIN or name printed on the statement, or by what you type, and check existing assets before using statement prices"

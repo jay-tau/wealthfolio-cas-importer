@@ -1902,8 +1902,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.hideHoldingsAccounts = true;
       window.host.activities = [
         posted("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "2892.104"),
-        // After the statement's date: not counted.
+        // After the statement's date: not counted. One entered in Wealthfolio's form at 02:00 on
+        // 01-Apr-2025 in its timezone, Asia/Kolkata, is stored on 31-Mar-2025 in UTC.
         posted("account-1", "BUY", "2025-04-01", "INFZ90K01FC8", "5"),
+        { ...posted("account-1", "BUY", "2025-04-01", "INFZ90K01FC8", "7"), id: "checked-form-entry", date: "2025-03-31T20:30:00+00:00" },
         posted("account-1", "BUY", "2024-04-01", "INFZ90K01BA1", "3000", "MY-BALANCED"),
         posted("unset-1", "BUY", "2024-04-01", "INFZ90K01BA1", "400", "MY-BALANCED"),
       ];
