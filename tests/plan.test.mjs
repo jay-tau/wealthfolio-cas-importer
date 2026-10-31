@@ -9,11 +9,13 @@ import {
   bankCandidates,
   bankMatches,
   closingUnits,
+  engineTimeZone,
   fundRef,
   fundRefs,
   importRows,
   indexActivities,
   linkBankRow,
+  localDay,
   openingUnits,
   planImport,
   rowsOf,
@@ -83,6 +85,20 @@ const check = (rows, errors = {}) =>
   rows.map((row) =>
     errors[row.lineNumber] ? { ...row, isValid: false, errors: { amount: [errors[row.lineNumber]] } } : { ...row },
   );
+
+/** Runs `run` on a device far east of UTC, then on one far west. */
+const inLocalTimeZones = (run) => {
+  const saved = process.env.TZ;
+  try {
+    for (const local of ["Pacific/Kiritimati", "Pacific/Pago_Pago"]) {
+      process.env.TZ = local;
+      run();
+    }
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
+};
 
 let id = 0;
 /** How Wealthfolio stores and returns an imported row (Wealthfolio 3.11.0's web API). */
@@ -436,13 +452,13 @@ describe("display codes", () => {
       const planned = plan(data, existing, {}, undefined, fundsFor(data));
       assert.deepEqual(statuses(planned), ["existing", "existing"], "the reinvested dividend has no cash row to match");
       assert.deepEqual(importRows(planned, () => false), []);
-      assert.ok(sameUnits(closingUnits(data, target, existing, fundsFor(data))[0]));
+      assert.ok(sameUnits(closingUnits(data, target, existing, fundsFor(data), "UTC")[0]));
     });
 
     test(`a fund chosen ${how} covers its opening units under another display code`, () => {
       const earlier = renamed(importRows(plan(statement(scheme("A", sip("2023-03-10")))), () => false).map(stored));
       const data = statement(balanced("103.088", "206.176", sip("2023-04-10")));
-      const [fund] = openingUnits(data, target, earlier, fundsFor(data));
+      const [fund] = openingUnits(data, target, earlier, fundsFor(data), "UTC");
       assert.equal(format(fund.held), "103.088");
       assert.ok(sameUnits(fund));
     });
@@ -464,7 +480,7 @@ describe("display codes", () => {
     // B's display code is A's symbol.
     const existing = importRows(plan(data), () => false).map(stored).map((a) => (a.assetId === "uuid-b" ? { ...a, assetSymbol: "A" } : a));
     for (const funds of [fundsOf(data), byId(data)]) {
-      assert.deepEqual(closingUnits(data, target, existing, funds).map((f) => format(f.held)), ["103.088", "10"]);
+      assert.deepEqual(closingUnits(data, target, existing, funds, "UTC").map((f) => format(f.held)), ["103.088", "10"]);
     }
   });
 
@@ -475,7 +491,7 @@ describe("display codes", () => {
     const lookalike = { ...trade, id: "lookalike", assetId: "uuid-lookalike" };
     const profiles = new Map([["uuid-lookalike", fundRef("a", "XBOM")], ["uuid-a", fundRef("A2", "XBOM")]]);
     const funds = fundRefs(data.folios[0].schemes.map((s) => ({ ...target(data.folios[0], s).asset, assetId: "uuid-a" })), profiles);
-    assert.equal(format(closingUnits(data, target, [trade, lookalike], funds)[0].held), "103.088");
+    assert.equal(format(closingUnits(data, target, [trade, lookalike], funds, "UTC")[0].held), "103.088");
   });
 
   test("several assets with the symbol and exchange of a fund without an asset ID need a choice", () => {
@@ -517,19 +533,19 @@ describe("units", () => {
     const earlier = importRows(plan(statement(scheme("A", sip("2023-03-10")))), () => false).map(stored);
     const later = importRows(plan(statement(scheme("A", sip("2023-04-10")))), () => false).map(stored);
     const data = opening("103.088", "206.176", sip("2023-04-10"));
-    const [fund] = openingUnits(data, target, [...earlier, ...later], fundsOf(data));
+    const [fund] = openingUnits(data, target, [...earlier, ...later], fundsOf(data), "UTC");
     assert.equal(format(fund.statement), "103.088");
     assert.equal(format(fund.held), "103.088", "only activities before the statement count");
     assert.ok(sameUnits(fund));
-    assert.ok(!sameUnits(openingUnits(data, target, later, fundsOf(data))[0]));
+    assert.ok(!sameUnits(openingUnits(data, target, later, fundsOf(data), "UTC")[0]));
   });
 
   test("only posted activities count towards opening and closing units", () => {
     const [buy] = importRows(plan(statement(scheme("A", sip("2023-03-10")))), () => false).map(stored);
     const data = opening("103.088", "103.088", []);
     const activities = [buy, ...["DRAFT", "PENDING", "VOID"].map((status) => ({ ...buy, status, quantity: "999" }))];
-    assert.ok(sameUnits(openingUnits(data, target, activities, fundsOf(data))[0]));
-    assert.ok(sameUnits(closingUnits(data, target, activities, fundsOf(data))[0]));
+    assert.ok(sameUnits(openingUnits(data, target, activities, fundsOf(data), "UTC")[0]));
+    assert.ok(sameUnits(closingUnits(data, target, activities, fundsOf(data), "UTC")[0]));
   });
 
   test("asset income and security transfers contribute their received or delivered units", () => {
@@ -543,7 +559,7 @@ describe("units", () => {
       { ...buy, activityType: "ADJUSTMENT", subtype: "RETURN_OF_CAPITAL", quantity: "100" },
     ];
     const data = opening("0", "13", []);
-    assert.ok(sameUnits(closingUnits(data, target, activities, fundsOf(data))[0]));
+    assert.ok(sameUnits(closingUnits(data, target, activities, fundsOf(data), "UTC")[0]));
   });
 
   test("splits and option expiry leave units unknown only within the matching posted history", () => {
@@ -553,7 +569,7 @@ describe("units", () => {
     const expiry = { ...buy, activityType: "ADJUSTMENT", subtype: "OPTION_EXPIRY", quantity: "10" };
     for (const row of [split, expiry]) {
       for (const count of [openingUnits, closingUnits]) {
-        const [fund] = count(data, target, [buy, row], fundsOf(data));
+        const [fund] = count(data, target, [buy, row], fundsOf(data), "UTC");
         assert.equal(fund.held, undefined);
         assert.ok(!sameUnits(fund));
       }
@@ -564,10 +580,70 @@ describe("units", () => {
       { ...split, accountId: "another-account" },
       otherFund(split, "ANOTHER-FUND"),
     ];
-    assert.ok(sameUnits(closingUnits(data, target, [buy, ...irrelevant], fundsOf(data))[0]));
+    assert.ok(sameUnits(closingUnits(data, target, [buy, ...irrelevant], fundsOf(data), "UTC")[0]));
     const during = { ...split, date: "2023-04-01" };
-    assert.ok(sameUnits(openingUnits(data, target, [buy, during], fundsOf(data))[0]));
-    assert.equal(closingUnits(data, target, [buy, during], fundsOf(data))[0].held, undefined);
+    assert.ok(sameUnits(openingUnits(data, target, [buy, during], fundsOf(data), "UTC")[0]));
+    assert.equal(closingUnits(data, target, [buy, during], fundsOf(data), "UTC")[0].held, undefined);
+  });
+
+  test("Wealthfolio's timezone setting, or UTC when it's missing or invalid", async () => {
+    const settings = (timezone) => ({ get: async () => ({ timezone }) });
+    for (const timezone of ["UTC", "America/Toronto", "Asia/Kolkata", "US/Eastern", "Etc/GMT+5"]) {
+      assert.equal(await engineTimeZone(settings(timezone)), timezone);
+    }
+    for (const timezone of [undefined, "", "Mars/Phobos"]) {
+      const timeZone = await engineTimeZone(settings(timezone));
+      assert.equal(timeZone, "UTC");
+      for (const date of ["2025-03-31T20:30:00+00:00", "2025-04-01T01:00:00+00:00"]) {
+        assert.equal(localDay(date, timeZone), date.slice(0, 10));
+      }
+    }
+    await assert.rejects(engineTimeZone({ get: async () => { throw new Error("Not allowed"); } }), /Not allowed/);
+  });
+
+  test("activity timestamps keep their instant across DST changes and timestamp formats", () => {
+    for (const [date, timeZone, expected] of [
+      ["2025-03-09T04:59:59.999999999+00:00", "America/Toronto", "2025-03-08"],
+      ["2025-03-09T07:00:00Z", "America/Toronto", "2025-03-09"],
+      ["2025-11-02T01:30:00-04:00", "America/Toronto", "2025-11-02"],
+      ["2025-11-02T01:30:00-05:00", "America/Toronto", "2025-11-02"],
+      ["2024-09-08T03:59:59Z", "America/Santiago", "2024-09-07"],
+      ["2024-09-08T04:00:00Z", "America/Santiago", "2024-09-08"],
+    ]) {
+      inLocalTimeZones(() => {
+        assert.equal(localDay(date, timeZone), expected);
+        assert.equal(localDay(new Date(date), timeZone), expected);
+      });
+    }
+    assert.equal(localDay(undefined, "UTC"), "");
+    assert.throws(() => localDay("invalid", "UTC"), RangeError);
+  });
+
+  test("activities count on their day in Wealthfolio's timezone, whatever the device's", () => {
+    const [buy] = importRows(plan(statement(scheme("A", sip("2023-03-10")))), () => false).map(stored);
+    const data = opening("103.088", "103.088", []);
+    const entered = (date, quantity) => ({ ...buy, id: `entered-${date}`, date, quantity });
+    // Entered in Wealthfolio's form at 02:00 on 01-Apr in India, and at 21:00 on 31-Mar in Toronto.
+    const india = (year) => entered(`${year}-03-31T20:30:00+00:00`, "1");
+    const toronto = (year) => entered(`${year}-04-01T01:00:00+00:00`, "2");
+    const held = (count, row, timeZone) => format(count(data, target, [buy, row], fundsOf(data), timeZone)[0].held);
+    inLocalTimeZones(() => {
+      // The statement runs from 01-Apr-2023 to 31-Mar-2025.
+      assert.equal(held(openingUnits, india(2023), "Asia/Kolkata"), "103.088");
+      assert.equal(held(openingUnits, toronto(2023), "America/Toronto"), "105.088");
+      assert.equal(held(closingUnits, india(2025), "Asia/Kolkata"), "103.088");
+      assert.equal(held(closingUnits, toronto(2025), "America/Toronto"), "105.088");
+      // Their UTC days, when Wealthfolio's timezone is UTC.
+      assert.equal(held(openingUnits, india(2023), "UTC"), "104.088");
+      assert.equal(held(openingUnits, toronto(2023), "UTC"), "103.088");
+      assert.equal(held(closingUnits, india(2025), "UTC"), "104.088");
+      assert.equal(held(closingUnits, toronto(2025), "UTC"), "103.088");
+      // A bare date stays as given, not UTC midnight on it.
+      assert.equal(held(openingUnits, entered("2023-03-31", "1"), "America/Toronto"), "104.088");
+      assert.equal(held(openingUnits, entered("2023-04-01", "1"), "America/Toronto"), "103.088");
+      assert.equal(held(closingUnits, entered("2025-03-31", "1"), "America/Toronto"), "104.088");
+      assert.equal(held(closingUnits, entered("2025-04-01", "1"), "America/Toronto"), "103.088");
+    });
   });
 
   test("sales and reinvested dividends count, cash and other funds don't", () => {
@@ -578,7 +654,7 @@ describe("units", () => {
     ]);
     const rows = importRows(plan(data), () => false);
     const other = otherFund(stored(rows[0]));
-    const [fund] = closingUnits(data, target, [...rows.map(stored), other], fundsOf(data));
+    const [fund] = closingUnits(data, target, [...rows.map(stored), other], fundsOf(data), "UTC");
     assert.equal(format(fund.held), "57.142");
     assert.ok(sameUnits(fund));
   });

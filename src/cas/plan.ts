@@ -57,6 +57,44 @@ export function day(date: Date | string | undefined) {
   return new Date(date).toISOString().slice(0, 10);
 }
 
+const dayFormats = new Map<string, Intl.DateTimeFormat>();
+function dayFormat(timeZone: string) {
+  let format = dayFormats.get(timeZone);
+  if (!format) {
+    format = new Intl.DateTimeFormat("en-US", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    dayFormats.set(timeZone, format);
+  }
+  return format;
+}
+
+/**
+ * Wealthfolio's timezone setting as its portfolio engine reads it: UTC when it's missing or invalid
+ * (Wealthfolio 3.11.0). Wealthfolio saves only timezone names it knows.
+ */
+export async function engineTimeZone(settings: Pick<AddonContext["api"]["settings"], "get">) {
+  const { timezone } = await settings.get();
+  if (!timezone) return "UTC";
+  try {
+    dayFormat(timezone);
+    return timezone;
+  } catch {
+    // Not a timezone this browser knows.
+    return "UTC";
+  }
+}
+
+/**
+ * An activity's date as Wealthfolio's portfolio engine counts it: its day in `timeZone`, from
+ * `engineTimeZone`. Its form saves an activity at the time of day entered, so the UTC day can be
+ * another; a bare date is stored on that day in UTC and in the timezone, so it stays as given.
+ */
+export function localDay(date: Date | string | undefined, timeZone: string) {
+  if (date === undefined) return "";
+  if (typeof date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(date)) return date;
+  const parts = Object.fromEntries(dayFormat(timeZone).formatToParts(new Date(date)).map((p) => [p.type, p.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
+}
+
 /** Wealthfolio leaves a zero fee out of the key; a zero quantity or price is treated the same. */
 function amount(value: string | number | null | undefined, zeroIsNone = false) {
   if (value === null || value === undefined || value === "") return "";
@@ -348,23 +386,27 @@ export function statementDay(date: string) {
   return `${match[3]}-${String(month + 1).padStart(2, "0")}-${match[1]}`;
 }
 
-/** Posted units within `range`, or unknown when the history needs Wealthfolio's portfolio engine. */
+/**
+ * Posted units of activities whose `localDay` in `timeZone` is within `range`, or unknown when the
+ * history needs Wealthfolio's portfolio engine.
+ */
 export function unitsHeld(
   activities: ActivityDetails[],
   accountId: string,
   asset: Pick<FundAsset, "symbol" | "exchangeMic">,
   funds: FundRefs,
   range: (day: string) => boolean,
+  timeZone: string,
 ) {
   const ref = fundRef(asset.symbol, asset.exchangeMic);
-  return countUnits(activities.filter((a) => a.accountId === accountId && a.assetId && funds.get(a.assetId) === ref), range);
+  return countUnits(activities.filter((a) => a.accountId === accountId && a.assetId && funds.get(a.assetId) === ref), range, timeZone);
 }
 
 /** `unitsHeld` for activities already narrowed to one asset in one account. */
-export function countUnits(activities: ActivityDetails[], range: (day: string) => boolean) {
+export function countUnits(activities: ActivityDetails[], range: (day: string) => boolean, timeZone: string) {
   let units = dec("0");
   for (const a of activities) {
-    if (a.status !== "POSTED" || !range(day(a.date))) continue;
+    if (a.status !== "POSTED" || !range(localDay(a.date, timeZone))) continue;
     if (a.activityType === "SPLIT" || (a.activityType === "ADJUSTMENT" && a.subtype === "OPTION_EXPIRY")) return undefined;
     if (!a.quantity) continue;
     const q = abs(dec(a.quantity));
@@ -409,22 +451,34 @@ function byFund(data: CasData, target: Target) {
 const sum = (values: string[]) => values.reduce((total, v) => add(total, dec(v)), dec("0"));
 
 /** Opening units against what Wealthfolio holds before the statement starts. */
-export function openingUnits(data: CasData, target: Target, activities: ActivityDetails[], funds: FundRefs): FundUnits[] {
+export function openingUnits(
+  data: CasData,
+  target: Target,
+  activities: ActivityDetails[],
+  funds: FundRefs,
+  timeZone: string,
+): FundUnits[] {
   const from = statementDay(data.statement_period.from);
   return byFund(data, target).map((f) => ({
     ...f,
     statement: sum(f.schemes.map((s) => s.open)),
-    held: unitsHeld(activities, f.accountId, f.asset, funds, (d) => d < from),
+    held: unitsHeld(activities, f.accountId, f.asset, funds, (d) => d < from, timeZone),
   }));
 }
 
 /** Closing units against what Wealthfolio holds at the statement's end. */
-export function closingUnits(data: CasData, target: Target, activities: ActivityDetails[], funds: FundRefs): FundUnits[] {
+export function closingUnits(
+  data: CasData,
+  target: Target,
+  activities: ActivityDetails[],
+  funds: FundRefs,
+  timeZone: string,
+): FundUnits[] {
   const to = statementDay(data.statement_period.to);
   return byFund(data, target).map((f) => ({
     ...f,
     statement: sum(f.schemes.map((s) => s.close)),
-    held: unitsHeld(activities, f.accountId, f.asset, funds, (d) => d <= to),
+    held: unitsHeld(activities, f.accountId, f.asset, funds, (d) => d <= to, timeZone),
   }));
 }
 

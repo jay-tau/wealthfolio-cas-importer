@@ -94,6 +94,8 @@ const host = {
   // Transfers already in a pair, and the pairs the add-on linked.
   linked: [] as string[],
   links: [] as [string, string][],
+  // Wealthfolio's timezone setting. Rows the add-on imports are stored at UTC midnight, on their day there too.
+  timezone: "Asia/Kolkata",
 };
 declare global {
   interface Window {
@@ -446,6 +448,7 @@ const api = {
   toast: { success() {}, error: (message: string) => void host.toasts.push(message), warning() {}, info() {} },
   logger: { error() {}, warn() {}, info() {}, debug() {}, trace() {} },
   query: { invalidateQueries() {}, refetchQueries() {} },
+  settings: { get: async () => ({ timezone: host.timezone }) },
 };
 
 window.addEventListener("message", async ({ data }) => {
