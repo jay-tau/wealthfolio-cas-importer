@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Ask for permission to read Wealthfolio's settings, for its timezone when checking units
+- Show the add-on as "CAS Importer (India)" in Wealthfolio's add-on list, the sidebar and the import page's heading, and set its manifest author to "jay-tau". Its ID stays `cas-importer`, so Wealthfolio still treats it as the same add-on
 
 ### Deprecated
 
