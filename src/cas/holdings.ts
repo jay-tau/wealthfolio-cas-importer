@@ -1,7 +1,7 @@
 import type { ActivityDetails, SnapshotHoldingInput } from "@wealthfolio/addon-sdk";
 import { add, dec, type Dec, div, format, isZero, mul } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
-import { countUnits, day, fundRef, sameUnits, statementDay } from "./plan.ts";
+import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
 import { type CasData, type DepositoryData, isDepository, type Statement } from "./types.ts";
 
 // A summary or NSDL/CDSL statement's holdings → the snapshots saved to Wealthfolio accounts that
@@ -726,6 +726,8 @@ export interface CheckInput {
    * couldn't be read, for the assets of `activities`. Needed for choices without an asset ID.
    */
   identities?: ReadonlyMap<string, string | { error: string }>;
+  /** Wealthfolio's timezone setting, from `engineTimeZone`: each activity counts on its `localDay` there. */
+  timeZone: string;
 }
 
 /**
@@ -734,11 +736,11 @@ export interface CheckInput {
  * accounts or PRANs list it, and its accounts once however many of those they share. Only reads.
  */
 export function checkUnits(holdings: Holdings, input: CheckInput): UnitCheck[] {
-  const { activities, identities = new Map() } = input;
+  const { activities, identities = new Map(), timeZone } = input;
   const until = (d: string) => d <= holdings.date;
   const accounts = new Set(input.accounts.map((a) => a.id));
   const history = Array.isArray(activities)
-    ? activities.filter((a) => a.status === "POSTED" && a.assetId && accounts.has(a.accountId) && until(day(a.date)))
+    ? activities.filter((a) => a.status === "POSTED" && a.assetId && accounts.has(a.accountId) && until(localDay(a.date, timeZone)))
     : [];
   // Activities show an asset's display code, which the user can change, so a choice without an
   // asset ID goes by the symbol and exchange on the asset's profile.
@@ -775,7 +777,7 @@ export function checkUnits(holdings: Holdings, input: CheckInput): UnitCheck[] {
     const rows = history.filter((a) => a.assetId === check.ref);
     check.accounts = input.accounts
       .filter((account) => rows.some((a) => a.accountId === account.id))
-      .map(({ id, name }) => ({ id, name, units: countUnits(rows.filter((a) => a.accountId === id), until) }));
+      .map(({ id, name }) => ({ id, name, units: countUnits(rows.filter((a) => a.accountId === id), until, timeZone) }));
     const unknown = check.accounts.filter((a) => a.units === undefined);
     if (!check.accounts.length) {
       check.problem = `No account that tracks transactions has posted activities for it on or before ${holdings.date}.`;
