@@ -23,7 +23,7 @@ import {
   statementAsset,
   type StatementHolding,
 } from "../cas/holdings";
-import { fundRef } from "../cas/plan";
+import { engineTimeZone, fundRef } from "../cas/plan";
 import type { Statement } from "../cas/types";
 import type { Ignored } from "../components/account-choices";
 import { type FundChoice, FundChoicesCard, type FundItem } from "../components/fund-choices";
@@ -479,6 +479,7 @@ export function HoldingsImport({
     try {
       const tracked = allAccounts.filter((a) => a.trackingMode !== "HOLDINGS");
       const accounts = tracked.filter((a) => !a.isArchived);
+      const timeZone = await engineTimeZone(api.settings);
       let activities: ActivityDetails[] | { error: string };
       try {
         activities = await api.activities.getAll();
@@ -501,7 +502,7 @@ export function HoldingsImport({
       }
       setChecked({
         // Wealthfolio shows add-ons no activities of archived accounts.
-        checks: checkUnits(holdings, { asset: assetOf, accounts, activities, identities }),
+        checks: checkUnits(holdings, { asset: assetOf, accounts, activities, identities, timeZone }),
         archived: tracked.filter((a) => a.isArchived).map((a) => a.name),
       });
     } catch (e) {

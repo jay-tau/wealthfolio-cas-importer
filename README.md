@@ -30,7 +30,8 @@ each row with the account's activities. Wealthfolio's own duplicate check misses
 that an earlier import created, because an add-on can't create the fund before importing the way
 Wealthfolio's CSV import does. A fund whose statement starts with units needs those units in
 Wealthfolio first, from an earlier statement or entered by hand.
-The units check counts posted account history; splits or option expiry in that history need review.
+The units check counts posted account history, each activity on its day in Wealthfolio's timezone
+setting (UTC if none is set); splits or option expiry in that history need review.
 Activities show an asset's display code, which can be changed, so rows and units go by the fund's
 asset ID, or for a fund confirmed without one, by the symbol and exchange on each asset's profile.
 When several assets have that symbol and exchange, the preview asks you to choose one under Funds.
@@ -103,7 +104,8 @@ included), once each holding is confirmed or left out. It needs no account that 
 and saves nothing. Each holding's printed units are summed over its folios, demat accounts and
 PRANs, holdings printed with zero units included: those are confirmed for the check, but never go in
 a snapshot. Against them go the units that the posted activities of accounts with any for its asset
-by the statement's date add up to on that date, summed over those accounts. A row shows Match or
+by the statement's date add up to on that date, summed over those accounts. Each activity counts on its
+day in Wealthfolio's timezone setting, or in UTC if none is set. A row shows Match or
 Differ once you tick Same holdings, confirming that those accounts hold its units only for the
 statement's folios, demat accounts and PRANs, and all of them. A difference can mean a purchase or
 redemption that wasn't imported, bonus units or shares, a transfer, or shares from a demerger. A

@@ -9,6 +9,7 @@ import {
   bankCandidates,
   bankMatches,
   closingUnits,
+  engineTimeZone,
   fundRef,
   fundRefs,
   type FundUnits,
@@ -301,7 +302,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       const funds = await fundsIn(existing);
       // A fund that starts with units needs Wealthfolio to hold exactly those before the statement.
       const covered = new Set(
-        openingUnits(data, target, existing, funds)
+        openingUnits(data, target, existing, funds, await engineTimeZone(api.settings))
           .filter(sameUnits)
           .flatMap((f) => f.schemes),
       );
@@ -375,7 +376,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       api.query.invalidateQueries([QueryKeys.ACTIVITIES]);
       try {
         const after = (await Promise.all(accountIds().map((id) => api.activities.getAll(id)))).flat();
-        setImported({ result, sent, closing: closingUnits(data, target, after, await fundsIn(after)), links });
+        const closing = closingUnits(data, target, after, await fundsIn(after), await engineTimeZone(api.settings));
+        setImported({ result, sent, closing, links });
       } catch {
         setError("The import finished, but the closing units couldn't be checked. Check the holdings in Wealthfolio.");
       }
