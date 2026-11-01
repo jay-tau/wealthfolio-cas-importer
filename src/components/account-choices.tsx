@@ -117,8 +117,8 @@ export function AccountChoicesCard({
       <CardContent className="space-y-6">
         {accounts.length === 0 && (
           <p>
-            No account tracks transactions. Add one in Wealthfolio, set to track transactions, then close and reopen the
-            add-on.
+            No account tracks transactions. Add one in Wealthfolio, set to track transactions, then choose Read statement
+            again.
           </p>
         )}
         <div className="grid gap-4">

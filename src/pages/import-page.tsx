@@ -1,7 +1,7 @@
 import type { Account, ActivityDetails, ActivityImport, AddonContext, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { type Holdings, readHoldings } from "../cas/holdings";
 import { closedScheme, type Mapping, mapStatement, withoutClosed } from "../cas/mapping";
 import { CasError } from "../cas/parser";
@@ -65,6 +65,7 @@ interface Imported {
 
 export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const { api } = ctx;
+  // As of the last read: Wealthfolio keeps this page loaded while the user changes accounts elsewhere.
   const [allAccounts, setAllAccounts] = useState<Account[] | null>(null);
   const accounts = allAccounts?.filter((a) => a.isActive && !a.isArchived) ?? null;
   // Wealthfolio values an account that tracks holdings from its snapshots alone, so a detailed
@@ -91,14 +92,6 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const [imported, setImported] = useState<Imported | null>(null);
   const [busy, setBusy] = useState<"" | "preview" | "import" | "check">("");
   const [error, setError] = useState("");
-
-  useEffect(() => {
-    // The host supports includeArchived; the SDK omits this argument.
-    (api.accounts.getAll as (includeArchived: boolean) => Promise<Account[]>)(true).then(
-      setAllAccounts,
-      (e) => setError(`Couldn't load the accounts: ${String(e)}`),
-    );
-  }, [api]);
 
   // Remembered accounts that are hidden, archived or no longer listed are ignored, and their rows say why.
   const accountChoices: AccountChoices = Object.fromEntries(
@@ -220,7 +213,12 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     }
     const choices: AccountChoices = {};
     const funds: Record<string, FundChoice> = {};
-    await Promise.all([
+    const [loaded] = await Promise.all([
+      // The host supports includeArchived; the SDK omits this argument.
+      (api.accounts.getAll as (includeArchived: boolean) => Promise<Account[]>)(true).catch((e) => {
+        setError(`Couldn't load the accounts: ${String(e)}. Choose Read statement to try again.`);
+        return null;
+      }),
       ...keys.map(async (key) => {
         const id = await api.storage.get(key).catch(() => null);
         if (id) choices[key] = id;
@@ -231,6 +229,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
         if (fund && !(isDetailed && fund.statementPrices)) funds[key] = { fund };
       }),
     ]);
+    if (!loaded) return;
+    setAllAccounts(loaded);
     setFundChoices(funds);
     setRemembered(choices);
     setUnbalanced(new Set());

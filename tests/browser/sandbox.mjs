@@ -86,6 +86,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const pause = (name) => tab.frames()[1].evaluate((name) => { window.host.pause = name; }, name);
     const waiting = () => tab.frames()[1].waitForFunction(() => window.host.resume);
     const resume = () => tab.frames()[1].evaluate(() => window.host.resume());
+    // The fake host's accounts. The add-on sees a change on its next read.
+    const accountList = () => tab.frames()[1].evaluate(() => window.host.accounts);
+    const setAccountList = (accounts) => tab.frames()[1].evaluate((accounts) => { window.host.accounts = accounts; }, accounts);
+    // Changes accounts by ID, adding any that isn't listed.
+    const editAccounts = (changes) => tab.frames()[1].evaluate((changes) => {
+      for (const [id, fields] of Object.entries(changes)) {
+        const account = window.host.accounts.find((a) => a.id === id);
+        if (account) Object.assign(account, fields);
+        else window.host.accounts.push({ id, currency: "INR", isActive: true, isArchived: false, ...fields });
+      }
+    }, changes);
     const remember = frame.getByRole("checkbox", { name: "Remember the password" });
     // A slow secret load cannot override an editable Remember opt-out.
     await waiting();
@@ -665,6 +676,50 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.frames()[1].evaluate(() => { window.host.noPanFolio = ""; });
     await restoreChoices(beforeUnavailable);
 
+    // Each read loads the accounts again, as Wealthfolio keeps the add-on's page loaded while they
+    // change. With none left that tracks transactions, the card says to add one and read again, and
+    // the next read offers it.
+    const beforeAccounts = await accountList();
+    await saveChoices([[accountKeys[0], "account-1"], [testbridgeKey, "unset-1"], [bankKey, "bank-1"]]);
+    await editAccounts({ "account-1": { isActive: false }, "unset-1": { isArchived: true }, "bank-1": { trackingMode: "HOLDINGS" } });
+    await readAgain();
+    const noTransactionAccount = "No account tracks transactions. Add one in Wealthfolio, set to track transactions, then choose Read statement again.";
+    await frame.getByText(noTransactionAccount, { exact: true }).waitFor();
+    await rowOf(panAccount).getByText(unavailable("Mutual funds, which is hidden in Wealthfolio"), { exact: true }).waitFor();
+    await rowOf(testbridge).getByText(unavailable("Not set, which is archived in Wealthfolio"), { exact: true }).waitFor();
+    await rowOf(bankChoice).getByText(unavailable("Savings, which tracks holdings. Transfers imported there wouldn't change its cash"), { exact: true }).waitFor();
+    assert.equal(await previewButton.isDisabled(), true);
+    await editAccounts({ "new-1": { name: "New funds", trackingMode: "TRANSACTIONS" } });
+    await readAgain();
+    assert.equal(await frame.getByText(noTransactionAccount, { exact: true }).count(), 0);
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
+    await panAccount.click();
+    await frame.getByRole("option", { name: "New funds (INR)", exact: true }).waitFor();
+    assert.equal(await frame.getByRole("option").count(), 1);
+    await frame.getByRole("option", { name: "New funds (INR)", exact: true }).click();
+    await pick(testbridge, "Same as PAN (New funds)");
+    await pick(bankChoice, "Outside Wealthfolio");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.equal(await previewButton.isDisabled(), false);
+    await tab.frames()[1].waitForFunction((key) => !window.host.storage.has(key), bankKey);
+    // Restored, they're offered again and the choices made before count.
+    await setAccountList(beforeAccounts);
+    await saveChoices([[accountKeys[0], "account-1"], [testbridgeKey, "unset-1"], [bankKey, "bank-1"]]);
+    await readAgain();
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.match(await panAccount.textContent(), /Mutual funds/);
+    assert.match(await testbridge.textContent(), /Not set/);
+    assert.match(await bankChoice.textContent(), /Savings/);
+    await restoreChoices(beforeUnavailable);
+    // When they can't be loaded, the read shows no choices, and the next read can load them.
+    await tab.frames()[1].evaluate(() => { window.host.failAccounts = true; });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("Couldn't load the accounts: Error: Accounts unavailable. Choose Read statement to try again.", { exact: true }).waitFor({ timeout: 180_000 });
+    assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
+    await tab.frames()[1].evaluate(() => { window.host.failAccounts = false; });
+    await readAgain();
+    assert.equal(await frame.getByText(/^Couldn't load the accounts/).count(), 0);
+
     // Change alone keeps the saved fund, so reading again confirms it again.
     const flexi = frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" });
     const remembered = await storage();
@@ -988,18 +1043,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await placeholder.getByRole("button", { name: "Leave this share out" }).click();
     assert.deepEqual(await storage(), beforeIgnored);
 
-    // With no account left that tracks holdings, the card still says why each choice is ignored.
+    // With no account left that tracks holdings, the card says to add one and read again, and still
+    // says why each choice is ignored. Each read loads the accounts again, so the next one offers it.
     const readNsdl = async (text) => {
       await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
       await frame.locator("#cas-password").fill("ABCDE1234F");
       await frame.getByRole("button", { name: "Read statement", exact: true }).click();
       await frame.getByText(text, { exact: true }).waitFor({ timeout: 180_000 });
     };
-    await hosted(() => {
-      window.host.hideHoldingsAccounts = true;
-      window.host.reopen();
-    });
-    await readNsdl("No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then close and reopen the add-on. The check against transactions below works without one.");
+    const beforeHidden = await accountList();
+    await editAccounts({ "holdings-1": { isActive: false }, "holdings-2": { isActive: false } });
+    await readNsdl("No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then choose Read statement again. The check against transactions below works without one.");
     assert.equal(await statementAccount.count(), 0);
     const card = await frame.locator("body").innerText();
     for (const [label, note] of [
@@ -1011,11 +1065,22 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
     assert.equal(await preview.isDisabled(), true);
-    await hosted(() => {
-      window.host.hideHoldingsAccounts = false;
-      window.host.reopen();
-    });
+    await editAccounts({ "new-2": { name: "New demat", trackingMode: "HOLDINGS" } });
     await readNsdl("Accounts");
+    assert.equal(await frame.getByText(/^No account tracks holdings/).count(), 0);
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
+    await statementAccount.click();
+    await frame.getByRole("option", { name: "New demat (INR)", exact: true }).waitFor();
+    assert.equal(await frame.getByRole("option").count(), 1);
+    await frame.getByRole("option", { name: "New demat (INR)", exact: true }).click();
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 2);
+    await tab.frames()[1].waitForFunction((key) => window.host.storage.get(key) === "new-2", statementKey);
+    // Restored, they're offered again.
+    await setAccountList(beforeHidden);
+    await hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeIgnored);
+    await readNsdl("Accounts");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.match(await statementAccount.textContent(), /Fund folios/);
     await placeholder.getByRole("button", { name: "Leave this share out" }).click();
     assert.equal(await preview.isDisabled(), false);
     assert.deepEqual(await storage(), beforeIgnored);
@@ -1330,15 +1395,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await hosted(() => window.host.quotes["asset-INEZ90B01015"]), undefined);
 
     // Archived accounts are absent from portfolio.getHoldings, but their saved assets still use
-    // their global pricing mode. Reload the account inventory after archiving the hidden account.
+    // their global pricing mode. The next read finds the hidden account archived, tracking transactions.
     await hosted((isins) => {
       window.host.soldIsins = isins.filter((isin) => isin !== "INEZ90A01017");
-      window.host.archiveOtherAccount = true;
+      Object.assign(window.host.accounts.find((a) => a.id === "archived-1"), { trackingMode: "TRANSACTIONS", isArchived: true });
       window.host.pricingModes.INEZ90A01017 = "MANUAL";
       window.host.snapshots["archived-1"] = {
         "2025-03-31": { holdings: [{ symbol: "INEZ90A01017", quantity: "1", averageCost: "20", currency: "INR" }], cash: {}, source: "CALCULATED" },
       };
-      window.host.reopen();
     }, nsdl.accounts.flatMap((a) => [...a.equities, ...a.mutual_funds, ...a.bonds].map((h) => h.isin)));
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
     await frame.locator("#cas-password").fill("ABCDE1234F");
@@ -1892,6 +1956,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const flexiName = "Fictiva Flexi Cap Fund - Direct Plan - Growth";
     const balancedName = "Fictiva Balanced Advantage Fund - Direct Plan - Income Distribution cum Capital Withdrawal Option - Reinvestment";
     const liquidName = "Fictiva Liquid Fund - Direct Plan - Growth";
+    const beforeCheck = await accountList();
+    // Hidden accounts that track transactions are still compared, like Not set here.
+    await editAccounts({ "holdings-1": { isActive: false }, "holdings-2": { isActive: false }, "unset-1": { isActive: false } });
     await hosted(() => {
       // Activities show an asset's display code; the Balanced Advantage fund's was changed.
       const posted = (accountId, activityType, date, symbol, quantity, displayCode = symbol) => ({
@@ -1901,7 +1968,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       for (const symbol of ["INFZ90K01FC8", "INFZ90K01BA1"]) {
         window.host.assets[`asset-${symbol}`] = { symbol, exchangeMic: "XBOM", instrumentType: "EQUITY", name: `Fund ${symbol}` };
       }
-      window.host.hideHoldingsAccounts = true;
       window.host.activities = [
         posted("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "2892.104"),
         // After the statement's date: not counted. One entered in Wealthfolio's form at 02:00 on
@@ -1911,7 +1977,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         posted("account-1", "BUY", "2024-04-01", "INFZ90K01BA1", "3000", "MY-BALANCED"),
         posted("unset-1", "BUY", "2024-04-01", "INFZ90K01BA1", "400", "MY-BALANCED"),
       ];
-      window.host.reopen();
     });
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-summary-cams.pdf");
     await frame.locator("#cas-password").fill("ABCDE1234F");
@@ -1947,7 +2012,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await checkRow(liquidName).getByText("No account that tracks transactions has posted activities for it on or before 2025-03-31.", { exact: true }).waitFor();
     assert.equal(await checkRow(liquidName).getByRole("checkbox").count(), 0);
     assert.equal(await accountData(), before);
-    await hosted(() => { window.host.hideHoldingsAccounts = false; });
+    // The next read finds Not set archived, so it isn't compared.
+    await editAccounts({ "unset-1": { isArchived: true } });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText(/^No account tracks holdings\. To save snapshots,/).waitFor({ timeout: 180_000 });
+    await frame.getByRole("button", { name: "Check units", exact: true }).click();
+    await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Not set, Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
+    assert.deepEqual(await checkRow(balancedName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "3443.91", "3000"]);
+    assert.equal(await accountData(), before);
+    await setAccountList(beforeCheck);
 
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });
