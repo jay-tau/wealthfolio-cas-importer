@@ -34,9 +34,11 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
     ).finally(() => setLoadingPassword(false));
   }, [ctx]);
 
-  // Start Python while the user types the password; it takes a few seconds.
+  // Start Python while the user types the password; it takes a few seconds. A parser that has
+  // stopped can't read again, so the next read starts a new one.
   const startParser = () => {
-    if (parser.current) return parser.current;
+    if (parser.current && !parser.current.stopped) return parser.current;
+    parser.current = null;
     try {
       parser.current = new CasParser(ctx.assets);
     } catch (e) {

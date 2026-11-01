@@ -64,8 +64,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
   const tab = await browser.newPage();
   tab.setDefaultTimeout(30_000);
   const violations = [];
+  const errors = [];
   tab.on("console", (message) => {
     if (/Content.Security.Policy|Refused/i.test(message.text())) violations.push(message.text());
+    if (message.type() === "error") errors.push(message.text());
   });
   await tab.route("http://sandbox.test/**", async (route) => {
     const path = new URL(route.request().url()).pathname.slice(1);
@@ -1950,9 +1952,48 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });
     assert.deepEqual((await host()).secrets, []);
+
+    // A parser that stops, hits a fatal Python error, never starts or never answers says so. The
+    // form stays usable, and the next read starts a new parser.
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
+    await frame.locator("#cas-password").fill("ABCDE1234F");
+    const readButton = frame.getByRole("button", { name: "Read statement", exact: true });
+    const workers = () => hosted(() => window.host.workers);
+    const failRead = async (fault, message) => {
+      await hosted((fault) => window.host.breakWorkers(fault), fault);
+      const before = await workers();
+      await readButton.click();
+      await frame.getByText(message, { exact: true }).waitFor({ timeout: 180_000 });
+      await frame.locator("#cas-file:enabled").waitFor();
+      assert.equal(await readButton.isDisabled(), false, fault);
+      return (await workers()) - before;
+    };
+    const readAfterFault = async () => {
+      await hosted(() => window.host.breakWorkers(""));
+      const before = await hosted(() => ({ workers: window.host.workers, parsed: window.host.parsed }));
+      await readButton.click();
+      await tab.frames()[1].waitForFunction((n) => window.host.parsed > n, before.parsed, { timeout: 180_000 });
+      await frame.locator("#cas-file:enabled").waitFor();
+      assert.equal(await workers(), before.workers + 1, "a new parser");
+      assert.equal(await frame.getByText("Couldn't read the statement", { exact: true }).count(), 0);
+    };
+    const stopped = "The parser stopped. Try reading the statement again.";
+    assert.equal(await failRead("stop", stopped), 0);
+    await readAfterFault();
+    assert.equal(await failRead("stop", stopped), 0);
+    // The stopped parser's replacement never gets Python's files.
+    assert.equal(await failRead("no-ready", "The parser didn't start in time. Try reading the statement again."), 1);
+    await readAfterFault();
+    assert.equal(await failRead("fatal", stopped), 0);
+    await readAfterFault();
+    assert.equal(await failRead("no-reply", "The parser didn't finish reading this PDF in time. Try reading it again."), 0);
+    await readAfterFault();
   } catch (error) {
     failed = true;
     console.log(`  FAILED: ${error.stack}`);
+    // A wait for one message times out when the add-on shows another, such as a parser error.
+    const alerts = await tab.frameLocator("iframe").getByRole("alert").allTextContents().catch(() => []);
+    console.log("  Alerts:", alerts, "Console errors:", errors.slice(-10));
   }
   // Pyodide refuses a classic Worker when its importScripts("data:...") probe works, which the CSP
   // would otherwise be all that prevents.
