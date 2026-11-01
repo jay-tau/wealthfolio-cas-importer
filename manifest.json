@@ -1,7 +1,7 @@
 {
   "id": "cas-importer",
   "name": "CAS Importer (India)",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Import Indian CAS statements (CAMS/KFintech, NSDL/CDSL) into Wealthfolio",
   "author": "jay-tau",
   "main": "dist/addon.js",

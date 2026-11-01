@@ -10,20 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
-- Ask for permission to read Wealthfolio's settings, for its timezone when checking units
-- Show the add-on as "CAS Importer (India)" in Wealthfolio's add-on list, the sidebar and the import page's heading, and set its manifest author to "jay-tau". Its ID stays `cas-importer`, so Wealthfolio still treats it as the same add-on
 
 ### Deprecated
 
 ### Removed
 
 ### Fixed
-- Detailed imports find a fund's earlier activities and count its opening and closing units after its display code changes in Wealthfolio: they go by the fund's asset ID, or for a fund confirmed without one, by the symbol and exchange on each asset's profile. Before, a renamed fund's trades and reinvested dividends were offered as new and its units counted as zero, and another asset whose display code was the fund's symbol added its units to the fund's. A fund confirmed from an existing asset that was since deleted, or whose symbol, exchange or type changed, has to be confirmed again. If its type isn't set, set it in Wealthfolio first
-- Holdings imports find the account's own holding of an asset, other accounts' holdings of it and its pricing mode after its display code changes in Wealthfolio: they go by the symbol and exchange on each holding's asset profile. Before, a renamed holding confirmed without an asset ID was planned as a new one next to the account's existing holding, without its average cost; a folio's fund that an account tracking transactions holds wasn't left out by default, so importing it counted it twice; and a renamed asset's pricing mode, or its ID after saving, could be missed, leaving its statement price or details unsaved. A profile that can't be read stops the preview
-- Check units on summary and depository statements, and a detailed statement's opening and closing units, count each activity on its day in Wealthfolio's timezone setting, as Wealthfolio does, or in UTC if none is set or it is invalid. Wealthfolio saves an activity entered in its form at the time of day entered, so its UTC day can differ: before, one entered at 02:00 in India on the day after a statement's date counted towards it, and one entered at 21:00 in Toronto on that date didn't.
-- Search for a fund in a CDSL statement's mutual fund folios by its scheme name, and name a new asset priced from the statement the same way, instead of using the scheme code printed before the name ("FMCDG - Fictiva Midcap Fund - Direct Plan - Growth" searched for "FMCDG"). The asset's printed details keep the name as printed
 
 ### Security
+
+## [1.2.0] - 2026-11-01
+
+### Changed
+- Ask for permission to read Wealthfolio's settings, for its timezone when checking units
+- Show the add-on as "CAS Importer (India)" in Wealthfolio's add-on list, the sidebar and the import page's heading, and set its manifest author to "jay-tau". Its ID stays `cas-importer`, so Wealthfolio still treats it as the same add-on
+
+### Fixed
+- Detailed imports find a fund's earlier activities and count its opening and closing units after its display code changes in Wealthfolio: they go by the fund's asset ID, or for a fund confirmed without one, by the symbol and exchange on each asset's profile. Before, a renamed fund's trades and reinvested dividends were offered as new and its units counted as zero, and another asset whose display code was the fund's symbol added its units to the fund's. A fund confirmed from an existing asset that was since deleted, or whose symbol, exchange or type changed, has to be confirmed again. If its type isn't set, set it in Wealthfolio first
+- Holdings imports find the account's own holding of an asset, other accounts' holdings of it and its pricing mode after its display code changes in Wealthfolio: they go by the symbol and exchange on each holding's asset profile. Before, a renamed holding confirmed without an asset ID was planned as a new one next to the account's existing holding, without its average cost; a folio's fund that an account tracking transactions holds wasn't left out by default, so importing it counted it twice; and a renamed asset's pricing mode, or its ID after saving, could be missed, leaving its statement price or details unsaved. A profile that can't be read stops the preview
+- Check units on summary and depository statements, and a detailed statement's opening and closing units, count each activity on its day in Wealthfolio's timezone setting, as Wealthfolio does, or in UTC if none is set or it is invalid. Wealthfolio saves an activity entered in its form at the time of day entered, so its UTC day can differ: before, one entered at 02:00 in India on the day after a statement's date counted towards it, and one entered at 21:00 in Toronto on that date didn't
+- Search for a fund in a CDSL statement's mutual fund folios by its scheme name, and name a new asset priced from the statement the same way, instead of using the scheme code printed before the name ("FMCDG - Fictiva Midcap Fund - Direct Plan - Growth" searched for "FMCDG"). The asset's printed details keep the name as printed
 
 ## [1.1.0] - 2026-10-30
 
