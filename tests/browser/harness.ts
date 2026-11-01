@@ -4,8 +4,8 @@
 // hidden or archived, in-memory storage, secrets and snapshots, a fund search, recorded error toasts, and
 // an import that stores rows the way Wealthfolio returns them. Snapshot saves write a manual
 // asset's average cost as its quote for the day, and profile updates store every field as sent,
-// both as Wealthfolio does. Wealthfolio's own checks are left
-// to the end-to-end run in the pull request.
+// both as Wealthfolio does. The parser's Workers can be made to stall or stop. Wealthfolio's own
+// checks are left to the end-to-end run in the pull request.
 import type {
   ActivityCreate,
   ActivityDetails,
@@ -37,6 +37,8 @@ interface HostAsset {
   providerConfig?: unknown;
   metadata?: unknown;
 }
+
+type WorkerFault = "" | "no-ready" | "no-reply" | "stop" | "fatal";
 
 const host = {
   storage: new Map<string, string>(),
@@ -90,6 +92,12 @@ const host = {
   // What accounts that track transactions hold, by symbol on XBOM.
   held: {} as Record<string, string[]>,
   parsed: 0,
+  // Workers started, one per parser. While a fault is set, each Worker never gets Python's files,
+  // never gets a PDF, stops when given one, or answers it with a fatal Python error.
+  workers: 0,
+  workerFault: "" as WorkerFault,
+  // Sets the fault, with limits short enough for a test on the waits that never end.
+  breakWorkers: (_fault: WorkerFault) => {},
   toasts: [] as string[],
   // Transfers already in a pair, and the pairs the add-on linked.
   linked: [] as string[],
@@ -103,6 +111,34 @@ declare global {
   }
 }
 window.host = host;
+
+window.Worker = class extends Worker {
+  constructor(...args: ConstructorParameters<typeof Worker>) {
+    super(...args);
+    host.workers++;
+  }
+
+  postMessage(message: { type: string; id?: number }, options?: StructuredSerializeOptions | Transferable[]) {
+    const fault = host.workerFault;
+    if ((fault === "no-ready" && message.type === "boot") || (fault === "no-reply" && message.type === "parse")) return;
+    // The parser terminates the Worker itself; WebKit drops a terminated Worker's listeners.
+    if (fault === "stop" && message.type === "parse") {
+      setTimeout(() => this.dispatchEvent(new ErrorEvent("error", { message: "Stopped by the test", cancelable: true })));
+      return;
+    }
+    if (fault === "fatal" && message.type === "parse") {
+      setTimeout(() => this.dispatchEvent(new MessageEvent("message", { data: { id: message.id, fatal: true } })));
+      return;
+    }
+    super.postMessage(message, options as StructuredSerializeOptions);
+  }
+};
+const limits = { start: CasParser.startTimeoutMs, parse: CasParser.parseTimeoutMs };
+host.breakWorkers = (fault) => {
+  host.workerFault = fault;
+  CasParser.startTimeoutMs = fault === "no-ready" ? 500 : limits.start;
+  CasParser.parseTimeoutMs = fault === "no-reply" ? 500 : limits.parse;
+};
 
 const wait = async (operation: string) => {
   if (host.pause !== operation) return;

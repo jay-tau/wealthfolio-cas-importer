@@ -54,7 +54,8 @@ self.onmessage = async ({ data }) => {
     const parse = await pyodide;
     postMessage({ id, json: parse(new Uint8Array(pdf), password) });
   } catch (error) {
-    // Python exception messages can contain extracted statement data.
-    postMessage({ id, errorType: error?.type ?? "Error" });
+    // Python exception messages can contain extracted statement data. After a fatal error (a
+    // WebAssembly trap, say), this Pyodide can't run anything again.
+    postMessage(error?.pyodide_fatal_error ? { id, fatal: true } : { id, errorType: error?.type ?? "Error" });
   }
 };

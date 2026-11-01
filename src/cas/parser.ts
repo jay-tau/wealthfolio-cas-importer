@@ -25,15 +25,26 @@ interface RuntimeFiles {
 
 type ParseReply = { id: number; json: string } | { id: number; errorType: string };
 
+const STOPPED = "The parser stopped. Try reading the statement again.";
+
 /**
  * casparser running under Pyodide in a Worker. Starting it loads about 18 MB of packaged
  * runtime files, so keep one parser per page and dispose of it when the page goes away.
+ * It stops for good if Python fails or doesn't answer in time; start a new one then.
  */
 export class CasParser {
+  /**
+   * How long Python may take to start, and then to read each PDF, before the parser stops. Reading
+   * the made-up 78-row statement takes about 3 seconds in Firefox, the slowest browser.
+   */
+  static startTimeoutMs = 120_000;
+  static parseTimeoutMs = 300_000;
+
   private readonly workerUrl = URL.createObjectURL(new Blob([workerSource], { type: "text/javascript" }));
   private readonly worker: Worker;
   private readonly ready: Promise<void>;
   private rejectReady!: (error: Error) => void;
+  private readonly startTimer: ReturnType<typeof setTimeout>;
   private error?: CasError;
   private readonly pending = new Map<number, { resolve: (reply: ParseReply) => void; reject: (error: Error) => void }>();
   private nextId = 0;
@@ -48,18 +59,21 @@ export class CasParser {
     this.ready = new Promise((resolve, reject) => {
       this.rejectReady = reject;
       this.worker.onmessage = ({ data }) => {
-        if ("id" in data) {
+        if (data.fatal) {
+          this.stop(new CasError("runtime", STOPPED));
+        } else if ("id" in data) {
           this.pending.get(data.id)?.resolve(data);
           this.pending.delete(data.id);
         } else if (data.type === "ready") {
+          clearTimeout(this.startTimer);
           resolve();
         } else {
-          this.stop(new CasError("runtime", `Couldn't start Python: ${data.message}`));
+          this.stop(new CasError("runtime", `Couldn't start Python: ${data.message}. Try reading the statement again.`));
         }
       };
       this.worker.onerror = (event) => {
         event.preventDefault();
-        this.stop(new CasError("runtime", "The parser stopped. Reopen this page to try again."));
+        this.stop(new CasError("runtime", STOPPED));
       };
       this.boot(assets).catch((error) =>
         this.stop(new CasError("runtime", `Couldn't load the parser's files: ${error?.message ?? error}`)),
@@ -67,6 +81,10 @@ export class CasParser {
     });
     // Reported by parse(); don't let an unused parser raise an unhandled rejection.
     this.ready.catch(() => {});
+    this.startTimer = setTimeout(
+      () => this.stop(new CasError("runtime", "The parser didn't start in time. Try reading the statement again.")),
+      CasParser.startTimeoutMs,
+    );
   }
 
   private async boot(assets: AddonAssets) {
@@ -94,8 +112,27 @@ export class CasParser {
     if (this.error) throw this.error;
     const id = this.nextId++;
     const reply = await new Promise<ParseReply>((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.worker.postMessage({ type: "parse", id, pdf, password }, [pdf]);
+      const timer = setTimeout(
+        () => this.stop(new CasError("runtime", "The parser didn't finish reading this PDF in time. Try reading it again.")),
+        CasParser.parseTimeoutMs,
+      );
+      this.pending.set(id, {
+        resolve: (reply) => {
+          clearTimeout(timer);
+          resolve(reply);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      });
+      try {
+        this.worker.postMessage({ type: "parse", id, pdf, password }, [pdf]);
+      } catch (error) {
+        clearTimeout(timer);
+        this.pending.delete(id);
+        reject(error);
+      }
     });
     if ("errorType" in reply) {
       if (reply.errorType === "IncorrectPasswordError") {
@@ -111,8 +148,14 @@ export class CasParser {
     return data;
   }
 
+  /** Whether the parser has stopped (an error, a timeout or `dispose()`), so it can't read any more PDFs. */
+  get stopped() {
+    return this.error !== undefined;
+  }
+
   private stop(error: CasError) {
     this.error ??= error;
+    clearTimeout(this.startTimer);
     this.rejectReady(this.error);
     for (const { reject } of this.pending.values()) reject(this.error);
     this.pending.clear();
