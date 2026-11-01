@@ -52,8 +52,8 @@ export function HoldingsAccountsCard({
         {accounts.length === 0 ? (
           <>
             <p>
-              No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then close and
-              reopen the add-on. The check against transactions below works without one.
+              No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then choose
+              Read statement again. The check against transactions below works without one.
             </p>
             {/* Still say why the accounts chosen before are ignored. */}
             {[[statementKey, "All of this statement"], ...holdings.sources.map((s) => [sourceKey(s), s.label])].map(

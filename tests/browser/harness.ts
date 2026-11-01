@@ -40,7 +40,23 @@ interface HostAsset {
 
 type WorkerFault = "" | "no-ready" | "no-reply" | "stop" | "fatal";
 
+const account = (id: string, name: string, trackingMode: string) => ({ id, name, currency: "INR", isActive: true, isArchived: false, trackingMode });
+
 const host = {
+  // Wealthfolio's accounts. The add-on sees a change on its next read.
+  accounts: [
+    account("account-1", "Mutual funds", "TRANSACTIONS"),
+    account("bank-1", "Savings", "TRANSACTIONS"),
+    account("unset-1", "Not set", "NOT_SET"),
+    account("holdings-1", "Demat", "HOLDINGS"),
+    account("holdings-2", "Fund folios", "HOLDINGS"),
+    { ...account("archived-1", "Archived funds", "HOLDINGS"), isActive: false },
+    { ...account("hidden-1", "Hidden funds", "TRANSACTIONS"), isActive: false },
+    { ...account("archived-2", "Old funds", "TRANSACTIONS"), isArchived: true },
+    { ...account("hidden-2", "Hidden demat", "HOLDINGS"), isActive: false },
+    { ...account("archived-3", "Old demat", "HOLDINGS"), isActive: false, isArchived: true },
+  ],
+  failAccounts: false,
   storage: new Map<string, string>(),
   secrets: new Map<string, string>(),
   activities: [] as ActivityDetails[],
@@ -67,9 +83,6 @@ const host = {
   ambiguousSummary: false,
   // Summary statements print no ISIN for the funds with these.
   summaryWithoutIsin: [] as string[],
-  archiveOtherAccount: false,
-  // Hides both accounts that track holdings, after a reopen.
-  hideHoldingsAccounts: false,
   reopen: () => {},
   // Asset pricing mode belongs to the asset, independently of any account or snapshot.
   pricingModes: {} as Record<string, string>,
@@ -221,7 +234,9 @@ const stored = (row: ActivityImport, i: number) =>
     comment: undefined,
   }) as unknown as ActivityDetails;
 
-const account = (id: string, name: string, trackingMode: string) => ({ id, name, currency: "INR", isActive: true, isArchived: false, trackingMode });
+// Archived funds once a test archives it, when it tracks transactions: no holdings, and only its
+// calculated snapshots count.
+const archivedOther = (accountId: string) => accountId === "archived-1" && host.accounts.some((a) => a.id === accountId && a.isArchived);
 
 // A saved snapshot the way `snapshots.getByDate` returns it.
 const snapshotHoldings = (accountId: string, date: string) => {
@@ -281,22 +296,15 @@ function saveQuote(quote: Quote) {
 
 const api = {
   accounts: {
-    getAll: async (includeArchived = false) => [
-      account("account-1", "Mutual funds", "TRANSACTIONS"),
-      account("bank-1", "Savings", "TRANSACTIONS"),
-      account("unset-1", "Not set", "NOT_SET"),
-      { ...account("holdings-1", "Demat", "HOLDINGS"), isActive: !host.hideHoldingsAccounts },
-      { ...account("holdings-2", "Fund folios", "HOLDINGS"), isActive: !host.hideHoldingsAccounts },
-      { ...account("archived-1", "Archived funds", host.archiveOtherAccount ? "TRANSACTIONS" : "HOLDINGS"), isActive: false, isArchived: host.archiveOtherAccount },
-      { ...account("hidden-1", "Hidden funds", "TRANSACTIONS"), isActive: false },
-      { ...account("archived-2", "Old funds", "TRANSACTIONS"), isArchived: true },
-      { ...account("hidden-2", "Hidden demat", "HOLDINGS"), isActive: false },
-      { ...account("archived-3", "Old demat", "HOLDINGS"), isActive: false, isArchived: true },
-    ].filter((a) => includeArchived || !a.isArchived),
+    // Copies, so a later change doesn't reach what the add-on read.
+    getAll: async (includeArchived = false) => {
+      if (host.failAccounts) throw new Error("Accounts unavailable");
+      return host.accounts.filter((a) => includeArchived || !a.isArchived).map((a) => ({ ...a }));
+    },
   },
   portfolio: {
     getHoldings: async (accountId: string) => {
-      if (accountId === "archived-1" && host.archiveOtherAccount) return [];
+      if (archivedOther(accountId)) return [];
       const date = latest(accountId);
       if (date) return snapshotHoldings(accountId, date);
       return (host.held[accountId] ?? []).map((symbol) => ({
@@ -312,11 +320,11 @@ const api = {
         ...Object.entries(host.snapshots[accountId] ?? {}).map(([date, snapshot]) => ({ id: `${accountId}-${date}`, snapshotDate: date, source: snapshot.source ?? "MANUAL_ENTRY" })),
         ...["2025-03-15", "2099-12-31"].map((date) => ({
           id: `${accountId}-${date}`, snapshotDate: date,
-          source: accountId === "archived-1" && host.archiveOtherAccount ? "MANUAL_ENTRY" : "CALCULATED",
+          source: archivedOther(accountId) ? "MANUAL_ENTRY" : "CALCULATED",
         })),
       ],
     getByDate: async (accountId: string, date: string) => {
-      const holdings = !(accountId === "archived-1" && host.archiveOtherAccount);
+      const holdings = !archivedOther(accountId);
       const snapshot = host.snapshots[accountId]?.[date];
       const source = snapshot?.source ?? (snapshot || !holdings ? "MANUAL_ENTRY" : "CALCULATED");
       if (!snapshot || holdings === (source === "CALCULATED")) return [];
