@@ -35,7 +35,8 @@ const paths = ["files.json", ...runtime.files, ...runtime.wasmParts, ...runtime.
   (name) => `assets/runtime/${name}`,
 );
 // The meta charset matters: Playwright's WebKit reads a routed page as windows-1252 despite the
-// header, which would garble the harness's non-ASCII text and so break its CSP hash.
+// header, which would garble the harness's non-ASCII text and so break its CSP hash. Still so in
+// Playwright 1.64.1 (microsoft/playwright#43649).
 const page = (doc) => `<!doctype html><meta charset="utf-8"><iframe sandbox="allow-scripts"></iframe><script>
 const paths = ${JSON.stringify(paths)};
 const frame = document.querySelector("iframe");

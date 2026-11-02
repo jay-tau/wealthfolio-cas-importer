@@ -50,7 +50,7 @@ jobs:
     # those packages took some runs past the time limit. Its tag must match playwright-core in
     # package.json, so change the two together.
     container:
-      image: mcr.microsoft.com/playwright:v1.58.2-noble
+      image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --user 1001
     steps:
       - uses: actions/checkout@v7
