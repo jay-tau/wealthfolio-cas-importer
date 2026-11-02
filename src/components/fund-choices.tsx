@@ -14,6 +14,7 @@ import {
 } from "@wealthfolio/ui";
 import { useEffect, useRef, useState } from "react";
 import type { CasData, CasScheme } from "../cas/types";
+import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
 import { fundName } from "../lib/fund-name";
 
@@ -43,7 +44,9 @@ const pickHint = (item: FundItem) => {
 };
 
 const describe = (fund: ChosenFund) =>
-  [fund.symbol, fund.exchangeMic, fund.instrumentType, fund.quoteCcy, fund.statementPrices && "priced from statements"].filter(Boolean).join(" · ");
+  [fund.symbol, fund.exchangeMic, fund.instrumentType, fund.quoteCcy, fromAmfi(fund) && "AMFI selected", fund.statementPrices && "priced from statements"]
+    .filter(Boolean)
+    .join(" · ");
 
 /** The statement's funds, one entry per fund however many folios hold it. */
 export function fundsOf(data: CasData) {
@@ -99,6 +102,8 @@ function FundSearch({
   const [error, setError] = useState("");
   // The name searched when the printed ISIN found nothing, or when there's no ISIN.
   const [byName, setByName] = useState("");
+  // The results are for the printed ISIN, or for the name of a fund printed without one.
+  const [own, setOwn] = useState(false);
   // Answers can arrive out of order; only the latest search's counts.
   const latest = useRef(0);
 
@@ -113,6 +118,7 @@ function FundSearch({
     // even when there's a single result.
     let named = !isin && text.trim() === name;
     setByName(named ? name : "");
+    setOwn(named || (!!isin && text.trim().toUpperCase() === isin));
     try {
       let found = await ctx.api.market.searchTicker(text.trim());
       if (id !== latest.current) return;
@@ -125,7 +131,7 @@ function FundSearch({
         if (id !== latest.current) return;
       }
       setResults(found);
-      setPicked(found.length === 1 && !named ? "0" : "");
+      setPicked(String(preselected(found, named) ?? ""));
     } catch (e) {
       if (id === latest.current) setError(`The search failed: ${String(e)}`);
     } finally {
@@ -172,6 +178,22 @@ function FundSearch({
       {results?.length === 0 && !byName && (
         <p className="text-muted-foreground text-sm">
           Nothing found. Try the {noun}'s name{statementAsset ? ", or use the statement's prices" : ""}.
+        </p>
+      )}
+      {results && own && noun === "fund" && !results.some(fromAmfi) && (
+        <p className="text-muted-foreground text-sm">
+          No AMFI result. Wealthfolio can price Indian funds from AMFI, the Association of Mutual Funds
+          in India: if it isn't on, add it in Settings → Market data, then search again. AMFI finds a fund only by its
+          exact ISIN or AMFI scheme code, in its current list of schemes: some closed or merged schemes aren't in it, and
+          an ISIN listed under more than one scheme code finds nothing.
+        </p>
+      )}
+      {results?.some(fromAmfi) && results.some(pricedElsewhere) && (
+        <p className="text-muted-foreground text-sm">
+          Wealthfolio already has this fund, priced from another source, and picking AMFI's result adds a second asset
+          for it. To price the one it has from AMFI instead, edit that asset in Wealthfolio. Under Market data, turn on
+          automatic updates if it's priced by hand, then choose AMFI as the preferred provider and map AMFI to the
+          fund's ISIN or scheme code.
         </p>
       )}
       {results && results.length > 0 && (

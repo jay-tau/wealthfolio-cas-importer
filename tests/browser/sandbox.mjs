@@ -146,11 +146,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await noIsin.getByRole("radio").count(), 1);
     assert.equal(await noIsin.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
     const firstFund = frame.locator("section").first();
+    // With AMFI not added in Settings → Market data, the search for a fund's ISIN or for the name of one
+    // printed without it finds no AMFI result. Other search terms say nothing about AMFI.
+    const noAmfi = /^No AMFI result\. Wealthfolio can price Indian funds from AMFI, .* add it in Settings → Market data, then search again\./;
+    await firstFund.getByText(noAmfi).waitFor();
+    await noIsin.getByText(noAmfi).waitFor();
     const search = firstFund.getByLabel("Search for the fund");
     const useFund = firstFund.getByRole("button", { name: "Use this fund" });
     await search.fill("MULTI");
     await search.press("Enter");
     await firstFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    assert.equal(await firstFund.getByText(noAmfi).count(), 0);
     assert.equal(await useFund.isDisabled(), true, "multiple matches require a selected result");
     await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
     assert.equal(await useFund.isDisabled(), false);
@@ -896,6 +902,79 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.frames()[1].evaluate((before) => Object.assign(window.host, before, { merger: false }), beforeMerger);
     await restoreChoices(storageBeforeMerger);
     await undecided(flexi);
+
+    // With AMFI added, a fund's ISIN finds Yahoo's result and then AMFI's, which
+    // is preselected but still needs confirming. Funds confirmed before keep their choice, unsearched.
+    const beforeAmfi = await tab.frames()[1].evaluate(() => ({
+      activities: window.host.activities, assets: window.host.assets, storage: [...window.host.storage], searches: window.host.searches,
+      failHistory: window.host.failHistory, rejectLine: window.host.rejectLine, skipLine: window.host.skipLine,
+    }));
+    await tab.frames()[1].evaluate(() => {
+      window.host.amfi = true;
+      window.host.activities = [];
+      window.host.failHistory = false;
+      window.host.rejectLine = undefined;
+      window.host.skipLine = undefined;
+      window.host.searches = [];
+      // Wealthfolio has the Flexi Cap fund, priced from Yahoo.
+      window.host.assets["yahoo-flexi"] = { symbol: "INFZ90K01FC8", exchangeMic: "XBOM", instrumentType: "EQUITY", name: "Yahoo Flexi Cap" };
+    });
+    await readAgain();
+    const liquidSection = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
+    await undecided(liquidSection);
+    const liquidResults = liquidSection.getByRole("radio");
+    await liquidResults.nth(1).waitFor({ state: "attached" });
+    assert.match(await liquidSection.locator("label").nth(1).textContent(), /^Scheme \d{6} \(\d{6} · MUTUALFUND · INR · AMFI selected\)$/);
+    assert.equal(await liquidResults.nth(1).getAttribute("aria-checked"), "true", "AMFI's result is preselected");
+    assert.equal(await liquidSection.getByText(noAmfi).count(), 0);
+    await liquidSection.getByRole("button", { name: "Use this fund" }).click();
+    await liquidSection.getByText(/^Scheme \d{6} \(\d{6} · MUTUALFUND · INR · AMFI selected\)$/).waitFor();
+    const amfiFund = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
+    assert.deepEqual(
+      [amfiFund.providerId, amfiFund.exchangeMic, amfiFund.providerSymbol, amfiFund.instrumentType, amfiFund.quoteCcy],
+      ["AMFI", undefined, amfiFund.symbol, "MUTUALFUND", "INR"],
+    );
+    // Picking AMFI's result for a fund Wealthfolio has priced from another source would add a second
+    // asset, so nothing is preselected, and the card says how to switch the asset to AMFI instead.
+    await undecided(flexi);
+    await flexi.getByText(/^Wealthfolio already has this fund, priced from another source, and picking AMFI's result adds a second asset for it\./).waitFor();
+    assert.equal(await flexi.getByRole("button", { name: "Use this fund" }).isDisabled(), true);
+    await flexi.getByRole("radio").first().dispatchEvent("click");
+    await flexi.getByRole("button", { name: "Use this fund" }).click();
+    await flexi.getByText("Yahoo Flexi Cap").waitFor();
+    // AMFI doesn't search names.
+    await undecided(noIsin);
+    await noIsin.getByText(noAmfi).waitFor();
+    await noIsin.getByRole("radio").first().dispatchEvent("click");
+    await noIsin.getByRole("button", { name: "Use this fund" }).click();
+    assert.equal(await confirmed(), 5);
+    const amfiSearches = await tab.frames()[1].evaluate(() => window.host.searches);
+    assert.ok(!amfiSearches.some((query) => /INFZ90K01BA1|INFZ91T01CB6/.test(query)), amfiSearches.join(" "));
+    // Wealthfolio 3.12.0's checkImport asks for an exchange for a new fund chosen from AMFI, but its
+    // import creates the fund priced from AMFI, so the add-on offers its rows as new.
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^\d+ new transactions, 0 already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
+    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
+    await frame.getByText(/^Imported (\d+) of \1 activities/).waitFor();
+    assert.ok(await tab.frames()[1].evaluate((code) => window.host.activities.some((a) => a.assetSymbol === code), amfiFund.symbol));
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
+    // Searching the ISIN again resolves AMFI's scheme code to the asset the import created.
+    await liquidSection.getByRole("button", { name: "Change", exact: true }).click();
+    await liquidResults.nth(1).waitFor({ state: "attached" });
+    assert.equal(await liquidResults.count(), 2);
+    assert.match(await liquidSection.locator("label").first().textContent(), / · EQUITY · INR · AMFI selected\)$/);
+    assert.equal(await liquidResults.first().getAttribute("aria-checked"), "true");
+    await liquidSection.getByRole("button", { name: "Use this fund" }).click();
+    const existingAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
+    assert.ok(existingAmfi.assetId);
+    assert.equal(existingAmfi.providerSymbol, undefined);
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
+    await tab.frames()[1].evaluate((state) => {
+      window.host.amfi = false;
+      Object.assign(window.host, { ...state, storage: new Map(state.storage) });
+    }, beforeAmfi);
 
     // An NSDL statement's holdings go to accounts that track holdings, as snapshots.
     const hosted = (fn, arg) => tab.frames()[1].evaluate(fn, arg);
@@ -2084,6 +2163,67 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await checkRow(balancedName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "3443.91", "3000"]);
     assert.equal(await accountData(), before);
     await setAccountList(beforeCheck);
+
+    // A summary import creates an AMFI fund without an exchange. Searching its ISIN then finds
+    // that asset, even if automatic updates have since been turned off.
+    await hosted(() => {
+      window.host.amfi = true;
+      window.host.storage.clear();
+      window.host.assets = {};
+      window.host.snapshots = {};
+      window.host.held = {};
+      window.host.activities = [];
+      window.host.pricingModes = {};
+      window.host.quotes = {};
+    });
+    await readHoldingsAgain();
+    await choose("All of this statement", "Fund folios (INR)");
+    const summaryLiquid = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
+    const schemeCodes = [];
+    for (const section of await frame.locator("section").all()) {
+      await section.getByRole("radio").first().waitFor({ state: "attached" });
+      const amfiLabel = await section.locator("label").filter({ hasText: "AMFI selected" }).textContent();
+      schemeCodes.push(amfiLabel.match(/^Scheme (\d{6})/)[1]);
+      if (await section.getByText("ISIN INFZ90K01LQ6", { exact: true }).count()) continue;
+      await section.getByRole("button", { name: "Leave this fund out", exact: true }).click();
+    }
+    assert.equal(new Set(schemeCodes).size, schemeCodes.length, "different funds have different AMFI scheme codes");
+    assert.equal(await summaryLiquid.getByRole("radio").nth(1).getAttribute("aria-checked"), "true");
+    await summaryLiquid.getByRole("button", { name: "Use this fund", exact: true }).click();
+    const summaryAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
+    await preview.click();
+    await frame.getByRole("button", { name: "Save 1 snapshot", exact: true }).click();
+    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    const amfiSnapshot = await snapshot("holdings-2", "2025-03-31");
+    assert.equal(amfiSnapshot.holdings.length, 1);
+    assert.deepEqual(
+      [amfiSnapshot.holdings[0].symbol, amfiSnapshot.holdings[0].exchangeMic, amfiSnapshot.holdings[0].providerId,
+        amfiSnapshot.holdings[0].providerSymbol, amfiSnapshot.holdings[0].instrumentType, amfiSnapshot.holdings[0].quoteCcy],
+      [summaryAmfi.symbol, undefined, "AMFI", summaryAmfi.symbol, "MUTUALFUND", "INR"],
+    );
+    assert.equal(await hosted((code) => window.host.assets[`asset-${code}`].providerId, summaryAmfi.symbol), "AMFI");
+    await hosted((code) => { window.host.pricingModes[code] = "MANUAL"; }, summaryAmfi.symbol);
+    await readHoldingsAgain();
+    await summaryLiquid.getByRole("button", { name: "Change", exact: true }).click();
+    const summaryResults = summaryLiquid.getByRole("radio");
+    await summaryResults.nth(1).waitFor({ state: "attached" });
+    assert.equal(await summaryResults.count(), 2);
+    assert.equal(await summaryResults.first().getAttribute("aria-checked"), "true");
+    assert.match(await summaryLiquid.locator("label").first().textContent(), / · EQUITY · INR · AMFI selected\)$/);
+    assert.equal(await summaryLiquid.getByText(/priced from AMFI/).count(), 0);
+    await summaryLiquid.getByRole("button", { name: "Use this fund", exact: true }).click();
+    const summaryExisting = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
+    assert.equal(summaryExisting.assetId, `asset-${summaryAmfi.symbol}`);
+    assert.equal(summaryExisting.providerSymbol, undefined);
+    await readHoldingsAgain();
+    await summaryLiquid.getByText(/ · EQUITY · INR · AMFI selected\)$/).waitFor();
+    for (const section of await frame.locator("section").all()) {
+      if (await section.getByText("ISIN INFZ90K01LQ6", { exact: true }).count()) continue;
+      await section.getByRole("button", { name: "Leave this fund out", exact: true }).click();
+    }
+    await preview.click();
+    await frame.getByText("Priced by hand: saving also saves the statement's price as its price on this date.", { exact: true }).waitFor();
+    await hosted(() => { window.host.amfi = false; });
 
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });
