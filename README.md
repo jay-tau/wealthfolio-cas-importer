@@ -9,8 +9,8 @@ parsed on the device. A detailed statement from CAMS or KFintech is imported as 
 summary statement from CAMS or KFintech, or a statement from NSDL or CDSL, the depositories, is
 imported as holdings (see [Summary and depository statements](#summary-and-depository-statements)).
 
-Detailed imports have been checked in Wealthfolio 3.11.0's desktop app on Linux and Windows;
-they haven't been tried on macOS.
+Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0 and 3.12.0) and
+Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on macOS.
 
 To import, pick the PDF and enter its password, choose a Wealthfolio account that tracks
 transactions for each PAN (and, if you like, a different one for a folio), and confirm the
@@ -72,9 +72,11 @@ enter, not from market data:
 
 - A fund or share has its ISIN as the symbol. A summary statement's fund without an ISIN goes by
   its registrar and scheme code: KFintech's `TONDG` is `MF-KFINTECH-TONDG`. A fund's type is sent
-  as `MUTUALFUND`, which Wealthfolio stores as `EQUITY` like a share's, and its automatic
-  classification files both under common stock; change a fund's instrument type on its asset page.
-  Detailed statements don't preconfirm this choice: reading one searches for the fund again.
+  as `MUTUALFUND`, which Wealthfolio stores as `EQUITY` like a share's. Wealthfolio 3.12.0 and newer
+  classify the new asset as a mutual fund, with an asset class guessed from its name
+  ([wealthfolio/wealthfolio#2408](https://github.com/wealthfolio/wealthfolio/issues/2408)); older
+  versions file funds and shares alike under common stock. Check a fund's classifications on its
+  asset page. Detailed statements don't preconfirm this choice: reading one searches for the fund again.
 - A bond is a `BOND` asset with its ISIN as the symbol. Its cost defaults to the face value times
   the number of bonds when the statement prints a face value (NSDL demat accounts do); CDSL demat
   accounts on NSDL statements print a market price instead. casparser 1.4.1 returns no bonds for
@@ -199,12 +201,11 @@ PDF, its password and your PAN never leave Wealthfolio.
 
 Download `wealthfolio-cas-importer-<version>.zip` from
 [Releases](https://github.com/jay-tau/wealthfolio-cas-importer/releases). In Wealthfolio's desktop
-app, 3.11.0 or newer, open **Settings** → **Add-ons**, choose **Install from File**, pick the zip
-and allow the permissions it asks for.
+app, 3.11.0 or newer, or its web app, 3.12.0 or newer, open **Settings** → **Add-ons**, choose
+**Install from file** (**Install from File** in 3.11.0), pick the zip and allow the permissions it asks for.
 
-Wealthfolio's web app can't install it from a file yet: its server turns away add-on zips over about
-1.5 MiB, and this one is about 11 MB
-([wealthfolio/wealthfolio#2306](https://github.com/wealthfolio/wealthfolio/issues/2306)).
+The web app needs 3.12.0: older servers turn away add-on zips over about 1.5 MiB, and this one is
+about 11 MB ([wealthfolio/wealthfolio#2306](https://github.com/wealthfolio/wealthfolio/issues/2306)).
 
 Each release also carries the zip's SHA-256 (`sha256sum -c wealthfolio-cas-importer-<version>.zip.sha256`)
 and a build provenance attestation:
