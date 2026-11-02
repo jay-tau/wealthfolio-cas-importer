@@ -3,11 +3,13 @@ import { abs, add, cmp, dec, type Dec, div, format, isZero, neg } from "./decima
 import type { FundAsset, MappedTransaction, Mapping } from "./mapping.ts";
 import type { CasData, CasFolio, CasScheme } from "./types.ts";
 
-// Which mapped transactions the import sends. Wealthfolio's checkImport doesn't report a
-// trade that an earlier import already saved when that import created the fund: the import
-// keyed the trade by symbol and exchange, and once the asset exists checkImport keys it by
-// the asset's ID (Wealthfolio 3.11.0). Wealthfolio's CSV import creates assets first; add-ons
-// can't. So each row is compared with the account's activities on the import key's fields.
+// Which mapped transactions the import sends. Each row is compared with the account's
+// activities on the import key's fields, and each activity matches one row at most.
+// Wealthfolio's checkImport can't count copies: a duplicate row imported with "Import anyway"
+// is stored without a duplicate key and isn't found by later checks. Before Wealthfolio 3.12.0,
+// checkImport also missed a trade that an earlier import saved when that import created the
+// fund: the import keyed the trade by symbol and exchange, and checkImport keyed it by the
+// asset's ID.
 
 export type Status =
   /** Every row is new. */

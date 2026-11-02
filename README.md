@@ -26,10 +26,10 @@ fund anyway"; then check its rows against the PDF and add or correct the missing
 Wealthfolio after importing.
 
 Importing the same statement again, or an overlapping one, adds only what's new: the add-on compares
-each row with the account's activities. Wealthfolio's own duplicate check misses the trades of a fund
-that an earlier import created, because an add-on can't create the fund before importing the way
-Wealthfolio's CSV import does. A fund whose statement starts with units needs those units in
-Wealthfolio first, from an earlier statement or entered by hand.
+each row with the account's activities. Wealthfolio's own duplicate check can't count copies of a row
+once a duplicate was imported with "Import anyway". Before Wealthfolio 3.12.0 it also missed the
+trades of a fund that an earlier import created. A fund whose statement starts with units needs
+those units in Wealthfolio first, from an earlier statement or entered by hand.
 The units check counts posted account history, each activity on its day in Wealthfolio's timezone
 setting (UTC if none is set); splits or option expiry in that history need review.
 Activities show an asset's display code, which can be changed, so rows and units go by the fund's
