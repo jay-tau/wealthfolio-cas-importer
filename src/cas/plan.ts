@@ -9,7 +9,8 @@ import type { CasData, CasFolio, CasScheme } from "./types.ts";
 // is stored without a duplicate key and isn't found by later checks. Before Wealthfolio 3.12.0,
 // checkImport also missed a trade that an earlier import saved when that import created the
 // fund: the import keyed the trade by symbol and exchange, and checkImport keyed it by the
-// asset's ID.
+// asset's ID. A merger's conversion rows also go by their direction and group, as Wealthfolio
+// 3.12.0's import key does.
 
 export type Status =
   /** Every row is new. */
@@ -38,12 +39,17 @@ export interface PlannedRow {
 
 export interface PlannedTransaction {
   transaction: MappedTransaction;
-  /** The activity, then its cash and the bank's side of it. */
+  /** The activity, then its cash and the bank's side of it, or a merger's two conversion rows. */
   rows: PlannedRow[];
   status: Status;
+  /** Earlier merger rows found in Wealthfolio, including uncertain matches when price or amount is missing. */
+  earlier?: PlannedRow[];
+  /** Why the transaction can't be imported, besides its rows' errors. */
+  problem?: string;
 }
 
-const rowsOfTransaction = (t: MappedTransaction) => [t.activity, t.cash, t.bank].filter((row) => row !== undefined);
+const rowsOfTransaction = (t: MappedTransaction) =>
+  [t.activity, t.cash, t.bank, t.arriving?.activity].filter((row) => row !== undefined);
 
 /**
  * The rows for checkImport and the import, in the order `planImport` reads its results. Each
@@ -107,6 +113,18 @@ function amount(value: string | number | null | undefined, zeroIsNone = false) {
 export const fundRef = (symbol: string, exchangeMic?: string | null) =>
   `${symbol.trim().toUpperCase()}@${exchangeMic ?? ""}`;
 
+/** A fund conversion's side, from a subtype in any spelling Wealthfolio accepts. */
+export function conversionSide(subtype: string | null | undefined) {
+  const canonical = subtype?.trim().replace(/[ -]/g, "_").toUpperCase();
+  return canonical === "CONVERSION_OUT" || canonical === "CONVERSION_IN" ? canonical : undefined;
+}
+
+/** The type Wealthfolio's import key hashes: a conversion row's with its side and group, as two can otherwise be equal. */
+function keyType(type: string, subtype: string | null | undefined, group: string | null | undefined) {
+  const side = conversionSide(subtype);
+  return side ? `${type}/${side}/${group?.trim() ?? ""}` : type;
+}
+
 function identity(
   accountId: string,
   type: string,
@@ -129,7 +147,13 @@ function identity(
 }
 
 const rowIdentity = (row: ActivityImport) =>
-  identity(row.accountId, row.activityType, row.date, row.symbol?.trim() ? fundRef(row.symbol, row.exchangeMic) : "", row);
+  identity(
+    row.accountId,
+    keyType(row.activityType, row.subtype, row.sourceGroupId),
+    row.date,
+    row.symbol?.trim() ? fundRef(row.symbol, row.exchangeMic) : "",
+    row,
+  );
 
 /** A fund account's cash row as the other kind of import has it: a deposit for a transfer in, say. */
 const OTHER_CASH: Partial<Record<ActivityType, ActivityType>> = {
@@ -181,10 +205,13 @@ export function fundRefs(funds: (FundAsset & { assetId?: string; name?: string }
   return refs;
 }
 
+/** Wealthfolio 3.12.0 returns an activity's group, though the SDK's ActivityDetails doesn't declare it. */
+const groupOf = (a: ActivityDetails) => (a as ActivityDetails & { sourceGroupId?: string | null }).sourceGroupId?.trim() || undefined;
+
 /** Undefined for an activity of an asset that isn't a confirmed fund. */
 function activityIdentity(a: ActivityDetails, funds: FundRefs) {
   const fund = a.assetId ? funds.get(a.assetId) : "";
-  return fund === undefined ? undefined : identity(a.accountId, a.activityType, a.date, fund, a);
+  return fund === undefined ? undefined : identity(a.accountId, keyType(a.activityType, a.subtype, groupOf(a)), a.date, fund, a);
 }
 
 /** Wealthfolio's activities by identity. */
@@ -213,16 +240,20 @@ export function planImport(
   funds: FundRefs,
 ): PlannedTransaction[] {
   const available = indexActivities(existing, funds).index;
+  // Stored group rows can make a new conversion fail the whole import.
+  const groups = new Set(existing.flatMap((a) => groupOf(a) ?? []));
   const seen = new Map<string, number>();
   let position = 0;
-  return mapping.transactions.map((transaction) => {
+  const planned: PlannedTransaction[] = mapping.transactions.map((transaction) => {
+    let tradeFound = false;
     const plan = (activity: ActivityImport, settled = false): PlannedRow => {
       const result = checked[position++];
       // A fund account's cash may have come in under the other type, from a v1 import or before a
       // bank account was chosen; the bank's side never does: its deposits and withdrawals are the
       // bank's own rows.
       const keys = activity === transaction.cash ? cashIdentities(activity) : [{ key: rowIdentity(activity), type: undefined }];
-      const match = settled ? undefined : keys.find(({ key }) => available.get(key)?.length);
+      const deferCash = activity === transaction.cash && !tradeFound;
+      const match = settled || deferCash ? undefined : keys.find(({ key }) => available.get(key)?.length);
       const row: PlannedRow = {
         activity,
         errors: messages(result?.errors),
@@ -238,26 +269,113 @@ export function planImport(
       return row;
     };
     const rows = [plan(transaction.activity)];
+    tradeFound = !!rows[0].existingId;
     if (transaction.cash) rows.push(plan(transaction.cash));
+    if (transaction.arriving) rows.push(plan(transaction.arriving.activity));
     // Wealthfolio has the transaction when it has the trade and the fund account's cash, whatever
-    // the bank account shows.
+    // the bank account shows, or both rows of a conversion.
     const settled = rows.every((r) => r.existingId);
     if (transaction.bank) rows.push(plan(transaction.bank, settled));
-    const status: Status = rows.some((r) => r.errors.length)
+    return { transaction, rows, status: "new" };
+  });
+
+  // Reserve current trades and their cash before looking for earlier SELL + BUY imports.
+  const mergers = planned.filter((t) => t.transaction.arriving && !t.rows.every((r) => r.existingId));
+  for (const t of mergers) {
+    if (t.rows.some((r) => r.existingId) || groups.has(t.transaction.activity.sourceGroupId!)) {
+      t.problem = CHANGED_CONVERSION;
+    } else if (t.transaction.earlier) {
+      t.earlier = t.transaction.earlier.map((activity) => ({ activity, errors: [], warnings: [], flagged: false }));
+    }
+  }
+  const takeAvailable = (row: PlannedRow) => {
+    const keys = cashIdentities(row.activity);
+    const match = keys.find(({ key }) => available.get(key)?.length);
+    row.existingId = match && available.get(match.key)!.shift();
+    row.existingType = match?.type;
+  };
+  // Match every merger's trades before cash: an unrelated merger can have equal cash rows.
+  for (const t of mergers) {
+    for (const r of t.earlier ?? []) if (r.activity.symbol?.trim() && r.activity.unitPrice !== undefined) takeAvailable(r);
+  }
+  for (const t of mergers) {
+    for (const r of t.earlier ?? []) {
+      if (!r.activity.symbol?.trim() || r.activity.unitPrice !== undefined) continue;
+      // Without a printed amount or NAV, a matching earlier trade is enough to block a second import.
+      const match = existing.find((a) => {
+        const key = activityIdentity(a, funds);
+        return key !== undefined && available.get(key)?.includes(a.id) &&
+          activityIdentity({ ...a, unitPrice: null, amount: null }, funds) === rowIdentity(r.activity);
+      });
+      if (match) {
+        r.existingId = match.id;
+        const ids = available.get(activityIdentity(match, funds)!)!;
+        ids.splice(ids.indexOf(match.id), 1);
+      }
+    }
+  }
+  // Trades already found get their cash first, ahead of any cash-only matches.
+  const withTrades = new Set(mergers.filter((t) => t.earlier?.some((r) => r.existingId)));
+  for (const t of withTrades) {
+    for (const r of t.earlier!) if (!r.activity.symbol?.trim()) takeAvailable(r);
+  }
+  // Cash without a matched trade can belong to several mergers; block them without reserving it.
+  for (const t of mergers) {
+    for (const r of t.earlier ?? []) {
+      if (r.activity.symbol?.trim() || r.existingId) continue;
+      // Without the old amount, any remaining cash on this day may belong to the earlier import.
+      const match = existing.find((a) => {
+        const key = activityIdentity(a, funds);
+        return key !== undefined && available.get(key)?.includes(a.id) && a.amount && dec(a.amount).n > 0n &&
+          cashIdentities({ ...r.activity, amount: r.activity.amount ?? a.amount }).some((candidate) => candidate.key === key);
+      });
+      if (match) t.problem = t.earlier!.some((r) => r.activity.symbol?.trim() && r.activity.unitPrice === undefined)
+        ? UNCERTAIN_EARLIER : PART_OF_EARLIER;
+    }
+  }
+  for (const t of planned) {
+    if (t.transaction.cash && !t.rows[0].existingId) takeAvailable(t.rows[1]);
+  }
+  const completeEarlier = (t: PlannedTransaction) => t.earlier?.every(
+    (r) => r.existingId && (!r.activity.symbol?.trim() || r.activity.unitPrice !== undefined),
+  );
+  for (const t of mergers) {
+    const earlier = t.earlier;
+    if (!earlier) continue;
+    if (!withTrades.has(t)) {
+      for (const r of earlier) if (!r.activity.symbol?.trim()) takeAvailable(r);
+    }
+    if (earlier.some((r) => r.existingId) && !completeEarlier(t)) {
+      const uncertain = earlier.some((r) => r.activity.symbol?.trim() && r.activity.unitPrice === undefined);
+      t.problem = uncertain ? UNCERTAIN_EARLIER : PART_OF_EARLIER;
+    }
+  }
+  for (const t of planned) {
+    const settled = t.rows.filter((r) => r.activity !== t.transaction.bank).every((r) => r.existingId);
+    t.status = t.problem || t.rows.some((r) => r.errors.length)
       ? "invalid"
-      : settled
+      : settled || completeEarlier(t)
         ? "existing"
-        : rows.some((r) => r.existingId || r.repeatsLine !== undefined || r.flagged)
+        : t.rows.some((r) => r.existingId || r.repeatsLine !== undefined || r.flagged)
           ? "duplicate"
           : "new";
-    return { transaction, rows, status };
-  });
+  }
+  return planned;
 }
+
+const CHANGED_CONVERSION =
+  "Wealthfolio has this conversion from an earlier import, changed since, so it isn't imported again. To import it as the statement has it, delete the conversion in Wealthfolio (deleting either row deletes both) and read the statement again.";
+const PART_OF_EARLIER =
+  "Wealthfolio has part of this merger from an earlier import, which recorded it as a sale and a purchase with a withdrawal and a deposit, so it isn't imported as a conversion. Correct that import, then read the statement again: delete what's left of it to import the merger as a conversion, or add the missing rows to keep it as a sale and a purchase.";
+
+const UNCERTAIN_EARLIER =
+  "Wealthfolio has rows that may belong to an earlier import of this merger, but this statement lacks the amount or NAV needed to check the earlier import, so the merger isn't imported again. Check the sale, purchase and their cash in Wealthfolio. To replace them with a conversion, delete those rows and read the statement again.";
 
 /**
  * New transactions, plus the duplicates the user chose to import anyway. All rows of a transaction
  * or none, except that a transaction whose bank row the user chose to reuse sends only its trade:
- * `linkBankRow` adds its cash afterwards.
+ * `linkBankRow` adds its cash afterwards. A conversion is never forced: a copy would join the
+ * group Wealthfolio has, and Wealthfolio refuses a third row in a group.
  */
 export function importRows(
   plan: PlannedTransaction[],
@@ -265,9 +383,9 @@ export function importRows(
   reuseBankRow: (t: PlannedTransaction) => boolean = () => false,
 ) {
   return plan.flatMap((t) => {
-    const rows = reuseBankRow(t) ? t.rows.filter((r) => r.activity === t.transaction.activity) : t.rows;
+    const rows = t.transaction.bank && reuseBankRow(t) ? t.rows.filter((r) => r.activity === t.transaction.activity) : t.rows;
     if (t.status === "new") return rows.map((r) => r.activity);
-    if (t.status === "invalid" || !importAnyway(t)) return [];
+    if (t.status === "invalid" || t.transaction.arriving || !importAnyway(t)) return [];
     return rows.map((r) => ({ ...r.activity, forceImport: true }));
   });
 }
@@ -413,12 +531,13 @@ export function countUnits(activities: ActivityDetails[], range: (day: string) =
     if (!a.quantity) continue;
     const q = abs(dec(a.quantity));
     const type = a.activityType as string;
+    const conversion = type === "ADJUSTMENT" ? conversionSide(a.subtype) : undefined;
     if (
-      type === "BUY" || type === "TRANSFER_IN" ||
+      type === "BUY" || type === "TRANSFER_IN" || conversion === "CONVERSION_IN" ||
       (type === "DIVIDEND" && (a.subtype === "DRIP" || a.subtype === "DIVIDEND_IN_KIND")) ||
       (type === "INTEREST" && a.subtype === "STAKING_REWARD")
     ) units = add(units, q);
-    else if (type === "SELL" || type === "TRANSFER_OUT") units = add(units, neg(q));
+    else if (type === "SELL" || type === "TRANSFER_OUT" || conversion === "CONVERSION_OUT") units = add(units, neg(q));
   }
   return units;
 }

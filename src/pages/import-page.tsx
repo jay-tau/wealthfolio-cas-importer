@@ -298,7 +298,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
     setPreview(null);
     setImported(null);
     try {
-      const existing = (await Promise.all(accountIds().map((id) => api.activities.getAll(id)))).flat();
+      // Groups span accounts; shortcut: the host hides archived activities until its search API includes them.
+      const existing = await api.activities.getAll();
       const funds = await fundsIn(existing);
       // A fund that starts with units needs Wealthfolio to hold exactly those before the statement.
       const covered = new Set(

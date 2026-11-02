@@ -21,7 +21,15 @@ import {
 } from "@wealthfolio/ui";
 import { format } from "../cas/decimal";
 import type { Mapping, MappingWarning } from "../cas/mapping";
-import { day, type FundUnits, type PlannedRow, type PlannedTransaction, sameUnits, type Status } from "../cas/plan";
+import {
+  conversionSide,
+  day,
+  type FundUnits,
+  type PlannedRow,
+  type PlannedTransaction,
+  sameUnits,
+  type Status,
+} from "../cas/plan";
 
 const LABELS: Record<string, string> = {
   BUY: "purchase",
@@ -32,8 +40,24 @@ const LABELS: Record<string, string> = {
   TRANSFER_IN: "transfer in",
   TRANSFER_OUT: "transfer out",
 };
-const label = (row: { activityType: string; subtype?: string | null }) =>
-  row.subtype === "DRIP" ? "reinvested dividend" : LABELS[row.activityType] ?? row.activityType;
+const CONVERSION_LABELS = { CONVERSION_OUT: "fund conversion out", CONVERSION_IN: "fund conversion in" };
+const label = (row: { activityType: string; subtype?: string | null }) => {
+  const side = row.activityType === "ADJUSTMENT" ? conversionSide(row.subtype) : undefined;
+  if (side) return CONVERSION_LABELS[side];
+  return row.subtype === "DRIP" ? "reinvested dividend" : LABELS[row.activityType] ?? row.activityType;
+};
+const list = (names: string[]) =>
+  names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "";
+
+/** A merger an earlier version imported as a sale and a purchase, as far as Wealthfolio has it. */
+function earlierNote(t: PlannedTransaction) {
+  const found = t.earlier?.filter((r) => r.existingId).map((r) => label(r.activity)) ?? [];
+  if (!found.length) return undefined;
+  if (t.status === "existing") {
+    return "Wealthfolio has this merger from an earlier import, as a sale and a purchase with a withdrawal and a deposit. Replacing them with a conversion is up to you: delete those four rows in Wealthfolio, then read the statement again.";
+  }
+  return `From that import, Wealthfolio has the ${list(found)}.`;
+}
 
 /** A transaction whose cash went to a bank row already in Wealthfolio, and what went wrong. */
 export interface BankLink {
@@ -138,10 +162,11 @@ export function Preview({
         <p className="text-muted-foreground text-sm">
           {count("new")} new transactions, {count("existing")} already in Wealthfolio, {count("duplicate")} possible
           duplicates and {count("invalid")} Wealthfolio can't import. Each purchase comes with a transfer from the
-          bank account you chose, and each sale or dividend payout with a transfer to it. Without one, and for switches
-          and mergers, a purchase comes with a deposit and a sale or payout with a withdrawal, as if the money came
-          from or went outside Wealthfolio. When you use a bank row Wealthfolio already has, the add-on imports the
-          trade first, then adds and links its cash.
+          bank account you chose, and each sale or dividend payout with a transfer to it. Without one, and for
+          switches, a purchase comes with a deposit and a sale or payout with a withdrawal, as if the money came from
+          or went outside Wealthfolio. When you use a bank row Wealthfolio already has, the add-on imports the trade
+          first, then adds and links its cash. A fund house's merger is a fund conversion: the new fund's units keep
+          the old fund's cost and purchase dates, nothing is sold and no cash moves.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -160,8 +185,9 @@ export function Preview({
         {count("duplicate") + count("existing") > 0 && (
           <p className="text-sm">
             Transactions marked as duplicates are skipped unless you tick "Import anyway", for example for two equal
-            purchases on the same day. The add-on compares each row with the account's activities, so a later import of
-            this statement still finds them.
+            purchases on the same day. A fund conversion has no "Import anyway": Wealthfolio keeps one per merger. The
+            add-on compares each row with the account's activities, so a later import of this statement still finds
+            them.
           </p>
         )}
         <Table>
@@ -179,19 +205,29 @@ export function Preview({
             </TableRow>
           </TableHeader>
           <TableBody>
-            {plan.map((t, i) => {
-              const { activity, cash, bank } = t.transaction;
-              const notes = [...t.rows.flatMap(reasons), ...caveatsOf(t).map((w) => w.message)];
+            {plan.flatMap((t, i) => {
+              const { activity, cash, bank, arriving } = t.transaction;
+              const notes = [
+                ...t.rows.flatMap(reasons),
+                ...caveatsOf(t).map((w) => w.message),
+                t.problem,
+                earlierNote(t),
+              ].filter((note) => note !== undefined);
               const match = matches.get(t);
-              return (
+              const cells = (scheme: string, row: ActivityImport) => (
+                <>
+                  <TableCell className="whitespace-nowrap">{String(row.date)}</TableCell>
+                  <TableCell>{scheme}</TableCell>
+                  <TableCell>{label(row)}</TableCell>
+                  <TableCell className="text-end tabular-nums">{row.quantity ?? ""}</TableCell>
+                  <TableCell className="text-end tabular-nums">{row.unitPrice ?? ""}</TableCell>
+                  <TableCell className="text-end tabular-nums">{row.tax ?? ""}</TableCell>
+                  <TableCell className="text-end tabular-nums">{row.amount ?? ""}</TableCell>
+                </>
+              );
+              return [
                 <TableRow key={i}>
-                  <TableCell className="whitespace-nowrap">{String(activity.date)}</TableCell>
-                  <TableCell>{t.transaction.scheme}</TableCell>
-                  <TableCell>{label(activity)}</TableCell>
-                  <TableCell className="text-end tabular-nums">{activity.quantity ?? ""}</TableCell>
-                  <TableCell className="text-end tabular-nums">{activity.unitPrice ?? ""}</TableCell>
-                  <TableCell className="text-end tabular-nums">{activity.tax ?? ""}</TableCell>
-                  <TableCell className="text-end tabular-nums">{activity.amount}</TableCell>
+                  {cells(t.transaction.scheme, activity)}
                   <TableCell className="whitespace-nowrap">
                     {cash ? `${label(cash)} ${cash.amount}` : ""}
                     {bank && (
@@ -200,7 +236,7 @@ export function Preview({
                       </span>
                     )}
                   </TableCell>
-                  <TableCell>
+                  <TableCell rowSpan={arriving ? 2 : undefined}>
                     <div className="grid gap-1">
                       <Badge variant={STATUS[t.status].variant}>{STATUS[t.status].badge}</Badge>
                       {notes.map((note, j) => (
@@ -208,7 +244,7 @@ export function Preview({
                           {note}
                         </span>
                       ))}
-                      {(t.status === "duplicate" || t.status === "existing") && (
+                      {(t.status === "duplicate" || t.status === "existing") && !arriving && (
                         <Label className="flex items-center gap-2 text-xs font-normal">
                           <Checkbox disabled={importing} checked={importAnyway.has(t)} onCheckedChange={(yes) => onImportAnyway(t, yes)} />
                           Import anyway
@@ -230,8 +266,16 @@ export function Preview({
                       )}
                     </div>
                   </TableCell>
-                </TableRow>
-              );
+                </TableRow>,
+                ...(arriving
+                  ? [
+                      <TableRow key={`${i}-arriving`}>
+                        {cells(arriving.scheme, arriving.activity)}
+                        <TableCell />
+                      </TableRow>,
+                    ]
+                  : []),
+              ];
             })}
           </TableBody>
         </Table>

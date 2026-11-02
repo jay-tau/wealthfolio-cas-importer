@@ -63,7 +63,8 @@ const map = (data, overrides) => {
 };
 
 /** What Wealthfolio's import would keep, and that each pair nets to zero. */
-function checkRows({ activity, cash, bank }) {
+function checkRows({ activity, cash, bank, arriving }) {
+  if (arriving) return checkConversion(activity, arriving.activity, cash, bank);
   for (const row of [activity, cash, bank].filter(Boolean)) {
     for (const key of ["activityType", "currency", "date", "symbol", "isDraft", "isValid"]) assert.ok(key in row, key);
     assert.equal(row.currency, "INR");
@@ -108,6 +109,26 @@ function checkRows({ activity, cash, bank }) {
   }
   const cashEffect = into ? dec(cash.amount) : neg(dec(cash.amount));
   assert.equal(cmp(add(effect, cashEffect), dec("0")), 0, "signed host cash nets to zero");
+}
+
+/** Wealthfolio's rule for a conversion: one group, one account and day, two assets, units on both, no charges or cash. */
+function checkConversion(leaving, arriving, cash, bank) {
+  assert.equal(cash, undefined);
+  assert.equal(bank, undefined);
+  for (const [row, subtype] of [[leaving, "CONVERSION_OUT"], [arriving, "CONVERSION_IN"]]) {
+    assert.equal(row.activityType, "ADJUSTMENT");
+    assert.equal(row.subtype, subtype);
+    assert.equal(row.currency, "INR");
+    assert.equal(row.isDraft, false);
+    assert.equal(row.isValid, true);
+    assert.equal(row.assetId, undefined);
+    assert.ok(row.quoteCcy && row.instrumentType);
+    assert.ok(cmp(dec(row.quantity), dec("0")) > 0, "units on both rows");
+    for (const key of ["amount", "unitPrice", "fee", "tax", "comment"]) assert.equal(row[key], undefined, key);
+  }
+  assert.match(leaving.sourceGroupId, /^cas-importer-merger:[0-9a-f]{64}$/);
+  for (const key of ["sourceGroupId", "accountId", "date"]) assert.equal(arriving[key], leaving[key], key);
+  assert.notEqual(arriving.symbol, leaving.symbol);
 }
 
 const summary = ({ transactions, warnings }) => ({
@@ -532,17 +553,80 @@ describe("reversals", () => {
 describe("mergers", () => {
   const out = tx("2024-08-01", "SWITCH_OUT_MERGER", "-1000.00", "-100.000", "10.0000");
   const into = tx("2024-08-01", "SWITCH_IN_MERGER", "1000.00", "50.000", "20.0000");
+  const group = (mapping) => mapping.transactions.find((t) => t.arriving).activity.sourceGroupId;
 
-  test("a matched merger is imported like a switch, with a caveat", () => {
+  test("a matched merger is a fund conversion, with no cash", () => {
     const mapping = map(statement(scheme("A", [out]), scheme("B", [into])));
-    assert.deepEqual(summary(mapping).rows, [
-      ["SELL", "", "100.000", "1000", "", "WITHDRAWAL"],
-      ["BUY", "", "50.000", "1000", "", "DEPOSIT"],
-    ]);
+    assert.deepEqual(mapping.warnings, []);
+    assert.equal(mapping.transactions.length, 1);
+    const [{ scheme: name, rows, activity, arriving, earlier }] = mapping.transactions;
+    assert.deepEqual([name, rows, arriving.scheme, arriving.rows], ["A", [out], "B", [into]]);
     assert.deepEqual(
-      mapping.warnings.map((w) => [w.scheme, w.leftOut]),
-      [["A", false], ["B", false]],
+      [activity, arriving.activity].map((r) => [r.subtype, r.symbol, r.quantity, r.date, r.symbolName]),
+      [
+        ["CONVERSION_OUT", "INF-A", "100.000", "2024-08-01", "A"],
+        ["CONVERSION_IN", "INF-B", "50.000", "2024-08-01", "B"],
+      ],
     );
+    // What v1.2.0 and earlier imported instead.
+    assert.deepEqual(
+      earlier.map((r) => [r.activityType, r.symbol, r.quantity ?? "", r.amount]),
+      [
+        ["SELL", "INF-A", "100.000", "1000"],
+        ["WITHDRAWAL", "", "", "1000"],
+        ["BUY", "INF-B", "50.000", "1000"],
+        ["DEPOSIT", "", "", "1000"],
+      ],
+    );
+  });
+
+  test("a conversion needs no amount or NAV, but keeps known fields to check earlier imports", () => {
+    const mapping = map(statement(scheme("A", [{ ...out, nav: null }]), scheme("B", [into])));
+    assert.equal(mapping.transactions.length, 1);
+    assert.equal(mapping.transactions[0].earlier.length, 4);
+    assert.deepEqual(mapping.transactions[0].earlier.map((r) => r.activityType), ["SELL", "WITHDRAWAL", "BUY", "DEPOSIT"]);
+    assert.equal(mapping.transactions[0].earlier[0].unitPrice, undefined);
+    assert.equal(mapping.transactions[0].earlier[0].amount, undefined);
+  });
+
+  test("a merger's group is the same on every statement that lists it, and different for each merger", () => {
+    const first = group(map(statement(scheme("A", [out]), scheme("B", [into]))));
+    assert.equal(group(map(statement(scheme("A", [out]), scheme("B", [into])))), first);
+    // Both statement issuers can print different codes or omit the same fund's ISIN.
+    for (const rta of ["KARVY", "KFIN", "KFINTECH"]) {
+      const kfin = statement(
+        scheme("A", [out], { isin: null, rta, rta_code: "OLD-A" }),
+        scheme("B", [into], { isin: null, rta, rta_code: "NEW-B" }),
+      );
+      kfin.file_type = "KFINTECH";
+      const target = (folio, s) => input().target(folio, { ...s, isin: `INF-${s.scheme}` });
+      assert.equal(group(map(kfin, { target })), first);
+    }
+    // An overlapping statement: another period, other rows, the folio number spaced differently.
+    const overlapping = statement(
+      scheme("A", [tx("2024-06-10", "PURCHASE", "1000.00", "100.000", "10.0000"), out]),
+      scheme("B", [into, tx("2024-09-10", "PURCHASE", "1000.00", "50.000", "20.0000")]),
+    );
+    overlapping.statement_period = { from: "01-Apr-2024", to: "31-Mar-2026" };
+    overlapping.folios[0].folio = " F 1 ";
+    assert.equal(group(map(overlapping, { target: (folio, s) => ({ ...input().target(folio, s), accountId: "account-F1" }) })), first);
+    assert.ok(!first.includes("F1"));
+
+    // The same folio imported into another account is another conversion: Wealthfolio's groups span accounts.
+    assert.notEqual(
+      group(map(statement(scheme("A", [out]), scheme("B", [into])), { target: (folio, s) => ({ ...input().target(folio, s), accountId: "account-2" }) })),
+      first,
+    );
+    // The same merger in two folios of one account is two conversions.
+    const twoFolios = statement(scheme("A", [out]), scheme("B", [into]));
+    twoFolios.folios.push({ ...twoFolios.folios[0], folio: "F2" });
+    const mapping = map(twoFolios, { target: (folio, s) => ({ ...input().target(folio, s), accountId: "account-1" }) });
+    const groups = mapping.transactions.map((t) => t.activity.sourceGroupId);
+    assert.equal(groups.length, 2);
+    assert.notEqual(groups[0], groups[1]);
+    // Another day, or other funds, is another merger.
+    assert.notEqual(group(map(statement(scheme("A", [{ ...out, date: "2024-08-02" }]), scheme("B", [{ ...into, date: "2024-08-02" }])))), first);
+    assert.notEqual(group(map(statement(scheme("A", [out]), scheme("C", [into])))), first);
   });
 
   test("a merger without its other half is left out", () => {
@@ -554,17 +638,42 @@ describe("mergers", () => {
   });
 
   test("when one half can't be imported, neither is", () => {
-    const mapping = map(statement(scheme("A", [out]), scheme("B", [into])), {
-      target: (folio, s) => (s.scheme === "B" ? undefined : input().target(folio, s)),
+    for (const omitted of ["A", "B"]) {
+      const mapping = map(statement(scheme("A", [out]), scheme("B", [into])), {
+        target: (folio, s) => (s.scheme === omitted ? undefined : input().target(folio, s)),
+      });
+      assert.deepEqual(mapping.transactions, []);
+      assert.deepEqual(
+        mapping.warnings.map((w) => w.message),
+        ["A", "B"].map((name) => name === omitted
+          ? "No Wealthfolio account or fund is chosen for this scheme, so its transactions are left out."
+          : "The other half of this merger can't be imported, so neither half is."),
+      );
+    }
+  });
+
+  test("a merger a conversion can't record is left out, both halves", () => {
+    const stamped = map(statement(scheme("A", [out]), scheme("B", [into, charge("2024-08-01", "STAMP_DUTY_TAX", "0.05")])));
+    const sameFund = map(statement(scheme("A", [out]), scheme("B", [into])), {
+      target: (folio, s) => ({ ...input().target(folio, s), asset: { ...input().target(folio, s).asset, symbol: "inf-a" } }),
     });
-    assert.deepEqual(mapping.transactions, []);
-    assert.deepEqual(
-      mapping.warnings.map((w) => w.message),
-      [
-        "The other half of this merger can't be imported, so neither half is.",
-        "No Wealthfolio account or fund is chosen for this scheme, so its transactions are left out.",
-      ],
-    );
+    const twoAccounts = map(statement(scheme("A", [out]), scheme("B", [into])), {
+      target: (folio, s) => ({ ...input().target(folio, s), accountId: `account-${s.scheme}` }),
+    });
+    const noUnits = map(statement(scheme("A", [out]), scheme("B", [{ ...into, units: "0" }])));
+    for (const [mapping, message] of [
+      [stamped, "This merger lists stamp duty, which a fund conversion in Wealthfolio can't carry, so neither half is imported."],
+      [sameFund, "Both funds of this merger are confirmed as the same Wealthfolio asset, so neither half is imported. Confirm each scheme's own fund under Funds."],
+      [twoAccounts, "This merger's funds go to different Wealthfolio accounts, and a fund conversion stays in one, so neither half is imported."],
+      [noUnits, "This row has no units, or units with the wrong sign."],
+    ]) {
+      assert.deepEqual(mapping.transactions, []);
+      assert.deepEqual(
+        mapping.warnings.map((w) => [w.scheme, w.leftOut]),
+        [["A", true], ["B", true]],
+      );
+      assert.ok(mapping.warnings.some((w) => w.message === message), message);
+    }
   });
 });
 
@@ -722,7 +831,7 @@ describe("bank account", () => {
     assert.deepEqual(lines, lines.map((_, i) => i + 1));
   });
 
-  test("switches and mergers keep the fund house's money in the fund account", () => {
+  test("switches keep the fund house's money in the fund account, and mergers have no cash", () => {
     const mapping = map(
       statement(
         scheme("A", [tx("2024-06-20", "SWITCH_OUT", "-1000.00", "-100.000", "10.0000"), tx("2024-08-01", "SWITCH_OUT_MERGER", "-500.00", "-50.000", "10.0000")]),
@@ -730,7 +839,14 @@ describe("bank account", () => {
       ),
       { target: banked },
     );
-    assert.deepEqual(types(mapping), ["SELL WITHDRAWAL", "SELL WITHDRAWAL", "BUY DEPOSIT", "BUY DEPOSIT"]);
+    // An investor's switch is a sale and a purchase.
+    assert.deepEqual(types(mapping), ["SELL WITHDRAWAL", "ADJUSTMENT", "BUY DEPOSIT"]);
+    assert.deepEqual(mapping.transactions[0].earlier, undefined);
+    assert.equal(mapping.transactions[1].arriving.activity.subtype, "CONVERSION_IN");
+    const lines = mapping.transactions.flatMap((t) =>
+      [t.activity, t.cash, t.bank, t.arriving?.activity].filter(Boolean).map((row) => row.lineNumber),
+    );
+    assert.deepEqual(lines, lines.map((_, i) => i + 1));
   });
 });
 

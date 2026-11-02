@@ -1,5 +1,7 @@
 import type { ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
+import { sha256 } from "../lib/sha256.ts";
 import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, step, sub } from "./decimal.ts";
+import { fundRef } from "./plan.ts";
 import type { CasData, CasFolio, CasScheme, CasTransaction, TransactionType } from "./types.ts";
 
 // casparser's statement → the rows sent to Wealthfolio's `activities.checkImport` and
@@ -46,6 +48,13 @@ export interface MappedTransaction {
   cash?: ActivityImport;
   /** The bank account's side of a transfer in `cash`. Wealthfolio links the two when it imports them together. */
   bank?: ActivityImport;
+  /**
+   * A merger's new fund: its scheme, rows and `CONVERSION_IN` row. `activity` is then the old fund's
+   * `CONVERSION_OUT` row, and the two are imported together or not at all.
+   */
+  arriving?: { scheme: string; rows: CasTransaction[]; activity: ActivityImport };
+  /** For a merger: the earlier sale, withdrawal, purchase and deposit, without price or amount when unknown. */
+  earlier?: ActivityImport[];
 }
 
 export interface MappingWarning {
@@ -105,9 +114,6 @@ const UNSUPPORTED: Partial<Record<TransactionType, string>> = {
   MISC: "casparser couldn't tell what this row is, so it isn't imported.",
 };
 
-const MERGER_CAVEAT =
-  "Imported like a switch, as a sale and a purchase: Wealthfolio may show a gain or loss that didn't happen, and the units' cost and purchase date restart.";
-
 /** Wealthfolio deletes both sides of a linked transfer, and the bank's side may be the user's own row. */
 const REVERSAL_CASH_NOTE =
   "If that cash is a transfer, unlink it first: Wealthfolio deletes both sides of a linked transfer. Then delete the bank account's side too, unless it's a row from your bank statement.";
@@ -143,6 +149,8 @@ interface Entry {
     bank?: ActivityImport;
     /** Imported, with this caveat. */
     note?: string;
+    /** A merger's rows as v1.2.0 and earlier imported them. */
+    earlier?: ActivityImport[];
   };
 }
 
@@ -154,7 +162,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   for (const entry of schemes.flatMap((s) => s.entries)) {
     const target = entry.scheme.target;
     if (!entry.kind || entry.problem || entry.scheme.problem || !target) continue;
-    const rows = buildRows(entry, target);
+    const rows = entry.partner ? conversionRows(entry, target) : buildRows(entry, target);
     if (typeof rows === "string") entry.problem = rows;
     else entry.rows = rows;
   }
@@ -198,6 +206,18 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
         if (entry.problem && entry.row.type === "REVERSAL") warn(rows, entry.problem);
       } else if (entry.problem) {
         warn(rows, entry.problem);
+      } else if (entry.rows && entry.partner) {
+        // The old fund's side carries both rows of the conversion.
+        if (entry.row.type === "SWITCH_IN_MERGER") continue;
+        const into = entry.partner;
+        const [leaving, arriving] = [entry.rows, into.rows!];
+        mapping.transactions.push({
+          ...names,
+          rows,
+          activity: number(leaving.activity),
+          arriving: { scheme: into.scheme.scheme.scheme, rows: [into.row, ...into.charges], activity: number(arriving.activity) },
+          earlier: leaving.earlier && arriving.earlier && [...leaving.earlier, ...arriving.earlier],
+        });
       } else if (entry.rows) {
         const { activity, cash, bank, note } = entry.rows;
         mapping.transactions.push({
@@ -208,7 +228,6 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
           bank: bank && number(bank),
         });
         if (note) warn(rows, note, false);
-        if (entry.partner) warn(rows, MERGER_CAVEAT, false);
       }
     }
   }
@@ -352,7 +371,7 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
   return state;
 }
 
-/** #1: a merger is imported like a switch only when both legs can be matched. */
+/** #1: a merger is imported as a fund conversion only when both legs can be matched. */
 function matchMergers(schemes: Scheme[]) {
   const legs = schemes.flatMap((s) =>
     s.entries.filter((e) => e.row.type === "SWITCH_OUT_MERGER" || e.row.type === "SWITCH_IN_MERGER"),
@@ -397,6 +416,81 @@ function unitsHeldBefore(scheme: CasScheme, index: number) {
   return add(dec(scheme.open), units);
 }
 
+const baseRow = (entry: Entry, target: SchemeTarget) => ({
+  accountId: target.accountId,
+  currency: CURRENCY,
+  date: entry.row.date,
+  isDraft: false,
+  isValid: true,
+});
+
+const assetOf = (entry: Entry, target: SchemeTarget) => ({
+  symbol: target.asset.symbol,
+  exchangeMic: target.asset.exchangeMic,
+  quoteCcy: target.asset.quoteCcy,
+  instrumentType: target.asset.instrumentType,
+  providerId: target.asset.providerId,
+  providerSymbol: target.asset.providerSymbol,
+  symbolName: entry.scheme.scheme.scheme,
+});
+
+/**
+ * One fund's side of a merger, as a row of a fund conversion: the new fund's units keep the old
+ * ones' cost and purchase dates, and no cash moves. Wealthfolio pairs the two rows by their group,
+ * and refuses either without the other.
+ */
+function conversionRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"]> | string {
+  const { row, partner } = entry;
+  const leaving = row.type === "SWITCH_OUT_MERGER";
+  const other = partner!.scheme.target;
+  if (!other) return "The other half of this merger can't be imported, so neither half is.";
+  if (entry.charges.length) {
+    const names = [...new Set(entry.charges.map((charge) => CHARGES[charge.type]!.name))].join(" and ");
+    return `This merger lists ${names}, which a fund conversion in Wealthfolio can't carry, so neither half is imported.`;
+  }
+  if (row.units === null || dec(row.units).n * (leaving ? -1n : 1n) <= 0n) return "This row has no units, or units with the wrong sign.";
+  if (other.accountId !== target.accountId) {
+    return "This merger's funds go to different Wealthfolio accounts, and a fund conversion stays in one, so neither half is imported.";
+  }
+  if (fundRef(other.asset.symbol, other.asset.exchangeMic) === fundRef(target.asset.symbol, target.asset.exchangeMic)) {
+    return "Both funds of this merger are confirmed as the same Wealthfolio asset, so neither half is imported. Confirm each scheme's own fund under Funds.";
+  }
+  const [out, into] = leaving ? [entry, partner!] : [partner!, entry];
+  const earlier = row.nav !== null && dec(row.nav).n > 0n
+    ? buildRows({ ...entry, row: { ...row, amount: format(mul(dec(row.units), dec(row.nav))) } }, target)
+    : buildRows(entry, target);
+  return {
+    activity: {
+      ...baseRow(entry, target),
+      ...assetOf(entry, target),
+      activityType: "ADJUSTMENT",
+      subtype: leaving ? "CONVERSION_OUT" : "CONVERSION_IN",
+      quantity: row.units.replace(/^-/, ""),
+      sourceGroupId: mergerGroup(target.accountId, out, into),
+    },
+    earlier: typeof earlier === "string"
+      ? [
+          { ...baseRow(entry, target), ...assetOf(entry, target), activityType: leaving ? "SELL" : "BUY", quantity: row.units.replace(/^-/, "") },
+          { ...baseRow(entry, target), activityType: leaving ? "WITHDRAWAL" : "DEPOSIT", symbol: "" },
+        ]
+      : [earlier.activity, earlier.cash!],
+  };
+}
+
+/**
+ * The same for a merger on every statement that lists it, and different for each merger: a folio
+ * has one on a day at most, or `matchMergers` leaves them out. Wealthfolio's groups span accounts,
+ * so the account goes in too: importing the folio into another account makes another conversion.
+ * The folio number goes in hashed, which keeps it out of view, not secret.
+ */
+function mergerGroup(accountId: string, out: Entry, into: Entry) {
+  // A statement can omit the ISIN or print another registrar code for the same confirmed fund.
+  const fund = ({ target }: Scheme) => fundRef(target!.asset.symbol, target!.asset.exchangeMic);
+  const folio = out.scheme.folio.folio.replace(/\s+/g, "");
+  const key = [accountId, folio, out.row.date, fund(out.scheme), fund(into.scheme)].join("|");
+  return `cas-importer-merger:${sha256(`cas-importer merger ${key}`)}`;
+}
+
 function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"]> | string {
   const { row, kind } = entry;
   const sign = kind === "sell" ? -1n : 1n;
@@ -415,17 +509,9 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
     charges = add(charges, dec(charge.amount));
   }
   const names = `₹${format(charges)} ${[...new Set(entry.charges.map((charge) => CHARGES[charge.type]!.name))].join(" and ")}`;
-  const base = { accountId: target.accountId, currency: CURRENCY, date: row.date, isDraft: false, isValid: true };
+  const base = baseRow(entry, target);
   const tax = isZero(charges) ? {} : { tax: format(charges) };
-  const asset = {
-    symbol: target.asset.symbol,
-    exchangeMic: target.asset.exchangeMic,
-    quoteCcy: target.asset.quoteCcy,
-    instrumentType: target.asset.instrumentType,
-    providerId: target.asset.providerId,
-    providerSymbol: target.asset.providerSymbol,
-    symbolName: entry.scheme.scheme.scheme,
-  };
+  const asset = assetOf(entry, target);
   // A purchase is paid from the bank account and a redemption or payout paid into it, when there
   // is one; a switch's or merger's money stays with the fund house.
   const bankAccountId = BANKED.has(row.type) ? target.bankAccountId : undefined;

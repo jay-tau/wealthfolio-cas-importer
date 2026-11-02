@@ -22,7 +22,7 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { CasError, CasParser } from "../../src/cas/parser";
 import { ImportPage } from "../../src/pages/import-page";
-import type { DematAccount } from "../../src/cas/types";
+import type { CasScheme, DematAccount } from "../../src/cas/types";
 
 interface HostAsset {
   symbol: string;
@@ -72,6 +72,8 @@ const host = {
   sharedIsin: "",
   // A detailed statement's folio printed without a PAN.
   noPanFolio: "",
+  // An invented fund house merger in the first folio, added to what the parser reads.
+  merger: false,
   // Holdings dropped from a depository statement as if they had been sold.
   soldIsins: [] as string[],
   parseWarnings: [] as string[],
@@ -216,10 +218,31 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
     return { ...data, folios: [{ ...first, schemes: [...first.schemes, ...third.schemes] }, second, ...rest] };
   }
   if (host.noPanFolio) data.folios = data.folios.map((f) => (f.folio === host.noPanFolio ? { ...f, PAN: null } : f));
+  if (host.merger) data.folios[0].schemes.push(...mergedSchemes());
   const [folio] = data.folios;
   const scheme = folio.schemes.find((s) => s.isin === host.sharedIsin);
   return scheme ? { ...data, folios: [...data.folios, { ...folio, folio: "91234568 / 34", schemes: [scheme] }] } : data;
 };
+
+/** A fund bought once and merged into another, in casparser's form. */
+function mergedSchemes() {
+  const row = (date: string, type: string, amount: string | null, units: string | null, nav: string | null, balance: string | null) =>
+    ({ date, description: type, amount, units, nav, balance, type, dividend_rate: null, gift_folio: null }) as const;
+  const scheme = (code: string, name: string, isin: string, close: string, transactions: ReturnType<typeof row>[]) => ({
+    scheme: name, advisor: "DIRECT", rta_code: code, rta: "CAMS", type: "EQUITY", isin, amfi: null, nominees: [],
+    open: "0", close, close_calculated: close, valuation: { date: "2025-03-31", nav: "21", cost: null, value: "0" }, transactions,
+  });
+  return [
+    scheme("FOFDG", "Fictiva Old Fund - Direct Plan - Growth", "INFZ90K01OF7", "0.000", [
+      row("2024-05-10", "PURCHASE", "1000.00", "99.995", "10.0000", "99.995"),
+      row("2024-05-10", "STAMP_DUTY_TAX", "0.05", null, null, null),
+      row("2024-08-01", "SWITCH_OUT_MERGER", "-1399.93", "-99.995", "14.0000", "0.000"),
+    ]),
+    scheme("FNFDG", "Fictiva New Fund - Direct Plan - Growth", "INFZ90K01NF5", "69.996", [
+      row("2024-08-01", "SWITCH_IN_MERGER", "1399.93", "69.996", "20.0000", "69.996"),
+    ]),
+  ] as unknown as CasScheme[];
+}
 
 const stored = (row: ActivityImport, i: number) =>
   ({
