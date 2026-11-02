@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Let a statement be read again after its parser stops or Python hits a fatal error, without restarting Wealthfolio or turning the add-on off and on. Stop the parser if it hasn't started within 2 minutes or hasn't answered a read within 5 minutes, show an error and enable the form; the next read starts a new parser. Before, a parser that never answered left the form disabled, and the form kept reusing a broken parser
+- Load Wealthfolio's accounts on each Read statement, so account choices, saved-account notes, previews and Check units use the current list. After adding an account, choose Read statement again
 
 ### Security
 

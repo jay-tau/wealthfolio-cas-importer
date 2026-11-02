@@ -63,7 +63,7 @@ demat account or National Pension System (NPS) account. Demat labels use their o
 broker name, without account numbers; an NPS account's label is its PRAN as printed, masked.
 Confirm the Wealthfolio asset for each holding: shares and bonds are searched by their
 ISIN too, and a fund confirmed for a detailed statement is already confirmed here. If no holdings
-account is offered, create one in Wealthfolio and reopen the add-on.
+account is offered, create one in Wealthfolio and choose Read statement again.
 
 A holding that no search result fits, including when the search finds only other funds or shares,
 can use the statement's prices instead. The add-on then creates an INR asset priced by hand, and the
