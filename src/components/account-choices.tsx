@@ -36,6 +36,11 @@ export function ChooseAgain({ ignored, mode }: { ignored: Ignored | undefined; m
 }
 
 const SAME_AS_PAN = "same-as-pan";
+/**
+ * Wealthfolio's CSS gives every span and div overflow-wrap: break-word, which still sizes a select or its list to fit
+ * a long account name without spaces, past a narrow card or window. There's no class for anywhere.
+ */
+const WRAP_ANYWHERE = { overflowWrap: "anywhere" } as const;
 
 export function AccountSelect({
   id,
@@ -68,13 +73,21 @@ export function AccountSelect({
       value={value === null ? null : value || (inherit ? SAME_AS_PAN : null)}
       onValueChange={(next) => onChange(next === SAME_AS_PAN || next === null ? "" : next)}
     >
-      <SelectTrigger id={id} className="w-72">
-        <SelectValue placeholder="Choose an account" />
+      {/* As wide as its choice, from 18rem (or the card's width, if narrower) to the card's width, wrapping past that.
+          The add-on has no CSS, so only classes in Wealthfolio's apply: there's none for the minimum, and cn keeps both
+          h-auto and h-input-height, whose rule comes later, hence the style. `line-clamp-none` isn't there either, but
+          it makes cn drop the value's one-line clamp and flex classes. */}
+      <SelectTrigger
+        id={id}
+        className="w-fit min-h-input-height py-1.5 whitespace-normal text-start *:data-[slot=select-value]:line-clamp-none"
+        style={{ minWidth: "min(18rem, 100%)", height: "auto" }}
+      >
+        <SelectValue placeholder="Choose an account" style={WRAP_ANYWHERE} />
       </SelectTrigger>
       <SelectContent>
         {items.map((item) => (
           <SelectItem key={item.value} value={item.value}>
-            {item.label}
+            <span style={WRAP_ANYWHERE}>{item.label}</span>
           </SelectItem>
         ))}
       </SelectContent>
