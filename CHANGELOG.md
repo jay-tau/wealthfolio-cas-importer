@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Checked with Wealthfolio 3.12.0: its Linux desktop app, both updated from 3.11.0 and new, and its web app, which can now install the add-on from its zip ([wealthfolio/wealthfolio#2306](https://github.com/wealthfolio/wealthfolio/issues/2306)). The README says which Wealthfolio version each platform was checked on, that the web app needs 3.12.0, and that Wealthfolio 3.12.0 classifies a new fund priced from statements as a mutual fund rather than common stock ([wealthfolio/wealthfolio#2359](https://github.com/wealthfolio/wealthfolio/issues/2359))
 
 ### Deprecated
 
