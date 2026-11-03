@@ -190,18 +190,19 @@ export function Preview({
             them.
           </p>
         )}
+        {/* Narrow padding and wrapping Cash keep Status visible with Extra large text in a 1440 px window. */}
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Date</TableHead>
-              <TableHead>Fund</TableHead>
-              <TableHead>Activity</TableHead>
-              <TableHead className="text-end">Units</TableHead>
-              <TableHead className="text-end">NAV</TableHead>
-              <TableHead className="text-end">Tax</TableHead>
-              <TableHead className="text-end">Amount</TableHead>
-              <TableHead>Cash</TableHead>
-              <TableHead>Status</TableHead>
+              <TableHead className="px-1.5">Date</TableHead>
+              <TableHead className="px-1.5">Fund</TableHead>
+              <TableHead className="px-1.5">Activity</TableHead>
+              <TableHead className="px-1.5 text-end">Units</TableHead>
+              <TableHead className="px-1.5 text-end">NAV</TableHead>
+              <TableHead className="px-1.5 text-end">Tax</TableHead>
+              <TableHead className="px-1.5 text-end">Amount</TableHead>
+              <TableHead className="px-1.5">Cash</TableHead>
+              <TableHead className="px-1.5">Status</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -216,29 +217,36 @@ export function Preview({
               const match = matches.get(t);
               const cells = (scheme: string, row: ActivityImport) => (
                 <>
-                  <TableCell className="whitespace-nowrap">{String(row.date)}</TableCell>
-                  <TableCell>{scheme}</TableCell>
-                  <TableCell>{label(row)}</TableCell>
-                  <TableCell className="text-end tabular-nums">{row.quantity ?? ""}</TableCell>
-                  <TableCell className="text-end tabular-nums">{row.unitPrice ?? ""}</TableCell>
-                  <TableCell className="text-end tabular-nums">{row.tax ?? ""}</TableCell>
-                  <TableCell className="text-end tabular-nums">{row.amount ?? ""}</TableCell>
+                  <TableCell className="px-1.5 whitespace-nowrap">{String(row.date)}</TableCell>
+                  <TableCell className="px-1.5">{scheme}</TableCell>
+                  <TableCell className="px-1.5">{label(row)}</TableCell>
+                  <TableCell className="px-1.5 text-end tabular-nums">{row.quantity ?? ""}</TableCell>
+                  <TableCell className="px-1.5 text-end tabular-nums">{row.unitPrice ?? ""}</TableCell>
+                  <TableCell className="px-1.5 text-end tabular-nums">{row.tax ?? ""}</TableCell>
+                  <TableCell className="px-1.5 text-end tabular-nums">{row.amount ?? ""}</TableCell>
                 </>
               );
               return [
                 <TableRow key={i}>
                   {cells(t.transaction.scheme, activity)}
-                  <TableCell className="whitespace-nowrap">
-                    {cash ? `${label(cash)} ${cash.amount}` : ""}
+                  <TableCell className="px-1.5">
+                    {cash && (
+                      <>
+                        <span className="whitespace-nowrap">{label(cash)}</span> {cash.amount}
+                      </>
+                    )}
                     {bank && (
                       <span className="text-muted-foreground block text-xs">
                         {bank.activityType === "TRANSFER_OUT" ? "from" : "to"} {accountName(bank.accountId)}
                       </span>
                     )}
                   </TableCell>
-                  <TableCell rowSpan={arriving ? 2 : undefined}>
+                  <TableCell className="px-1.5" rowSpan={arriving ? 2 : undefined}>
                     <div className="grid gap-1">
-                      <Badge variant={STATUS[t.status].variant}>{STATUS[t.status].badge}</Badge>
+                      {/* The badge hides its overflow, so without a minimum width Chromium sizes the column without it. */}
+                      <Badge className="min-w-fit" variant={STATUS[t.status].variant}>
+                        {STATUS[t.status].badge}
+                      </Badge>
                       {notes.map((note, j) => (
                         <span key={j} className="text-muted-foreground text-xs">
                           {note}
@@ -271,7 +279,7 @@ export function Preview({
                   ? [
                       <TableRow key={`${i}-arriving`}>
                         {cells(arriving.scheme, arriving.activity)}
-                        <TableCell />
+                        <TableCell className="px-1.5" />
                       </TableRow>,
                     ]
                   : []),
