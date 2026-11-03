@@ -835,6 +835,68 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.ok(previousFund);
     assert.deepEqual(await storage(), afterSlowWrites);
 
+    // A fund house's merger is one fund conversion: two lines with one status, both rows or neither.
+    const beforeMerger = await tab.frames()[1].evaluate(() =>
+      ({ activities: window.host.activities, failHistory: window.host.failHistory, rejectLine: window.host.rejectLine }));
+    const storageBeforeMerger = await storage();
+    await tab.frames()[1].evaluate(() => {
+      window.host.activities = [];
+      window.host.failHistory = false;
+      window.host.rejectLine = undefined;
+      window.host.merger = true;
+    });
+    await readAgain();
+    for (const isin of ["INFZ90K01FC8", "INFZ90K01OF7", "INFZ90K01NF5"]) {
+      const section = frame.locator("section").filter({ hasText: `ISIN ${isin}` });
+      await section.getByRole("radio").first().waitFor({ state: "attached" });
+      await section.getByRole("radio").first().dispatchEvent("click");
+      await section.getByRole("button", { name: "Use this fund" }).click();
+      await section.getByText("Confirmed", { exact: true }).waitFor();
+    }
+    for (const section of await frame.locator("section").all()) {
+      if (await section.getByText(/^(Confirmed|Left out)$/).count()) continue;
+      await section.getByRole("button", { name: "Leave this fund out" }).click();
+      await section.getByText("Left out", { exact: true }).waitFor();
+    }
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    const leaving = frame.getByRole("row").filter({ hasText: "fund conversion out" });
+    const arriving = frame.getByRole("row").filter({ hasText: "fund conversion in" });
+    await leaving.waitFor({ timeout: 30_000 });
+    assert.deepEqual(await leaving.locator("td").allTextContents(), [
+      "2024-08-01", "Fictiva Old Fund - Direct Plan - Growth", "fund conversion out", "99.995", "", "", "", "", "New",
+    ]);
+    assert.equal(await leaving.locator("td").last().getAttribute("rowspan"), "2");
+    assert.deepEqual(await arriving.locator("td").allTextContents(), [
+      "2024-08-01", "Fictiva New Fund - Direct Plan - Growth", "fund conversion in", "69.996", "", "", "", "",
+    ]);
+    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
+    await frame.getByText(/^Imported \d+ of \d+ activities$/).waitFor();
+    const conversions = await tab.frames()[1].evaluate(() =>
+      window.host.activities.filter((a) => a.activityType === "ADJUSTMENT").map((a) => [a.subtype, a.symbol, a.quantity, a.sourceGroupId]),
+    );
+    assert.deepEqual(conversions.map((c) => c.slice(0, 3)), [["CONVERSION_OUT", "INFZ90K01OF7", "99.995"], ["CONVERSION_IN", "INFZ90K01NF5", "69.996"]]);
+    assert.match(conversions[0][3], /^cas-importer-merger:[0-9a-f]{64}$/);
+    assert.equal(conversions[1][3], conversions[0][3]);
+    const mergerUnits = frame.locator("table").last().locator("tbody tr");
+    for (const name of ["Fictiva Old Fund", "Fictiva New Fund"]) {
+      assert.equal(await mergerUnits.filter({ hasText: name }).filter({ hasText: "Match" }).count(), 1, name);
+    }
+    // Read again, it's in Wealthfolio, and can't be imported twice.
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await leaving.getByText("Already in Wealthfolio", { exact: true }).waitFor({ timeout: 30_000 });
+    assert.equal(await leaving.getByText("Import anyway").count(), 0);
+    // Moving the conversion to an unselected account keeps its group and blocks a second import.
+    await tab.frames()[1].evaluate(() => {
+      for (const a of window.host.activities) if (a.subtype?.startsWith("CONVERSION_")) a.accountId = "elsewhere";
+    });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await leaving.getByText(/^Wealthfolio has this conversion from an earlier import, changed since/).waitFor({ timeout: 30_000 });
+    assert.equal(await leaving.getByText("Import anyway").count(), 0);
+    assert.ok(await frame.getByRole("button", { name: "Import 0 activities", exact: true }).isDisabled());
+    await tab.frames()[1].evaluate((before) => Object.assign(window.host, before, { merger: false }), beforeMerger);
+    await restoreChoices(storageBeforeMerger);
+    await undecided(flexi);
+
     // An NSDL statement's holdings go to accounts that track holdings, as snapshots.
     const hosted = (fn, arg) => tab.frames()[1].evaluate(fn, arg);
     await hosted(() => {

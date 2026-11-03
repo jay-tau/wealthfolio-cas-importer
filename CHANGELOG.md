@@ -11,6 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Checked with Wealthfolio 3.12.0: its Linux desktop app, both updated from 3.11.0 and new, and its web app, which can now install the add-on from its zip ([wealthfolio/wealthfolio#2306](https://github.com/wealthfolio/wealthfolio/issues/2306)). The README says which Wealthfolio version each platform was checked on, that the web app needs 3.12.0, and that Wealthfolio 3.12.0 classifies a new fund priced from statements as a mutual fund rather than common stock ([wealthfolio/wealthfolio#2359](https://github.com/wealthfolio/wealthfolio/issues/2359))
+- Import a fund house's merger as a Wealthfolio fund conversion: the new fund's units keep the old units' cost and purchase dates, nothing is sold and no cash moves. Before, a merger was a sale and a purchase with a withdrawal and a deposit, so Wealthfolio could show a gain or loss that didn't happen, and the units' cost and purchase date restarted. A merger imported that way is listed as already in Wealthfolio; replacing it is up to you. If Wealthfolio has only part of it, or has the conversion changed since its import, the preview says so and leaves the merger out. Switches you asked for stay a sale and a purchase
+- Require Wealthfolio 3.12.0 or newer, which records fund conversions. Update every device you sync before importing a merger
 
 ### Deprecated
 

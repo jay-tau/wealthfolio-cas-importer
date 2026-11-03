@@ -1052,6 +1052,22 @@ test("checks each holding's units against accounts that track transactions, each
   assert.deepEqual(snapshot.positions.find((p) => p.ref === ref("INFZ90K01LQ6")).lines.map((l) => [l.source.label, l.holding.units]), [[fictiva, "12.296"]]);
 });
 
+test("a fund conversion's units count for the fund they move into, not the one they leave", async () => {
+  const holdings = readHoldings(await fixture("made-up-summary-cams"));
+  const conversion = (subtype, isin, quantity) =>
+    activity("account-1", "ADJUSTMENT", "2024-08-01", isin, quantity, { subtype, unitPrice: null, sourceGroupId: "merger-1" });
+  const activities = [
+    activity("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "892.104"),
+    // A merged fund, not on the statement, whose 1500 units became 2000 of the Flexi Cap fund.
+    activity("account-1", "BUY", "2024-04-01", "INFZ90K01MG1", "1500"),
+    conversion("CONVERSION_OUT", "INFZ90K01MG1", "1500"),
+    conversion("CONVERSION_IN", "INFZ90K01FC8", "2000"),
+  ];
+  const flexiCap = check(holdings, activities).find((c) => c.ref === "asset-INFZ90K01FC8");
+  assert.equal(format(flexiCap.held), "2892.104");
+  assert.equal(unitStatus(flexiCap, true), "match");
+});
+
 test("activities count towards the statement's date on their day in Wealthfolio's timezone, whatever the device's", async () => {
   const holdings = readHoldings(await fixture("made-up-summary-cams"));
   const bought = activity("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "3000");

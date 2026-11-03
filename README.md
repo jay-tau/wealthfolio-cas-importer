@@ -43,8 +43,9 @@ If its type isn't set, set it in Wealthfolio before confirming it again.
 If Wealthfolio also tracks the bank account a PAN's purchases are paid from, choose it under
 **Bank account** (a folio can have a different one, or none). Each purchase then comes with a transfer
 from that account to the funds' account, and each redemption or IDCW payout with a transfer back,
-which Wealthfolio links, instead of a deposit or withdrawal. Switches and mergers keep their deposit
-and withdrawal, since their money stays with the fund house; reinvested dividends have no cash row.
+which Wealthfolio links, instead of a deposit or withdrawal. Switches keep their deposit and
+withdrawal, since their money stays with the fund house; mergers and reinvested dividends have no
+cash row.
 
 If the bank account already has the debit or credit, from a bank statement import for example, the
 preview offers to use it: a withdrawal or deposit (or a transfer not yet linked) within 7 days, for
@@ -52,6 +53,35 @@ the transaction's amount to the paisa, with or without its stamp duty, STT or TD
 add-on imports the trade, adds the funds' account's side of the transfer, changes the bank's
 withdrawal or deposit into a transfer and links the two. Transactions imported earlier with a deposit
 or withdrawal count as already in Wealthfolio, and the add-on leaves those rows as they are.
+
+### Mergers
+
+When a fund house merges one fund into another, the statement shows the units leaving one fund and
+arriving in the other. The add-on matches the two rows within one folio on one day and imports them
+as a Wealthfolio fund conversion: the new fund's units keep the old units' cost and purchase dates,
+nothing is sold and no cash moves. Both rows go in together or not at all. If you leave either fund
+out, Wealthfolio can't import either row, or the merger lists stamp duty or another charge, which a
+conversion can't carry, the preview leaves out both and says why. A switch you asked for, such as
+from a Regular to a Direct plan or from Growth to IDCW, is a sale and a purchase, and is imported as
+one.
+
+Update Wealthfolio to 3.12.0 or newer on every device you sync before importing a merger: 3.11
+doesn't handle conversions. If a device received a conversion while still on 3.11, after updating
+it open the affected account and choose **Recalculate History**.
+
+Version 1.2.0 and earlier imported a merger as a sale and a purchase, with a withdrawal and a
+deposit. The add-on finds those four rows and lists the merger as already in Wealthfolio. Replacing
+them with a conversion is up to you: delete the four rows in Wealthfolio, then read the statement
+again. If Wealthfolio has only some of them, the preview doesn't import the merger and says how to
+correct it. A conversion changed in Wealthfolio after its import isn't imported again either; delete
+it there to import it as the statement has it. If the statement prints no NAV for the merger, the
+add-on can't fully compare it with an earlier import. Then a matching sale or purchase, or other
+unmatched cash in the funds' account on that day, leaves the merger out, and the preview says to
+check those rows in Wealthfolio.
+
+If you moved a conversion to an account and then archived that account, unarchive it before
+previewing that merger again. Wealthfolio hides archived activities from add-ons, but their groups
+can still cause the whole import to fail.
 
 ## Summary and depository statements
 
@@ -153,7 +183,7 @@ account's complete snapshot before anything is saved:
 Whether a holding is priced by hand comes from the snapshot being carried over, returned portfolio
 holdings, pricing information in search results, and the latest readable snapshot of each archived
 account when one is available. Those archived snapshots supply pricing information only, not
-current overlap warnings. SDK 3.11.0 can't list every existing asset: an asset absent from these
+current overlap warnings. SDK 3.12.0 can't list every existing asset: an asset absent from these
 results, including one in an archived account with no readable snapshot, can be priced by hand
 without the add-on knowing, and then takes its average cost as its price on the snapshot's date.
 For a statement-price or other manual-priced choice, the add-on also searches for its existing
@@ -189,6 +219,9 @@ the later snapshot's prices.
   Importing an earlier date preserves the records for later dates.
 - In Wealthfolio's secret store, only if you tick "Remember": the PDF password. It stays after the
   add-on is uninstalled until you choose "Forget the saved password".
+- On the two activities of each merger's conversion, the group ID that pairs them: a SHA-256 hash of
+  the Wealthfolio account, the folio number, the merger's date and the confirmed funds' symbols and
+  exchanges. It stays the same when another statement omits an ISIN or prints different scheme codes.
 
 These hashes keep PANs and folio numbers out of casual view; they don't make them secret.
 PANs are few enough to brute-force.
@@ -201,8 +234,8 @@ PDF, its password and your PAN never leave Wealthfolio.
 
 Download `wealthfolio-cas-importer-<version>.zip` from
 [Releases](https://github.com/jay-tau/wealthfolio-cas-importer/releases). In Wealthfolio's desktop
-app, 3.11.0 or newer, or its web app, 3.12.0 or newer, open **Settings** → **Add-ons**, choose
-**Install from file** (**Install from File** in 3.11.0), pick the zip and allow the permissions it asks for.
+app or its web app, 3.12.0 or newer, open **Settings** → **Add-ons**, choose **Install from file**,
+pick the zip and allow the permissions it asks for.
 
 The web app needs 3.12.0: older servers turn away add-on zips over about 1.5 MiB, and this one is
 about 11 MB ([wealthfolio/wealthfolio#2306](https://github.com/wealthfolio/wealthfolio/issues/2306)).

@@ -101,7 +101,9 @@ const inLocalTimeZones = (run) => {
 };
 
 let id = 0;
-/** How Wealthfolio stores and returns an imported row (Wealthfolio 3.11.0's web API). */
+/** A decimal with trailing zeros, as Wealthfolio returns it. */
+const padded = (value) => `${value}${value.includes(".") ? "" : "."}`;
+/** How Wealthfolio stores and returns an imported row (Wealthfolio 3.12.0's web API). */
 const stored = (row) => {
   if (row.symbol) profiles.set(`uuid-${row.symbol}`, fundRef(row.symbol, row.exchangeMic));
   return {
@@ -111,9 +113,9 @@ const stored = (row) => {
     subtype: row.subtype ?? null,
     status: "POSTED",
     date: `${row.date}T00:00:00+00:00`,
-    quantity: row.quantity ? `${row.quantity}000` : null,
+    quantity: row.quantity ? `${padded(row.quantity)}000` : null,
     unitPrice: row.unitPrice ?? null,
-    amount: row.activityType === "BUY" || row.activityType === "SELL" ? `${row.amount}0000` : row.amount,
+    amount: row.activityType === "BUY" || row.activityType === "SELL" ? `${padded(row.amount)}0000` : row.amount ?? null,
     fee: null,
     tax: row.tax ?? null,
     currency: row.currency,
@@ -122,6 +124,7 @@ const stored = (row) => {
     assetId: row.symbol ? `uuid-${row.symbol}` : "",
     assetSymbol: row.symbol ? row.symbol.toUpperCase() : "",
     exchangeMic: row.exchangeMic ?? null,
+    sourceGroupId: row.sourceGroupId ?? null,
   };
 };
 
@@ -254,6 +257,229 @@ describe("duplicates", () => {
     const mapping = map(statement(scheme("A", [...purchase, tx("2024-01-15", "REVERSAL", "-999.95", "-99.995", "10.0000")])), earlier);
     assert.deepEqual(mapping.transactions, []);
     assert.match(mapping.warnings[0].message, /^Wealthfolio has this purchase from an earlier import/);
+  });
+});
+
+describe("mergers", () => {
+  const out = (date = "2024-08-01") => tx(date, "SWITCH_OUT_MERGER", "-1000.00", "-100.000", "10.0000");
+  const into = (date = "2024-08-01") => tx(date, "SWITCH_IN_MERGER", "1000.00", "50.000", "20.0000");
+  const data = statement(scheme("A", [out()]), scheme("B", [into()]));
+  /** What v1.2.0 and earlier imported for the merger, as Wealthfolio returns it. */
+  const earlierImport = () => plan(data)[0].transaction.earlier.map(stored);
+
+  test("a merger sends both conversion rows, and a second read finds both", () => {
+    const planned = plan(data);
+    assert.deepEqual(statuses(planned), ["new"]);
+    const sent = importRows(planned, () => false);
+    assert.deepEqual(importRows(planned, () => true, () => true), sent, "bank-row reuse cannot split a conversion");
+    assert.deepEqual(
+      sent.map((r) => `${r.activityType} ${r.subtype} ${r.symbol}`),
+      ["ADJUSTMENT CONVERSION_OUT a", "ADJUSTMENT CONVERSION_IN b"],
+    );
+    const again = plan(data, sent.map(stored));
+    assert.deepEqual(statuses(again), ["existing"]);
+    assert.ok(again[0].rows.every((r) => r.existingId));
+    assert.equal(again[0].earlier, undefined);
+    assert.deepEqual(importRows(again, () => true), [], "a conversion is never forced");
+  });
+
+  test("an overlapping statement finds the merger, and separate mergers aren't mistaken for each other", () => {
+    const existing = importRows(plan(data), () => false).map(stored);
+    const overlapping = statement(
+      scheme("A", [...sip("2024-07-10", "1000.00", "100.000", "10.0000"), out(), out("2024-09-01")]),
+      scheme("B", [into(), into("2024-09-01")]),
+    );
+    // The same merger in a second folio of the same account is another conversion.
+    overlapping.folios.push({ ...overlapping.folios[0], folio: "F2", schemes: [scheme("A", [out()]), scheme("B", [into()])] });
+    const planned = plan(overlapping, existing);
+    assert.deepEqual(
+      planned.map((t) => `${t.transaction.folio} ${t.transaction.activity.date} ${t.status}`),
+      ["F1 2024-07-10 new", "F1 2024-08-01 existing", "F1 2024-09-01 new", "F2 2024-08-01 new"],
+    );
+  });
+
+  test("a conversion changed in Wealthfolio isn't imported again, as Wealthfolio would refuse its group", () => {
+    const [leaving, arriving] = importRows(plan(data), () => false).map(stored);
+    const moved = (a) => ({ ...a, date: "2024-08-02T00:00:00+00:00" });
+    for (const existing of [[leaving, { ...arriving, quantity: "51" }], [moved(leaving), moved(arriving)], [leaving], [arriving]]) {
+      const [t] = plan(data, existing);
+      assert.equal(t.status, "invalid");
+      assert.match(t.problem, /^Wealthfolio has this conversion from an earlier import, changed since, so it isn't imported again\./);
+      assert.deepEqual(importRows([t], () => true), []);
+    }
+    // Another merger's group is no conflict.
+    assert.deepEqual(statuses(plan(data, [{ ...moved(leaving), sourceGroupId: "another" }])), ["new"]);
+  });
+
+  test("a merger an earlier version imported as a sale and a purchase is already in Wealthfolio", () => {
+    const earlier = earlierImport();
+    assert.deepEqual(earlier.map((a) => `${a.activityType} ${a.assetSymbol}`), ["SELL A", "WITHDRAWAL ", "BUY B", "DEPOSIT "]);
+    const [t] = plan(data, earlier);
+    assert.equal(t.status, "existing");
+    assert.deepEqual(
+      t.earlier.map((r) => r.existingId),
+      earlier.map((a) => a.id),
+    );
+    assert.equal(t.problem, undefined);
+    assert.deepEqual(importRows([t], () => true), []);
+  });
+
+  test("an earlier import that lacks a row blocks the conversion", () => {
+    const earlier = earlierImport();
+    for (const missing of earlier) {
+      const [t] = plan(data, earlier.filter((a) => a !== missing));
+      assert.equal(t.status, "invalid");
+      assert.match(t.problem, /^Wealthfolio has part of this merger from an earlier import/);
+      assert.deepEqual(
+        t.earlier.map((r) => !!r.existingId),
+        earlier.map((a) => a !== missing),
+      );
+      assert.deepEqual(importRows([t], () => true), []);
+    }
+  });
+
+  test("a row checkImport rejects keeps both out", () => {
+    for (const line of [1, 2]) {
+      const [t] = plan(data, [], { [line]: "A conversion must be two rows." });
+      assert.equal(t.status, "invalid");
+      assert.deepEqual(importRows([t], () => true), []);
+    }
+  });
+
+  test("earlier merger checks don't take an ordinary transaction's cash", () => {
+    const purchase = statement(scheme("C", [tx("2024-08-01", "PURCHASE", "1000", "25", "40")]));
+    const existing = importRows(plan(purchase), () => false).map(stored);
+    for (const first of [true, false]) {
+      const combined = structuredClone(data);
+      combined.folios[first ? "push" : "unshift"]({ ...purchase.folios[0], folio: "F2" });
+      const planned = plan(combined, existing);
+      assert.deepEqual(statuses(planned), first ? ["new", "existing"] : ["existing", "new"]);
+      assert.equal(importRows(planned, () => false).length, 2);
+      for (const s of combined.folios.flatMap((f) => f.schemes)) {
+        if (s.transactions[0].type.endsWith("_MERGER")) s.transactions[0].nav = null;
+      }
+      assert.deepEqual(statuses(plan(combined, existing)), first ? ["new", "existing"] : ["existing", "new"]);
+    }
+  });
+
+  test("earlier merger trades get their cash before an unrelated new merger", () => {
+    const legacy = statement(scheme("C", [out()]), scheme("D", [into()]));
+    const existing = plan(legacy)[0].transaction.earlier.map(stored);
+    for (const first of [true, false]) {
+      const combined = structuredClone(data);
+      combined.folios[first ? "push" : "unshift"]({ ...legacy.folios[0], folio: "F2" });
+      const planned = plan(combined, existing);
+      assert.deepEqual(statuses(planned), first ? ["new", "existing"] : ["existing", "new"]);
+      assert.equal(importRows(planned, () => false).length, 2);
+    }
+  });
+
+  test("a new purchase doesn't take an earlier merger's cash", () => {
+    const purchase = statement(scheme("C", [tx("2024-08-01", "PURCHASE", "1000", "25", "40")]));
+    const existing = earlierImport();
+    for (const first of [true, false]) {
+      const combined = structuredClone(data);
+      combined.folios[first ? "push" : "unshift"]({ ...purchase.folios[0], folio: "F2" });
+      const planned = plan(combined, existing);
+      assert.deepEqual(statuses(planned), first ? ["existing", "new"] : ["new", "existing"]);
+      assert.deepEqual(importRows(planned, () => false).map((r) => r.activityType), ["BUY", "DEPOSIT"]);
+    }
+  });
+
+  test("cash-only earlier merger evidence isn't taken by new transactions or another merger", () => {
+    const earlier = earlierImport();
+    for (const [type, units, cash] of [["PURCHASE", "25", "DEPOSIT"], ["REDEMPTION", "-25", "WITHDRAWAL"]]) {
+      const ordinary = statement(scheme("C", [tx("2024-08-01", type, type === "PURCHASE" ? "1000" : "-1000", units, "40")]));
+      const cashOnly = earlier.filter((a) => a.activityType === cash);
+      const otherMerger = statement(scheme("C", [out()]), scheme("D", [into()]));
+      for (const first of [true, false]) {
+        for (const other of [ordinary, otherMerger]) {
+          const combined = structuredClone(data);
+          combined.folios[first ? "push" : "unshift"]({ ...other.folios[0], folio: "F2" });
+          const planned = plan(combined, cashOnly);
+          const mergers = planned.filter((t) => t.transaction.arriving);
+          assert.ok(mergers.every((t) => t.status === "invalid"));
+          assert.ok(mergers.every((t) => t.problem.startsWith("Wealthfolio has part of this merger")));
+          assert.deepEqual(importRows(planned, () => false), []);
+        }
+      }
+    }
+  });
+
+  test("missing amount or NAV still finds earlier trades and blocks another import", () => {
+    const existing = earlierImport();
+    for (const fields of [["nav"], ["amount"], ["nav", "amount"]]) {
+      for (const sides of [[0], [1], [0, 1]]) {
+        const incomplete = structuredClone(data);
+        for (const side of sides) for (const field of fields) incomplete.folios[0].schemes[side].transactions[0][field] = null;
+        const [t] = plan(incomplete, existing);
+        assert.equal(t.status, fields.includes("nav") ? "invalid" : "existing");
+        if (fields.includes("nav")) assert.match(t.problem, /^Wealthfolio has rows that may belong to an earlier import/);
+        assert.deepEqual(importRows([t], () => true), []);
+        assert.deepEqual(statuses(plan(incomplete)), ["new"], "new conversions need no amount or NAV");
+      }
+    }
+    // Either or both leftover cash rows block an earlier import, even without either NAV or amount.
+    for (const fields of [["nav"], ["amount"], ["nav", "amount"]]) {
+      const incomplete = structuredClone(data);
+      for (const s of incomplete.folios[0].schemes) for (const field of fields) s.transactions[0][field] = null;
+      for (const kept of [["DEPOSIT"], ["WITHDRAWAL"], ["DEPOSIT", "WITHDRAWAL"]]) {
+        const [t] = plan(incomplete, existing.filter((a) => kept.includes(a.activityType)));
+        assert.equal(t.status, "invalid");
+        assert.ok(t.problem);
+        assert.deepEqual(importRows([t], () => true), []);
+      }
+    }
+    const twins = structuredClone(data);
+    for (const s of twins.folios[0].schemes) s.transactions[0].nav = null;
+    twins.folios.push({ ...twins.folios[0], folio: "F2" });
+    assert.deepEqual(statuses(plan(twins, existing.filter((a) => a.activityType === "DEPOSIT"))), ["invalid", "invalid"], "uncertain cash cannot be assigned to only one possible merger");
+    // The remaining complete side's cash can be the only evidence of an earlier import.
+    const incomplete = structuredClone(data);
+    incomplete.folios[0].schemes[0].transactions[0].nav = null;
+    const [cashOnly] = plan(incomplete, existing.filter((a) => a.activityType === "DEPOSIT"));
+    assert.equal(cashOnly.status, "invalid");
+    assert.match(cashOnly.problem, /^Wealthfolio has rows that may belong to an earlier import/);
+    assert.deepEqual(cashOnly.earlier.filter((r) => r.existingId).map((r) => r.activity.activityType), ["DEPOSIT"]);
+  });
+
+  test("stored groups, canonical subtypes and checkImport flags keep conversions together", () => {
+    const mapping = map(data);
+    const rows = rowsOf(mapping);
+    const storedRows = rows.map(stored).map((a) => ({
+      ...a, subtype: ` ${a.subtype.toLowerCase().replace("_", " ")} `, sourceGroupId: ` ${a.sourceGroupId} `,
+    }));
+    assert.deepEqual(statuses(plan(data, storedRows)), ["existing"]);
+    const moved = storedRows.map((a) => ({ ...a, accountId: "another-account" }));
+    assert.deepEqual(statuses(plan(data, moved)), ["invalid"]);
+    for (const flag of [{ duplicateOfId: "elsewhere" }, { duplicateOfLineNumber: 8 }]) {
+      const checked = check(rows);
+      Object.assign(checked[1], flag);
+      const planned = planImport(mapping, [], checked, fundsOf(data));
+      assert.deepEqual(statuses(planned), ["duplicate"]);
+      assert.deepEqual(importRows(planned, () => true), []);
+    }
+    const otherRow = { ...storedRows[0], activityType: "BUY", subtype: null };
+    assert.deepEqual(statuses(plan(data, [otherRow])), ["invalid"], "any stored row in the group blocks new conversion rows");
+  });
+
+  test("a conversion moves units from the old fund to the new one", () => {
+    const bought = importRows(plan(statement(scheme("A", sip("2023-03-10", "1000.00", "100.000", "10.0000")))), () => false);
+    const merged = statement(
+      scheme("A", [out()], { open: "100.000", close: "0", close_calculated: "0" }),
+      scheme("B", [into()], { close: "50.000", close_calculated: "50.000" }),
+    );
+    const activities = [...bought, ...importRows(plan(merged), () => false)].map(stored);
+    const funds = fundsOf(merged);
+    assert.ok(openingUnits(merged, target, activities, funds, "UTC").every(sameUnits));
+    const closing = closingUnits(merged, target, activities, funds, "UTC");
+    assert.deepEqual(closing.map((f) => format(f.held)), ["0", "50"]);
+    assert.ok(closing.every(sameUnits));
+    // Any spelling Wealthfolio accepts.
+    for (const separator of ["_", "-", " "]) {
+      const spelled = activities.map((a) => (a.subtype ? { ...a, subtype: ` ${a.subtype.toLowerCase().replace("_", separator)} ` } : a));
+      assert.deepEqual(closingUnits(merged, target, spelled, funds, "UTC").map((f) => format(f.held)), ["0", "50"]);
+    }
   });
 });
 
