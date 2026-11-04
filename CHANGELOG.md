@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Let a statement be read again after its parser stops or Python hits a fatal error, without restarting Wealthfolio or turning the add-on off and on. Stop the parser if it hasn't started within 2 minutes or hasn't answered a read within 5 minutes, show an error and enable the form; the next read starts a new parser. Before, a parser that never answered left the form disabled, and the form kept reusing a broken parser
 - Load Wealthfolio's accounts on each Read statement, so account choices, saved-account notes, previews and Check units use the current list. After adding an account, choose Read statement again
+- Show the whole choice in the Accounts and Bank account selects and in the holdings import's Accounts select. Each select is as wide as its choice, at least 18rem (or the card's width if narrower) and at most the card's width; when the choice doesn't fit beside its label, the select moves under the label, and when it's wider than the card, it wraps onto more lines. An account name without spaces wraps within the word, in the select and in its list of choices. Before, each select was 18rem wide, so a longer choice was cut off, such as "Same as PAN (Outside Wealthfolio)" with Wealthfolio 3.12.0's Classic theme and Mono font, or a choice naming a long account, and in a narrow window a long account name without spaces ran past the edge of the list
 
 ### Security
 
