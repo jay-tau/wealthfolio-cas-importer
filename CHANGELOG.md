@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [2.0.0] - 2026-11-05
+
+### Added
 - Preselect AMFI's result when the search for a fund's ISIN finds one, with AMFI added in Wealthfolio's Settings → Market data, so the fund is priced from AMFI's daily NAVs; confirm it as before. For a fund Wealthfolio already has, priced from Yahoo or from statements, AMFI's result isn't preselected, since picking it adds a second asset: the Funds card says so, and how to switch that asset to AMFI in Wealthfolio. Results and confirmed funds with AMFI selected say so
 - Say on the Funds card when the search for a fund's ISIN, or for the name of one printed without it, finds no AMFI result: that Wealthfolio can price funds from AMFI once it's added in Settings → Market data, and what AMFI's search can't find
 
@@ -16,10 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Import a fund house's merger as a Wealthfolio fund conversion: the new fund's units keep the old units' cost and purchase dates, nothing is sold and no cash moves. Before, a merger was a sale and a purchase with a withdrawal and a deposit, so Wealthfolio could show a gain or loss that didn't happen, and the units' cost and purchase date restarted. A merger imported that way is listed as already in Wealthfolio; replacing it is up to you. If Wealthfolio has only part of it, or has the conversion changed since its import, the preview says so and leaves the merger out. Switches you asked for stay a sale and a purchase
 - Require Wealthfolio 3.12.0 or newer, which records fund conversions. Update every device you sync before importing a merger
 
-### Deprecated
-
-### Removed
-
 ### Fixed
 - Import the rows of a fund chosen from AMFI that Wealthfolio doesn't have yet. Wealthfolio 3.12.0's import check asks for an exchange for it, which AMFI's funds don't have, so the preview listed every trade as one Wealthfolio can't import; Wealthfolio's import itself creates the fund, priced from AMFI
 - Let a statement be read again after its parser stops or Python hits a fatal error, without restarting Wealthfolio or turning the add-on off and on. Stop the parser if it hasn't started within 2 minutes or hasn't answered a read within 5 minutes, show an error and enable the form; the next read starts a new parser. Before, a parser that never answered left the form disabled, and the form kept reusing a broken parser
@@ -27,8 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Show the whole choice in the Accounts and Bank account selects and in the holdings import's Accounts select. Each select is as wide as its choice, at least 18rem (or the card's width if narrower) and at most the card's width; when the choice doesn't fit beside its label, the select moves under the label, and when it's wider than the card, it wraps onto more lines. An account name without spaces wraps within the word, in the select and in its list of choices. Before, each select was 18rem wide, so a longer choice was cut off, such as "Same as PAN (Outside Wealthfolio)" with Wealthfolio 3.12.0's Classic theme and Mono font, or a choice naming a long account, and in a narrow window a long account name without spaces ran past the edge of the list
 - Keep every column of the detailed import's preview in view with Wealthfolio 3.12.0's Extra large text in its default 1440 × 960 window. Narrow the cells' horizontal padding; a Cash cell can wrap after its kind ("deposit" above the amount), and the bank account's name under it can wrap too. Before, the table was wider than the page, so the Status column, with the "Import anyway" boxes after reading a statement again, was out of view, and WebKitGTK shows no scrollbar until you scroll sideways. In Chromium-based browsers, the Status column is now also as wide as its badges, which used to run past it
 - In Chromium-based browsers, keep Check units' Status column, and the snapshot preview's, as wide as their badges. Before, in a narrow window, Check units' "Needs review" badges ran past the column and were cut off at the table's edge
-
-### Security
 
 ## [1.2.0] - 2026-11-01
 
