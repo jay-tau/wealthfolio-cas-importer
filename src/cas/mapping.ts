@@ -558,7 +558,8 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
   if (row.nav === null || dec(row.nav).n <= 0n) return "This row has no NAV.";
   // The printed units and NAV are authoritative. Wealthfolio keeps an amount equal to
   // quantity × unit price ± charges, and flags any other for review.
-  // shortcut: older layouts without a NAV column get amount ÷ units from casparser; #6 could supply the published NAV.
+  // shortcut: casparser 1.4.1 doesn't mark NAVs derived from amount ÷ units; until it does,
+  // they are used as printed NAVs, treating the amount as before charges (#90).
   const quantity = row.units.replace(/^-/, "");
   const units = dec(quantity);
   const nav = dec(row.nav);

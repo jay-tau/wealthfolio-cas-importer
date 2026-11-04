@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
-import { add, cmp, dec, format, mul, neg, sub } from "../src/cas/decimal.ts";
+import { abs, add, cmp, dec, format, mul, neg, sub } from "../src/cas/decimal.ts";
 import { closedScheme, mapStatement, withoutClosed } from "../src/cas/mapping.ts";
 
 const tx = (date, type, amount, units = null, nav = null, extra = {}) => ({
@@ -898,6 +898,39 @@ describe("the made-up statement", async () => {
     assert.deepEqual(rows["2023-09-25 INFZ90K01BA1"], ["84.054", "15.6145", "1312.461183", "0.07"]);
     assert.deepEqual(rows["2023-12-28 INFZ91T01CB6"], ["", "", "7276.48", "808.5"]);
     assert.deepEqual(rows["2025-03-10 TONDG"], ["6.250", "1306.9834", "8168.64625", ""]);
+  });
+});
+
+describe("the made-up statement without a Price column", async () => {
+  // casparser gives each trade amount ÷ units as its NAV, and doesn't say so (#90).
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cas-no-price.json", "utf8"));
+  const printed = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
+
+  test("maps the same rows as with its NAVs printed, but at amount ÷ units", () => {
+    const mapping = map(data);
+    assert.deepEqual(mapping.warnings, []);
+    const withoutPrices = ({ activity, cash }) => {
+      const { unitPrice, amount, ...rest } = activity;
+      return [rest, cash && { ...cash, amount: undefined }];
+    };
+    assert.deepEqual(mapping.transactions.map(withoutPrices), map(printed).transactions.map(withoutPrices));
+    for (const { activity, rows } of mapping.transactions) assert.equal(activity.unitPrice, rows[0].nav ?? undefined);
+  });
+
+  test("values before charges stay within the units' rounding of the statement's amounts", () => {
+    const { transactions } = map(data);
+    for (const { activity, rows: [row] } of transactions.filter(({ activity }) => activity.unitPrice)) {
+      const nav = dec(activity.unitPrice);
+      const off = abs(sub(mul(dec(activity.quantity), nav), abs(dec(row.amount))));
+      assert.ok(cmp(off, mul(mul(nav, dec("0.5")), dec("0.001"))) <= 0, `${row.date} ${row.amount}`);
+    }
+    const rows = Object.fromEntries(
+      transactions.map(({ activity: a }) => [`${a.date} ${a.symbol}`, [a.quantity ?? "", a.unitPrice ?? "", a.amount, a.tax ?? ""]]),
+    );
+    assert.deepEqual(rows["2023-04-10 INFZ90K01FC8"], ["103.088", "48.4998", "4999.9973824", "0.25"]);
+    // ₹25,000 paid; the printed NAV, 2564.8812, gives ₹25,001.15.
+    assert.deepEqual(rows["2023-05-05 INFZ90K01LQ6"], ["9.747", "2564.7635", "24999.9998345", "1.25"]);
+    assert.deepEqual(rows["2025-03-10 TONDG"], ["6.250", "1306.9840", "8168.65", ""]);
   });
 });
 

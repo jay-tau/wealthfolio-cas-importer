@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { before, test } from "node:test";
+import { abs, cmp, dec, mul, sub } from "../src/cas/decimal.ts";
 import { loadRuntime } from "./runtime.mjs";
 
 const PASSWORD = "ABCDE1234F";
@@ -30,6 +31,32 @@ test("reports a missing row as a balance mismatch", async () => {
   const data = JSON.parse(parse(pdf, PASSWORD));
   assert.deepEqual(data, expected);
   assert.equal(data.parse_warnings.length, 1);
+});
+
+test("gives each trade amount ÷ units as its NAV when the statement has no Price column", async () => {
+  const { pdf, expected } = await fixture("made-up-cas-no-price");
+  const data = JSON.parse(parse(pdf, PASSWORD));
+  assert.deepEqual(data, expected);
+  assert.deepEqual(data.parse_warnings, []);
+  // The made-up statement without its Price column: only the trades' NAVs differ, and nothing marks them (#90).
+  const printed = (await fixture("made-up-cas")).expected;
+  const rows = (statement) => statement.folios.flatMap((f) => f.schemes.flatMap((s) => s.transactions));
+  const restored = structuredClone(data);
+  const printedRows = rows(printed);
+  let trades = 0;
+  let differ = 0;
+  rows(restored).forEach((row, i) => {
+    const { amount, units, nav } = row;
+    if (printedRows[i].nav === null) return;
+    // The 4-place NAV nearest amount ÷ units.
+    assert.equal(dec(nav).scale, 4, nav);
+    assert.ok(cmp(abs(sub(mul(dec(nav), dec(units)), dec(amount))), mul(abs(dec(units)), dec("0.00005"))) <= 0, nav);
+    trades++;
+    if (nav !== printedRows[i].nav) differ++;
+    row.nav = printedRows[i].nav;
+  });
+  assert.deepEqual(restored, printed);
+  assert.deepEqual([trades, differ], [36, 26]);
 });
 
 for (const name of ["made-up-summary-cams", "made-up-summary-kfintech", "made-up-nsdl", "made-up-cdsl"]) {
