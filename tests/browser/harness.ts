@@ -36,6 +36,8 @@ interface HostAsset {
   quoteCcy?: string;
   providerConfig?: unknown;
   metadata?: unknown;
+  /** AMFI for a fund with AMFI selected, even if automatic updates are off. */
+  providerId?: string;
 }
 
 type WorkerFault = "" | "no-ready" | "no-reply" | "stop" | "fatal";
@@ -98,6 +100,8 @@ const host = {
   failQuoteIds: [] as string[],
   failSearchQueries: [] as string[],
   emptySearchQueries: [] as string[],
+  // AMFI added in Wealthfolio's Settings → Market data. Off until a test adds it, as in a new profile.
+  amfi: false,
   failGetProfileIds: [] as string[],
   failProfileIds: [] as string[],
   failSnapshotAccounts: [] as string[],
@@ -184,6 +188,24 @@ const fund = (query: string): SymbolSearchResult & { quoteMode?: string } => ({
   score: 1,
   typeDisplay: "",
   quoteMode: host.pricingModes[query],
+});
+
+// AMFI's scheme for a fund's ISIN or scheme code, the way Wealthfolio 3.12.0 lists it: no exchange,
+// the scheme code as its symbol.
+// shortcut: synthetic codes cover these fixtures; use an explicit map if a fixture collides.
+const amfiCode = (isin: string) => String(100000 + (parseInt(isin.slice(3), 36) % 900000));
+const amfiScheme = (code: string): SymbolSearchResult & { quoteMode?: string } => ({
+  ...fund(code),
+  symbol: code,
+  canonicalSymbol: code,
+  canonicalExchangeMic: undefined,
+  exchangeMic: undefined,
+  exchange: "AMFI",
+  providerId: "AMFI",
+  providerSymbol: code,
+  dataSource: "AMFI",
+  score: 0,
+  longName: `Scheme ${code}`,
 });
 
 // Adds the invented folio to every read while the test sets host.sharedIsin.
@@ -360,7 +382,7 @@ const api = {
         const id = assetId(h);
         const symbol = h.symbol.toUpperCase();
         if (!h.assetId && !host.assets[id]) {
-          host.assets[id] = { symbol, exchangeMic: h.exchangeMic ?? null, instrumentType: instrumentType(h.instrumentType), name: h.name, displayCode: symbol, kind: "INVESTMENT", quoteCcy: h.quoteCcy ?? "INR" };
+          host.assets[id] = { symbol, exchangeMic: h.exchangeMic ?? null, instrumentType: instrumentType(h.instrumentType), name: h.name, displayCode: symbol, kind: "INVESTMENT", quoteCcy: h.quoteCcy ?? "INR", providerId: h.providerId };
         }
         if (h.dataSource === "MANUAL") host.pricingModes[symbol] = "MANUAL";
         if (host.pricingModes[symbol] === "MANUAL" && h.averageCost && Number(h.averageCost) !== 0) {
@@ -427,12 +449,23 @@ const api = {
     },
     checkImport: async (rows: ActivityImport[]) => {
       await wait("check");
-      return rows.map((row) => ({ ...row, isValid: true }));
+      // Like Wealthfolio, a trade in a new fund with no exchange needs pricing by hand: so is one
+      // from AMFI, whose import creates the fund.
+      const known = (symbol: string) => [...knownAssets().values()].some((a) => a.symbol === symbol.toUpperCase() && a.exchangeMic === null);
+      return rows.map((row) => row.symbol && !row.exchangeMic && row.quoteMode !== "MANUAL" && !known(row.symbol)
+        ? { ...row, isValid: false, errors: { symbol: [`Could not find '${row.symbol}' in market data. Please search for the correct ticker symbol.`] } }
+        : { ...row, isValid: true });
     },
     import: async (rows: ActivityImport[]) => {
       await wait("import");
       const skipped = (r: ActivityImport) => r.lineNumber === host.skipLine && !r.forceImport;
       const accepted = rows.filter((r) => r.lineNumber !== host.rejectLine && !skipped(r));
+      // The import creates a new fund with no exchange as it is.
+      for (const r of accepted) {
+        if (r.symbol && !r.exchangeMic) {
+          host.assets[`asset-${r.symbol.toUpperCase()}`] ??= { symbol: r.symbol.toUpperCase(), exchangeMic: null, instrumentType: instrumentType(r.instrumentType), name: r.symbolName, quoteCcy: r.quoteCcy, providerId: r.providerId };
+        }
+      }
       host.activities.push(...accepted.map(stored));
       const total = rows.length;
       const summary = { total, imported: accepted.length, skipped: total - accepted.length, duplicates: rows.filter(skipped).length, assetsCreated: 0, success: true };
@@ -467,26 +500,33 @@ const api = {
     await wait(query);
     if (query === "FAIL" || host.failSearchQueries.includes(query)) throw new Error("Search unavailable");
     if (host.emptySearchQueries.includes(query)) return [];
+    // AMFI finds a fund's exact ISIN or scheme code, listed after Yahoo's results.
+    const amfi = host.amfi && /^(INF\w{9}|\d{6})$/.test(query) ? [amfiScheme(/^\d/.test(query) ? query : amfiCode(query))] : [];
     // Existing assets are returned even when no account currently holds them.
     const existing = [...knownAssets()].filter(([, a]) =>
-      [a.symbol, a.displayCode, a.name].some((s) => s?.toUpperCase().includes(query.toUpperCase())),
+      [a.symbol, a.displayCode, a.name].some((s) => s?.toUpperCase().includes(query.toUpperCase())) ||
+      amfi.some((r) => a.symbol === r.symbol && a.exchangeMic === null && instrumentType(a.instrumentType) === "EQUITY"),
     ).map(([id, a]) => ({
       ...fund(a.symbol), symbol: a.displayCode ?? a.symbol, canonicalSymbol: a.symbol,
       canonicalExchangeMic: a.exchangeMic ?? undefined, exchangeMic: a.exchangeMic ?? undefined,
       quoteType: instrumentType(a.instrumentType) ?? "OTHER", currency: a.quoteCcy ?? "INR", longName: a.name ?? a.symbol,
-      quoteMode: host.pricingModes[a.symbol] ?? "MARKET", isExisting: true, existingAssetId: id,
+      quoteMode: host.pricingModes[a.symbol] ?? "MARKET", isExisting: true, existingAssetId: id, providerId: a.providerId, providerSymbol: undefined,
     }));
-    if (existing.length) return existing;
+    // Replace a provider result with its existing asset, keeping Yahoo's other listing for an ISIN.
+    if (existing.length) {
+      const schemes = amfi.filter((r) => !existing.some((e) => e.canonicalSymbol === r.symbol && !e.exchangeMic));
+      return [...existing, ...(amfi.length && /^INF/.test(query) && existing.some((e) => !e.exchangeMic) ? [fund(query)] : []), ...schemes];
+    }
     // Like Yahoo, no NPS schemes and few Indian bonds. One bond is listed under its ISIN.
     if (query === "INEZ93A08016") return [{ ...fund(query), canonicalExchangeMic: undefined, exchangeMic: undefined, quoteType: "BOND", longName: "Democorp Infra 7.60% 2033" }];
     if (/^INE\w{4}0[78]\d{3}$/.test(query) || /\b(NCD|BD)\b/.test(query) || query.startsWith("NPS TRUST")) return [];
     // Like Yahoo with some funds, the Corporate Bond fund is listed under neither its ISIN nor its
     // full scheme name.
-    if (query === "INFZ91T01CB6" || query.includes(" - ")) return [];
+    if (query === "INFZ91T01CB6" || query.includes(" - ")) return amfi;
     if (query === "Testbridge Corporate Bond Fund") return [fund("0P0000TBCB")];
     // The Overnight fund has no ISIN on the statement.
     if (query === "Testbridge Overnight Fund") return [fund("0P0000TONF")];
-    return query === "MULTI" ? [fund("A"), fund("B")] : [fund(query)];
+    return query === "MULTI" ? [fund("A"), fund("B")] : [fund(query), ...amfi];
   } },
   storage: {
     get: async (key: string) => {

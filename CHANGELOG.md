@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Preselect AMFI's result when the search for a fund's ISIN finds one, with AMFI added in Wealthfolio's Settings → Market data, so the fund is priced from AMFI's daily NAVs; confirm it as before. For a fund Wealthfolio already has, priced from Yahoo or from statements, AMFI's result isn't preselected, since picking it adds a second asset: the Funds card says so, and how to switch that asset to AMFI in Wealthfolio. Results and confirmed funds with AMFI selected say so
+- Say on the Funds card when the search for a fund's ISIN, or for the name of one printed without it, finds no AMFI result: that Wealthfolio can price funds from AMFI once it's added in Settings → Market data, and what AMFI's search can't find
 
 ### Changed
 - Checked with Wealthfolio 3.12.0: its Linux desktop app, both updated from 3.11.0 and new, and its web app, which can now install the add-on from its zip ([wealthfolio/wealthfolio#2306](https://github.com/wealthfolio/wealthfolio/issues/2306)). The README says which Wealthfolio version each platform was checked on, that the web app needs 3.12.0, and that Wealthfolio 3.12.0 classifies a new fund priced from statements as a mutual fund rather than common stock ([wealthfolio/wealthfolio#2359](https://github.com/wealthfolio/wealthfolio/issues/2359))
@@ -19,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Import the rows of a fund chosen from AMFI that Wealthfolio doesn't have yet. Wealthfolio 3.12.0's import check asks for an exchange for it, which AMFI's funds don't have, so the preview listed every trade as one Wealthfolio can't import; Wealthfolio's import itself creates the fund, priced from AMFI
 - Let a statement be read again after its parser stops or Python hits a fatal error, without restarting Wealthfolio or turning the add-on off and on. Stop the parser if it hasn't started within 2 minutes or hasn't answered a read within 5 minutes, show an error and enable the form; the next read starts a new parser. Before, a parser that never answered left the form disabled, and the form kept reusing a broken parser
 - Load Wealthfolio's accounts on each Read statement, so account choices, saved-account notes, previews and Check units use the current list. After adding an account, choose Read statement again
 - Show the whole choice in the Accounts and Bank account selects and in the holdings import's Accounts select. Each select is as wide as its choice, at least 18rem (or the card's width if narrower) and at most the card's width; when the choice doesn't fit beside its label, the select moves under the label, and when it's wider than the card, it wraps onto more lines. An account name without spaces wraps within the word, in the select and in its list of choices. Before, each select was 18rem wide, so a longer choice was cut off, such as "Same as PAN (Outside Wealthfolio)" with Wealthfolio 3.12.0's Classic theme and Mono font, or a choice naming a long account, and in a narrow window a long account name without spaces ran past the edge of the list

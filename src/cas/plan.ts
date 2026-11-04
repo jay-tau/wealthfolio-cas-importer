@@ -1,4 +1,5 @@
 import type { ActivityDetails, ActivityImport, ActivityType, AddonContext } from "@wealthfolio/addon-sdk";
+import { AMFI } from "../lib/amfi.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, neg } from "./decimal.ts";
 import type { FundAsset, MappedTransaction, Mapping } from "./mapping.ts";
 import type { CasData, CasFolio, CasScheme } from "./types.ts";
@@ -232,6 +233,15 @@ export function indexActivities(existing: ActivityDetails[], funds: FundRefs) {
 const messages = (record: Record<string, string[]> | undefined, skip?: string) =>
   Object.entries(record ?? {}).flatMap(([field, list]) => (field === skip ? [] : list));
 
+/**
+ * Wealthfolio 3.12.0's checkImport rejects a trade in a fund chosen from AMFI that Wealthfolio
+ * doesn't have yet, asking for the exchange AMFI's funds don't have, while its import creates the
+ * fund priced from AMFI. Only that symbol error is set then, and the check stops there.
+ */
+const newAmfiFund = (activity: ActivityImport, result: ActivityImport | undefined) =>
+  !!activity.symbol && activity.providerId === AMFI && !activity.exchangeMic && result?.isValid === false &&
+  Object.keys(result.errors ?? {}).join() === "symbol";
+
 /** `checked` is checkImport's answer for `rowsOf(mapping)`. */
 export function planImport(
   mapping: Mapping,
@@ -254,9 +264,10 @@ export function planImport(
       const keys = activity === transaction.cash ? cashIdentities(activity) : [{ key: rowIdentity(activity), type: undefined }];
       const deferCash = activity === transaction.cash && !tradeFound;
       const match = settled || deferCash ? undefined : keys.find(({ key }) => available.get(key)?.length);
+      const unchecked = newAmfiFund(activity, result);
       const row: PlannedRow = {
         activity,
-        errors: messages(result?.errors),
+        errors: unchecked ? [] : messages(result?.errors),
         warnings: messages(result?.warnings, "_duplicate"),
         existingId: match && available.get(match.key)!.shift(),
         existingType: match?.type,
@@ -264,7 +275,7 @@ export function planImport(
         flagged: !!(result?.duplicateOfId || result?.duplicateOfLineNumber),
       };
       if (!result) row.errors.push("Wealthfolio didn't check this row.");
-      else if (!result.isValid && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
+      else if (!result.isValid && !unchecked && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
       if (!settled && !seen.has(keys[0].key)) seen.set(keys[0].key, activity.lineNumber ?? position);
       return row;
     };

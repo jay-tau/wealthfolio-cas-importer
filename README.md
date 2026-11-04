@@ -38,6 +38,26 @@ When several assets have that symbol and exchange, the preview asks you to choos
 If a chosen asset was deleted or its symbol, exchange or type changed, confirm the fund again under Funds.
 If its type isn't set, set it in Wealthfolio before confirming it again.
 
+### AMFI prices
+
+Wealthfolio can price Indian funds from AMFI, the Association of Mutual Funds in
+India, which publishes each fund's daily NAV. It's off until you add it in **Settings** → **Market
+data**. Then the search for a fund's ISIN, on detailed, summary and depository statements, finds
+AMFI's scheme as well as Yahoo's listing, and the add-on preselects AMFI's; confirm it as any other
+result. AMFI finds a fund only by its exact ISIN or AMFI scheme code, in its current list of
+schemes: some closed or merged schemes aren't in it, and an ISIN listed under more than one scheme
+code finds nothing. When there's no AMFI result, the Funds card says so.
+
+A fund Wealthfolio already has, priced from Yahoo or from statements, isn't switched: the add-on
+doesn't preselect AMFI's result for it, since picking that adds a second asset for the fund. To
+price the asset Wealthfolio has from AMFI, edit it in Wealthfolio: under **Market data**, turn on
+**Automatic updates** if it's priced by hand, then choose AMFI as the preferred provider and map
+AMFI to the fund's ISIN or scheme code.
+
+Wealthfolio 3.12.0's import check asks for an exchange for a fund chosen from AMFI that Wealthfolio
+doesn't have yet, which AMFI's funds don't have, while its import creates the fund priced from AMFI.
+The add-on leaves that one error out and offers the fund's rows as new.
+
 ### Bank account
 
 If Wealthfolio also tracks the bank account a PAN's purchases are paid from, choose it under
