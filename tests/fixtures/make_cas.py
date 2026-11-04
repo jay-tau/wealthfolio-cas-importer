@@ -1,6 +1,6 @@
 """Write a MADE-UP CAMS detailed Consolidated Account Statement PDF.
 
-Usage: python make_cas.py out.pdf [--mismatch]
+Usage: python make_cas.py out.pdf [--mismatch] [--no-price]
 
 Everything in the statement is invented: investor, PAN (ABCDE1234F, the
 PDF's user password), address, email, phone, folios, AMCs ("Fictiva Mutual
@@ -24,7 +24,9 @@ The layout follows what casparser 1.4.1's CAMS DETAILED parser reads
 
 Balances are computed with Decimal so every printed running Unit Balance is
 consistent. --mismatch drops one SIP purchase row so casparser reports one
-unit-balance discontinuity in parse_warnings.
+unit-balance discontinuity in parse_warnings. --no-price leaves out the Price
+column, header and cells, as casparser says some older CAMS and KFintech
+layouts do; casparser then gives each trade amount / units as its NAV.
 
 Output is AES-256 (R6) encrypted with user password "ABCDE1234F".
 """
@@ -368,7 +370,8 @@ WATERMARK = "CAMSCASWS-00000001-01042025-TEST-FIXTURE Version:V3.4 Live-1017"
 class Layout:
     """Collects draw ops per page; rendered once the page count is known."""
 
-    def __init__(self):
+    def __init__(self, price: bool):
+        self.price = price
         self.pages: List[list] = []
         self.y = 0.0
         self.new_page(first=True)
@@ -393,10 +396,12 @@ class Layout:
         self.text(X_DESC, y, "Transaction", BOLD)
         self.rtext(X_AMOUNT, y, "Amount", BOLD)
         self.rtext(X_UNITS, y, "Units", BOLD)
-        self.rtext(X_PRICE, y, "Price", BOLD)
+        if self.price:
+            self.rtext(X_PRICE, y, "Price", BOLD)
         self.rtext(X_BAL, y, "Unit", BOLD)
         self.rtext(X_AMOUNT, y - 8, "(INR)", BOLD)
-        self.rtext(X_PRICE, y - 8, "(INR)", BOLD)
+        if self.price:
+            self.rtext(X_PRICE, y - 8, "(INR)", BOLD)
         self.rtext(X_BAL, y - 8, "Balance", BOLD)
         self.y = y - 8 - 20  # first content line well outside the 15pt header window
 
@@ -415,8 +420,8 @@ def check_desc_width(s: str):
         raise SystemExit(f"description too wide ({w:.1f} > {room}pt): {s!r}")
 
 
-def lay_out(folios: List[Folio], drop_tag: Optional[str]) -> Layout:
-    L = Layout()
+def lay_out(folios: List[Folio], drop_tag: Optional[str], price: bool) -> Layout:
+    L = Layout(price)
     for folio in folios:
         L.need(14 + 12 * 6)
         L.text(X_DATE, L.y, folio.amc, BOLD, 8.5)
@@ -458,7 +463,7 @@ def lay_out(folios: List[Folio], drop_tag: Optional[str]) -> Layout:
                     L.rtext(X_AMOUNT, L.y, inr(r.amount, 2))
                 if r.units is not None:
                     L.rtext(X_UNITS, L.y, inr(r.units, 3))
-                if r.nav is not None:
+                if r.nav is not None and price:
                     L.rtext(X_PRICE, L.y, inr(r.nav, 4))
                 if r.balance is not None:
                     L.rtext(X_BAL, L.y, inr(r.balance, 3))
@@ -569,11 +574,11 @@ def page_one_banner(c, folios: List[Folio]):
 def main(argv: List[str]) -> None:
     args = [a for a in argv if not a.startswith("--")]
     flags = {a for a in argv if a.startswith("--")}
-    if len(args) != 1 or flags - {"--mismatch"}:
-        raise SystemExit("usage: python make_cas.py out.pdf [--mismatch]")
+    if len(args) != 1 or flags - {"--mismatch", "--no-price"}:
+        raise SystemExit("usage: python make_cas.py out.pdf [--mismatch] [--no-price]")
     folios = build_portfolio()
     drop = "sip6" if "--mismatch" in flags else None
-    plain = render(folios, lay_out(folios, drop))
+    plain = render(folios, lay_out(folios, drop, "--no-price" not in flags))
     with pikepdf.open(io.BytesIO(plain)) as pdf:
         pdf.save(
             args[0],

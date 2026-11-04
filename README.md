@@ -25,6 +25,13 @@ A fund whose rows don't add up to its closing balance is left out unless you tic
 fund anyway"; then check its rows against the PDF and add or correct the missing ones in
 Wealthfolio after importing.
 
+A purchase costs the statement's units × NAV plus stamp duty; a redemption pays units × NAV less
+STT and TDS. casparser says some older CAMS and KFintech layouts print no NAV column. casparser
+1.4.1 derives those NAVs as amount ÷ units, rounded to 4 places, without marking them; the add-on
+uses them as printed. The price can differ from the fund's NAV for that day; for a fund priced by
+hand, it also becomes the fund's price for that day. The add-on can't tell whether the amount used
+to derive a NAV includes that day's charges, and treats it as before them.
+
 Importing the same statement again, or an overlapping one, adds only what's new: the add-on compares
 each row with the account's activities. Wealthfolio's own duplicate check can't count copies of a row
 once a duplicate was imported with "Import anyway". Before Wealthfolio 3.12.0 it also missed the
