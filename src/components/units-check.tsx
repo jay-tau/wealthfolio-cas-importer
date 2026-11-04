@@ -126,7 +126,10 @@ export function UnitsCheckCard({
                       </TableCell>
                       <TableCell>
                         <div className="grid gap-1">
-                          <Badge variant={variant}>{badge}</Badge>
+                          {/* The badge hides its overflow, so without a minimum width Chromium sizes the column without it. */}
+                          <Badge className="min-w-fit" variant={variant}>
+                            {badge}
+                          </Badge>
                           {check.problem ? (
                             <span className="text-muted-foreground text-xs">{check.problem}</span>
                           ) : (
