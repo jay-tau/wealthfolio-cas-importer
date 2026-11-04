@@ -189,7 +189,10 @@ function AccountPreview({
                 </TableCell>
                 <TableCell>
                   <div className="grid gap-1">
-                    <Badge variant={variant}>{badge}</Badge>
+                    {/* The badge hides its overflow, so without a minimum width Chromium sizes the column without it. */}
+                    <Badge className="min-w-fit" variant={variant}>
+                      {badge}
+                    </Badge>
                     {position.notes.map((note, i) => (
                       <span key={i} className="text-muted-foreground text-xs">
                         {note}
