@@ -38,8 +38,9 @@ const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 function parseRequirements(text) {
   return text
-    .replace(/\\\n/g, " ")
-    .split("\n")
+    // A checkout made before .gitattributes may still have CRLF line endings.
+    .replace(/\\\r?\n/g, " ")
+    .split(/\r?\n/)
     .map((line) => line.replace(/#.*/, "").trim())
     .filter(Boolean)
     .map((line) => {
