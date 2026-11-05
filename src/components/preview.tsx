@@ -243,8 +243,10 @@ export function Preview({
                   </TableCell>
                   <TableCell className="px-1.5" rowSpan={arriving ? 2 : undefined}>
                     <div className="grid gap-1">
-                      {/* The badge hides its overflow, so without a minimum width Chromium sizes the column without it. */}
-                      <Badge className="min-w-fit" variant={STATUS[t.status].variant}>
+                      {/* The badge hides its overflow, so without a minimum width Chromium sizes the column without it.
+                          Narrow padding keeps "Already in Wealthfolio" in view with the Mono font and Extra large text
+                          in a 1440 px window. */}
+                      <Badge className="min-w-fit px-1" variant={STATUS[t.status].variant}>
                         {STATUS[t.status].badge}
                       </Badge>
                       {notes.map((note, j) => (

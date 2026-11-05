@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Keep each "Already in Wealthfolio" badge in the detailed import's preview whole with Wealthfolio 3.12.0's Mono font, which its Classic theme picks, and Extra large text in its default 1440 × 960 window, by narrowing the preview's Status badges' padding. Before, after reading a statement again, the table was 2 px wider than the page, so it scrolled sideways and each badge's right end was cut off
 
 ### Security
 
