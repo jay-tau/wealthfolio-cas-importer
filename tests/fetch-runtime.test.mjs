@@ -81,6 +81,20 @@ test("runtime refreshes metadata when hashes change without a version change", a
   await assert.rejects(run(files), /isn't pinned/);
 });
 
+test("runtime reads the same pins from runtime-requirements.txt with LF and CRLF line endings", async () => {
+  const lf = `# A comment\ndemo==1.0 \\\n    --hash=sha256:${digest(pure)} \\\n    --hash=sha256:${digest(native)}\n`;
+  const results = [];
+  for (const text of [lf, lf.replaceAll("\n", "\r\n")]) {
+    const files = fixture();
+    files.set("runtime-requirements.txt", text);
+    const wheels = await run(files);
+    // The cached metadata's name has a hash of the pinned hashes.
+    results.push({ wheels, files: [...files.keys()].sort() });
+  }
+  assert.deepEqual(results[0].wheels, [native]);
+  assert.deepEqual(results[1], results[0]);
+});
+
 test("runtime accepts compatible Python and Pyodide tags, and rejects incompatible pairs", async () => {
   for (const [tag, compatible] of [
     ["py313-none-any", true],

@@ -14,6 +14,8 @@ jobs:
   test:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    outputs:
+      zip-sha256: ${{ steps.zip.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -35,6 +37,9 @@ jobs:
       - run: pnpm test:casparser
       # Builds the add-on and checks the zip against Wealthfolio's limits.
       - run: pnpm bundle
+      # The windows job must build the same zip.
+      - id: zip
+        run: echo "sha256=$(sha256sum dist/*.zip | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
       # A release publishes this zip.
       - if: github.ref_type == 'tag'
         uses: actions/upload-artifact@v7
@@ -42,6 +47,42 @@ jobs:
           name: package
           path: dist/*.zip
           if-no-files-found: error
+
+  # Git for Windows sets core.autocrlf=true, which checks text files out with CRLF line endings
+  # unless .gitattributes says otherwise. Builds the zip in such a checkout and compares it with
+  # the test job's.
+  windows:
+    needs: test
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - run: git config --global core.autocrlf true
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          version: 10
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v6
+        with:
+          path: .cache/runtime
+          key: runtime-${{ hashFiles('pnpm-lock.yaml', 'runtime.json', 'runtime-requirements.txt') }}
+      - run: pnpm bundle
+      - name: Compare the zip with Ubuntu's
+        shell: bash
+        env:
+          UBUNTU: ${{ needs.test.outputs.zip-sha256 }}
+        run: |
+          windows=$(sha256sum dist/*.zip | cut -d ' ' -f 1)
+          echo "Ubuntu:  $UBUNTU"
+          echo "Windows: $windows"
+          if [ -z "$UBUNTU" ] || [ "$windows" != "$UBUNTU" ]; then
+            echo "::error::Windows built a different zip"
+            exit 1
+          fi
 
   browser:
     runs-on: ubuntu-24.04

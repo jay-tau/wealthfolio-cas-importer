@@ -1,0 +1,3 @@
+# Check text files out with LF line endings everywhere, even with core.autocrlf=true, so a Windows
+# checkout builds the same zip as Linux. Git detects binary files such as the PDFs itself.
+* text=auto eol=lf

@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Keep each "Already in Wealthfolio" badge in the detailed import's preview whole with Wealthfolio 3.12.0's Mono font, which its Classic theme picks, and Extra large text in its default 1440 × 960 window, by narrowing the preview's Status badges' padding. Before, after reading a statement again, the table was 2 px wider than the page, so it scrolled sideways and each badge's right end was cut off
+- Let `pnpm bundle` run in a Windows checkout made with `core.autocrlf=true`, Git for Windows' default, and build the same zip there as on Linux. Before, its CRLF line endings stopped `pnpm runtime` at `runtime-requirements.txt`, and fixing only that built a different zip. A `.gitattributes` now checks text files out with LF line endings, `pnpm runtime` also reads CRLF ones, and CI builds the zip on Windows and checks that it matches Linux's
 
 ### Security
 
