@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Ask on the Funds card to check that each fund found matches the statement's name, plan and option, then choose Use this fund, which is needed only the first time. The "No AMFI result" paragraph repeated under each fund, which read as a problem with that fund, is now one note below the Funds or Holdings card's introduction, shown while a fund's search finds no AMFI result: it recommends AMFI for daily fund prices, added in Settings → Market data before confirming, and says to search each fund's ISIN or AMFI scheme code
+- Read statements with pypdfium2 5.15.0, up from 5.14.0. It's built on PDFium 159.0.8146.0, up from 156.0.8076.0, which pypdfium2's release notes say fixes a few CVEs
 
 ### Deprecated
 
