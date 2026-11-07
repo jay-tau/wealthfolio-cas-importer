@@ -80,6 +80,6 @@
     }
   ],
   "keywords": ["wealthfolio", "addon"],
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "repository": "https://github.com/jay-tau/wealthfolio-cas-importer"
 }

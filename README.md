@@ -333,5 +333,18 @@ stops before CI if the tag, either version or the CHANGELOG doesn't match.
 
 ## License
 
-MIT. The package also carries Pyodide, casparser and the other components listed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+Copyright (c) 2026 jay-tau
+
+This add-on is free software: you can redistribute it and/or modify it under the terms of the GNU
+Affero General Public License as published by the Free Software Foundation, either version 3 of the
+License, or (at your option) any later version. It is distributed in the hope that it will be
+useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
+FOR A PARTICULAR PURPOSE. See [LICENSE](LICENSE) for the full text.
+
+If you modify the add-on and let users interact with it remotely over a network, prominently offer
+them that version's corresponding source at no charge (AGPL §13).
+
+Releases through v2.0.1 were released under the MIT License.
+
+The package also carries Pyodide, casparser and the other components listed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), each under its own licence.
