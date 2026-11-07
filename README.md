@@ -47,13 +47,18 @@ If its type isn't set, set it in Wealthfolio before confirming it again.
 
 ### AMFI prices
 
-Wealthfolio can price Indian funds from AMFI, the Association of Mutual Funds in
-India, which publishes each fund's daily NAV. It's off until you add it in **Settings** → **Market
-data**. Then the search for a fund's ISIN, on detailed, summary and depository statements, finds
-AMFI's scheme as well as Yahoo's listing, and the add-on preselects AMFI's; confirm it as any other
-result. AMFI finds a fund only by its exact ISIN or AMFI scheme code, in its current list of
-schemes: some closed or merged schemes aren't in it, and an ISIN listed under more than one scheme
-code finds nothing. When there's no AMFI result, the Funds card says so.
+Wealthfolio can price Indian funds from AMFI, the Association of Mutual Funds in India, which
+publishes each fund's daily NAV. It's off until you add it in **Settings** → **Market data**, and we
+recommend adding it before your first import: a fund Wealthfolio already has, priced from Yahoo for
+example, isn't switched to AMFI later without editing its asset in Wealthfolio (see below). Then the
+search for a fund's ISIN, on detailed, summary and depository statements, finds AMFI's scheme as
+well as Yahoo's listing, and the add-on preselects AMFI's; confirm it as any other result. AMFI
+finds a fund only by its exact ISIN or AMFI scheme code, in its current list of schemes: some closed
+or merged schemes aren't in it, and an ISIN listed under more than one scheme code finds nothing.
+While the search for a fund's ISIN, or for the name of one printed without it, finds no AMFI result,
+the Funds or Holdings card shows one note below its introduction: it recommends AMFI, says to add it
+in **Settings** → **Market data** if it isn't on, and to enter each fund's ISIN or AMFI scheme code
+in its search box and press **Search**.
 
 A fund Wealthfolio already has, priced from Yahoo or from statements, isn't switched: the add-on
 doesn't preselect AMFI's result for it, since picking that adds a second asset for the fund. To

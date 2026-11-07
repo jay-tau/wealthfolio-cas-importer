@@ -147,16 +147,30 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await noIsin.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
     const firstFund = frame.locator("section").first();
     // With AMFI not added in Settings → Market data, the search for a fund's ISIN or for the name of one
-    // printed without it finds no AMFI result. Other search terms say nothing about AMFI.
-    const noAmfi = /^No AMFI result\. Wealthfolio can price Indian funds from AMFI, .* add it in Settings → Market data, then search again\./;
-    await firstFund.getByText(noAmfi).waitFor();
-    await noIsin.getByText(noAmfi).waitFor();
+    // printed without it finds no AMFI result. While any fund's does, its card recommends AMFI once,
+    // directly below the card's intro and in no fund's section. Other search terms say nothing about AMFI.
+    const fundsIntro = "Check that each fund found matches the statement's name, plan and option, then choose Use this fund. This is only needed the first time: the add-on remembers each fund you confirm.";
+    const amfiNote = "We recommend AMFI for daily fund prices. Before confirming, add it in Settings → Market data if it isn't on. In each fund's search box, enter its ISIN or AMFI scheme code and press Search.";
+    const amfiNoteShown = async (intro = fundsIntro) => {
+      await frame.getByText(amfiNote, { exact: true }).waitFor();
+      assert.equal(await frame.getByText(amfiNote, { exact: true }).count(), 1);
+      assert.equal(await frame.locator("section").getByText(amfiNote, { exact: true }).count(), 0);
+      assert.equal(await frame.getByText(intro, { exact: true }).locator("xpath=following-sibling::*[1]").textContent(), amfiNote);
+      assert.equal(await frame.getByText(/No AMFI result/).count(), 0);
+    };
+    const noAmfiNote = async () => {
+      // Search-result DOM can appear before the effect reports its condition to the card.
+      await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      await frame.getByText(amfiNote, { exact: true }).waitFor({ state: "detached" });
+    };
+    await amfiNoteShown();
     const search = firstFund.getByLabel("Search for the fund");
     const useFund = firstFund.getByRole("button", { name: "Use this fund" });
     await search.fill("MULTI");
     await search.press("Enter");
     await firstFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    assert.equal(await firstFund.getByText(noAmfi).count(), 0);
+    // The other funds' searches still find no AMFI result.
+    await amfiNoteShown();
     assert.equal(await useFund.isDisabled(), true, "multiple matches require a selected result");
     await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
     assert.equal(await useFund.isDisabled(), false);
@@ -206,6 +220,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await section.getByRole("button", { name: "Use this fund" }).click();
       await section.getByText("Confirmed").waitFor();
     }
+    // Once no open fund search lacks an AMFI result, the note goes.
+    await noAmfiNote();
     const searches = await tab.frames()[1].evaluate(() => window.host.searches);
     assert.ok(!searches.some((query) => /INFZ90K01MC|INFZ91T01GL/.test(query)), searches.join(" "));
     assert.ok(searches.includes("INFZ91T01CB6") && searches.includes("Testbridge Corporate Bond Fund"), searches.join(" "));
@@ -926,7 +942,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await liquidResults.nth(1).waitFor({ state: "attached" });
     assert.match(await liquidSection.locator("label").nth(1).textContent(), /^Scheme \d{6} \(\d{6} · MUTUALFUND · INR · AMFI selected\)$/);
     assert.equal(await liquidResults.nth(1).getAttribute("aria-checked"), "true", "AMFI's result is preselected");
-    assert.equal(await liquidSection.getByText(noAmfi).count(), 0);
     await liquidSection.getByRole("button", { name: "Use this fund" }).click();
     await liquidSection.getByText(/^Scheme \d{6} \(\d{6} · MUTUALFUND · INR · AMFI selected\)$/).waitFor();
     const amfiFund = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
@@ -942,11 +957,31 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await flexi.getByRole("radio").first().dispatchEvent("click");
     await flexi.getByRole("button", { name: "Use this fund" }).click();
     await flexi.getByText("Yahoo Flexi Cap").waitFor();
-    // AMFI doesn't search names.
+    // AMFI doesn't search names, so the note stays while the fund printed without an ISIN is the only
+    // one open, and goes once it's left out. Choosing a fund for it again searches again.
     await undecided(noIsin);
-    await noIsin.getByText(noAmfi).waitFor();
+    await amfiNoteShown();
+    // A mounted search stops qualifying while it runs, and for a different query's results.
+    const overnightSearch = noIsin.getByLabel("Search for the fund");
+    await pause("market");
+    await overnightSearch.fill("MULTI");
+    await overnightSearch.press("Enter");
+    await waiting();
+    await noAmfiNote();
+    await resume();
+    await noIsin.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    await noAmfiNote();
+    await overnightSearch.fill("Testbridge Overnight Fund");
+    await overnightSearch.press("Enter");
+    await amfiNoteShown();
+    await noIsin.getByRole("button", { name: "Leave this fund out" }).click();
+    await noIsin.getByText("Left out", { exact: true }).waitFor();
+    await noAmfiNote();
+    await noIsin.getByRole("button", { name: "Choose a fund" }).click();
+    await amfiNoteShown();
     await noIsin.getByRole("radio").first().dispatchEvent("click");
     await noIsin.getByRole("button", { name: "Use this fund" }).click();
+    await noAmfiNote();
     assert.equal(await confirmed(), 5);
     const amfiSearches = await tab.frames()[1].evaluate(() => window.host.searches);
     assert.ok(!amfiSearches.some((query) => /INFZ90K01BA1|INFZ91T01CB6/.test(query)), amfiSearches.join(" "));
@@ -962,6 +997,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Searching the ISIN again resolves AMFI's scheme code to the asset the import created.
     await liquidSection.getByRole("button", { name: "Change", exact: true }).click();
     await liquidResults.nth(1).waitFor({ state: "attached" });
+    await noAmfiNote();
     assert.equal(await liquidResults.count(), 2);
     assert.match(await liquidSection.locator("label").first().textContent(), / · EQUITY · INR · AMFI selected\)$/);
     assert.equal(await liquidResults.first().getAttribute("aria-checked"), "true");
@@ -1041,6 +1077,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await choose(/^Folio 1040012345/, "Leave out");
     const preview = frame.getByRole("button", { name: "Preview the snapshots" });
     assert.equal(await frame.locator("section").count(), 16);
+    // The Holdings card recommends AMFI the same way while a fund's search finds no AMFI result.
+    const holdingsIntro = /^Confirm the Wealthfolio asset for each holding\./;
+    await amfiNoteShown(holdingsIntro);
     for (const section of await frame.locator("section").all()) {
       if (await section.getByText("PLACEHOLDER PHARMA LIMITED").count()) {
         await section.getByRole("button", { name: "Leave this share out" }).click();
@@ -1058,6 +1097,19 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
       await section.getByText("Confirmed", { exact: true }).waitFor();
     }
+    await noAmfiNote();
+    // Leaving out the only qualifying Holdings fund removes the note too; restore its choice after.
+    const holdingsFund = frame.locator("section").filter({ hasText: "ISIN INFZ90K01NE8" });
+    await holdingsFund.getByRole("button", { name: "Change", exact: true }).click();
+    await amfiNoteShown(holdingsIntro);
+    await holdingsFund.getByRole("button", { name: "Leave this fund out" }).click();
+    await holdingsFund.getByText("Left out", { exact: true }).waitFor();
+    await noAmfiNote();
+    await holdingsFund.getByRole("button", { name: "Choose a fund" }).click();
+    await amfiNoteShown(holdingsIntro);
+    await holdingsFund.getByRole("button", { name: "Use this fund" }).click();
+    await holdingsFund.getByText("Confirmed", { exact: true }).waitFor();
+    await noAmfiNote();
     await frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" }).getByText("INEZ91A07012 · BOND · INR · priced from statements").waitFor();
     await frame.locator("section").filter({ hasText: "ISIN INEZ93A08016" }).getByText("Democorp Infra 7.60% 2033").waitFor();
 
@@ -1574,6 +1626,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I, NPS, PRAN XXXXXXXX9001: No units on the statement.", { exact: true }).waitFor({ timeout: 180_000 });
     const npsSection = frame.locator("section").filter({ hasText: scheme });
     await npsSection.getByText(/^No ISIN on the statement, and nothing found for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
+    // A card without funds never recommends AMFI.
+    await noAmfiNote();
     await npsSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await npsSection.getByText("NPS-TEST-E-TIER-I · EQUITY · INR · priced from statements").waitFor();
     // A PRAN's remembered account that's archived is ignored too, though it doesn't track holdings either.

@@ -85,11 +85,14 @@ function FundSearch({
   item,
   onChoose,
   onLeaveOut,
+  onNoAmfi,
 }: {
   ctx: AddonContext;
   item: FundItem;
   onChoose: (fund: ChosenFund) => void;
   onLeaveOut: () => void;
+  /** Called with true while the fund's own search finds no AMFI result, and with false after. */
+  onNoAmfi: (noAmfi: boolean) => void;
 }) {
   // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing or isn't
   // printed, or what the user types is sent to market-data providers.
@@ -144,6 +147,15 @@ function FundSearch({
     void search(query);
   }, []);
 
+  // The printed ISIN, or the name of a fund printed without one, finds no AMFI result: AMFI may not
+  // be added in Wealthfolio. Other search terms say nothing about AMFI.
+  const noAmfi = !!results && own && noun === "fund" && !results.some(fromAmfi);
+  useEffect(() => {
+    if (!noAmfi) return;
+    onNoAmfi(true);
+    return () => onNoAmfi(false);
+  }, [noAmfi]);
+
   const result = picked === "" ? undefined : results?.[Number(picked)];
   return (
     <div className="grid gap-3">
@@ -178,14 +190,6 @@ function FundSearch({
       {results?.length === 0 && !byName && (
         <p className="text-muted-foreground text-sm">
           Nothing found. Try the {noun}'s name{statementAsset ? ", or use the statement's prices" : ""}.
-        </p>
-      )}
-      {results && own && noun === "fund" && !results.some(fromAmfi) && (
-        <p className="text-muted-foreground text-sm">
-          No AMFI result. Wealthfolio can price Indian funds from AMFI, the Association of Mutual Funds
-          in India: if it isn't on, add it in Settings → Market data, then search again. AMFI finds a fund only by its
-          exact ISIN or AMFI scheme code, in its current list of schemes: some closed or merged schemes aren't in it, and
-          an ISIN listed under more than one scheme code finds nothing.
         </p>
       )}
       {results?.some(fromAmfi) && results.some(pricedElsewhere) && (
@@ -231,7 +235,7 @@ export function FundChoicesCard({
   choices,
   onChange,
   title = "Funds",
-  intro = "Confirm the Wealthfolio fund for each scheme. Funds are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed; the add-on remembers the fund you confirm for each scheme.",
+  intro = "Check that each fund found matches the statement's name, plan and option, then choose Use this fund. This is only needed the first time: the add-on remembers each fund you confirm.",
 }: {
   ctx: AddonContext;
   items: FundItem[];
@@ -240,11 +244,19 @@ export function FundChoicesCard({
   title?: string;
   intro?: string;
 }) {
+  // The open fund searches that find no AMFI result.
+  const [noAmfi, setNoAmfi] = useState<readonly string[]>([]);
   return (
     <Card>
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <p className="text-muted-foreground text-sm">{intro}</p>
+        {noAmfi.length > 0 && (
+          <p className="text-muted-foreground text-sm">
+            We recommend AMFI for daily fund prices. Before confirming, add it in Settings → Market data if it isn't on.
+            In each fund's search box, enter its ISIN or AMFI scheme code and press Search.
+          </p>
+        )}
       </CardHeader>
       <CardContent className="space-y-6">
         {items.map((item) => {
@@ -280,6 +292,9 @@ export function FundChoicesCard({
                   item={item}
                   onChoose={(fund) => onChange(key, { fund })}
                   onLeaveOut={() => onChange(key, { leftOut: true })}
+                  onNoAmfi={(missing) =>
+                    setNoAmfi((keys) => (missing ? [...keys.filter((k) => k !== key), key] : keys.filter((k) => k !== key)))
+                  }
                 />
               )}
             </section>
