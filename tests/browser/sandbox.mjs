@@ -166,6 +166,43 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await amfiNoteShown();
     const search = firstFund.getByLabel("Search for the fund");
     const useFund = firstFund.getByRole("button", { name: "Use this fund" });
+    // A fund's plan and option are badges beside its name, its search results and its confirmed choice.
+    // Each name gets badges only for its own fields. Beside a result or choice, a field warns only
+    // when both names give it and it differs.
+    const badges = (locator) => locator.locator("[data-slot=badge]").evaluateAll((all) => all.map((b) => `${b.textContent} ${b.dataset.variant}`));
+    const nameBadges = (section) => badges(section.locator("h3").locator("xpath=.."));
+    const resultBadges = (section) => section.getByRole("radiogroup").locator("label").evaluateAll((labels) =>
+      labels.map((label) => [...label.querySelectorAll("[data-slot=badge]")].map((b) => `${b.textContent} ${b.dataset.variant}`)));
+    const choiceBadges = (section) => badges(section.getByText("Confirmed", { exact: true }).locator("xpath=.."));
+    assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
+    assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" })), ["Regular secondary", "IDCW secondary"]);
+    assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: "IDCW Reinvestment" })), ["Direct secondary", "IDCW secondary"]);
+    await search.fill("Fictiva Flexi Cap");
+    await search.press("Enter");
+    await firstFund.getByRole("radio").nth(4).waitFor({ state: "attached" });
+    assert.deepEqual(await resultBadges(firstFund), [
+      ["Direct secondary", "Growth secondary"],
+      ["Regular warning-subtle", "IDCW warning-subtle"],
+      ["Direct secondary"],
+      [],
+      ["Growth secondary"],
+    ]);
+    await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
+    await useFund.click();
+    await firstFund.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW warning-subtle"]);
+    assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
+    await firstFund.getByRole("button", { name: "Change", exact: true }).click();
+    for (const [index, expected] of [[2, ["Direct secondary"]], [3, []], [4, ["Growth secondary"]]]) {
+      await search.fill("Fictiva Flexi Cap");
+      await search.press("Enter");
+      await firstFund.getByRole("radio").nth(4).waitFor({ state: "attached" });
+      await firstFund.getByRole("radio").nth(index).dispatchEvent("click");
+      await useFund.click();
+      await firstFund.getByText("Confirmed", { exact: true }).waitFor();
+      assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", ...expected]);
+      await firstFund.getByRole("button", { name: "Change", exact: true }).click();
+    }
     await search.fill("MULTI");
     await search.press("Enter");
     await firstFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
@@ -1080,6 +1117,31 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // The Holdings card recommends AMFI the same way while a fund's search finds no AMFI result.
     const holdingsIntro = /^Confirm the Wealthfolio asset for each holding\./;
     await amfiNoteShown(holdingsIntro);
+    // Only funds have plan and option badges, beside their names and results. A bond's results have
+    // none, even when their names give a plan and option.
+    const headings = await frame.locator("section h3").evaluateAll((all) => all.map((h) =>
+      [h.textContent, [...h.parentElement.querySelectorAll("[data-slot=badge]")].map((b) => `${b.textContent} ${b.dataset.variant}`)]));
+    assert.deepEqual(headings.filter(([, b]) => b.length), [
+      ["TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH", ["Direct secondary", "Growth secondary"]],
+      ["Fictiva Flexi Cap Fund - Direct Plan - Growth", ["Direct secondary", "Growth secondary"]],
+      ["Fictiva Liquid Fund - Direct Plan - Growth", ["Direct secondary", "Growth secondary"]],
+      ["Fictiva Balanced Advantage Fund - Direct Plan - IDCW Reinvestment", ["Direct secondary", "IDCW secondary"]],
+      ["Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout", ["Regular secondary", "IDCW secondary"]],
+    ]);
+    const bondSection = frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" });
+    const bondSearch = bondSection.getByLabel("Search for the bond");
+    await bondSearch.fill("Fictiva Flexi Cap");
+    await bondSearch.press("Enter");
+    await bondSection.getByRole("radio").nth(4).waitFor({ state: "attached" });
+    assert.deepEqual(await badges(bondSection), []);
+    await bondSection.getByRole("radio").nth(1).dispatchEvent("click");
+    await bondSection.getByRole("button", { name: "Use this bond" }).click();
+    await bondSection.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(bondSection), ["Confirmed success-subtle"]);
+    await bondSection.getByRole("button", { name: "Change", exact: true }).click();
+    await bondSearch.fill("INEZ91A07012");
+    await bondSearch.press("Enter");
+    await bondSection.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
     for (const section of await frame.locator("section").all()) {
       if (await section.getByText("PLACEHOLDER PHARMA LIMITED").count()) {
         await section.getByRole("button", { name: "Leave this share out" }).click();
@@ -1628,8 +1690,19 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await npsSection.getByText(/^No ISIN on the statement, and nothing found for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
     // A card without funds never recommends AMFI.
     await noAmfiNote();
+    // An NPS scheme's results have no plan or option badges, even when their names give them.
+    await npsSection.getByLabel("Search for the NPS scheme").fill("Fictiva Flexi Cap");
+    await npsSection.getByLabel("Search for the NPS scheme").press("Enter");
+    await npsSection.getByRole("radio").nth(4).waitFor({ state: "attached" });
+    assert.deepEqual(await badges(npsSection), []);
+    await npsSection.getByRole("radio").nth(1).dispatchEvent("click");
+    await npsSection.getByRole("button", { name: "Use this NPS scheme" }).click();
+    await npsSection.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(npsSection), ["Confirmed success-subtle"]);
+    await npsSection.getByRole("button", { name: "Change", exact: true }).click();
     await npsSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await npsSection.getByText("NPS-TEST-E-TIER-I · EQUITY · INR · priced from statements").waitFor();
+    assert.deepEqual(await badges(npsSection), ["Confirmed success-subtle"]);
     // A PRAN's remembered account that's archived is ignored too, though it doesn't track holdings either.
     const pran = frame.getByLabel(/^NPS, PRAN XXXXXXXX9001/);
     await saveChoices([[await pran.getAttribute("id"), "archived-2"]]);
@@ -2076,7 +2149,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // A depository statement's share and fund: the share's ISIN finds only another fund, the fund's nothing.
     const textiles = "IMAGINARY TEXTILES LIMITED";
-    const smallCap = "PRETEND SMALL CAP FUND - DIRECT PLAN - GROWTH";
+    // The fund is printed with a plan but no option.
+    const smallCap = "PRETEND SMALL CAP FUND - DIRECT PLAN";
     await hosted(([textiles, smallCap]) => {
       window.host.statementDate = "30-Apr-2025";
       window.host.emptySearchQueries = ["INFZ92P01SC5", "PRETEND SMALL CAP FUND"];
@@ -2085,7 +2159,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         name: "PRETEND BROKING LIMITED", type: "CDSL Demat Account", dp_id: "12099900", client_id: "00000004", folios: 0, balance: "8045", owners: [],
         equities: [{ isin: "INEZ94A01017", name: textiles, num_shares: "40", price: "125.50", value: "5020.00", symbol: null, exchange: null }],
         mutual_funds: [{
-          isin: "INFZ92P01SC5", name: smallCap, amfi: null, type: null, balance: "100", nav: "30.25", value: "3025.00", avg_cost: "28", total_cost: null,
+          isin: "INFZ92P01SC5", name: smallCap.replace("DIRECT PLAN", "GROWTH"), amfi: null, type: null, balance: "100", nav: "30.25", value: "3025.00", avg_cost: "28", total_cost: null,
           ucc: null, folio: null, pnl: null, return: null,
         }],
         bonds: [],
@@ -2095,15 +2169,54 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.locator("#cas-password").fill("ABCDE1234F");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 30-Apr-2025: 1 demat accounts, 0 folios, 2 holdings.").waitFor({ timeout: 180_000 });
+    // With an option but no plan on the statement, only the differing option warns.
+    const optionOnlySection = frame.locator("section").filter({ hasText: "PRETEND SMALL CAP FUND - GROWTH" });
+    assert.deepEqual(await nameBadges(optionOnlySection), ["Growth secondary"]);
+    await optionOnlySection.getByLabel("Search for the fund").fill("Pretend Small Cap");
+    await optionOnlySection.getByLabel("Search for the fund").press("Enter");
+    await optionOnlySection.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    assert.deepEqual(await resultBadges(optionOnlySection), [["Direct secondary", "Growth secondary"], ["Regular secondary", "IDCW warning-subtle"]]);
+    await optionOnlySection.getByRole("radio").nth(1).dispatchEvent("click");
+    await optionOnlySection.getByRole("button", { name: "Use this fund" }).click();
+    await optionOnlySection.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(optionOnlySection), ["Confirmed success-subtle", "Regular secondary", "IDCW warning-subtle"]);
+    // Forget this temporary choice, then restore the plan-only statement for the snapshot checks.
+    await optionOnlySection.getByRole("button", { name: "Change", exact: true }).click();
+    await optionOnlySection.getByRole("button", { name: "Leave this fund out" }).click();
+    await optionOnlySection.getByText("Left out", { exact: true }).waitFor();
+    await hosted((smallCap) => { window.host.depositoryAccounts[0].mutual_funds[0].name = smallCap; }, smallCap);
+    await readAgain();
     const textilesSection = frame.locator("section").filter({ hasText: textiles });
     await textilesSection.getByText("Fund INEZ94A01017").waitFor();
     assert.equal(await textilesSection.getByRole("button", { name: "Use this share" }).isDisabled(), false);
+    // A share's results have no plan or option badges, even when their names give them.
+    await textilesSection.getByLabel("Search for the share").fill("Pretend Small Cap");
+    await textilesSection.getByLabel("Search for the share").press("Enter");
+    await textilesSection.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    assert.deepEqual(await badges(textilesSection), []);
+    await textilesSection.getByRole("radio").nth(1).dispatchEvent("click");
+    await textilesSection.getByRole("button", { name: "Use this share" }).click();
+    await textilesSection.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(textilesSection), ["Confirmed success-subtle"]);
+    await textilesSection.getByRole("button", { name: "Change", exact: true }).click();
     await textilesSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await textilesSection.getByText("INEZ94A01017 · EQUITY · INR · priced from statements").waitFor();
     const smallCapSection = frame.locator("section").filter({ hasText: smallCap });
     await smallCapSection.getByText(`Nothing found for the ISIN or for "PRETEND SMALL CAP FUND". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
+    // With no option on the statement, a result's option is no warning; another plan is.
+    assert.deepEqual(await nameBadges(smallCapSection), ["Direct secondary"]);
+    await smallCapSection.getByLabel("Search for the fund").fill("Pretend Small Cap");
+    await smallCapSection.getByLabel("Search for the fund").press("Enter");
+    await smallCapSection.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    assert.deepEqual(await resultBadges(smallCapSection), [["Direct secondary", "Growth secondary"], ["Regular warning-subtle", "IDCW secondary"]]);
+    await smallCapSection.getByRole("radio").nth(1).dispatchEvent("click");
+    await smallCapSection.getByRole("button", { name: "Use this fund" }).click();
+    await smallCapSection.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(smallCapSection), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW secondary"]);
+    await smallCapSection.getByRole("button", { name: "Change", exact: true }).click();
     await smallCapSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await smallCapSection.getByText("INFZ92P01SC5 · MUTUALFUND · INR · priced from statements").waitFor();
+    assert.deepEqual(await choiceBadges(smallCapSection), ["Confirmed success-subtle", "Direct secondary"]);
     await choose(/^CDSL Demat Account 1, PRETEND BROKING LIMITED/, "Demat (INR)");
     await preview.click();
     const pretendDemat = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-04-30" });
@@ -2178,6 +2291,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.locator("#cas-password").fill("ABCDE1234F");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText(/^No account tracks holdings\. To save snapshots,/).waitFor({ timeout: 180_000 });
+    assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: balancedName })), ["Direct secondary", "IDCW secondary"]);
     for (const section of await frame.locator("section").all()) {
       await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).first().waitFor();
       if (await section.getByText("Confirmed", { exact: true }).count()) continue;

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Show each fund's plan (Direct or Regular) and option (Growth or IDCW) as badges beside its name on the statement, its search results and the confirmed fund, on the Funds and Holdings cards, to make names like "DIRECT PLAN GROWTH" and "Dir Gr" easier to compare. The add-on reads them from the end of each name; a result's or confirmed fund's badge is a warning when it differs from the statement's, and a name that doesn't give its plan or option has no badge for it
 
 ### Changed
 - Ask on the Funds card to check that each fund found matches the statement's name, plan and option, then choose Use this fund, which is needed only the first time. The "No AMFI result" paragraph repeated under each fund, which read as a problem with that fund, is now one note below the Funds or Holdings card's introduction, shown while a fund's search finds no AMFI result: it recommends AMFI for daily fund prices, added in Settings → Market data before confirming, and says to search each fund's ISIN or AMFI scheme code

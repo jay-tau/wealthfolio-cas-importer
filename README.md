@@ -17,7 +17,12 @@ transactions for each PAN (and, if you like, a different one for a folio), and c
 Wealthfolio fund for each scheme; the
 add-on searches by the ISIN printed on the statement, and by the fund's name if the ISIN finds
 nothing or none is printed. Name-search results can be other funds: pick one with the statement's
-fund name, plan and option, or leave the fund out. Closed schemes, with no units at either end and
+fund name, plan and option, or leave the fund out. Badges beside the statement's name, each result
+and the confirmed fund show the plan (Direct or Regular) and option (Growth or IDCW, which older
+names call Dividend) that each name ends with, in spellings such as "Direct Plan - Growth" or
+"Dir Gr". A result's or confirmed fund's badge is a warning when the statement's name gives a
+different one. A name that doesn't give its plan or option has no badge for it, and no warning: the
+add-on doesn't guess it. Closed schemes, with no units at either end and
 nothing to import, are skipped. The preview lists every activity with its
 cash deposit or withdrawal (or [bank transfer](#bank-account)), the rows left out and why, and anything Wealthfolio already has. After
 the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
@@ -124,7 +129,8 @@ Choose such an account for the whole statement, and a different one or "Leave ou
 demat account or National Pension System (NPS) account. Demat labels use their order on the statement and
 broker name, without account numbers; an NPS account's label is its PRAN as printed, masked.
 Confirm the Wealthfolio asset for each holding: shares and bonds are searched by their
-ISIN too, and a fund confirmed for a detailed statement is already confirmed here. If no holdings
+ISIN too, and a fund confirmed for a detailed statement is already confirmed here. Funds have the
+same plan and option badges as on the Funds card; shares, bonds and NPS schemes have none. If no holdings
 account is offered, create one in Wealthfolio and choose Read statement again.
 
 A holding that no search result fits, including when the search finds only other funds or shares,
