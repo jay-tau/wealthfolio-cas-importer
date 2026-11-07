@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { after, test } from "node:test";
@@ -53,7 +53,15 @@ for (const method of [0, 8]) {
   });
 }
 
-// A made-up add-on with every file pnpm package zips, and a source map it leaves out.
+test("labels the add-on AGPL-3.0-or-later in package.json and manifest.json", async () => {
+  for (const file of ["package.json", "manifest.json"]) {
+    assert.equal(JSON.parse(await readFile(file, "utf8")).license, "AGPL-3.0-or-later", file);
+  }
+});
+
+// A made-up add-on with every file pnpm package zips, and a source map it leaves out. Its README,
+// LICENSE, notices and licenses/ are the real ones, which the zip must carry unchanged.
+const LICENSES = (await readdir("licenses")).sort();
 const ADDON = {
   "package.json": JSON.stringify({ name: "addon", version: "1.0.0" }),
   "manifest.json": JSON.stringify({ main: "dist/addon.js" }),
@@ -62,11 +70,12 @@ const ADDON = {
   "assets/runtime/b.whl": "b".repeat(1000),
   "assets/runtime/a.json": "{}",
   "assets/runtime/C.txt": "C",
-  "README.md": "readme",
-  LICENSE: "license",
-  "THIRD_PARTY_NOTICES.md": "notices",
-  "licenses/z.txt": "z",
-  "licenses/a.txt": "a",
+  "README.md": await readFile("README.md"),
+  LICENSE: await readFile("LICENSE"),
+  "THIRD_PARTY_NOTICES.md": await readFile("THIRD_PARTY_NOTICES.md"),
+  ...Object.fromEntries(await Promise.all(LICENSES.map(async (name) => [
+    `licenses/${name}`, await readFile(join("licenses", name)),
+  ]))),
 };
 // 2026-10-27 13:54:18 UTC, in seconds and as a zip's time and date.
 const COMMIT_TIME = 1793109258;
@@ -85,7 +94,7 @@ function unpack(zip) {
       version: zip.readUInt16LE(offset + 6), method: zip.readUInt16LE(offset + 10),
       time: zip.readUInt16LE(offset + 12), date: zip.readUInt16LE(offset + 14),
       mode: zip.readUInt32LE(offset + 38) >>> 16, extra: zip.readUInt16LE(offset + 30) + zip.readUInt16LE(header + 28),
-      contents: (zip.readUInt16LE(offset + 10) === 8 ? inflateRawSync(data) : data).toString(),
+      contents: zip.readUInt16LE(offset + 10) === 8 ? inflateRawSync(data) : data,
     });
     offset += 46 + nameLength + zip.readUInt16LE(offset + 30) + zip.readUInt16LE(offset + 32);
   }
@@ -132,16 +141,17 @@ test("packages the same bytes whatever the files' times, permissions and directo
 
   // Keep the root order, sort each directory's children, and leave source maps out.
   const entries = unpack(zips[0]);
-  assert.deepEqual(entries.map(({ name }) => name), [
+  const names = [
     "manifest.json", "dist/", "dist/addon.js", "assets/", "assets/runtime/", "assets/runtime/C.txt",
     "assets/runtime/a.json", "assets/runtime/b.whl", "README.md", "LICENSE", "THIRD_PARTY_NOTICES.md",
-    "licenses/", "licenses/a.txt", "licenses/z.txt",
-  ]);
+    "licenses/", ...LICENSES.map((name) => `licenses/${name}`),
+  ];
+  assert.deepEqual(entries.map(({ name }) => name), names);
   for (const { name, version, method, time, date, mode, extra, contents } of entries) {
     assert.deepEqual({ name, time, date, extra }, { name, time: ZIP_TIME, date: ZIP_DATE, extra: 0 });
     assert.equal(mode, name.endsWith("/") ? 0o40755 : 0o100644, name);
     assert.equal(version, name.endsWith("/") || method === 8 ? 20 : 10, name);
-    assert.equal(contents, name.endsWith("/") ? "" : ADDON[name], name);
+    assert.ok(contents.equals(Buffer.from(name.endsWith("/") ? "" : ADDON[name])), `${name} changed`);
   }
 
   for (const [seconds, time] of [["0", 0], ["315532801", 0], ["315532803", 1]]) {
@@ -150,7 +160,7 @@ test("packages the same bytes whatever the files' times, permissions and directo
     });
     assert.equal(packaged.status, 0, packaged.stderr);
     const entries = unpack(await readFile(join(temporary, "second/dist/addon-1.0.0.zip")));
-    assert.equal(entries.length, 14);
+    assert.equal(entries.length, names.length);
     for (const entry of entries) assert.deepEqual({ time: entry.time, date: entry.date }, { time, date: 33 });
   }
   for (const seconds of ["invalid", "4354819200", "999999999999999999999"]) {

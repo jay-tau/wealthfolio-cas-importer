@@ -8,7 +8,7 @@
     "wealthfolio",
     "addon"
   ],
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",
