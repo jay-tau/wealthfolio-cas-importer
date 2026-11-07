@@ -12,11 +12,11 @@ import {
   RadioGroupItem,
   Spinner,
 } from "@wealthfolio/ui";
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import type { CasData, CasScheme } from "../cas/types";
 import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
-import { fundName } from "../lib/fund-name";
+import { fundName, type PlanAndOption, planAndOption } from "../lib/fund-name";
 
 /** Undefined while undecided. */
 export type FundChoice = { fund: ChosenFund } | { leftOut: true };
@@ -47,6 +47,28 @@ const describe = (fund: ChosenFund) =>
   [fund.symbol, fund.exchangeMic, fund.instrumentType, fund.quoteCcy, fromAmfi(fund) && "AMFI selected", fund.statementPrices && "priced from statements"]
     .filter(Boolean)
     .join(" · ");
+
+/** The plan and option of a fund's name on the statement. Shares, bonds and NPS schemes have none. */
+const statementPlan = (item: FundItem) => (item.noun === "fund" ? planAndOption(item.name) : undefined);
+
+/**
+ * Badges for the plan and option a name gives, with a space before each. Beside a search result or
+ * confirmed fund, one that differs from the statement's is a warning; a field missing from either
+ * name has no warning.
+ */
+function PlanBadges({ own, statement }: { own: PlanAndOption; statement?: PlanAndOption }) {
+  return (["plan", "option"] as const).map((field) => {
+    const value = own[field];
+    if (!value) return null;
+    const differs = !!statement?.[field] && statement[field] !== value;
+    return (
+      <Fragment key={field}>
+        {" "}
+        <Badge variant={differs ? "warning-subtle" : "secondary"}>{value}</Badge>
+      </Fragment>
+    );
+  });
+}
 
 /** The statement's funds, one entry per fund however many folios hold it. */
 export function fundsOf(data: CasData) {
@@ -98,6 +120,7 @@ function FundSearch({
   // printed, or what the user types is sent to market-data providers.
   const name = fundName(item.name);
   const { isin, noun, statementAsset } = item;
+  const plan = statementPlan(item);
   const [query, setQuery] = useState(isin ?? name);
   const [results, setResults] = useState<SymbolSearchResult[] | null>(null);
   const [picked, setPicked] = useState<string>("");
@@ -206,7 +229,9 @@ function FundSearch({
             <Label key={`${r.symbol} ${r.exchangeMic} ${i}`} className="flex items-center gap-2 font-normal">
               <RadioGroupItem value={String(i)} />
               <span>
-                {r.longName || r.shortName} <span className="text-muted-foreground">({describe(toFund(r))})</span>
+                {r.longName || r.shortName}
+                {plan && <PlanBadges own={planAndOption(r.longName || r.shortName || "")} statement={plan} />}{" "}
+                <span className="text-muted-foreground">({describe(toFund(r))})</span>
               </span>
             </Label>
           ))}
@@ -262,9 +287,13 @@ export function FundChoicesCard({
         {items.map((item) => {
           const { key } = item;
           const choice = choices[key];
+          const plan = statementPlan(item);
           return (
             <section key={key} className="grid gap-2">
-              <h3 className="font-medium">{item.name}</h3>
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="font-medium">{item.name}</h3>
+                {plan && <PlanBadges own={plan} />}
+              </div>
               <p className="text-muted-foreground text-sm">
                 {item.isin ? `ISIN ${item.isin}` : "No ISIN printed"}
                 {item.where && ` · ${item.where}`}
@@ -273,7 +302,9 @@ export function FundChoicesCard({
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="success-subtle">Confirmed</Badge>
                   <span>
-                    {choice.fund.name} <span className="text-muted-foreground">({describe(choice.fund)})</span>
+                    {choice.fund.name}
+                    {plan && <PlanBadges own={planAndOption(choice.fund.name)} statement={plan} />}{" "}
+                    <span className="text-muted-foreground">({describe(choice.fund)})</span>
                   </span>
                   <Button type="button" variant="link" size="sm" onClick={() => onChange(key, undefined)}>
                     Change

@@ -190,6 +190,21 @@ const fund = (query: string): SymbolSearchResult & { quoteMode?: string } => ({
   quoteMode: host.pricingModes[query],
 });
 
+// Made-up results for the plan and option badges, for searches the tests type. Beside the Flexi Cap
+// fund, printed as "Direct Plan - Growth": a match spelled another way, a mismatch in both, and names
+// without an option, without either, or without a plan. Beside the Small Cap fund, printed with
+// either field missing: a result with both, and one with another plan and option.
+const planResults = new Map([
+  ["Fictiva Flexi Cap", [
+    "Fictiva Flexi Cap Fund DIRECT PLAN GROWTH",
+    "Fictiva Flexi Cap Fund Reg IDCW",
+    "Fictiva Flexi Cap Fund Dir",
+    "Fictiva Flexi Cap Fund",
+    "Fictiva Flexi Cap Fund Gr",
+  ]],
+  ["Pretend Small Cap", ["Pretend Small Cap Fund Dir Gr", "Pretend Small Cap Fund - Regular Plan - IDCW Payout"]],
+]);
+
 // AMFI's scheme for a fund's ISIN or scheme code, the way Wealthfolio 3.12.0 lists it: no exchange,
 // the scheme code as its symbol.
 // shortcut: synthetic codes cover these fixtures; use an explicit map if a fixture collides.
@@ -499,6 +514,10 @@ const api = {
     await wait("market");
     await wait(query);
     if (query === "FAIL" || host.failSearchQueries.includes(query)) throw new Error("Search unavailable");
+    const named = planResults.get(query);
+    if (named) {
+      return named.map((longName, i) => ({ ...fund(`${query.replace(/\W/g, "").toUpperCase()}${i + 1}`), longName }));
+    }
     if (host.emptySearchQueries.includes(query)) return [];
     // AMFI finds a fund's exact ISIN or scheme code, listed after Yahoo's results.
     const amfi = host.amfi && /^(INF\w{9}|\d{6})$/.test(query) ? [amfiScheme(/^\d/.test(query) ? query : amfiCode(query))] : [];
