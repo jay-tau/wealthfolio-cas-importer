@@ -5,7 +5,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test } from "node:test";
-import { strFromU8, unzipSync } from "fflate";
+import { strFromU8, unzipSync, zipSync } from "fflate";
 import { loadRuntime, runtime } from "./runtime.mjs";
 
 // casparser requirements the add-on leaves out on purpose.
@@ -72,14 +72,34 @@ test("THIRD_PARTY_NOTICES.md names the bundled versions", async () => {
   }
 });
 
-// A bundled wheel's file names, and its version.json files (pypdfium2_raw/ has PDFium's).
-async function readWheel(file) {
+// A wheel's file names and version.json files (pypdfium2_raw/ has PDFium's).
+// Leave directory entries out so a licence directory needs files under it.
+function readWheel(bytes) {
   const names = [];
-  const files = unzipSync(await readFile(join("assets/runtime", file)), {
-    filter: ({ name }) => names.push(name) && name.endsWith("/version.json"),
+  const files = unzipSync(bytes, {
+    filter: ({ name }) => !name.endsWith("/") && names.push(name) && name.endsWith("/version.json"),
   });
-  return { file, names, files };
+  return { names, files };
 }
+
+test("wheel file names leave out directory entries", () => {
+  const directory = "demo-1.dist-info/licenses/BUILD_LICENSES/";
+  const license = `${directory}LICENSE`;
+  const version = "pypdfium2_raw/version.json";
+  for (const [entries, expected] of [
+    [[directory], []],
+    [[license], [license]],
+    [[directory, license], [license]],
+  ]) {
+    const wheel = readWheel(zipSync({
+      ...Object.fromEntries(entries.map((name) => [name, new Uint8Array()])),
+      [version]: Buffer.from("{}"),
+    }));
+    assert.deepEqual(wheel.names, [...expected, version]);
+    assert.deepEqual(Object.keys(wheel.files), [version]);
+    assert.deepEqual(JSON.parse(strFromU8(wheel.files[version])), {});
+  }
+});
 
 // What in THIRD_PARTY_NOTICES.md's "Python wheels" table doesn't match the bundled wheels: a
 // wheel without a row, a Version cell, PDFium's version, or a "Full text" path that isn't in the
@@ -99,7 +119,8 @@ async function wheelNoticeProblems(notices) {
   for (const [component, version, , fullText = "", , shipsIn = ""] of rows) {
     const file = shipsIn.match(/^wheel `([^`]+)`$/)?.[1];
     if (file) {
-      wheel = runtime.wheels.includes(file) ? await readWheel(file) : undefined;
+      wheel = runtime.wheels.includes(file)
+        ? { file, ...readWheel(await readFile(join("assets/runtime", file))) } : undefined;
       if (!wheel) {
         problems.push(`${component}: ${file} isn't bundled`);
         continue;
