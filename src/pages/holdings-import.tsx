@@ -33,6 +33,7 @@ import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type U
 import { type Checked, UnitsCheckCard } from "../components/units-check";
 import { holdingKey, LEFT_OUT, readImported, saveImported, sourceKey } from "../lib/choices";
 import { instrumentType } from "../lib/instrument-type";
+import { plural } from "../lib/plural";
 
 type Api = AddonContext["api"];
 type HostInstrument = NonNullable<Holding["instrument"]> & {
@@ -674,7 +675,7 @@ export function HoldingsImport({
   );
 }
 
-function HoldingsSummary({ statement, holdings }: { statement: Statement; holdings: Holdings }) {
+export function HoldingsSummary({ statement, holdings }: { statement: Statement; holdings: Holdings }) {
   const kind = "cas_type" in statement ? `${statement.file_type} summary` : statement.file_type;
   const count = (k: Source["kind"]) => holdings.sources.filter((s) => s.kind === k).length;
   const lines = holdings.sources.reduce((n, s) => n + s.holdings.length, 0);
@@ -682,9 +683,9 @@ function HoldingsSummary({ statement, holdings }: { statement: Statement; holdin
     <div className="space-y-4">
       <p className="text-muted-foreground">
         {kind} statement for {statement.investor_info.name}, as on {statement.statement_period.to}:{" "}
-        {count("demat") > 0 && `${count("demat")} demat accounts, `}
-        {count("folio")} folios, {count("nps") > 0 && `${count("nps")} NPS ${count("nps") === 1 ? "account" : "accounts"}, `}
-        {lines} holdings.
+        {count("demat") > 0 && `${plural(count("demat"), "demat account")}, `}
+        {plural(count("folio"), "folio")}, {count("nps") > 0 && `${plural(count("nps"), "NPS account")}, `}
+        {plural(lines, "holding")}.
       </p>
       {"cas_type" in statement && (
         <p className="text-muted-foreground text-sm">

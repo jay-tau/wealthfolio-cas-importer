@@ -346,7 +346,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await firstFund.getByText("Confirmed").waitFor();
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/The type of .+ isn't set in Wealthfolio\. Set its type there/).waitFor();
-    assert.equal(await frame.getByText(/^\d+ new transactions, \d+ already in Wealthfolio/).count(), 0);
+    assert.equal(await frame.getByText(/^\d+ new transactions?, \d+ already in Wealthfolio/).count(), 0);
     // Set its type and confirm it again, then change its identity and remove it entirely.
     await tab.frames()[1].evaluate(() => { window.host.assets["chosen-fund"].instrumentType = "EQUITY"; });
     await firstFund.getByRole("button", { name: "Change", exact: true }).click();
@@ -455,7 +455,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await reuseBankRow.dispatchEvent("click");
     await frame.getByRole("button", { name: "Import 30 activities" }).click();
     await frame.getByText("Imported 30 of 30 activities").waitFor();
-    await frame.getByText("Linked 1 of 1 bank rows you chose with their transactions.").waitFor();
+    await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
     const banked = await tab.frames()[1].evaluate(() => ({ activities: window.host.activities, links: window.host.links }));
     const byId = Object.fromEntries(banked.activities.map((a) => [a.id, a]));
     assert.equal(banked.links.length, 1);
@@ -2241,7 +2241,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
     await frame.locator("#cas-password").fill("ABCDE1234F");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 30-Apr-2025: 1 demat accounts, 0 folios, 2 holdings.").waitFor({ timeout: 180_000 });
+    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 30-Apr-2025: 1 demat account, 0 folios, 2 holdings.").waitFor({ timeout: 180_000 });
     // With an option but no plan on the statement, only the differing option warns.
     const optionOnlySection = frame.locator("section").filter({ hasText: "PRETEND SMALL CAP FUND - GROWTH" });
     assert.deepEqual(await nameBadges(optionOnlySection), ["Growth secondary"]);
