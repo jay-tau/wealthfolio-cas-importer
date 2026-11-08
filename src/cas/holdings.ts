@@ -426,6 +426,13 @@ export interface PlannedPosition {
   cost?: { total: string; from: CostSource };
   /** Statement lines: whether they replace the account's units. Others: whether the account keeps them. */
   include: boolean;
+  /**
+   * Statement lines that an earlier import of their source added under other assets: the keys of
+   * those positions. Importing these lines replaces them, so they stay unless these are imported.
+   */
+  replaces?: string[];
+  /** The key of the statement's position whose import replaces this one. */
+  replacedBy?: string;
   notes: string[];
   /** Where the statement first lists it. */
   order: number;
@@ -491,14 +498,16 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     for (const [key, position] of byRef) {
       if (!position.lines.length && [...byRef.values()].some((p) => p.ref === position.ref && p.lines.length)) byRef.delete(key);
     }
-    holdBack([...byRef.values()], misread, plan.remembered, input);
-    for (const position of byRef.values()) {
+    const positions = [...byRef.values()];
+    holdBack(positions, misread, plan.remembered, input);
+    for (const position of positions) {
       if (position.misread) settleHeldBack(position);
       else if (position.lines.length) settleStatement(position, plan.accountId, input);
-      else settleOther(position, plan.sources, plan.accountId, input);
     }
+    // The account's others last: an earlier import may have added one for a line the statement's now take.
+    settleOthers(positions, plan.sources, plan.accountId, input);
     // The statement's holdings in its order, then the account's others in theirs.
-    const positions = [...byRef.values()].sort((a, b) => a.order - b.order);
+    positions.sort((a, b) => a.order - b.order);
     return { ...plan, positions };
   });
 }
@@ -594,33 +603,147 @@ function settleStatement(position: PlannedPosition, accountId: string, input: Pl
   }
 }
 
-function settleOther(position: PlannedPosition, sources: Source[], accountId: string, input: PlanInput) {
+/** A position's name, with its symbol and exchange to tell apart two assets of one holding. */
+export const assetName = (position: PlannedPosition) => {
+  const symbol = position.existing?.symbol ?? position.asset?.symbol;
+  const ref = position.existing?.ref ?? position.ref;
+  const exchange = ref.slice(ref.lastIndexOf("@") + 1);
+  const identity = [symbol, exchange].filter(Boolean).join(" · ");
+  return identity && identity !== position.name ? `${position.name} (${identity})` : position.name;
+};
+
+const labels = (sources: Iterable<Source>) => [...new Set([...sources].map((s) => s.label))].join(" and ");
+export const assetNames = (positions: Iterable<PlannedPosition>) => [...new Set([...positions].map(assetName))].join(" and ");
+
+/** A position an earlier import added for lines the statement now puts under another asset. */
+interface Moved {
+  old: PlannedPosition;
+  /** Sources whose lines it was added for. */
+  sources: Source[];
+  /** Every source that recorded adding it. */
+  recorded: Source[];
+}
+
+/**
+ * The account's holdings the statement doesn't list under their asset. One an earlier import added
+ * for lines the statement now puts under another asset would count them twice: it's kept, and those
+ * lines left out, until the user replaces it with them. Import records hold identifiers, not units,
+ * so a holding that may also have other units is only kept, with a note.
+ */
+function settleOthers(positions: PlannedPosition[], sources: Source[], accountId: string, input: PlanInput) {
+  const importable = new Set(positions.filter((p) => p.lines.length && p.include && !p.misread));
+  const under = new Map(positions.flatMap((p) => p.lines.map((l) => [l.holding, p] as const)));
+  const replacing = new Map<PlannedPosition, { whole: Moved[]; part: Moved[] }>();
+  for (const position of positions) {
+    // A statement row's lines replace its own units; a held-back one keeps them.
+    if (!position.existing || (position.lines.length && !position.misread)) continue;
+    const moved = settleOther(position, under, importable, sources, accountId, input);
+    if (!moved) continue;
+    for (const target of moved.targets) {
+      const entry = replacing.get(target) ?? { whole: [], part: [] };
+      (moved.whole ? entry.whole : entry.part).push(moved);
+      replacing.set(target, entry);
+    }
+  }
+  for (const [target, { whole, part }] of replacing) {
+    if (whole.length) {
+      target.include = false;
+      target.replaces = whole.map((m) => m.old.key);
+      const old = assetNames(whole.map((m) => m.old));
+      const them = whole.length > 1;
+      target.notes.push(
+        `An earlier import of ${labels(whole.flatMap((m) => m.sources))} added this holding as ${old}. So that it isn't counted twice, it's left out unless you replace ${old} with it. ` +
+        `Replace ${them ? "them" : "it"} only if all ${them ? "their" : "its"} units came from ${labels(whole.flatMap((m) => m.recorded))}: imports don't record how many units each folio, demat account or PRAN added.`,
+      );
+    }
+    if (part.length) {
+      const old = assetNames(part.map((m) => m.old));
+      const added = `An earlier import of ${labels(part.flatMap((m) => m.sources))} added this holding as ${old}`;
+      if (importable.has(target)) {
+        target.include = false;
+        target.notes.push(`${added}, which may also hold other units, so it's left out by default. If you keep both, correct the units of ${old} in Wealthfolio so that they aren't counted twice.`);
+      } else {
+        target.notes.push(`${added}.`);
+      }
+    }
+  }
+}
+
+function settleOther(
+  position: PlannedPosition,
+  under: ReadonlyMap<StatementHolding, PlannedPosition>,
+  importable: ReadonlySet<PlannedPosition>,
+  sources: Source[],
+  accountId: string,
+  input: PlanInput,
+) {
   // A holding the statement still lists, but that this import leaves out, wasn't sold.
   const lines = (s: Source) => [...s.holdings, ...(s.misread ?? [])];
   const listed = new Set(sources.flatMap((s) => lines(s).flatMap(security)));
+  // Missing ISINs across formats can leave no common identity to compare.
+  const incomparable = (s: Source, earlier: string[]) =>
+    lines(s).some((h) => !security(h).some((id) => earlier.some((old) => old.includes("|") === id.includes("|"))));
   let uncertain = false;
+  // It may also hold units that no listed holding under another asset replaces.
+  let mixed = !!position.misread;
+  const moved: { source: Source; to: PlannedPosition }[] = [];
+  const recorded: Source[] = [];
   const from = sources.filter((s) => {
-    const earlier = input.remembered(s, accountId).get(position.ref);
-    if (!earlier || earlier.some((id) => listed.has(id))) return false;
-    // Missing ISINs across formats can leave no common identity to compare.
-    if (lines(s).some((h) => !security(h).some((id) => earlier.some((old) => old.includes("|") === id.includes("|"))))) {
-      uncertain = true;
+    const earlier = input.remembered(s, accountId).get(position.ref) ?? input.remembered(s, accountId).get(position.existing!.ref);
+    if (!earlier) return false;
+    recorded.push(s);
+    // The source's own listed holdings it was added for: each is now left out, or under another asset.
+    const own = s.holdings.filter((h) => security(h).some((id) => earlier.includes(id)));
+    for (const holding of own) {
+      const to = under.get(holding);
+      if (to && to.ref !== position.ref && to.existing?.assetId !== position.existing!.assetId) moved.push({ source: s, to });
+      else mixed = true;
+    }
+    const unsure = incomparable(s, earlier);
+    if (unsure) mixed = true;
+    if (own.length) {
+      if (earlier.some((id) => listed.has(id) && !own.some((h) => security(h).includes(id)))) mixed = true;
       return false;
     }
-    return true;
+    if (earlier.some((id) => listed.has(id))) {
+      mixed = true;
+      return false;
+    }
+    uncertain ||= unsure;
+    return !unsure;
   });
-  if (from.length) {
+  if (!moved.length && position.misread) return;
+  let replaced: (Moved & { targets: PlannedPosition[]; whole: boolean }) | undefined;
+  if (moved.length) {
+    const targets = [...new Set(moved.map((m) => m.to))];
+    const whole = !mixed && targets.length === 1 && importable.has(targets[0]);
+    replaced = { old: position, sources: moved.map((m) => m.source), recorded, targets, whole };
+    const them = moved.length > 1;
+    const added = `An earlier import of ${labels(replaced.sources)} added it for ${them ? "holdings" : "a holding"} that this import lists under ${assetNames(targets)}.`;
+    if (whole) {
+      position.replacedBy = targets[0].key;
+      position.notes.push(`${added} It's kept unless you replace it with ${assetName(targets[0])}.`);
+    } else {
+      const left = targets.filter((t) => importable.has(t));
+      position.notes.push(left.length
+        ? `${added} The add-on can't tell how many of its units ${them ? "those holdings account" : "that holding accounts"} for, so it's kept and ${assetNames(left)} ${left.length > 1 ? "are" : "is"} left out by default. ` +
+          `If you keep both, correct this holding's units in Wealthfolio so that they aren't counted twice.`
+        : added);
+    }
+  } else if (from.length) {
     position.include = false;
     position.notes.push(`Not on the statement any more. An earlier import of ${from.map((s) => s.label).join(" and ")} added it.`);
   } else if (uncertain) {
     position.notes.push("A listed holding lacks a comparable identifier. Check whether to keep this earlier imported holding.");
   }
+  if (position.misread) return replaced;
   if (position.existing?.split) {
     position.notes.push("A split was recorded since the account's snapshot, so these units predate it. If you keep it, correct its units in Wealthfolio after saving.");
   }
   if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
     position.notes.push("It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date if you keep it.");
   }
+  return replaced;
 }
 
 /**
@@ -661,9 +784,12 @@ export interface Choices {
   costs: ReadonlyMap<string, string>;
 }
 
-/** Whether the statement's lines replace the account's units, or for others whether the account keeps them. */
+/**
+ * Whether the statement's lines replace the account's units, or for others whether the account keeps
+ * them. One that a statement position replaces is kept unless that position is imported.
+ */
 export const included = (position: PlannedPosition, choices: Choices) =>
-  position.misread ? position.include : position.include !== choices.flipped.has(position.key);
+  position.misread ? position.include : position.include !== choices.flipped.has(position.replacedBy ?? position.key);
 
 /** What `snapshots.save` gets for the account. */
 export function snapshotOf(plan: AccountPlan, choices: Choices) {
