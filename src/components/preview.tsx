@@ -30,6 +30,7 @@ import {
   sameUnits,
   type Status,
 } from "../cas/plan";
+import { plural } from "../lib/plural";
 
 const LABELS: Record<string, string> = {
   BUY: "purchase",
@@ -160,8 +161,9 @@ export function Preview({
       <CardHeader>
         <CardTitle>Preview</CardTitle>
         <p className="text-muted-foreground text-sm">
-          {count("new")} new transactions, {count("existing")} already in Wealthfolio, {count("duplicate")} possible
-          duplicates and {count("invalid")} Wealthfolio can't import. Each purchase comes with a transfer from the
+          {plural(count("new"), "new transaction")}, {count("existing")} already in Wealthfolio,{" "}
+          {plural(count("duplicate"), "possible duplicate")} and {count("invalid")} Wealthfolio can't import.
+          Each purchase comes with a transfer from the
           bank account you chose, and each sale or dividend payout with a transfer to it. Without one, and for
           switches, a purchase comes with a deposit and a sale or payout with a withdrawal, as if the money came from
           or went outside Wealthfolio. When you use a bank row Wealthfolio already has, the add-on imports the trade
@@ -294,7 +296,7 @@ export function Preview({
         </Table>
         <Button type="button" disabled={importing || rowCount === 0} onClick={onImport}>
           {importing && <Spinner />}
-          {importing ? "Importing…" : `Import ${rowCount} activities`}
+          {importing ? "Importing…" : `Import ${plural(rowCount, "activity", "activities")}`}
         </Button>
       </CardContent>
     </Card>
@@ -330,10 +332,11 @@ export function ImportResult({
         {summary.success ? (
           <Alert variant="success">
             <AlertTitle>
-              Imported {summary.imported} of {summary.total} activities
+              Imported {summary.imported} of {plural(summary.total, "activity", "activities")}
             </AlertTitle>
             <AlertDescription>
-              Wealthfolio skipped {summary.duplicates} as duplicates and created {summary.assetsCreated} funds.
+              Wealthfolio skipped {summary.duplicates} as {summary.duplicates === 1 ? "a duplicate" : "duplicates"} and
+              created {plural(summary.assetsCreated, "fund")}.
             </AlertDescription>
           </Alert>
         ) : (
@@ -361,7 +364,8 @@ export function ImportResult({
         )}
         {links.length > failedLinks.length && (
           <p className="text-sm">
-            Linked {links.length - failedLinks.length} of {links.length} bank rows you chose with their transactions.
+            Linked {links.length - failedLinks.length} of {plural(links.length, "bank row")} you chose with{" "}
+            {links.length === 1 ? "its transaction" : "their transactions"}.
           </p>
         )}
         {failedLinks.length > 0 && (

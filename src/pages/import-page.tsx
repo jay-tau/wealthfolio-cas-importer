@@ -48,6 +48,7 @@ import {
   sourceKey,
 } from "../lib/choices";
 import { instrumentType } from "../lib/instrument-type";
+import { plural } from "../lib/plural";
 import { HoldingsImport, holdingItems } from "./holdings-import";
 
 interface Previewed {
@@ -499,7 +500,7 @@ function toggle<T>(set: Set<T>, item: T, yes: boolean) {
   return next;
 }
 
-function StatementSummary({ data }: { data: CasData }) {
+export function StatementSummary({ data }: { data: CasData }) {
   const schemes = data.folios.flatMap((folio) => folio.schemes);
   const rows = schemes.reduce((count, scheme) => count + scheme.transactions.length, 0);
   const closed = schemes.filter(closedScheme).length;
@@ -507,8 +508,9 @@ function StatementSummary({ data }: { data: CasData }) {
     <div className="space-y-4">
       <p className="text-muted-foreground">
         {data.file_type} detailed statement for {data.investor_info.name}, {data.statement_period.from} to{" "}
-        {data.statement_period.to}: {data.folios.length} folios, {schemes.length} schemes, {rows} rows.
-        {closed > 0 && ` Skipping ${closed} closed ${closed === 1 ? "scheme" : "schemes"}, with no units and nothing to import.`}
+        {data.statement_period.to}: {plural(data.folios.length, "folio")}, {plural(schemes.length, "scheme")},{" "}
+        {plural(rows, "row")}.
+        {closed > 0 && ` Skipping ${plural(closed, "closed scheme")}, with no units and nothing to import.`}
       </p>
       {data.parse_warnings.length > 0 && (
         <Alert variant="warning">
