@@ -1,4 +1,5 @@
 import type { ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
+import { plural } from "../lib/plural.ts";
 import { sha256 } from "../lib/sha256.ts";
 import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, step, sub } from "./decimal.ts";
 import { fundRef } from "./plan.ts";
@@ -421,7 +422,7 @@ function matchMergers(schemes: Scheme[]) {
     if (outs.length === 1 && ins.length === 1) {
       leg.partner = leg === outs[0] ? ins[0] : outs[0];
     } else {
-      leg.problem ??= `Can't match this merger with its other half: the folio has ${outs.length} merger sales and ${ins.length} merger purchases on this day.`;
+      leg.problem ??= `Can't match this merger with its other half: the folio has ${plural(outs.length, "merger sale")} and ${plural(ins.length, "merger purchase")} on this day.`;
     }
   }
 }

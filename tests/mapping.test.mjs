@@ -657,11 +657,18 @@ describe("mergers", () => {
   });
 
   test("a merger without its other half is left out", () => {
-    const mapping = map(statement(scheme("A", [out])));
-    assert.deepEqual(summary(mapping), {
-      rows: [],
-      warnings: ["Can't match this merger with its other half: the folio has 1 merger sales and 0 merger purchases on this day."],
-    });
+    const counted = (counts) => `Can't match this merger with its other half: the folio has ${counts} on this day.`;
+    for (const [schemes, counts] of [
+      [[scheme("A", [out])], "1 merger sale and 0 merger purchases"],
+      [[scheme("B", [into])], "0 merger sales and 1 merger purchase"],
+      [[scheme("A", [out]), scheme("C", [out]), scheme("B", [into])], "2 merger sales and 1 merger purchase"],
+      [[scheme("A", [out]), scheme("B", [into]), scheme("D", [into])], "1 merger sale and 2 merger purchases"],
+    ]) {
+      assert.deepEqual(summary(map(statement(...schemes))), {
+        rows: [],
+        warnings: schemes.map(() => counted(counts)),
+      });
+    }
   });
 
   test("when one half can't be imported, neither is", () => {
