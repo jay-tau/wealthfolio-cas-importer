@@ -1555,6 +1555,54 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(funds.holdings.find((h) => h.symbol === "GILT").averageCost, "100");
     await hosted((renamed) => { for (const id of renamed) window.host.assets[id].displayCode = window.host.assets[id].symbol; }, renamed);
 
+    // A fund confirmed to another asset than the one an earlier import of its folio added keeps that
+    // asset, and leaves the new one out, until one choice replaces the old asset with it.
+    const confirmBalanced = async (query, result) => {
+      await balanced.getByRole("button", { name: "Change", exact: true }).click();
+      await balanced.getByLabel("Search for the fund").fill(query);
+      await balanced.getByLabel("Search for the fund").press("Enter");
+      await balanced.getByRole("radio", { name: result }).dispatchEvent("click");
+      await balanced.getByRole("button", { name: "Use this fund" }).click();
+      await balanced.getByText("Confirmed", { exact: true }).waitFor();
+    };
+    const replaceAndSave = async (oldName, newName, oldSymbol, newSymbol) => {
+      await preview.click();
+      const [oldAsset, newAsset] = [`${oldName} (${oldSymbol} · XBOM)`, `${newName} (${newSymbol} · XBOM)`];
+      // The other row's note names each asset, so each row goes by the name in its first cell.
+      const row = (name) => folios.getByRole("row").filter({ has: frame.locator("td:first-child > div > span:first-child", { hasText: new RegExp(`^${name}$`) }) });
+      const [oldRow, newRow] = [row(oldName), row(newName)];
+      const replace = newRow.getByRole("checkbox", { name: `Replace ${oldAsset} with ${newAsset}`, exact: true });
+      await replace.waitFor({ state: "attached" });
+      assert.equal(await replace.getAttribute("aria-checked"), "false");
+      await newRow.getByText(
+        `An earlier import of Folio 91234567/12 added this holding as ${oldAsset}. So that it isn't counted twice, it's left out unless you replace ${oldAsset} with it. ` +
+        "Replace it only if all its units came from Folio 91234567/12: imports don't record how many units each folio, demat account or PRAN added.",
+        { exact: true },
+      ).waitFor();
+      assert.equal(await newRow.getByText("Left out", { exact: true }).count(), 1);
+      await oldRow.getByText(`An earlier import of Folio 91234567/12 added it for a holding that this import lists under ${newAsset}. It's kept unless you replace it with ${newAsset}.`, { exact: true }).waitFor();
+      assert.equal(await oldRow.getByText("Kept", { exact: true }).count(), 1);
+      // The old row has no choice of its own.
+      assert.equal(await oldRow.getByRole("checkbox").count(), 0);
+      await replace.dispatchEvent("click");
+      await oldRow.getByText("Replaced", { exact: true }).waitFor();
+      assert.equal(await newRow.getByText("New", { exact: true }).count(), 1);
+      await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+      await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+      await save.click();
+      await frame.getByText("Saved 2 snapshots").waitFor();
+      return (await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => [h.symbol, h.quantity]);
+    };
+    await confirmBalanced("MULTI", /^Fund A /);
+    assert.deepEqual(await replaceAndSave("Fund INFZ90K01BA1", "Fund A", "INFZ90K01BA1", "A"), [
+      ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["A", "3540.293"],
+    ]);
+    // The import remembers the replacement, so going back is offered the same way.
+    await confirmBalanced("INFZ90K01BA1", /^Fund INFZ90K01BA1 /);
+    assert.deepEqual(await replaceAndSave("Fund A", "Fund INFZ90K01BA1", "A", "INFZ90K01BA1"), [
+      ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["INFZ90K01BA1", "3540.293"],
+    ]);
+
     // Leaving a still-listed fund out keeps both its units and the earlier import's provenance.
     await leaveOut(frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" }));
     await preview.click();

@@ -235,6 +235,14 @@ account's complete snapshot before anything is saved:
   and that the statement no longer lists, defaults to removed. If the printed identifiers can't
   be compared, it stays with a note to check it. You can keep or remove each one, and include or
   leave out each holding.
+- A holding the statement still lists, but that you now confirm to another asset than the one an
+  earlier import of the same folio, demat account or PRAN added (AMFI's result instead of Yahoo's,
+  say, or a summary statement's fund that now prints its ISIN), isn't counted twice: the old asset
+  is kept and the new one left out until you choose to replace the old asset with it. Imports
+  record identifiers, not units, so replace it only if all its units came from those folios, demat
+  accounts or PRANs. When the old asset may also hold other units, it's kept and the new one left
+  out, each with its own choice and a note to correct the units in Wealthfolio. An old asset that
+  a possibly misread line holds back is kept as it is, and the new one left out the same way.
 - A holding carried over from an older snapshot whose asset has a split recorded since gets a
   note: its units predate the split, so correct them in Wealthfolio after saving, and its cost
   there isn't reused. Splits recorded in archived accounts are hidden from add-ons, so those go

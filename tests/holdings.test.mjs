@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { dec, div, format, mul } from "../src/cas/decimal.ts";
 import {
   assetDetails,
+  assetName,
+  assetNames,
   checkUnits,
   importedRefs,
   included,
@@ -496,6 +498,221 @@ test("a left-out holding keeps its provenance until a later statement sells it",
   holdings.sources[0].holdings = holdings.sources[0].holdings.slice(1);
   const [sold] = plan(holdings, { existing: () => existing, remembered: (s) => next.get(s.id) });
   assert.ok(!snapshotOf(sold, noChoices).holdings.some((h) => h.assetId === "earlier"));
+});
+
+// A fund in a folio, confirmed to Yahoo's result on the first import and to AMFI's on the next.
+const FOLIO = "Fictiva Mutual Fund, folio 91234567 / 12";
+const flexi = (units, more = {}) => ({
+  kind: "fund", isin: "INFZ90K01FC8", rta: "CAMS", rtaCode: "FFCDG", name: "Fictiva Flexi Cap Fund - Direct Plan - Growth",
+  units, price: "70", value: format(mul(dec(units), dec("70"))), cost: null, ...more,
+});
+const folioOf = (number, ...holdings) => ({ id: `folio|${number}|amc:Fictiva Mutual Fund`, kind: "folio", label: `Fictiva Mutual Fund, folio ${number}`, holdings });
+const statementOf = (date, ...sources) => ({ date, investor: "x", leftOut: [], sources });
+const yahoo = { symbol: "0P0000FFCD.BO", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Fictiva Flexi Cap" };
+const amfi = { symbol: "119551", quoteCcy: "INR", instrumentType: "MUTUALFUND", providerId: "AMFI", name: "Fictiva Flexi Cap" };
+const YAHOO = "Fictiva Flexi Cap (0P0000FFCD.BO · XBOM)";
+const AMFI = "Fictiva Flexi Cap (119551)";
+/** What each source's import recorded: source ID → `fundRef` → identifiers. */
+const recordsOf = (account, choices = noChoices) =>
+  new Map(importedRefs(account, choices).map(({ source, refs }) => [source.id, new Map(Object.entries(refs))]));
+const heldBefore = (asset, units, more = {}) => ({
+  date: "2025-03-31", later: [], cash: {},
+  positions: [{ assetId: "yahoo-asset", symbol: asset.symbol, ref: fundRef(asset.symbol, asset.exchangeMic), name: asset.name, units, cost: "5000", currency: "INR", ...more }],
+});
+const savedOf = (account, choices = noChoices) => snapshotOf(account, choices).holdings.map((h) => [h.assetId ?? h.symbol, h.quantity]);
+const replacing = (key) => ({ flipped: new Set([key]), costs: new Map() });
+
+test("a fund confirmed to another asset keeps the one an earlier import of its folio added, until the user replaces it", () => {
+  const [first] = plan(statementOf("2025-03-31", folioOf("91234567 / 12", flexi("100"))), { asset: () => yahoo });
+  const records = recordsOf(first);
+  const [next] = plan(statementOf("2025-04-30", folioOf("91234567 / 12", flexi("110"))), {
+    asset: () => amfi, existing: () => heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id),
+  });
+  const [listed, old] = next.positions;
+  assert.equal(listed.ref, fundRef("119551"));
+  assert.equal(old.existing.assetId, "yahoo-asset");
+  // Left out by default: the account keeps the old asset's 100 units and doesn't add the statement's 110.
+  assert.equal(listed.include, false);
+  assert.deepEqual(listed.replaces, [old.key]);
+  assert.deepEqual(listed.notes, [
+    `An earlier import of ${FOLIO} added this holding as ${YAHOO}. So that it isn't counted twice, it's left out unless you replace ${YAHOO} with it. ` +
+    `Replace it only if all its units came from ${FOLIO}: imports don't record how many units each folio, demat account or PRAN added.`,
+  ]);
+  assert.equal(old.include, true);
+  assert.equal(old.replacedBy, listed.key);
+  assert.deepEqual(old.notes, [`An earlier import of ${FOLIO} added it for a holding that this import lists under ${AMFI}. It's kept unless you replace it with ${AMFI}.`]);
+  assert.deepEqual(savedOf(next), [["yahoo-asset", "100"]]);
+  assert.deepEqual([...recordsOf(next).values()].map((refs) => [...refs.keys()]), [[old.ref]]);
+  // One choice replaces it: the old asset goes, and the statement's units come in under the new one.
+  const replace = replacing(listed.key);
+  assert.equal(included(listed, replace), true);
+  assert.equal(included(old, replace), false);
+  assert.deepEqual(savedOf(next, replace), [["119551", "110"]]);
+  const replaced = recordsOf(next, replace);
+  assert.deepEqual([...replaced.values()].map((refs) => [...refs]), [[[fundRef("119551"), ["INFZ90K01FC8", "CAMS|FFCDG"]]]]);
+  // The old row goes with the statement row's choice, not its own.
+  assert.deepEqual(savedOf(next, replacing(old.key)), [["yahoo-asset", "100"]]);
+  // Once replaced, the next import has nothing to replace.
+  const [after] = plan(statementOf("2025-05-31", folioOf("91234567 / 12", flexi("120"))), {
+    asset: () => amfi,
+    existing: () => ({ ...heldBefore(amfi, "110"), date: "2025-04-30" }),
+    remembered: (s) => replaced.get(s.id),
+  });
+  assert.deepEqual(after.positions.map((p) => [p.include, p.replaces, p.replacedBy, p.notes]), [[true, undefined, undefined, []]]);
+});
+
+test("replacement names distinguish the same symbol on different exchanges", () => {
+  const share = { ...flexi("110"), kind: "share", isin: "INEZ90A01017" };
+  const source = { id: "demat|1|2", kind: "demat", label: "Demat account 1", holdings: [share] };
+  const before = { ...yahoo, symbol: "EXAMPLE", name: "Example Share" };
+  const after = { ...before, exchangeMic: "XNSE" };
+  const [next] = plan(statementOf("2025-04-30", source), {
+    asset: () => after, existing: () => heldBefore(before, "100"),
+    remembered: () => new Map([[fundRef(before.symbol, before.exchangeMic), [share.isin]]]),
+  });
+  const [listed, old] = next.positions;
+  assert.deepEqual(listed.replaces, [old.key]);
+  assert.equal(assetName(old), "Example Share (EXAMPLE · XBOM)");
+  assert.equal(assetName(listed), "Example Share (EXAMPLE · XNSE)");
+  assert.equal(assetNames([old, listed]), "Example Share (EXAMPLE · XBOM) and Example Share (EXAMPLE · XNSE)");
+  assert.match(old.notes[0], /Example Share \(EXAMPLE · XNSE\)/);
+  assert.match(listed.notes[0], /Example Share \(EXAMPLE · XBOM\)/);
+  assert.deepEqual(savedOf(next), [["yahoo-asset", "100"]]);
+  assert.deepEqual(savedOf(next, replacing(listed.key)), [["EXAMPLE", "110"]]);
+});
+
+test("a summary fund that now prints its ISIN can replace the asset priced from statements an earlier import added", () => {
+  const overnight = { kind: "fund", isin: null, rta: "KFINTECH", rtaCode: "TONDG", name: "Testbridge Overnight Fund", units: "12.5", price: "1300", value: "16250", cost: null };
+  const folio = (holding) => ({ id: "folio|1040012345|amc:Testbridge Mutual Fund", kind: "folio", label: "Testbridge Mutual Fund, folio 1040012345", holdings: [holding] });
+  const [first] = plan(statementOf("2025-03-31", folio(overnight)), { asset: statementAsset });
+  const records = recordsOf(first);
+  const symbol = "MF-KFINTECH-TONDG";
+  assert.deepEqual([...records.values()].map((refs) => [...refs]), [[[fundRef(symbol), ["KFINTECH|TONDG"]]]]);
+  const existing = { ...none, date: "2025-03-31", positions: [{
+    assetId: "statement-priced", symbol, ref: fundRef(symbol), name: overnight.name, units: "12.5", cost: "16000", currency: "INR",
+    manual: true, price: { close: "1300", currency: "INR" },
+  }] };
+  // The ISIN finds the fund again, and the user confirms the search's result.
+  const [next] = plan(statementOf("2025-04-30", folio({ ...overnight, isin: "INFZ91T01ON3", units: "13" })), {
+    existing: () => existing, remembered: (s) => records.get(s.id),
+  });
+  const [listed, old] = next.positions;
+  assert.equal(listed.ref, ref("INFZ91T01ON3"));
+  assert.deepEqual([listed.include, listed.replaces, old.include, old.replacedBy], [false, [old.key], true, listed.key]);
+  assert.match(listed.notes[0], /^An earlier import of Testbridge Mutual Fund, folio 1040012345 added this holding as Testbridge Overnight Fund \(MF-KFINTECH-TONDG\)\./);
+  assert.deepEqual(savedOf(next), [["statement-priced", "12.5"]]);
+  assert.deepEqual(savedOf(next, replacing(listed.key)), [["INFZ91T01ON3", "13"]]);
+  // Kept, it gets the price it had; replaced, the new asset isn't priced by hand, so nothing is saved.
+  assert.deepEqual(pricesToSave(next, noChoices).map((p) => [p.assetId, p.price, p.from]), [["statement-priced", "1300", "earlier"]]);
+  assert.deepEqual(pricesToSave(next, replacing(listed.key)), []);
+});
+
+test("an asset several folios added is replaced whole; one that may hold other units is only kept", () => {
+  const [first] = plan(statementOf("2025-03-31", folioOf("1", flexi("60")), folioOf("2", flexi("40"))), { asset: () => yahoo });
+  const records = recordsOf(first);
+  const both = "Fictiva Mutual Fund, folio 1 and Fictiva Mutual Fund, folio 2";
+  // A folio new to the account has no record: its units come in with the others'.
+  const later = statementOf("2025-04-30", folioOf("1", flexi("66")), folioOf("2", flexi("44")), folioOf("3", flexi("10")));
+  const [shared] = plan(later, { asset: () => amfi, existing: () => heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id) ?? new Map() });
+  const [listed, old] = shared.positions;
+  assert.deepEqual(listed.replaces, [old.key]);
+  assert.match(listed.notes[0], new RegExp(`^An earlier import of ${both} added this holding as .*Replace it only if all its units came from ${both}:`));
+  assert.equal(old.notes[0], `An earlier import of ${both} added it for holdings that this import lists under ${AMFI}. It's kept unless you replace it with ${AMFI}.`);
+  assert.deepEqual(savedOf(shared), [["yahoo-asset", "100"]]);
+  assert.deepEqual(savedOf(shared, replacing(listed.key)), [["119551", "120"]]);
+
+  // Another fund that an earlier import of folio 1 added to the same asset is still listed, but left
+  // out: how many of the asset's units it holds is unknown, so nothing is replaced.
+  const other = flexi("5", { isin: "INFZ90K01FC9", rtaCode: "FFCRG", name: "Fictiva Flexi Cap Fund - Regular Plan - Growth" });
+  const [twoFunds] = plan(statementOf("2025-03-31", folioOf("1", flexi("60"), other)), { asset: () => yahoo });
+  const twoRecords = recordsOf(twoFunds);
+  const mixedNote = `An earlier import of Fictiva Mutual Fund, folio 1 added it for a holding that this import lists under ${AMFI}. ` +
+    `The add-on can't tell how many of its units that holding accounts for, so it's kept and ${AMFI} is left out by default. ` +
+    "If you keep both, correct this holding's units in Wealthfolio so that they aren't counted twice.";
+  const [mixed] = plan(statementOf("2025-04-30", folioOf("1", flexi("66"), other)), {
+    asset: (h) => (h.isin === "INFZ90K01FC8" ? amfi : undefined), existing: () => heldBefore(yahoo, "65"), remembered: (s) => twoRecords.get(s.id),
+  });
+  const [mixedListed, mixedOld] = mixed.positions;
+  assert.deepEqual([mixedListed.include, mixedListed.replaces, mixedOld.include, mixedOld.replacedBy], [false, undefined, true, undefined]);
+  assert.deepEqual(mixedListed.notes, [
+    `An earlier import of Fictiva Mutual Fund, folio 1 added this holding as ${YAHOO}, which may also hold other units, so it's left out by default. ` +
+    `If you keep both, correct the units of ${YAHOO} in Wealthfolio so that they aren't counted twice.`,
+  ]);
+  assert.deepEqual(mixedOld.notes, [mixedNote]);
+  assert.deepEqual(savedOf(mixed), [["yahoo-asset", "65"]]);
+  // Each row has its own choice: importing the statement's units keeps the old asset too, as the notes warn.
+  assert.deepEqual(savedOf(mixed, replacing(mixedListed.key)), [["yahoo-asset", "65"], ["119551", "66"]]);
+  assert.deepEqual(savedOf(mixed, replacing(mixedOld.key)), []);
+
+  // So does a folio whose lines can't all be compared with what its earlier import recorded.
+  const noIsin = { ...other, isin: null };
+  const [uncertain] = plan(statementOf("2025-04-30", folioOf("1", flexi("66"), noIsin)), {
+    asset: (h) => (h.isin ? amfi : undefined), existing: () => heldBefore(yahoo, "60"),
+    remembered: () => new Map([[fundRef(yahoo.symbol, yahoo.exchangeMic), ["INFZ90K01FC8"]]]),
+  });
+  assert.deepEqual(uncertain.positions.map((p) => [p.include, p.replaces, p.replacedBy]), [[false, undefined, undefined], [true, undefined, undefined]]);
+  assert.equal(uncertain.positions[1].notes[0], mixedNote);
+
+  // Another recorded holding still listed only by another source makes the old asset mixed too.
+  const [elsewhere] = plan(statementOf("2025-04-30", folioOf("1", flexi("66")), folioOf("2", other)), {
+    asset: (h) => (h.isin === "INFZ90K01FC8" ? amfi : undefined), existing: () => heldBefore(yahoo, "65"),
+    remembered: (s) => twoRecords.get(s.id) ?? new Map(),
+  });
+  assert.deepEqual(elsewhere.positions.map((p) => [p.include, p.replaces, p.replacedBy]), [[false, undefined, undefined], [true, undefined, undefined]]);
+  assert.equal(elsewhere.positions[1].notes[0], mixedNote);
+  assert.deepEqual(savedOf(elsewhere), [["yahoo-asset", "65"]]);
+
+  // A valid line moving assets must not duplicate an old position held back by another misread line.
+  const [heldBack] = plan(statementOf("2025-04-30", { ...folioOf("1", flexi("66")), misread: [other] }), {
+    asset: (h) => (h.isin === "INFZ90K01FC8" ? amfi : undefined), existing: () => heldBefore(yahoo, "65"),
+    remembered: (s) => twoRecords.get(s.id),
+  });
+  const [heldNew, heldOld] = heldBack.positions;
+  assert.deepEqual([heldNew.include, heldNew.replaces, heldOld.include, heldOld.replacedBy], [false, undefined, true, undefined]);
+  assert.ok(heldOld.misread);
+  assert.equal(heldOld.notes[1], mixedNote);
+  assert.deepEqual(savedOf(heldBack), [["yahoo-asset", "65"]]);
+  assert.deepEqual(savedOf(heldBack, replacing(heldOld.key)), [["yahoo-asset", "65"]]);
+  assert.deepEqual([...recordsOf(heldBack).values()].map((refs) => [...refs]), [...twoRecords.values()].map((refs) => [...refs]));
+
+  // Lines still under the old asset replace its units as any statement row's do, so the moved
+  // holding leaves with its old units and comes in under the new asset: nothing is counted twice.
+  const [stillListed] = plan(statementOf("2025-04-30", folioOf("1", flexi("66"), other)), {
+    asset: (h) => (h.isin === "INFZ90K01FC8" ? amfi : yahoo), existing: () => heldBefore(yahoo, "65"),
+    remembered: (s) => twoRecords.get(s.id),
+  });
+  assert.deepEqual(stillListed.positions.map((p) => [p.include, p.replaces, p.replacedBy, p.notes]), [
+    [true, undefined, undefined, []], [true, undefined, undefined, []],
+  ]);
+  assert.deepEqual(savedOf(stillListed), [["119551", "66"], ["yahoo-asset", "5"]]);
+});
+
+test("an asset is only replaced by a holding an earlier import of the same folio added it for", () => {
+  const records = recordsOf(plan(statementOf("2025-03-31", folioOf("1", flexi("100"))), { asset: () => yahoo })[0]);
+  const later = statementOf("2025-04-30", folioOf("1", flexi("110")));
+  // Without a record, the old asset can't be told apart from one added by hand: both stay, as before.
+  const [unrecorded] = plan(later, { asset: () => amfi, existing: () => heldBefore(yahoo, "100") });
+  assert.deepEqual(unrecorded.positions.map((p) => [p.include, p.replaces, p.replacedBy, p.notes]), [
+    [true, undefined, undefined, []], [true, undefined, undefined, []],
+  ]);
+  // A listed holding left out keeps the asset, as before.
+  const [leftOut] = plan(later, { asset: () => undefined, existing: () => heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id) });
+  assert.deepEqual(leftOut.positions.map((p) => [p.include, p.replacedBy, p.notes]), [[true, undefined, []]]);
+  // A holding left out because an account tracking transactions holds it isn't imported anyway:
+  // the old asset keeps its own choice, and both rows say what the earlier import added.
+  const [overlap] = plan(later, {
+    asset: () => amfi, existing: () => heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id),
+    heldElsewhere: (r) => (r === fundRef("119551") ? [{ name: "Mutual funds", tracksTransactions: true }] : []),
+  });
+  const [listed, old] = overlap.positions;
+  assert.deepEqual([listed.include, listed.replaces, old.include, old.replacedBy], [false, undefined, true, undefined]);
+  assert.deepEqual(listed.notes, [
+    "Mutual funds already holds this fund, from its transactions. Including it here counts it twice.",
+    `An earlier import of Fictiva Mutual Fund, folio 1 added this holding as ${YAHOO}.`,
+  ]);
+  assert.deepEqual(old.notes, [`An earlier import of Fictiva Mutual Fund, folio 1 added it for a holding that this import lists under ${AMFI}.`]);
+  assert.deepEqual(savedOf(overlap), [["yahoo-asset", "100"]]);
+  assert.deepEqual(savedOf(overlap, replacing(old.key)), []);
 });
 
 test("overlap leaves only folio contributions out and saves selected contributions once", () => {

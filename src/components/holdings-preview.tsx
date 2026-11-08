@@ -22,6 +22,8 @@ import {
 } from "@wealthfolio/ui";
 import {
   type AccountPlan,
+  assetName,
+  assetNames,
   type Choices,
   costOf,
   included,
@@ -43,7 +45,10 @@ export const ready = (plans: AccountPlan[], choices: ReadonlyMap<string, Choices
 
 function status(position: PlannedPosition, yes: boolean) {
   if (position.misread) return position.existing ? { badge: "Kept", variant: "secondary" as const } : { badge: "Left out", variant: "secondary" as const };
-  if (!position.lines.length) return yes ? { badge: "Kept", variant: "secondary" as const } : { badge: "Removed", variant: "warning-subtle" as const };
+  if (!position.lines.length) {
+    if (yes) return { badge: "Kept", variant: "secondary" as const };
+    return { badge: position.replacedBy ? "Replaced" : "Removed", variant: "warning-subtle" as const };
+  }
   if (!yes) return { badge: "Left out", variant: "secondary" as const };
   return position.existing ? { badge: "Updated", variant: "success-subtle" as const } : { badge: "New", variant: "success-subtle" as const };
 }
@@ -166,6 +171,7 @@ function AccountPreview({
             const statement = position.lines.length > 0;
             const before = position.existing?.units;
             const listedIn = [...new Set([...position.lines, ...(position.misread ?? [])].map((l) => l.source.label))];
+            const replaces = plan.positions.filter((p) => position.replaces?.includes(p.key));
             return (
               <TableRow key={position.key}>
                 <TableCell>
@@ -200,11 +206,16 @@ function AccountPreview({
                         {note}
                       </span>
                     ))}
-                    {/* A misread line holds it back: the import leaves the account's position as it is. */}
-                    {!position.misread && (
+                    {/*
+                      A misread line holds it back: the import leaves the account's position as it is. One that
+                      a statement position replaces goes with that position's choice.
+                    */}
+                    {!position.misread && !position.replacedBy && (
                       <Label className="flex items-center gap-2 text-xs font-normal">
                         <Checkbox disabled={importing} checked={yes} onCheckedChange={() => onFlip(position.key)} />
-                        {statement ? "Import" : "Keep"}
+                        {replaces.length
+                          ? `Replace ${assetNames(replaces)} with ${assetName(position)}`
+                          : statement ? "Import" : "Keep"}
                       </Label>
                     )}
                   </div>
