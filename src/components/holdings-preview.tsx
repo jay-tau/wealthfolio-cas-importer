@@ -12,6 +12,8 @@ import {
   Checkbox,
   Input,
   Label,
+  RadioGroup,
+  RadioGroupItem,
   Spinner,
   Table,
   TableBody,
@@ -27,25 +29,35 @@ import {
   type Choices,
   costOf,
   included,
+  labels,
   type PlannedPosition,
   replacesSnapshot,
+  undecided,
   validCost,
 } from "../cas/holdings";
 import { nameNumber } from "../lib/name-number";
 
 export const noChoices = (): Choices => ({ flipped: new Set(), costs: new Map() });
 
-/** Whether every included typed cost is valid and every replaced snapshot is confirmed. */
+/**
+ * Whether every included typed cost is valid, every replaced snapshot is confirmed, and the user chose
+ * to keep or remove each holding's units that would otherwise count twice.
+ */
 export const ready = (plans: AccountPlan[], choices: ReadonlyMap<string, Choices>, confirmed: ReadonlySet<string>) =>
   plans.every((plan) => {
     const chosen = choices.get(plan.accountId) ?? noChoices();
     return (!replacesSnapshot(plan) || confirmed.has(plan.accountId)) &&
-      plan.positions.every((position) => !position.lines.length || !included(position, chosen) ||
-        position.cost?.from === "statement" || validCost(chosen.costs.get(position.key) ?? ""));
+      plan.positions.every((position) => !undecided(position, chosen) && (!position.lines.length || !included(position, chosen) ||
+        position.cost?.from === "statement" || validCost(chosen.costs.get(position.key) ?? "")));
   });
 
-function status(position: PlannedPosition, yes: boolean) {
+function status(position: PlannedPosition, yes: boolean, keep: boolean | undefined) {
   if (position.misread) return position.existing ? { badge: "Kept", variant: "secondary" as const } : { badge: "Left out", variant: "secondary" as const };
+  // The account's units, which would otherwise count twice, go with the user's choice.
+  if (position.removable && (!position.lines.length || !yes)) {
+    if (keep === undefined) return { badge: "Needs a choice", variant: "warning-subtle" as const };
+    return keep ? { badge: "Kept", variant: "secondary" as const } : { badge: "Removed", variant: "warning-subtle" as const };
+  }
   if (!position.lines.length) {
     if (yes) return { badge: "Kept", variant: "secondary" as const };
     return { badge: position.replacedBy ? "Replaced" : "Removed", variant: "warning-subtle" as const };
@@ -110,6 +122,7 @@ function AccountPreview({
   importing,
   onFlip,
   onCost,
+  onKeep,
   onConfirm,
 }: {
   plan: AccountPlan;
@@ -120,6 +133,7 @@ function AccountPreview({
   importing: boolean;
   onFlip: (key: string) => void;
   onCost: (key: string, text: string) => void;
+  onKeep: (key: string, keep: boolean) => void;
   onConfirm: (yes: boolean) => void;
 }) {
   const { existing } = plan;
@@ -174,8 +188,11 @@ function AccountPreview({
           {plan.positions.map((position, i) => {
             const inAccount = `${label}${nameNumber(plan.positions, i, "holding")}`;
             const yes = included(position, choices);
-            const { badge, variant } = status(position, yes);
+            const keep = choices.keep?.get(position.key);
+            const { badge, variant } = status(position, yes, keep);
             const statement = position.lines.length > 0;
+            // Removable units are chosen for once the statement's lines, if any, are left out.
+            const choosing = !!position.removable && (!statement || !yes);
             const before = position.existing?.units;
             const listedIn = [...new Set([...position.lines, ...(position.misread ?? [])].map((l) => l.source.label))];
             const replaces = plan.positions.filter((p) => position.replaces?.includes(p.key));
@@ -216,9 +233,10 @@ function AccountPreview({
                     ))}
                     {/*
                       A misread line holds it back: the import leaves the account's position as it is. One that
-                      a statement position replaces goes with that position's choice.
+                      a statement position replaces goes with that position's choice. A removable one without
+                      statement lines has only the choice to keep or remove its units.
                     */}
-                    {!position.misread && !position.replacedBy && (
+                    {!position.misread && !position.replacedBy && (statement || !position.removable) && (
                       <Label className="flex items-center gap-2 text-xs font-normal">
                         <Checkbox disabled={importing} checked={yes} onCheckedChange={() => onFlip(position.key)} />
                         {replaces.length ? (
@@ -233,6 +251,26 @@ function AccountPreview({
                           </>
                         )}
                       </Label>
+                    )}
+                    {choosing && (
+                      <RadioGroup
+                        aria-label={`Keep or remove its ${before} units for ${position.name} in ${inAccount}`}
+                        disabled={importing}
+                        value={keep === undefined ? "" : keep ? "keep" : "remove"}
+                        onValueChange={(value) => onKeep(position.key, value === "keep")}
+                        className="grid gap-1"
+                      >
+                        <Label className="flex items-center gap-2 text-xs font-normal">
+                          <RadioGroupItem value="keep" />
+                          Keep its {before} units
+                          <span className="sr-only"> for {position.name} in {inAccount}</span>
+                        </Label>
+                        <Label className="flex items-center gap-2 text-xs font-normal">
+                          <RadioGroupItem value="remove" />
+                          Remove its {before} units: all of them came from {labels(position.removable!)}
+                          <span className="sr-only"> for {position.name} in {inAccount}</span>
+                        </Label>
+                      </RadioGroup>
                     )}
                   </div>
                 </TableCell>
@@ -264,6 +302,7 @@ export function HoldingsPreview({
   importing,
   onFlip,
   onCost,
+  onKeep,
   onConfirm,
   onImport,
 }: {
@@ -274,6 +313,7 @@ export function HoldingsPreview({
   importing: boolean;
   onFlip: (accountId: string, key: string) => void;
   onCost: (accountId: string, key: string, text: string) => void;
+  onKeep: (accountId: string, key: string, keep: boolean) => void;
   onConfirm: (accountId: string, yes: boolean) => void;
   onImport: () => void;
 }) {
@@ -302,6 +342,7 @@ export function HoldingsPreview({
             importing={importing}
             onFlip={(key) => onFlip(plan.accountId, key)}
             onCost={(key, text) => onCost(plan.accountId, key, text)}
+            onKeep={(key, keep) => onKeep(plan.accountId, key, keep)}
             onConfirm={(yes) => onConfirm(plan.accountId, yes)}
           />
         ))}
