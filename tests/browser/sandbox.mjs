@@ -2468,6 +2468,58 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }
     await preview.click();
     await frame.getByText("Priced by hand: saving also saves the statement's price as its price on this date.", { exact: true }).waitFor();
+
+    // A line whose units can't be read leaves the account's fund as it is, and its units can't be checked.
+    await hosted(() => { window.host.summaryMisread = ["INFZ90K01LQ6"]; });
+    await readHoldingsAgain();
+    const liquidFolio = "Fictiva Mutual Fund, folio 91234567 / 12";
+    await frame.getByRole("alert").filter({ hasText: /^Left out/ }).getByText(
+      `${liquidName}, ${liquidFolio}: It has no units but a value of ₹35799.22, so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.`,
+      { exact: true },
+    ).waitFor();
+    await summaryLiquid.getByText("ISIN INFZ90K01LQ6 · a line may have been misread, so the import leaves its holding as it is", { exact: true }).waitFor();
+    for (const section of await frame.locator("section").all()) {
+      if (await section.getByText(/^ISIN INFZ90K01LQ6\b/).count()) continue;
+      await section.getByRole("button", { name: "Leave this fund out", exact: true }).click();
+    }
+    await preview.click();
+    // The account's AMFI asset, under its own name.
+    const heldBackNote = `Its line in ${liquidFolio} may have been misread, so this import leaves it as it is: its units, cost and price stay. Check it against the PDF.`;
+    const heldBack = frame.getByRole("table").filter({ hasText: "Total cost" }).getByRole("row").filter({ hasText: heldBackNote });
+    await heldBack.getByText(heldBackNote, { exact: true }).waitFor();
+    assert.equal(await heldBack.count(), 1);
+    await heldBack.getByText(liquidFolio, { exact: true }).waitFor();
+    await heldBack.getByText("Kept", { exact: true }).waitFor();
+    assert.equal(await heldBack.getByRole("checkbox").count(), 0);
+    await frame.getByRole("button", { name: "Check units", exact: true }).click();
+    const unknownUnits = frame.getByRole("table").filter({ hasText: "Units in the statement" }).getByRole("row").filter({ hasText: liquidName });
+    await unknownUnits.getByText("Needs review", { exact: true }).waitFor();
+    assert.deepEqual(await unknownUnits.getByRole("cell").allTextContents().then((cells) => cells.slice(2, 4).map((c) => c.trim())), ["Unknown", ""]);
+    await unknownUnits.getByText(`${liquidFolio} (may be misread)`, { exact: true }).waitFor();
+    await unknownUnits.getByText(
+      `Its line in ${liquidFolio} may have been misread, so its units on the statement are unknown. Check it against the PDF. No account that tracks transactions has posted activities for it on or before 2025-03-31.`,
+      { exact: true },
+    ).waitFor();
+    assert.equal(await unknownUnits.getByRole("checkbox").count(), 0);
+    const preservedSnapshot = { holdings: [{
+      assetId: `asset-${summaryAmfi.symbol}`, symbol: summaryAmfi.symbol, quantity: "100", currency: "INR", averageCost: "10",
+    }], cash: { INR: "25" } };
+    await hosted((snapshot) => { window.host.snapshots["holdings-2"]["2025-03-31"] = snapshot; }, preservedSnapshot);
+    const liquidQuotes = [{
+      id: `asset-${summaryAmfi.symbol}_2025-03-31_MANUAL`, assetId: `asset-${summaryAmfi.symbol}`,
+      timestamp: "2025-03-31T12:00:00.000Z", createdAt: "2025-03-31T13:00:00.000Z", dataSource: "MANUAL",
+      open: 6, high: 8, low: 5, close: 7, adjclose: 7, volume: 123, currency: "INR", notes: "Kept quote",
+    }];
+    await hosted(([code, quotes]) => { window.host.quotes[`asset-${code}`] = quotes; }, [summaryAmfi.symbol, liquidQuotes]);
+    await preview.click();
+    await frame.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31", exact: true }).dispatchEvent("click");
+    await frame.getByRole("button", { name: "Save 1 snapshot", exact: true }).click();
+    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    const keptSnapshot = await snapshot("holdings-2", "2025-03-31");
+    assert.deepEqual(keptSnapshot.holdings, preservedSnapshot.holdings);
+    assert.deepEqual(keptSnapshot.cash, preservedSnapshot.cash);
+    assert.deepEqual(await hosted((code) => window.host.quotes[`asset-${code}`], summaryAmfi.symbol), liquidQuotes);
+    await hosted(() => { window.host.summaryMisread = []; });
     await hosted(() => { window.host.amfi = false; });
 
     await frame.getByRole("button", { name: "Forget the saved password" }).click();

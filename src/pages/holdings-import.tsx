@@ -73,25 +73,29 @@ const NOUNS: Record<HoldingKind, FundItem["noun"]> = { fund: "fund", share: "sha
 
 /**
  * The statement's holdings, one entry each however many folios, demat accounts or PRANs hold it.
- * Printed zeros are confirmed too, for the check.
+ * Printed zeros are confirmed too, for the check, and misread lines, to hold their asset back.
  */
 export function holdingItems(holdings: Holdings): FundItem[] {
-  const items = new Map<string, FundItem & { count: number; units: boolean }>();
-  for (const [h, units] of holdings.sources.flatMap((s) => [
-    ...s.holdings.map((h) => [h, true] as const),
-    ...(s.zero ?? []).map((h) => [h, false] as const),
+  const items = new Map<string, FundItem & { count: number; units: boolean; misread: boolean }>();
+  for (const [h, line] of holdings.sources.flatMap((s) => [
+    ...s.holdings.map((h) => [h, "units"] as const),
+    ...(s.zero ?? []).map((h) => [h, "zero"] as const),
+    ...(s.misread ?? []).map((h) => [h, "misread"] as const),
   ])) {
     const key = holdingKey(h);
-    const item = items.get(key) ?? { key, isin: h.isin, name: h.name, noun: NOUNS[h.kind], statementAsset: statementAsset(h), count: 0, units };
+    const item = items.get(key) ??
+      { key, isin: h.isin, name: h.name, noun: NOUNS[h.kind], statementAsset: statementAsset(h), count: 0, units: false, misread: false };
     item.count++;
-    item.units ||= units;
+    item.units ||= line === "units";
+    item.misread ||= line === "misread";
     items.set(key, item);
   }
-  return [...items.values()].map(({ count, units, ...item }) => ({
+  return [...items.values()].map(({ count, units, misread, ...item }) => ({
     ...item,
     where: [
       count > 1 && `in ${count} folios, demat accounts or PRANs`,
-      !units && "no units on the statement, so only checked against transactions",
+      !units && !misread && "no units on the statement, so only checked against transactions",
+      misread && "a line may have been misread, so the import leaves its holding as it is",
     ].filter(Boolean).join(" · ") || undefined,
   }));
 }
@@ -335,8 +339,9 @@ export function HoldingsImport({
   // Holdings whose accounts compared the user confirmed hold the same units as the statement, by `ref`.
   const [same, setSame] = useState<Set<string>>(new Set());
   const items = holdingItems(holdings);
-  // Printed zeros never go in a snapshot, so the snapshot preview doesn't wait for them.
-  const snapshotKeys = new Set(holdings.sources.flatMap((s) => s.holdings.map(holdingKey)));
+  // Printed zeros never go in a snapshot, so the snapshot preview doesn't wait for them. It waits
+  // for misread lines, whose asset it holds back.
+  const snapshotKeys = new Set(holdings.sources.flatMap((s) => [...s.holdings, ...(s.misread ?? [])].map(holdingKey)));
 
   // A source whose own account is ignored needs choosing again, even to go with the statement.
   const accountOf = (source: Source) => sourceKey(source) in ignored ? undefined : accountForSource(usable, holdings, source);
@@ -384,7 +389,7 @@ export function HoldingsImport({
         holders(api, profileOf, allAccounts),
       ]);
       const resolved = new Map<string, { assetId: string; symbol: string; exchangeMic?: string; manual: boolean }>();
-      const assets = new Map(bySource.flatMap(({ source }) => source.holdings.flatMap((h) => {
+      const assets = new Map(bySource.flatMap(({ source }) => [...source.holdings, ...(source.misread ?? [])].flatMap((h) => {
         const asset = assetOf(h);
         return asset ? [[fundRef(asset.symbol, asset.exchangeMic), asset] as const] : [];
       })));
@@ -527,7 +532,8 @@ export function HoldingsImport({
       }
       // A choice without an asset ID is matched by the symbol and exchange on each asset's profile.
       const identities = new Map<string, string | { error: string }>();
-      const unidentified = holdings.sources.some((s) => [...s.holdings, ...(s.zero ?? [])].some((h) => assetOf(h) && !assetOf(h)!.assetId));
+      const unidentified = holdings.sources.some((s) =>
+        [...s.holdings, ...(s.zero ?? []), ...(s.misread ?? [])].some((h) => assetOf(h) && !assetOf(h)!.assetId));
       if (Array.isArray(activities) && unidentified) {
         const ids = new Set(activities.filter((a) => a.assetId && accounts.some((account) => account.id === a.accountId)).map((a) => a.assetId));
         await Promise.all([...ids].map(async (id) => {

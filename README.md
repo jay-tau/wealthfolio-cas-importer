@@ -199,6 +199,15 @@ without a warning. A folio whose funds' ISINs name more than one fund house, fro
 from fund houses merging, is still imported, but what its imports add isn't shared with the same
 folio's imports from depository statements.
 
+A summary statement's fund whose units × NAV don't give its value, to the paisa plus the units'
+and NAV's rounding, is left out as possibly misread, and so is one with units but no NAV, or a value but no
+units. casparser 1.4.1 reads a cell it can't read, such as "N.A.", as 0, and on made-up statements an
+amount of ₹1 crore or more without its leading digit, without a warning. Check such a line against the
+PDF. You still confirm its asset, so the import can leave that fund's holding in the folio's account
+as it is: its units, cost and price, and what earlier imports added. Without such a holding, the
+fund isn't added, even from another folio's line. Check units marks it for review, its units on the
+statement unknown.
+
 Check units compares the statement with Wealthfolio accounts that track transactions (Not set
 included), once each holding is confirmed or left out. It needs no account that tracks holdings,
 and saves nothing. Each holding's printed units are summed over its folios, demat accounts and
@@ -244,6 +253,7 @@ account's complete snapshot before anything is saved:
   instead for each such holding included from the statement. A kept holding uses that price too
   when another imported account includes it; otherwise it keeps its latest price on or before that
   date. If neither price is available, the preview warns that its average cost becomes its price.
+  A statement's price that isn't positive is never saved.
   An existing quote on that date keeps its notes. A kept price also keeps the quote's other fields.
   If a snapshot fails after writing prices, the add-on still attempts price repair. Any price or
   detail it can't save is listed after the import.

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { dec, div, format } from "../src/cas/decimal.ts";
+import { dec, div, format, mul } from "../src/cas/decimal.ts";
 import {
   assetDetails,
   checkUnits,
@@ -35,6 +35,9 @@ const asset = (h) => ({
   name: `Asset ${h.isin}`,
 });
 const ref = (isin) => fundRef(isin, "XBOM");
+/** A summary statement's scheme with other units, and the value they're worth at its NAV. */
+const worth = (scheme, close) =>
+  ({ ...scheme, close, valuation: { ...scheme.valuation, value: format(div(mul(dec(close), dec(scheme.valuation.nav)), dec("1"), 2)) } });
 const none = { date: null, positions: [], cash: {}, later: [] };
 const noChoices = { flipped: new Set(), costs: new Map() };
 
@@ -457,7 +460,7 @@ test("explicit empty sources remove their last imported holding, preserving cash
     const holding = first.holdings[0];
     if (data.folios) {
       data.folios = [data.folios[0]];
-      data.folios[0].schemes.forEach((s) => { s.close = "0"; });
+      data.folios[0].schemes = data.folios[0].schemes.map((s) => worth(s, "0"));
     } else {
       data.accounts = [data.accounts[0]];
       data.accounts[0].equities = [];
@@ -1011,7 +1014,7 @@ test("checks each holding's units against accounts that track transactions, each
   const data = await fixture("made-up-summary-cams");
   const [first] = data.folios;
   // A second folio in the same account: one more Flexi Cap line, and the Liquid fund printed with zero units.
-  data.folios.push({ ...first, folio: "91234568 / 34", schemes: [{ ...first.schemes[0], close: "107.896" }, { ...first.schemes[1], close: "0.000" }] });
+  data.folios.push({ ...first, folio: "91234568 / 34", schemes: [worth(first.schemes[0], "107.896"), worth(first.schemes[1], "0.000")] });
   const holdings = readHoldings(data);
   const activities = [
     activity("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "2500"),
@@ -1127,7 +1130,7 @@ test("the check finds a holding's asset by its ID, or by the symbol and exchange
   const data = await fixture("made-up-summary-cams");
   const [first] = data.folios;
   // The same fund in a second folio, printed without its ISIN and confirmed without an asset ID.
-  data.folios = [{ ...first, schemes: [{ ...first.schemes[0], close: "10" }] }, { ...first, folio: "91234568 / 34", schemes: [{ ...first.schemes[0], isin: null, close: "20" }] }];
+  data.folios = [{ ...first, schemes: [worth(first.schemes[0], "10")] }, { ...first, folio: "91234568 / 34", schemes: [{ ...worth(first.schemes[0], "20"), isin: null }] }];
   const holdings = readHoldings(data);
   const isin = first.schemes[0].isin;
   const confirmed = (h, more = {}) => ({ ...asset(h), symbol: isin, ...more });
@@ -1174,4 +1177,226 @@ test("distinct assets with the same symbol and exchange are checked separately",
     [share.isin, "10", "10", "match"],
     [other.isin, "20", "19", "differ"],
   ]);
+});
+
+/** The made-up summary statement, with three lines as casparser 1.4.1 can misread them without a warning. */
+async function misreadSummary() {
+  const data = await fixture("made-up-summary-cams");
+  const [, liquid] = data.folios[0].schemes;
+  const [balanced] = data.folios[1].schemes;
+  const [bond] = data.folios[2].schemes;
+  // ₹1,16,45,808.40 and a cost of ₹1,10,00,000.00 lose their leading digit, which the cost's adds to the name.
+  data.folios[0].schemes[1] = {
+    ...liquid, scheme: `${liquid.scheme} 1`, close: "4000.000", valuation: { ...liquid.valuation, cost: "1000000.00", value: "1645808.40" },
+  };
+  // A NAV and value printed "N.A." come back as 0.
+  data.folios[1].schemes[0] = { ...balanced, valuation: { ...balanced.valuation, nav: "0", value: "0" } };
+  // Units printed "N.A." come back as 0.
+  data.folios[2].schemes[0] = { ...bond, close: "0" };
+  return data;
+}
+const MISREAD = ["INFZ90K01LQ6", "INFZ90K01BA1", "INFZ91T01CB6"];
+
+test("a summary line whose units × NAV don't give its value is left out as possibly misread", async () => {
+  const holdings = readHoldings(await misreadSummary());
+  const tail = ", so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.";
+  assert.deepEqual(holdings.leftOut, [
+    {
+      source: "Fictiva Mutual Fund, folio 91234567 / 12", name: "Fictiva Liquid Fund - Direct Plan - Growth 1",
+      reason: `Its value of ₹1645808.40 differs from 4000.000 units × NAV 2911.4521 by more than the units' and NAV's rounding${tail}`,
+    },
+    { source: "Fictiva Mutual Fund, folio 91234570/0", name: holdings.sources[1].misread[0].name, reason: `It has 3443.910 units but no NAV${tail}` },
+    { source: "Testbridge Mutual Fund, folio 1040012345", name: holdings.sources[2].misread[0].name, reason: `It has no units but a value of ₹102183.67${tail}` },
+  ]);
+  // Kept to reconcile, but never a holding or a printed zero, so neither their cost nor their price is used.
+  assert.deepEqual(holdings.sources.map((s) => s.misread.map((h) => h.isin)), [[MISREAD[0]], [MISREAD[1]], [MISREAD[2]]]);
+  assert.ok(holdings.sources.every((s) => s.zero === undefined && s.holdings.every((h) => !MISREAD.includes(h.isin))));
+
+  // Units printed to three decimals: a value off by less than their rounding still matches.
+  const data = await fixture("made-up-summary-cams");
+  const liquid = data.folios[0].schemes[1];
+  const valued = (value) => readHoldings({ ...data, folios: [{ ...data.folios[0], schemes: [{ ...liquid, valuation: { ...liquid.valuation, value } }] }] });
+  // 12.296 × 2911.4521 = 35799.215; half a unit's last decimal is worth ₹1.46.
+  for (const value of ["35799.22", "35799.21", "35800.38", "35798.05"]) {
+    assert.deepEqual([value, valued(value).leftOut, valued(value).sources[0].holdings.length], [value, [], 1]);
+  }
+  for (const value of ["35800.70", "35797.70", "0"]) assert.deepEqual([value, valued(value).sources[0].misread.length], [value, 1]);
+  // A NAV printed to four decimals can hide rounding worth several rupees on many units.
+  for (const issuer of ["made-up-summary-cams", "made-up-summary-kfintech"]) {
+    const summary = await fixture(issuer);
+    const line = summary.folios[0].schemes[0];
+    const rounded = (value) => readHoldings({ ...summary, folios: [{ ...summary.folios[0], schemes: [{
+      ...line, close: "100000.000", valuation: { ...line.valuation, nav: "10.1234", value },
+    }] }] });
+    // True NAVs 10.123449 and 10.123351 round to 10.1234.
+    for (const value of ["1012344.90", "1012335.10", "1012345.01", "1012334.99"]) assert.deepEqual(rounded(value).leftOut, []);
+    for (const value of ["1012345.02", "1012334.98"]) assert.equal(rounded(value).sources[0].misread.length, 1);
+  }
+  // A printed zero with no value is still only checked.
+  const zero = readHoldings({ ...data, folios: [{ ...data.folios[0], schemes: [worth(liquid, "0")] }] });
+  assert.deepEqual([zero.sources[0].zero.length, zero.sources[0].misread, zero.leftOut[0].reason], [1, undefined, "No units on the statement."]);
+});
+
+test("a misread line's fund keeps the account's units, cost, price and import record, or isn't added", async () => {
+  const holdings = readHoldings(await misreadSummary());
+  const misread = new Set(holdings.sources.flatMap((s) => s.misread ?? []));
+  const refs = (account) => importedRefs(account, noChoices).map(({ source, refs }) => [source.id, Object.keys(refs)]);
+  // Without an earlier position, none of them is added, remembered or priced.
+  const [fresh] = plan(holdings, { asset: (h) => ({ ...asset(h), manual: true }) });
+  assert.deepEqual(fresh.positions.map((p) => p.ref), ["INFZ90K01FC8", "INFZ91T01GL6", "INFZ91T01FT1"].map(ref));
+  assert.ok(refs(fresh).every(([, saved]) => MISREAD.every((isin) => !saved.includes(ref(isin)))));
+  assert.ok(pricesToSave(fresh, noChoices).every((p) => !MISREAD.map(ref).includes(p.ref)));
+
+  // An earlier import of each folio added them.
+  const [first] = plan(readHoldings(await fixture("made-up-summary-cams")));
+  const earlier = new Map(importedRefs(first, noChoices).map(({ source, refs }) => [source.id, new Map(Object.entries(refs))]));
+  const position = (isin, more = {}) =>
+    ({ assetId: `asset-${isin}`, ref: ref(isin), symbol: isin, name: `Asset ${isin}`, units: "100", cost: "1000", currency: "INR", ...more });
+  const existing = { ...none, date: "2025-02-28", positions: [
+    position(MISREAD[0], { manual: true, price: { close: "2900", currency: "INR" } }),
+    position(MISREAD[1]),
+    position(MISREAD[2]),
+  ] };
+  const kept = MISREAD.map((isin) => ({ assetId: `asset-${isin}`, symbol: isin, quantity: "100", currency: "INR", averageCost: "10" }));
+  // By the asset confirmed for the line, or else by the identifiers the earlier import recorded.
+  for (const confirmed of [asset, (h) => (misread.has(h) ? undefined : asset(h))]) {
+    const [account] = plan(holdings, { asset: confirmed, existing: () => existing, remembered: (s) => earlier.get(s.id) });
+    const held = account.positions.filter((p) => p.misread);
+    assert.deepEqual(held.map((p) => [p.ref, p.lines.length, p.include]), MISREAD.map((isin) => [ref(isin), 0, true]));
+    assert.deepEqual(held[0].notes, [
+      "Its line in Fictiva Mutual Fund, folio 91234567 / 12 may have been misread, so this import leaves it as it is: its units, cost and price stay. Check it against the PDF.",
+    ]);
+    // Units that can't be read no longer look sold.
+    assert.ok(account.positions.every((p) => !p.notes.some((note) => note.startsWith("Not on the statement any more"))));
+    const saved = snapshotOf(account, noChoices).holdings;
+    assert.deepEqual(saved.filter((h) => MISREAD.includes(h.symbol)), kept);
+    // The preview offers no choice.
+    const everything = { flipped: new Set(account.positions.map((p) => p.key)), costs: new Map() };
+    assert.deepEqual(snapshotOf(account, everything).holdings.filter((h) => MISREAD.includes(h.symbol)), kept);
+    assert.ok(held.every((p) => included(p, everything)));
+    assert.deepEqual(
+      importedRefs(account, everything).map(({ source, refs }) => [source.id, MISREAD.map(ref).filter((r) => r in refs).map((r) => refs[r])]),
+      [...earlier].map(([id, records]) => [id, MISREAD.map(ref).filter((r) => records.has(r)).map((r) => records.get(r))]),
+    );
+    // The manual-priced one gets back the price it had, or another account's statement price for the date.
+    assert.deepEqual(pricesToSave(account, noChoices).map((p) => [p.assetId, p.price, p.from]), [[`asset-${MISREAD[0]}`, "2900", "earlier"]]);
+    assert.deepEqual(
+      pricesToSave(account, noChoices, new Map([[ref(MISREAD[0]), "2911.4521"]])).map((p) => [p.assetId, p.price, p.from]),
+      [[`asset-${MISREAD[0]}`, "2911.4521", "statement"]],
+    );
+  }
+  // Without its price on or before the date, the row says what Wealthfolio does.
+  const unpriced = { ...existing, positions: [position(MISREAD[0], { manual: true }), ...existing.positions.slice(1)] };
+  const [account] = plan(holdings, { existing: () => unpriced, remembered: (s) => earlier.get(s.id) });
+  assert.match(account.positions.find((p) => p.ref === ref(MISREAD[0])).notes[1], /no price on or before this date.*average cost as its price/);
+});
+
+test("a fund in two folios, one misread, keeps the account's units and needs review in the check", async () => {
+  const data = await fixture("made-up-summary-cams");
+  const [first] = data.folios;
+  const flexi = first.schemes[0];
+  data.folios = [first, { ...first, folio: "91234568 / 34", schemes: [{ ...flexi, close: "0" }] }];
+  const holdings = readHoldings(data);
+  const [listed, unread] = holdings.sources;
+  const line = unread.misread[0];
+  const note = "Its line in Fictiva Mutual Fund, folio 91234568 / 34 may have been misread";
+  const flexiOf = (account) => account.positions.find((p) => p.ref === ref(flexi.isin));
+  // By the asset confirmed for it, or else by its ISIN, which the other folio's line prints.
+  for (const confirmed of [asset, (h) => (h === line ? undefined : asset(h))]) {
+    // Without an earlier position, neither line is imported.
+    const [fresh] = plan(holdings, { asset: confirmed });
+    const position = flexiOf(fresh);
+    assert.deepEqual([position.lines.map((l) => l.source), position.misread.map((l) => l.source), position.include], [[listed], [unread], false]);
+    assert.deepEqual(position.notes, [`${note}, so it isn't imported. Check it against the PDF.`]);
+    for (const choices of [noChoices, { flipped: new Set([position.key]), costs: new Map() }]) {
+      assert.ok(!snapshotOf(fresh, choices).holdings.some((h) => h.symbol === flexi.isin));
+      assert.ok(importedRefs(fresh, choices).every(({ refs }) => !(ref(flexi.isin) in refs)));
+    }
+    // With one, the account keeps all of its units and cost.
+    const [held] = plan(holdings, { asset: confirmed, existing: () => ({ ...none, positions: [{
+      assetId: "flexi", ref: ref(flexi.isin), symbol: flexi.isin, name: "Flexi", units: "3000", cost: "150000", currency: "INR",
+    }] }) });
+    assert.match(flexiOf(held).notes[0], /^Its line in .* so this import leaves it as it is/);
+    assert.deepEqual(snapshotOf(held, { flipped: new Set([flexiOf(held).key]), costs: new Map() }).holdings.find((h) => h.assetId === "flexi"),
+      { assetId: "flexi", symbol: flexi.isin, quantity: "3000", currency: "INR", averageCost: "50" });
+
+    // The check can't compare a partial total.
+    const activities = [activity("account-1", "BUY", "2024-04-01", flexi.isin, "2892.104")];
+    const [checked] = check(holdings, activities, { asset: confirmed }).filter((c) => c.ref === `asset-${flexi.isin}`);
+    assert.deepEqual(summarised([checked]), [[
+      `asset-${flexi.isin}`, [listed.label], "2892.104", [["account-1", "2892.104"]], "2892.104",
+      `${note}, so its units on the statement are unknown. Check it against the PDF.`,
+    ]]);
+    assert.deepEqual(checked.misread.map((l) => l.source), [unread]);
+    assert.equal(unitStatus(checked, true), "review");
+  }
+  // A held-back asset's old import key survives a renamed display code or a new confirmed symbol.
+  const oldRef = ref("OLD");
+  const records = new Map([[oldRef, [flexi.isin, `CAMS|${flexi.rta_code}`]]]);
+  for (const current of ["OLD", "NEW"]) {
+    const [renamed] = plan(holdings, {
+      asset: (h) => ({ ...asset(h), symbol: "NEW", assetId: h.isin === flexi.isin ? "flexi" : "liquid" }),
+      existing: () => ({ ...none, positions: [{
+        assetId: "flexi", ref: ref(current), symbol: current, name: "Flexi", units: "3000", cost: "150000", currency: "INR",
+      }] }),
+      remembered: () => records,
+    });
+    assert.ok(renamed.positions.find((p) => p.existing?.assetId === "flexi").misread);
+    assert.deepEqual(importedRefs(renamed, noChoices).map(({ refs }) => refs[oldRef]), [[flexi.isin, `CAMS|${flexi.rta_code}`], [flexi.isin, `CAMS|${flexi.rta_code}`]]);
+  }
+  // A folio that goes to another account doesn't hold this account's fund back.
+  const accounts = plan(holdings, { account: (s) => (s === unread ? "holdings-2" : "holdings-1") });
+  assert.deepEqual(accounts.map((a) => [a.accountId, flexiOf(a)?.include, flexiOf(a)?.units]), [["holdings-1", true, "2892.104"], ["holdings-2", undefined, undefined]]);
+
+  // Quotes belong to the asset: a held-back holding takes the other account's statement price, so
+  // the accounts agree whichever saves last.
+  const priced = plan(holdings, {
+    account: (s) => (s === unread ? "holdings-2" : "holdings-1"),
+    asset: (h) => ({ ...asset(h), manual: true }),
+    existing: () => ({ ...none, positions: [{
+      assetId: "flexi", ref: ref(flexi.isin), symbol: flexi.isin, name: "Flexi", units: "100", cost: "1000", currency: "INR", manual: true,
+      price: { close: "7", currency: "INR" },
+    }] }),
+  });
+  const prices = new Map(priced.flatMap((p) => pricesToSave(p, noChoices).filter((p) => p.from === "statement").map((p) => [p.ref, p.price])));
+  assert.deepEqual(priced.map((p) => [
+    flexiOf(p).misread?.length, pricesToSave(p, noChoices, prices).filter((x) => x.ref === ref(flexi.isin)).map((x) => [x.price, x.from]),
+  ]), [
+    [undefined, [[flexi.valuation.nav, "statement"]]],
+    [1, [[flexi.valuation.nav, "statement"]]],
+  ]);
+
+  // A misread line with no other: its own check when its asset is confirmed, with other problems after.
+  const alone = readHoldings({ ...data, folios: [data.folios[1]] });
+  const [own] = check(alone, []);
+  assert.deepEqual([own.ref, own.lines, own.misread.length, format(own.statement), unitStatus(own, true)], [ref(flexi.isin), [], 1, "0", "review"]);
+  assert.equal(own.problem, `${note}, so its units on the statement are unknown. Check it against the PDF. No account that tracks transactions has posted activities for it on or before 2025-03-31.`);
+  assert.deepEqual(check(alone, [], { asset: () => undefined }), []);
+});
+
+test("a statement's price that isn't positive is never saved", () => {
+  const h = { kind: "share", isin: "INEZ1", rta: null, rtaCode: null, name: "Unlisted", units: "10", price: "0", value: "0", cost: null };
+  const source = (n, holding) => ({ id: `demat|${n}|${n}`, kind: "demat", label: `Demat ${n}`, holdings: [holding] });
+  const holdings = { date: "2025-03-31", investor: "x", leftOut: [], sources: [source(1, h)] };
+  const manual = (holding) => ({ ...asset(holding), manual: true });
+  // A new asset gets none, and its row says to enter one.
+  const [fresh] = plan(holdings, { asset: manual });
+  assert.deepEqual(pricesToSave(fresh, noChoices), []);
+  assert.deepEqual(fresh.positions[0].notes, ["Priced by hand, but the statement prints no price for it. Enter its price for this date on its asset page after saving."]);
+  // Another line's positive price is the statement's.
+  const [two] = plan({ ...holdings, sources: [source(1, h), source(2, { ...h, price: "12", value: "120" })] }, { asset: manual });
+  assert.deepEqual(pricesToSave(two, noChoices).map((p) => [p.price, p.from]), [["12", "statement"]]);
+  // One the account has gets back the price it had, whatever another account's import lists that isn't positive.
+  const existing = { ...none, positions: [{
+    assetId: "kept", ref: ref("INEZ1"), symbol: "INEZ1", name: "Unlisted", units: "10", cost: "100", currency: "INR", manual: true, price: { close: "9", currency: "INR" },
+  }] };
+  const [held] = plan(holdings, { asset: manual, existing: () => existing });
+  const keep = { flipped: new Set([held.positions[0].key]), costs: new Map() };
+  for (const choices of [noChoices, keep]) {
+    for (const elsewhere of [undefined, "0", "-1", "0.00"]) {
+      const listed = new Map(elsewhere === undefined ? [] : [[ref("INEZ1"), elsewhere]]);
+      assert.deepEqual(pricesToSave(held, choices, listed).map((p) => [p.assetId, p.price, p.from]), [["kept", "9", "earlier"]]);
+    }
+  }
+  assert.deepEqual(pricesToSave(held, keep, new Map([[ref("INEZ1"), "11"]])).map((p) => [p.price, p.from]), [["11", "statement"]]);
 });

@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - Say when casparser couldn't read a statement's date or period, as soon as the statement is read: "casparser couldn't read this statement's date or period, so it can't be imported." casparser leaves the period empty when it doesn't recognise where a statement prints it. Before, a detailed statement was read anyway, and only after its accounts were chosen and every fund confirmed did each Preview the import fail with "Couldn't prepare the preview: Error: Not a statement date: ". A summary or depository statement showed "Couldn't read the statement" with only "Not a statement date: "
+- Leave out a summary statement's line whose units × NAV don't give its value, to the paisa plus the units' and NAV's rounding, or that has units but no NAV, or a value but no units, and say it may have been misread and needs checking against the PDF. casparser 1.4.1 reads a cell it can't read as 0, and on made-up statements an amount of ₹1 crore or more without its leading digit, without a warning. Before, a cost of ₹1 crore or more could be saved without its leading digit, a fund whose units couldn't be read could be removed as if it had been sold, and one whose NAV couldn't be read got a price of ₹0. The holdings import now leaves that fund's holding in the folio's account as it is, with its units, cost, price and what earlier imports added, or doesn't add it, even from another folio's line; Check units marks it for review
+- Never save a statement's price that isn't positive for a holding priced by hand, including a price another account's import supplies for a kept holding, which then gets back the price it had
 
 ### Security
 
