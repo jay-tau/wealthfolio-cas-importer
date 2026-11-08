@@ -147,9 +147,29 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // The Overnight fund has no ISIN, so its name is searched without the plan and option when it's first shown.
     const noIsin = frame.locator("section").filter({ hasText: "No ISIN printed" });
     await noIsin.getByText(`No ISIN on the statement; showing results for "Testbridge Overnight Fund". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`).waitFor();
-    assert.equal(await noIsin.getByLabel("Search for the fund").inputValue(), "Testbridge Overnight Fund");
+    assert.equal(await noIsin.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Overnight Fund");
     assert.equal(await noIsin.getByRole("radio").count(), 1);
     assert.equal(await noIsin.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
+    // Each section repeats the same controls, so their names say which fund, share, bond or NPS scheme
+    // they're for: each name is in its section, and only once on the page.
+    const namedFor = async (section, controls) => {
+      const item = await section.locator("h3").textContent();
+      for (const [role, name] of controls(item)) {
+        await section.getByRole(role, { name, exact: true }).waitFor({ state: "attached" });
+        assert.equal(await section.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
+        assert.equal(await frame.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
+      }
+    };
+    for (const section of await frame.locator("section").all()) {
+      await namedFor(section, (fund) => [
+        ["textbox", `Search for ${fund}`],
+        ["button", `Search for ${fund}`],
+        ["button", `Use this fund for ${fund}`],
+        ["button", `Leave this fund out for ${fund}`],
+      ]);
+    }
+    await namedFor(noIsin, (fund) => [["radiogroup", `Search results for ${fund}`]]);
+    assert.equal(await noIsin.locator("h3").textContent(), "Testbridge Overnight Fund - Direct Plan - Growth");
     const firstFund = frame.locator("section").first();
     // With AMFI not added in Settings → Market data, the search for a fund's ISIN or for the name of one
     // printed without it finds no AMFI result. While any fund's does, its card recommends AMFI once,
@@ -169,7 +189,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await frame.getByText(amfiNote, { exact: true }).waitFor({ state: "detached" });
     };
     await amfiNoteShown();
-    const search = firstFund.getByLabel("Search for the fund");
+    const search = firstFund.getByRole("textbox", { name: /^Search for / });
     const useFund = firstFund.getByRole("button", { name: "Use this fund" });
     // A fund's plan and option are badges beside its name, its search results and its confirmed choice.
     // Each name gets badges only for its own fields. Beside a result or choice, a field warns only
@@ -197,7 +217,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await firstFund.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW warning-subtle"]);
     assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
-    await firstFund.getByRole("button", { name: "Change", exact: true }).click();
+    await firstFund.getByRole("button", { name: /^Change the / }).click();
     for (const [index, expected] of [[2, ["Direct secondary"]], [3, []], [4, ["Growth secondary"]]]) {
       await search.fill("Fictiva Flexi Cap");
       await search.press("Enter");
@@ -206,7 +226,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await useFund.click();
       await firstFund.getByText("Confirmed", { exact: true }).waitFor();
       assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", ...expected]);
-      await firstFund.getByRole("button", { name: "Change", exact: true }).click();
+      await firstFund.getByRole("button", { name: /^Change the / }).click();
     }
     await search.fill("MULTI");
     await search.press("Enter");
@@ -234,11 +254,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // The Corporate Bond fund's ISIN finds nothing, so its name is searched without the plan and option.
     const byName = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
     await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund".').waitFor();
-    assert.equal(await byName.getByLabel("Search for the fund").inputValue(), "Testbridge Corporate Bond Fund");
+    assert.equal(await byName.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Corporate Bond Fund");
     await byName.getByRole("radio").first().waitFor({ state: "attached" });
     assert.equal(await byName.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
     // A late name fallback cannot replace a newer typed search or restore its message.
-    const nameSearch = byName.getByLabel("Search for the fund");
+    const nameSearch = byName.getByRole("textbox", { name: /^Search for / });
     await pause("Testbridge Corporate Bond Fund");
     await nameSearch.fill("INFZ91T01CB6");
     await nameSearch.press("Enter");
@@ -261,6 +281,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await section.getByRole("radio").first().waitFor();
       await section.getByRole("button", { name: "Use this fund" }).click();
       await section.getByText("Confirmed").waitFor();
+    }
+    for (const section of await frame.locator("section").all()) {
+      await namedFor(section, (fund) => [["button", `Change the fund for ${fund}`]]);
     }
     // Once no open fund search lacks an AMFI result, the note goes.
     await noAmfiNote();
@@ -292,7 +315,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.locator("#cas-file").isDisabled(), true);
     assert.equal(await frame.getByLabel("PAN ABCDE1234F", { exact: true }).isDisabled(), true);
     assert.equal(await remember.isDisabled(), true);
-    assert.equal(await frame.getByRole("button", { name: "Change", exact: true }).first().isDisabled(), true);
+    assert.equal(await frame.getByRole("button", { name: /^Change the / }).first().isDisabled(), true);
     await resume();
     await pause("import");
     await frame.getByRole("button", { name: "Import 23 activities" }).click();
@@ -305,8 +328,38 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const units = frame.locator("table").last().locator("tbody tr");
     assert.equal(await units.count(), 5);
     assert.equal(await units.filter({ hasText: "Match" }).count(), 4);
+    assert.deepEqual(
+      await frame.locator("table").last().getByRole("columnheader").allTextContents(),
+      ["Fund", "Units in the statement", "Units in Wealthfolio", "Status"],
+    );
 
     // A second import of the same statement finds everything.
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    // Each transaction's "Import anyway" says which one it is for, and each name is on the page once.
+    const importAnyway = frame.getByRole("checkbox", { name: /^Import anyway for the / });
+    assert.equal(await importAnyway.count(), 13);
+    for (const name of await importAnyway.evaluateAll((all) => all.map((box) => box.closest("label").textContent))) {
+      assert.equal(await frame.getByRole("checkbox", { name, exact: true }).count(), 1, name);
+    }
+    await frame.getByRole("checkbox", {
+      name: "Import anyway for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001.1470564, folio 91234567 / 12, transaction 1",
+      exact: true,
+    }).waitFor({ state: "attached" });
+    // Equal purchases of the same fund in two folios still have distinct transaction names.
+    await tab.frames()[1].evaluate(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText(/3 folios, 8 schemes, 83 rows\./).waitFor({ timeout: 180_000 });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    const twins = frame.getByRole("checkbox", { name: /^Import anyway for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001\.1470564,/ });
+    await twins.nth(1).waitFor({ state: "attached" });
+    assert.equal(await twins.count(), 2);
+    for (const name of await twins.evaluateAll((all) => all.map((box) => box.closest("label").textContent))) {
+      assert.equal(await frame.getByRole("checkbox", { name, exact: true }).count(), 1, name);
+    }
+    await tab.frames()[1].evaluate(() => { window.host.sharedIsin = ""; });
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).isDisabled(), true);
@@ -338,9 +391,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).count(), 0);
     await tab.frames()[1].evaluate((symbol) => { window.host.failGetProfileIds = []; window.host.assets["chosen-fund"] = { symbol, exchangeMic: "XBOM" }; }, expected.folios[0].schemes[0].isin);
     // Search lists an untyped asset as OTHER, but symbol-based imports cannot target it.
-    await firstFund.getByRole("button", { name: "Change", exact: true }).click();
-    await firstFund.getByLabel("Search for the fund").fill(expected.folios[0].schemes[0].isin);
-    await firstFund.getByLabel("Search for the fund").press("Enter");
+    await firstFund.getByRole("button", { name: /^Change the / }).click();
+    await firstFund.getByRole("textbox", { name: /^Search for / }).fill(expected.folios[0].schemes[0].isin);
+    await firstFund.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await firstFund.getByRole("radio").first().dispatchEvent("click");
     await firstFund.getByRole("button", { name: "Use this fund" }).click();
     await firstFund.getByText("Confirmed").waitFor();
@@ -349,9 +402,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText(/^\d+ new transactions?, \d+ already in Wealthfolio/).count(), 0);
     // Set its type and confirm it again, then change its identity and remove it entirely.
     await tab.frames()[1].evaluate(() => { window.host.assets["chosen-fund"].instrumentType = "EQUITY"; });
-    await firstFund.getByRole("button", { name: "Change", exact: true }).click();
-    await firstFund.getByLabel("Search for the fund").fill(expected.folios[0].schemes[0].isin);
-    await firstFund.getByLabel("Search for the fund").press("Enter");
+    await firstFund.getByRole("button", { name: /^Change the / }).click();
+    await firstFund.getByRole("textbox", { name: /^Search for / }).fill(expected.folios[0].schemes[0].isin);
+    await firstFund.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await firstFund.getByRole("radio").first().dispatchEvent("click");
     await firstFund.getByRole("button", { name: "Use this fund" }).click();
     await firstFund.getByText("Confirmed").waitFor();
@@ -362,17 +415,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
     // A fresh confirmation of the same ID for another scheme cannot hide the stale one.
-    await byName.getByRole("button", { name: "Change", exact: true }).click();
-    await byName.getByLabel("Search for the fund").fill("B2");
-    await byName.getByLabel("Search for the fund").press("Enter");
+    await byName.getByRole("button", { name: /^Change the / }).click();
+    await byName.getByRole("textbox", { name: /^Search for / }).fill("B2");
+    await byName.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await byName.getByRole("radio").first().dispatchEvent("click");
     await byName.getByRole("button", { name: "Use this fund" }).click();
     await byName.getByText("Confirmed").waitFor();
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
-    await byName.getByRole("button", { name: "Change", exact: true }).click();
-    await byName.getByLabel("Search for the fund").fill("Testbridge Corporate Bond Fund");
-    await byName.getByLabel("Search for the fund").press("Enter");
+    await byName.getByRole("button", { name: /^Change the / }).click();
+    await byName.getByRole("textbox", { name: /^Search for / }).fill("Testbridge Corporate Bond Fund");
+    await byName.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await byName.getByRole("radio").first().dispatchEvent("click");
     await byName.getByRole("button", { name: "Use this fund" }).click();
     await byName.getByText("Confirmed").waitFor();
@@ -383,9 +436,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/If the asset was deleted, choose its replacement under Funds/).waitFor();
     // Reconfirm the original symbol-only choice for the remaining checks.
-    await firstFund.getByRole("button", { name: "Change", exact: true }).click();
-    await firstFund.getByLabel("Search for the fund").fill(expected.folios[0].schemes[0].isin);
-    await firstFund.getByLabel("Search for the fund").press("Enter");
+    await firstFund.getByRole("button", { name: /^Change the / }).click();
+    await firstFund.getByRole("textbox", { name: /^Search for / }).fill(expected.folios[0].schemes[0].isin);
+    await firstFund.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await firstFund.getByRole("radio").first().dispatchEvent("click");
     await firstFund.getByRole("button", { name: "Use this fund" }).click();
     await firstFund.getByText("Confirmed").waitFor();
@@ -422,7 +475,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText(
       "Savings has a withdrawal of 25000.00 on 2023-05-04 (NEFT FICTIVA MF). If you use it, the add-on changes it into a transfer out and links it with this transfer in.",
     ).waitFor();
-    const reuseBankRow = frame.getByRole("checkbox", { name: "Use it instead of a new transfer out" });
+    const reuseBankRow = frame.getByRole("checkbox", {
+      name: "Use it instead of a new transfer out for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001.1470564, folio 91234567 / 12, transaction 1",
+      exact: true,
+    });
     assert.equal(await reuseBankRow.count(), 1);
     const bankRows = await tab.frames()[1].evaluate(() => window.host.activities);
     // A trade rejected or skipped after preview must leave its chosen bank row and fund cash alone.
@@ -505,7 +561,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const gap = /^Fictiva Flexi Cap Fund - Direct Plan - Growth, folio 91234567 \/ 12: The rows take the unit balance from 1250 to 2798\.066, but the statement's closing balance is 2892\.104, 94\.038 units apart/;
     const leftOutAlert = frame.getByRole("alert").filter({ hasText: /^Left out/ });
     const anywayAlert = frame.getByRole("alert").filter({ hasText: /^Imported anyway/ });
-    const importFlexi = frame.getByRole("checkbox", { name: "Import this fund anyway" });
+    const importFlexi = frame.getByRole("checkbox", {
+      name: "Import this fund anyway for Fictiva Flexi Cap Fund - Direct Plan - Growth, folio 91234567 / 12",
+      exact: true,
+    });
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     await leftOutAlert.getByText(gap).waitFor();
@@ -556,12 +615,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const storage = async () => Object.fromEntries((await host()).storage);
     const confirmed = () => frame.getByText("Confirmed", { exact: true }).count();
     const undecided = async (section) => {
-      await section.getByLabel("Search for the fund").waitFor();
+      await section.getByRole("textbox", { name: /^Search for / }).waitFor();
       assert.equal(await section.getByText("Confirmed", { exact: true }).count(), 0);
       assert.equal(await section.getByText("Left out", { exact: true }).count(), 0);
     };
     const leaveOut = async (section) => {
-      await section.getByRole("button", { name: "Change", exact: true }).click();
+      await section.getByRole("button", { name: /^Change the / }).click();
       await section.getByRole("button", { name: "Leave this fund out" }).click();
       await section.getByText("Left out", { exact: true }).waitFor();
     };
@@ -788,7 +847,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Change alone keeps the saved fund, so reading again confirms it again.
     const flexi = frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" });
     const remembered = await storage();
-    await flexi.getByRole("button", { name: "Change", exact: true }).click();
+    await flexi.getByRole("button", { name: /^Change the / }).click();
     await flexi.getByRole("button", { name: "Leave this fund out" }).waitFor();
     await readAgain();
     await flexi.getByText("Fund INFZ90K01FC8").waitFor();
@@ -809,11 +868,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // Choosing a fund after leaving it out doesn't bring the old one back; confirming another saves it.
     await flexi.getByRole("button", { name: "Leave this fund out" }).click();
+    await namedFor(flexi, (fund) => [["button", `Choose a fund for ${fund}`]]);
     await flexi.getByRole("button", { name: "Choose a fund" }).click();
     await flexi.getByRole("radio").first().waitFor({ state: "attached" });
     assert.deepEqual(await storage(), forgotten);
-    await flexi.getByLabel("Search for the fund").fill("MULTI");
-    await flexi.getByLabel("Search for the fund").press("Enter");
+    await flexi.getByRole("textbox", { name: /^Search for / }).fill("MULTI");
+    await flexi.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await flexi.getByRole("radio").nth(1).waitFor({ state: "attached" });
     await flexi.getByRole("radio").nth(1).dispatchEvent("click");
     await flexi.getByRole("button", { name: "Use this fund" }).click();
@@ -883,7 +943,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     );
 
     // A slow save must finish before leaving it out deletes it, and before a reread restores choices.
-    await flexi.getByRole("button", { name: "Change", exact: true }).click();
+    await flexi.getByRole("button", { name: /^Change the / }).click();
     await pause("set");
     await flexi.getByRole("button", { name: "Use this fund" }).click();
     await waiting();
@@ -1072,7 +1132,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await undecided(noIsin);
     await amfiNoteShown();
     // A mounted search stops qualifying while it runs, and for a different query's results.
-    const overnightSearch = noIsin.getByLabel("Search for the fund");
+    const overnightSearch = noIsin.getByRole("textbox", { name: /^Search for / });
     await pause("market");
     await overnightSearch.fill("MULTI");
     await overnightSearch.press("Enter");
@@ -1105,7 +1165,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
     // Searching the ISIN again resolves AMFI's scheme code to the asset the import created.
-    await liquidSection.getByRole("button", { name: "Change", exact: true }).click();
+    await liquidSection.getByRole("button", { name: /^Change the / }).click();
     await liquidResults.nth(1).waitFor({ state: "attached" });
     await noAmfiNote();
     assert.equal(await liquidResults.count(), 2);
@@ -1202,16 +1262,24 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ["Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout", ["Regular secondary", "IDCW secondary"]],
     ]);
     const bondSection = frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" });
-    const bondSearch = bondSection.getByLabel("Search for the bond");
+    const bondSearch = bondSection.getByRole("textbox", { name: /^Search for / });
     await bondSearch.fill("Fictiva Flexi Cap");
     await bondSearch.press("Enter");
     await bondSection.getByRole("radio").nth(4).waitFor({ state: "attached" });
+    await namedFor(bondSection, (bond) => [
+      ["textbox", `Search for ${bond}`],
+      ["radiogroup", `Search results for ${bond}`],
+      ["button", `Use this bond for ${bond}`],
+      ["button", `Use the statement's prices for ${bond}`],
+      ["button", `Leave this bond out for ${bond}`],
+    ]);
     assert.deepEqual(await badges(bondSection), []);
     await bondSection.getByRole("radio").nth(1).dispatchEvent("click");
     await bondSection.getByRole("button", { name: "Use this bond" }).click();
     await bondSection.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(bondSection), ["Confirmed success-subtle"]);
-    await bondSection.getByRole("button", { name: "Change", exact: true }).click();
+    await namedFor(bondSection, (bond) => [["button", `Change the bond for ${bond}`]]);
+    await bondSection.getByRole("button", { name: /^Change the / }).click();
     await bondSearch.fill("INEZ91A07012");
     await bondSearch.press("Enter");
     await bondSection.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
@@ -1220,7 +1288,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await section.getByRole("button", { name: "Leave this share out" }).click();
         continue;
       }
-      const use = section.getByRole("button", { name: /^Use this (fund|share|bond)$/ });
+      const use = section.getByRole("button", { name: /^Use this (fund|share|bond) for / });
       const nothing = section.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/);
       await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).or(nothing).first().waitFor();
       if (await section.getByText("Confirmed", { exact: true }).count()) continue;
@@ -1235,7 +1303,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await noAmfiNote();
     // Leaving out the only qualifying Holdings fund removes the note too; restore its choice after.
     const holdingsFund = frame.locator("section").filter({ hasText: "ISIN INFZ90K01NE8" });
-    await holdingsFund.getByRole("button", { name: "Change", exact: true }).click();
+    await holdingsFund.getByRole("button", { name: /^Change the / }).click();
     await amfiNoteShown(holdingsIntro);
     await holdingsFund.getByRole("button", { name: "Leave this fund out" }).click();
     await holdingsFund.getByText("Left out", { exact: true }).waitFor();
@@ -1414,6 +1482,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await preview.isDisabled(), false);
     assert.deepEqual(await storage(), beforeIgnored);
 
+    // The same share in two snapshot accounts names the account on its checkbox and cost box.
+    await choose(/^CDSL Demat Account 2,/, "Fund folios (INR)");
+    await preview.click();
+    for (const account of ["Demat", "Fund folios"]) {
+      const box = frame.getByRole("checkbox", { name: `Import Fund INEZ90B01015 in ${account}`, exact: true });
+      await box.waitFor({ state: "attached" });
+      assert.equal(await box.count(), 1);
+      assert.equal(await frame.getByRole("textbox", { name: `Total cost of Fund INEZ90B01015 in ${account}`, exact: true }).count(), 1);
+    }
+    await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
+
     // A known MANUAL asset in an inactive account gets the statement's price, even when the target starts empty.
     const priced = "Priced by hand: saving also saves the statement's price as its price on this date.";
     await hosted(() => {
@@ -1460,14 +1539,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await demat.getByText("520", { exact: true }).waitFor();
     const shortRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90B01015" });
     await shortRow.getByText("Mutual funds also holds it.", { exact: true }).waitFor();
-    assert.equal(await shortRow.getByRole("checkbox", { name: "Import", exact: true }).isChecked(), true);
+    // Each holding's checkbox names it.
+    assert.equal(await frame.getByRole("checkbox", { name: "Import Fund INEZ90B01015 in Demat", exact: true }).isChecked(), true);
     await demat.getByLabel("Total cost of Fund INEZ90A01017").fill("185175");
     await demat.getByLabel("Total cost of Fund INEZ90C01021").fill("abc");
     await demat.getByText("Type an amount like 12345.67, or leave it blank.").waitFor();
     const save = frame.getByRole("button", { name: "Save 2 snapshots" });
     assert.equal(await save.isDisabled(), true);
     const invalidRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90C01021" });
-    const invalidImport = invalidRow.getByRole("checkbox", { name: "Import", exact: true });
+    const invalidImport = frame.getByRole("checkbox", { name: "Import Fund INEZ90C01021 in Demat", exact: true });
     await invalidImport.dispatchEvent("click");
     assert.equal(await save.isDisabled(), false);
     assert.equal(await invalidRow.getByText("Type an amount like 12345.67, or leave it blank.").count(), 0);
@@ -1558,9 +1638,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // A fund confirmed to another asset than the one an earlier import of its folio added keeps that
     // asset, and leaves the new one out, until one choice replaces the old asset with it.
     const confirmBalanced = async (query, result) => {
-      await balanced.getByRole("button", { name: "Change", exact: true }).click();
-      await balanced.getByLabel("Search for the fund").fill(query);
-      await balanced.getByLabel("Search for the fund").press("Enter");
+      await balanced.getByRole("button", { name: /^Change the / }).click();
+      await balanced.getByRole("textbox", { name: /^Search for / }).fill(query);
+      await balanced.getByRole("textbox", { name: /^Search for / }).press("Enter");
       await balanced.getByRole("radio", { name: result }).dispatchEvent("click");
       await balanced.getByRole("button", { name: "Use this fund" }).click();
       await balanced.getByText("Confirmed", { exact: true }).waitFor();
@@ -1571,7 +1651,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       // The other row's note names each asset, so each row goes by the name in its first cell.
       const row = (name) => folios.getByRole("row").filter({ has: frame.locator("td:first-child > div > span:first-child", { hasText: new RegExp(`^${name}$`) }) });
       const [oldRow, newRow] = [row(oldName), row(newName)];
-      const replace = newRow.getByRole("checkbox", { name: `Replace ${oldAsset} with ${newAsset}`, exact: true });
+      const replace = newRow.getByRole("checkbox", { name: `Replace ${oldAsset} with ${newAsset} in Fund folios`, exact: true });
       await replace.waitFor({ state: "attached" });
       assert.equal(await replace.getAttribute("aria-checked"), "false");
       await newRow.getByText(
@@ -1587,8 +1667,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await replace.dispatchEvent("click");
       await oldRow.getByText("Replaced", { exact: true }).waitFor();
       assert.equal(await newRow.getByText("New", { exact: true }).count(), 1);
-      await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
-      await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+      await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
+      await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
       await save.click();
       await frame.getByText("Saved 2 snapshots").waitFor();
       return (await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => [h.symbol, h.quantity]);
@@ -1607,8 +1687,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveOut(frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" }));
     await preview.click();
     await folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" }).getByText("Kept", { exact: true }).waitFor();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
     await save.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
@@ -1628,12 +1708,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const sold = folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" });
     await sold.getByText("Not on the statement any more. An earlier import of Folio 91234567/12 added it.").waitFor();
     assert.equal(await sold.getByText("Removed", { exact: true }).count(), 1);
+    assert.equal(await frame.getByRole("checkbox", { name: "Keep Fund INFZ90K01LQ6 in Fund folios", exact: true }).isChecked(), false);
     assert.equal(await demat.getByLabel("Total cost of Fund INEZ90A01017").inputValue(), "185175");
     await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText("From the account's average cost in Wealthfolio").waitFor();
     assert.equal(await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).count(), 1);
     assert.equal(await save.isDisabled(), true);
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    // Both accounts have a snapshot on this date; each checkbox names its account.
+    await frame.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
+    await frame.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
     await save.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.deepEqual(
@@ -1646,8 +1728,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // code matches another asset's symbol. Restore the remembered choice before the next read.
     const shareChoiceBefore = (await storage())["isin:INEZ90A01017"];
     const shareChoice = frame.locator("section").filter({ hasText: "ISIN INEZ90A01017" });
-    await shareChoice.getByRole("button", { name: "Change", exact: true }).click();
-    await shareChoice.getByRole("button", { name: "Use this share", exact: true }).click();
+    await shareChoice.getByRole("button", { name: /^Change the / }).click();
+    await shareChoice.getByRole("button", { name: /^Use this share for / }).click();
     await hosted(() => {
       window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90C01021";
       window.host.assets["asset-INEZ90A01017"].instrumentSymbol = null;
@@ -1704,8 +1786,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await demat.getByRole("row").filter({ hasText: "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31" }).getByText("Removed", { exact: true }).waitFor();
     await demat.getByRole("row").filter({ hasText: "Fund INEZ92A01013" }).getByText(priced, { exact: true }).waitFor();
     assert.equal(await folios.getByRole("row").filter({ hasText: "Gilt fund" }).getByText("Kept", { exact: true }).count(), 1);
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
     assert.equal(await save.isDisabled(), false);
     await save.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
@@ -1746,7 +1828,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const sharesRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90B01015" });
     await sharesRow.getByText(priced, { exact: true }).waitFor();
     const manualShare = frame.locator("section").filter({ hasText: "ISIN INEZ90B01015" });
-    await manualShare.getByRole("button", { name: "Change", exact: true }).click();
+    await manualShare.getByRole("button", { name: /^Change the / }).click();
     await manualShare.getByRole("button", { name: "Use this share" }).click();
     await manualShare.getByText("Confirmed", { exact: true }).waitFor();
     assert.equal(JSON.parse((await storage())["isin:INEZ90B01015"]).manual, undefined);
@@ -1763,8 +1845,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await preview.click();
     await sharesRow.getByText(priced, { exact: true }).waitFor({ state: "hidden" });
     await demat.getByLabel("Total cost of Fund INEZ90B01015").fill("1000");
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
     assert.equal(await save.isDisabled(), false);
     await save.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
@@ -1786,7 +1868,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("Confirmed", { exact: true }).waitFor({ timeout: 180_000 });
     await preview.click();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
     const saveOne = frame.getByRole("button", { name: "Save 1 snapshot", exact: true });
     assert.equal(await saveOne.isDisabled(), false);
     await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText(priced, { exact: true }).waitFor();
@@ -1812,15 +1894,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // A card without funds never recommends AMFI.
     await noAmfiNote();
     // An NPS scheme's results have no plan or option badges, even when their names give them.
-    await npsSection.getByLabel("Search for the NPS scheme").fill("Fictiva Flexi Cap");
-    await npsSection.getByLabel("Search for the NPS scheme").press("Enter");
+    await npsSection.getByRole("textbox", { name: /^Search for / }).fill("Fictiva Flexi Cap");
+    await npsSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await npsSection.getByRole("radio").nth(4).waitFor({ state: "attached" });
     assert.deepEqual(await badges(npsSection), []);
     await npsSection.getByRole("radio").nth(1).dispatchEvent("click");
     await npsSection.getByRole("button", { name: "Use this NPS scheme" }).click();
     await npsSection.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(npsSection), ["Confirmed success-subtle"]);
-    await npsSection.getByRole("button", { name: "Change", exact: true }).click();
+    await npsSection.getByRole("button", { name: /^Change the / }).click();
     await npsSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await npsSection.getByText("NPS-TEST-E-TIER-I · EQUITY · INR · priced from statements").waitFor();
     assert.deepEqual(await badges(npsSection), ["Confirmed success-subtle"]);
@@ -1837,7 +1919,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const npsRow = folios.getByRole("row").filter({ hasText: scheme });
     await npsRow.getByText(priced, { exact: true }).waitFor();
     await npsRow.getByText("New", { exact: true }).waitFor();
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
     await saveOne.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     const pension = (await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I");
@@ -1861,7 +1943,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readHoldingsAgain();
     await npsSection.getByText("Confirmed", { exact: true }).waitFor();
     await preview.click();
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
     await saveOne.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.deepEqual(await hosted(() => window.host.quotes["pension-created-007"].map((q) => [q.id, q.timestamp, q.close])), npsHost.quotes.map((q) => [q.id, q.timestamp, q.close]));
@@ -1878,7 +1960,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await preview.click();
     const laterPension = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-04-30" });
     await laterPension.getByLabel(`Total cost of ${scheme}`).fill("500");
-    await laterPension.getByRole("checkbox", { name: "Replace the snapshot of 2025-04-30" }).dispatchEvent("click");
+    await laterPension.getByRole("checkbox", { name: "Replace the snapshot of 2025-04-30 in Demat", exact: true }).dispatchEvent("click");
     await saveOne.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-04-30")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").assetId, "pension-created-007");
@@ -1994,9 +2076,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }, marketScheme);
     await readHoldingsAgain();
     const marketSection = frame.locator("section").filter({ hasText: marketScheme });
-    await marketSection.getByLabel("Search for the NPS scheme").fill("NPS-TEST-M-TIER-I");
-    await marketSection.getByLabel("Search for the NPS scheme").press("Enter");
-    await marketSection.getByRole("button", { name: "Use this NPS scheme", exact: true }).click();
+    await marketSection.getByRole("textbox", { name: /^Search for / }).fill("NPS-TEST-M-TIER-I");
+    await marketSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
+    await marketSection.getByRole("button", { name: /^Use this NPS scheme for / }).click();
     // A fresh search choice's manual mode can go stale before preview, too.
     await hosted(() => {
       window.host.pricingModes["NPS-TEST-M-TIER-I"] = "MARKET";
@@ -2007,7 +2089,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
     await hosted(() => { window.host.failGetProfileIds = []; });
     await preview.click();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
     await saveOne.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     const marketProfile = await hosted(() => window.host.assets["market-profile-011"]);
@@ -2056,7 +2138,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readHoldingsAgain();
     await preview.click();
     await demat.getByRole("row").filter({ hasText: "Provider pension" }).getByText(priced, { exact: true }).waitFor();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
     await saveOne.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, "market-profile-011");
@@ -2112,7 +2194,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     await readHoldingsAgain();
     for (const section of await frame.locator("section").all()) {
-      await section.getByRole("button", { name: "Use the statement's prices", exact: true }).click();
+      await section.getByRole("button", { name: /^Use the statement's prices for / }).click();
     }
     await choose("All of this statement", "Fund folios (INR)");
     await choose(/^NSDL Demat Account 1, FAILURE TEST BROKER/, "Demat (INR)");
@@ -2143,7 +2225,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.failSnapshotAccounts = []; window.host.failQuoteIds = []; window.host.failProfileIds = []; window.host.failGetProfileIds = []; });
     await readHoldingsAgain();
     await preview.click();
-    await continuedNps.getByRole("checkbox", { name: "Replace the snapshot of 2025-05-31" }).dispatchEvent("click");
+    await continuedNps.getByRole("checkbox", { name: "Replace the snapshot of 2025-05-31 in Fund folios", exact: true }).dispatchEvent("click");
     await frame.getByRole("button", { name: "Save 2 snapshots", exact: true }).click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
@@ -2254,7 +2336,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await giltSection.getByText("MF-KFINTECH-TGLDG · MUTUALFUND · INR · priced from statements").waitFor();
     await preview.click();
     await folios.getByRole("row").filter({ hasText: gilt }).getByText("From the account's average cost in Wealthfolio").waitFor();
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31" }).dispatchEvent("click");
+    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
     await saveOne.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
@@ -2293,8 +2375,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // With an option but no plan on the statement, only the differing option warns.
     const optionOnlySection = frame.locator("section").filter({ hasText: "PRETEND SMALL CAP FUND - GROWTH" });
     assert.deepEqual(await nameBadges(optionOnlySection), ["Growth secondary"]);
-    await optionOnlySection.getByLabel("Search for the fund").fill("Pretend Small Cap");
-    await optionOnlySection.getByLabel("Search for the fund").press("Enter");
+    await optionOnlySection.getByRole("textbox", { name: /^Search for / }).fill("Pretend Small Cap");
+    await optionOnlySection.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await optionOnlySection.getByRole("radio").nth(1).waitFor({ state: "attached" });
     assert.deepEqual(await resultBadges(optionOnlySection), [["Direct secondary", "Growth secondary"], ["Regular secondary", "IDCW warning-subtle"]]);
     await optionOnlySection.getByRole("radio").nth(1).dispatchEvent("click");
@@ -2302,7 +2384,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await optionOnlySection.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(optionOnlySection), ["Confirmed success-subtle", "Regular secondary", "IDCW warning-subtle"]);
     // Forget this temporary choice, then restore the plan-only statement for the snapshot checks.
-    await optionOnlySection.getByRole("button", { name: "Change", exact: true }).click();
+    await optionOnlySection.getByRole("button", { name: /^Change the / }).click();
     await optionOnlySection.getByRole("button", { name: "Leave this fund out" }).click();
     await optionOnlySection.getByText("Left out", { exact: true }).waitFor();
     await hosted((smallCap) => { window.host.depositoryAccounts[0].mutual_funds[0].name = smallCap; }, smallCap);
@@ -2311,30 +2393,30 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await textilesSection.getByText("Fund INEZ94A01017").waitFor();
     assert.equal(await textilesSection.getByRole("button", { name: "Use this share" }).isDisabled(), false);
     // A share's results have no plan or option badges, even when their names give them.
-    await textilesSection.getByLabel("Search for the share").fill("Pretend Small Cap");
-    await textilesSection.getByLabel("Search for the share").press("Enter");
+    await textilesSection.getByRole("textbox", { name: /^Search for / }).fill("Pretend Small Cap");
+    await textilesSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await textilesSection.getByRole("radio").nth(1).waitFor({ state: "attached" });
     assert.deepEqual(await badges(textilesSection), []);
     await textilesSection.getByRole("radio").nth(1).dispatchEvent("click");
     await textilesSection.getByRole("button", { name: "Use this share" }).click();
     await textilesSection.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(textilesSection), ["Confirmed success-subtle"]);
-    await textilesSection.getByRole("button", { name: "Change", exact: true }).click();
+    await textilesSection.getByRole("button", { name: /^Change the / }).click();
     await textilesSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await textilesSection.getByText("INEZ94A01017 · EQUITY · INR · priced from statements").waitFor();
     const smallCapSection = frame.locator("section").filter({ hasText: smallCap });
     await smallCapSection.getByText(`Nothing found for the ISIN or for "PRETEND SMALL CAP FUND". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
     // With no option on the statement, a result's option is no warning; another plan is.
     assert.deepEqual(await nameBadges(smallCapSection), ["Direct secondary"]);
-    await smallCapSection.getByLabel("Search for the fund").fill("Pretend Small Cap");
-    await smallCapSection.getByLabel("Search for the fund").press("Enter");
+    await smallCapSection.getByRole("textbox", { name: /^Search for / }).fill("Pretend Small Cap");
+    await smallCapSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await smallCapSection.getByRole("radio").nth(1).waitFor({ state: "attached" });
     assert.deepEqual(await resultBadges(smallCapSection), [["Direct secondary", "Growth secondary"], ["Regular warning-subtle", "IDCW secondary"]]);
     await smallCapSection.getByRole("radio").nth(1).dispatchEvent("click");
     await smallCapSection.getByRole("button", { name: "Use this fund" }).click();
     await smallCapSection.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(smallCapSection), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW secondary"]);
-    await smallCapSection.getByRole("button", { name: "Change", exact: true }).click();
+    await smallCapSection.getByRole("button", { name: /^Change the / }).click();
     await smallCapSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await smallCapSection.getByText("INFZ92P01SC5 · MUTUALFUND · INR · priced from statements").waitFor();
     assert.deepEqual(await choiceBadges(smallCapSection), ["Confirmed success-subtle", "Direct secondary"]);
@@ -2371,8 +2453,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
     const detailedCorporate = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
-    await detailedCorporate.getByLabel("Search for the fund").waitFor();
-    assert.equal(await detailedCorporate.getByLabel("Search for the fund").inputValue(), "INFZ91T01CB6");
+    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).waitFor();
+    assert.equal(await detailedCorporate.getByRole("textbox", { name: /^Search for / }).inputValue(), "INFZ91T01CB6");
     assert.equal(await detailedCorporate.getByText("Confirmed", { exact: true }).count(), 0);
     assert.equal(await frame.getByRole("button", { name: "Use the statement's prices" }).count(), 0);
     await frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" }).getByText("Confirmed", { exact: true }).waitFor();
@@ -2436,13 +2518,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await checkRow(flexiName).getByText("Needs review", { exact: true }).waitFor();
     await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
     assert.deepEqual(await checkRow(flexiName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "2892.104", "2892.104"]);
-    await checkRow(flexiName).getByRole("checkbox").dispatchEvent("click");
+    // Each holding's Same holdings names it.
+    await frame.getByRole("checkbox", { name: `Same holdings for ${flexiName}`, exact: true }).dispatchEvent("click");
     await checkRow(flexiName).getByText("Match", { exact: true }).waitFor();
     // A fund in two accounts is summed once, and a gap shows once its accounts are confirmed.
     assert.deepEqual(await checkRow(balancedName).getByRole("cell").allTextContents().then((cells) => cells.slice(2, 4).map((c) => c.trim())), ["3443.91", "3400"]);
     await checkRow(balancedName).getByText("Mutual funds · 3000").waitFor();
     await checkRow(balancedName).getByText("Not set · 400").waitFor();
-    await checkRow(balancedName).getByRole("checkbox").dispatchEvent("click");
+    await frame.getByRole("checkbox", { name: `Same holdings for ${balancedName}`, exact: true }).dispatchEvent("click");
     await checkRow(balancedName).getByText("Differ", { exact: true }).waitFor();
     await checkRow(liquidName).getByText("No account that tracks transactions has posted activities for it on or before 2025-03-31.", { exact: true }).waitFor();
     assert.equal(await checkRow(liquidName).getByRole("checkbox").count(), 0);
@@ -2478,11 +2561,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       const amfiLabel = await section.locator("label").filter({ hasText: "AMFI selected" }).textContent();
       schemeCodes.push(amfiLabel.match(/^Scheme (\d{6})/)[1]);
       if (await section.getByText("ISIN INFZ90K01LQ6", { exact: true }).count()) continue;
-      await section.getByRole("button", { name: "Leave this fund out", exact: true }).click();
+      await section.getByRole("button", { name: /^Leave this fund out for / }).click();
     }
     assert.equal(new Set(schemeCodes).size, schemeCodes.length, "different funds have different AMFI scheme codes");
     assert.equal(await summaryLiquid.getByRole("radio").nth(1).getAttribute("aria-checked"), "true");
-    await summaryLiquid.getByRole("button", { name: "Use this fund", exact: true }).click();
+    await summaryLiquid.getByRole("button", { name: /^Use this fund for / }).click();
     const summaryAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     await preview.click();
     await frame.getByRole("button", { name: "Save 1 snapshot", exact: true }).click();
@@ -2497,14 +2580,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await hosted((code) => window.host.assets[`asset-${code}`].providerId, summaryAmfi.symbol), "AMFI");
     await hosted((code) => { window.host.pricingModes[code] = "MANUAL"; }, summaryAmfi.symbol);
     await readHoldingsAgain();
-    await summaryLiquid.getByRole("button", { name: "Change", exact: true }).click();
+    await summaryLiquid.getByRole("button", { name: /^Change the / }).click();
     const summaryResults = summaryLiquid.getByRole("radio");
     await summaryResults.nth(1).waitFor({ state: "attached" });
     assert.equal(await summaryResults.count(), 2);
     assert.equal(await summaryResults.first().getAttribute("aria-checked"), "true");
     assert.match(await summaryLiquid.locator("label").first().textContent(), / · EQUITY · INR · AMFI selected\)$/);
     assert.equal(await summaryLiquid.getByText(/priced from AMFI/).count(), 0);
-    await summaryLiquid.getByRole("button", { name: "Use this fund", exact: true }).click();
+    await summaryLiquid.getByRole("button", { name: /^Use this fund for / }).click();
     const summaryExisting = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     assert.equal(summaryExisting.assetId, `asset-${summaryAmfi.symbol}`);
     assert.equal(summaryExisting.providerSymbol, undefined);
@@ -2512,7 +2595,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await summaryLiquid.getByText(/ · EQUITY · INR · AMFI selected\)$/).waitFor();
     for (const section of await frame.locator("section").all()) {
       if (await section.getByText("ISIN INFZ90K01LQ6", { exact: true }).count()) continue;
-      await section.getByRole("button", { name: "Leave this fund out", exact: true }).click();
+      await section.getByRole("button", { name: /^Leave this fund out for / }).click();
     }
     await preview.click();
     await frame.getByText("Priced by hand: saving also saves the statement's price as its price on this date.", { exact: true }).waitFor();
@@ -2528,7 +2611,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await summaryLiquid.getByText("ISIN INFZ90K01LQ6 · a line may have been misread, so the import leaves its holding as it is", { exact: true }).waitFor();
     for (const section of await frame.locator("section").all()) {
       if (await section.getByText(/^ISIN INFZ90K01LQ6\b/).count()) continue;
-      await section.getByRole("button", { name: "Leave this fund out", exact: true }).click();
+      await section.getByRole("button", { name: /^Leave this fund out for / }).click();
     }
     await preview.click();
     // The account's AMFI asset, under its own name.
@@ -2560,7 +2643,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }];
     await hosted(([code, quotes]) => { window.host.quotes[`asset-${code}`] = quotes; }, [summaryAmfi.symbol, liquidQuotes]);
     await preview.click();
-    await frame.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31", exact: true }).dispatchEvent("click");
+    await frame.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
     await frame.getByRole("button", { name: "Save 1 snapshot", exact: true }).click();
     await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
     const keptSnapshot = await snapshot("holdings-2", "2025-03-31");

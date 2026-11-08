@@ -47,6 +47,9 @@ const label = (row: { activityType: string; subtype?: string | null }) => {
   if (side) return CONVERSION_LABELS[side];
   return row.subtype === "DRIP" ? "reinvested dividend" : LABELS[row.activityType] ?? row.activityType;
 };
+/** Hidden text that tells a transaction's checkboxes apart for screen readers. */
+const which = ({ transaction: { activity, scheme, folio } }: PlannedTransaction, number: number) =>
+  `${String(activity.date)} ${label(activity)} of ${scheme}${activity.amount ? `, ${activity.amount}` : ""}, folio ${folio}, transaction ${number}`;
 const list = (names: string[]) =>
   names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "";
 
@@ -113,6 +116,7 @@ function Warnings({
                 <Label className="mt-1 flex items-center gap-2 font-normal">
                   <Checkbox disabled={importing} checked={!w.leftOut} onCheckedChange={(yes) => onImportUnbalanced(w, yes)} />
                   Import this fund anyway
+                  <span className="sr-only"> for {w.scheme}, folio {w.folio}</span>
                 </Label>
               )}
             </li>
@@ -263,6 +267,7 @@ export function Preview({
                         <Label className="flex items-center gap-2 text-xs font-normal">
                           <Checkbox disabled={importing} checked={importAnyway.has(t)} onCheckedChange={(yes) => onImportAnyway(t, yes)} />
                           Import anyway
+                          <span className="sr-only"> for the {which(t, i + 1)}</span>
                         </Label>
                       )}
                       {match && (
@@ -276,6 +281,7 @@ export function Preview({
                           <Label className="flex items-center gap-2 text-xs font-normal">
                             <Checkbox disabled={importing} checked={reuse.has(t)} onCheckedChange={(yes) => onReuse(t, yes)} />
                             Use it instead of a new {label(bank!)}
+                            <span className="sr-only"> for the {which(t, i + 1)}</span>
                           </Label>
                         </>
                       )}
@@ -405,7 +411,7 @@ export function ImportResult({
                 <TableHead>Fund</TableHead>
                 <TableHead className="text-end">Units in the statement</TableHead>
                 <TableHead className="text-end">Units in Wealthfolio</TableHead>
-                <TableHead />
+                <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

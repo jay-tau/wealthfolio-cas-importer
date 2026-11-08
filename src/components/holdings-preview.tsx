@@ -31,6 +31,7 @@ import {
   replacesSnapshot,
   validCost,
 } from "../cas/holdings";
+import { nameNumber } from "../lib/name-number";
 
 export const noChoices = (): Choices => ({ flipped: new Set(), costs: new Map() });
 
@@ -55,12 +56,14 @@ function status(position: PlannedPosition, yes: boolean) {
 
 function Cost({
   position,
+  account,
   yes,
   typed,
   disabled,
   onCost,
 }: {
   position: PlannedPosition;
+  account: string;
   yes: boolean;
   typed: string | undefined;
   disabled: boolean;
@@ -79,7 +82,7 @@ function Cost({
   return (
     <div className="grid gap-1">
       <Input
-        aria-label={`Total cost of ${position.name}`}
+        aria-label={`Total cost of ${position.name} in ${account}`}
         className="w-36 text-end tabular-nums"
         inputMode="decimal"
         disabled={disabled}
@@ -101,6 +104,7 @@ function Cost({
 function AccountPreview({
   plan,
   account,
+  label,
   choices,
   confirmed,
   importing,
@@ -110,6 +114,7 @@ function AccountPreview({
 }: {
   plan: AccountPlan;
   account: string;
+  label: string;
   choices: Choices;
   confirmed: boolean;
   importing: boolean;
@@ -135,6 +140,7 @@ function AccountPreview({
             <Label className="flex items-center gap-2 font-normal">
               <Checkbox disabled={importing} checked={confirmed} onCheckedChange={(yes) => onConfirm(yes)} />
               Replace the snapshot of {plan.date}
+              <span className="sr-only"> in {label}</span>
             </Label>
           </AlertDescription>
         </Alert>
@@ -165,7 +171,8 @@ function AccountPreview({
           </TableRow>
         </TableHeader>
         <TableBody>
-          {plan.positions.map((position) => {
+          {plan.positions.map((position, i) => {
+            const inAccount = `${label}${nameNumber(plan.positions, i, "holding")}`;
             const yes = included(position, choices);
             const { badge, variant } = status(position, yes);
             const statement = position.lines.length > 0;
@@ -189,6 +196,7 @@ function AccountPreview({
                 <TableCell className="text-end">
                   <Cost
                     position={position}
+                    account={inAccount}
                     yes={yes}
                     typed={choices.costs.get(position.key)}
                     disabled={importing}
@@ -213,9 +221,17 @@ function AccountPreview({
                     {!position.misread && !position.replacedBy && (
                       <Label className="flex items-center gap-2 text-xs font-normal">
                         <Checkbox disabled={importing} checked={yes} onCheckedChange={() => onFlip(position.key)} />
-                        {replaces.length
-                          ? `Replace ${assetNames(replaces)} with ${assetName(position)}`
-                          : statement ? "Import" : "Keep"}
+                        {replaces.length ? (
+                          <>
+                            Replace {assetNames(replaces)} with {assetName(position)}
+                            <span className="sr-only"> in {inAccount}</span>
+                          </>
+                        ) : (
+                          <>
+                            {statement ? "Import" : "Keep"}
+                            <span className="sr-only"> {position.name} in {inAccount}</span>
+                          </>
+                        )}
                       </Label>
                     )}
                   </div>
@@ -261,7 +277,10 @@ export function HoldingsPreview({
   onConfirm: (accountId: string, yes: boolean) => void;
   onImport: () => void;
 }) {
-  const name = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;
+  const name = (id: string) => {
+    const i = accounts.findIndex((a) => a.id === id);
+    return i < 0 ? id : `${accounts[i].name.trim()}${nameNumber(accounts, i, "account")}`;
+  };
   return (
     <Card>
       <CardHeader>
@@ -276,7 +295,8 @@ export function HoldingsPreview({
           <AccountPreview
             key={plan.accountId}
             plan={plan}
-            account={name(plan.accountId)}
+            account={accounts.find((a) => a.id === plan.accountId)?.name ?? plan.accountId}
+            label={name(plan.accountId)}
             choices={choices.get(plan.accountId) ?? noChoices()}
             confirmed={confirmed.has(plan.accountId)}
             importing={importing}
