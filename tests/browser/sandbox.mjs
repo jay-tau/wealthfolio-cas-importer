@@ -961,6 +961,74 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await restoreChoices(storageBeforeMerger);
     await undecided(flexi);
 
+    // A gift from a folio the statement doesn't include is an external transfer in. A gift between two
+    // of its folios, in two accounts, is a transfer out and in: two lines with one status, which
+    // Wealthfolio links. Neither has cash.
+    const beforeGifts = await tab.frames()[1].evaluate(() =>
+      ({ activities: window.host.activities, failHistory: window.host.failHistory, rejectLine: window.host.rejectLine }));
+    const storageBeforeGifts = await storage();
+    await tab.frames()[1].evaluate(() => {
+      window.host.activities = [];
+      window.host.failHistory = false;
+      window.host.rejectLine = undefined;
+      window.host.gifts = true;
+    });
+    await readAgain();
+    for (const isin of ["INFZ90K01GF3", "INFZ90K01SF6"]) {
+      const section = frame.locator("section").filter({ hasText: `ISIN ${isin}` });
+      await section.getByRole("radio").first().waitFor({ state: "attached" });
+      await section.getByRole("radio").first().dispatchEvent("click");
+      await section.getByRole("button", { name: "Use this fund" }).click();
+      await section.getByText("Confirmed", { exact: true }).waitFor();
+    }
+    for (const section of await frame.locator("section").all()) {
+      if (await section.getByText(/^(Confirmed|Left out)$/).count()) continue;
+      await section.getByRole("button", { name: "Leave this fund out" }).click();
+      await section.getByText("Left out", { exact: true }).waitFor();
+    }
+    // In one account the units don't move, so neither side goes in.
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    const sameAccount = "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported.";
+    await frame.getByText(new RegExp(`folio 92345678, 2024-06-03 Gifting of units-TO Folio No: 93456789: ${sameAccount}`)).waitFor({ timeout: 30_000 });
+    assert.equal(await frame.getByText(new RegExp(`folio 93456789, 2024-06-03 Gifting of units - From Folio No.92345678: ${sameAccount}`)).count(), 1);
+    await pick(frame.getByLabel("Fictiva Mutual Fund, folio 93456789", { exact: true }), "Not set (INR)");
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    // Purchases' cash can be a transfer too: go by the Activity column.
+    const activityRow = (fund, activity) => frame.getByRole("row").filter({ hasText: fund })
+      .filter({ has: frame.locator("td:nth-child(3)", { hasText: new RegExp(`^${activity}$`) }) });
+    const received = activityRow("Fictiva Gifted Fund", "transfer in");
+    const given = activityRow("Fictiva Shared Fund", "transfer out");
+    const taken = activityRow("Fictiva Shared Fund", "transfer in");
+    await given.waitFor({ timeout: 30_000 });
+    const cells = async (row) => (await row.locator("td").allTextContents()).map((text) => text.trim());
+    assert.deepEqual((await cells(received)).slice(0, 8), ["2024-06-04", "Fictiva Gifted Fund - Direct Plan - Growth", "transfer in", "10.000", "25.0000", "", "", ""]);
+    assert.match((await cells(received))[8], /^NewImported at NAV 25\.0000, the units' value on the day of the gift/);
+    assert.deepEqual((await cells(given)).slice(0, 8), ["2024-06-03", "Fictiva Shared Fund - Direct Plan - Growth", "transfer out", "20.000", "25.0000", "", "", ""]);
+    assert.match((await cells(given))[8], /^NewA gift to folio 93456789: Wealthfolio links this transfer out with that folio's transfer in/);
+    assert.equal(await given.locator("td").last().getAttribute("rowspan"), "2");
+    assert.deepEqual(await cells(taken), ["2024-06-03", "Fictiva Shared Fund - Direct Plan - Growth", "transfer in", "20.000", "25.0000", "", "", ""]);
+    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
+    await frame.getByText(/^Imported \d+ of \d+ activities$/).waitFor();
+    const transfers = await tab.frames()[1].evaluate(() =>
+      window.host.activities.filter((a) => a.assetSymbol && a.activityType.startsWith("TRANSFER_"))
+        .map((a) => [a.accountId, a.activityType, a.assetSymbol, a.quantity, a.unitPrice, a.amount ?? null, a.isExternal ?? null]),
+    );
+    assert.deepEqual(transfers, [
+      ["account-1", "TRANSFER_IN", "INFZ90K01GF3", "10.000", "25.0000", null, true],
+      ["account-1", "TRANSFER_OUT", "INFZ90K01SF6", "20.000", "25.0000", null, null],
+      ["unset-1", "TRANSFER_IN", "INFZ90K01SF6", "20.000", "25.0000", null, null],
+    ]);
+    const giftUnits = frame.locator("table").last().locator("tbody tr");
+    assert.equal(await giftUnits.filter({ hasText: "Fictiva Gifted Fund" }).filter({ hasText: "Match" }).count(), 1);
+    assert.equal(await giftUnits.filter({ hasText: "Fictiva Shared Fund" }).filter({ hasText: "Match" }).count(), 2);
+    // Read again, both are in Wealthfolio.
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await received.getByText("Already in Wealthfolio", { exact: true }).waitFor({ timeout: 30_000 });
+    await given.getByText("Already in Wealthfolio", { exact: true }).waitFor();
+    await tab.frames()[1].evaluate((before) => Object.assign(window.host, before, { gifts: false }), beforeGifts);
+    await restoreChoices(storageBeforeGifts);
+    await undecided(flexi);
+
     // With AMFI added, a fund's ISIN finds Yahoo's result and then AMFI's, which
     // is preselected but still needs confirming. Funds confirmed before keep their choice, unsearched.
     const beforeAmfi = await tab.frames()[1].evaluate(() => ({

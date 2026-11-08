@@ -50,7 +50,7 @@ export interface PlannedTransaction {
 }
 
 const rowsOfTransaction = (t: MappedTransaction) =>
-  [t.activity, t.cash, t.bank, t.arriving?.activity].filter((row) => row !== undefined);
+  [t.activity, t.cash, t.bank, t.arriving?.activity, t.receiving?.activity].filter((row) => row !== undefined);
 
 /**
  * The rows for checkImport and the import, in the order `planImport` reads its results. Each
@@ -248,8 +248,11 @@ export function planImport(
   existing: ActivityDetails[],
   checked: ActivityImport[],
   funds: FundRefs,
+  /** Wealthfolio's timezone setting, from `engineTimeZone`: the day it counts a hand-entered activity on. */
+  timeZone = "UTC",
 ): PlannedTransaction[] {
   const available = indexActivities(existing, funds).index;
+  const byId = new Map(existing.map((a) => [a.id, a]));
   // Stored group rows can make a new conversion fail the whole import.
   const groups = new Set(existing.flatMap((a) => groupOf(a) ?? []));
   const seen = new Map<string, number>();
@@ -264,12 +267,16 @@ export function planImport(
       const keys = activity === transaction.cash ? cashIdentities(activity) : [{ key: rowIdentity(activity), type: undefined }];
       const deferCash = activity === transaction.cash && !tradeFound;
       const match = settled || deferCash ? undefined : keys.find(({ key }) => available.get(key)?.length);
+      // Keep untouched imported dates; form entries and edited gifts must also match their engine day.
+      const ids = match && available.get(match.key)!;
+      const at = ids?.findIndex((id) => !activity.activityType.startsWith("TRANSFER_") || !activity.symbol?.trim() ||
+        giftDay(byId.get(id)!, timeZone) === day(activity.date)) ?? -1;
       const unchecked = newAmfiFund(activity, result);
       const row: PlannedRow = {
         activity,
         errors: unchecked ? [] : messages(result?.errors),
         warnings: messages(result?.warnings, "_duplicate"),
-        existingId: match && available.get(match.key)!.shift(),
+        existingId: at < 0 ? undefined : ids!.splice(at, 1)[0],
         existingType: match?.type,
         repeatsLine: settled ? undefined : seen.get(keys[0].key),
         flagged: !!(result?.duplicateOfId || result?.duplicateOfLineNumber),
@@ -283,8 +290,9 @@ export function planImport(
     tradeFound = !!rows[0].existingId;
     if (transaction.cash) rows.push(plan(transaction.cash));
     if (transaction.arriving) rows.push(plan(transaction.arriving.activity));
+    if (transaction.receiving) rows.push(plan(transaction.receiving.activity));
     // Wealthfolio has the transaction when it has the trade and the fund account's cash, whatever
-    // the bank account shows, or both rows of a conversion.
+    // the bank account shows, or both rows of a conversion or of a gift between two folios.
     const settled = rows.every((r) => r.existingId);
     if (transaction.bank) rows.push(plan(transaction.bank, settled));
     return { transaction, rows, status: "new" };
@@ -346,6 +354,17 @@ export function planImport(
   }
   for (const t of planned) {
     if (t.transaction.cash && !t.rows[0].existingId) takeAvailable(t.rows[1]);
+    // Sent alone, one side of a gift between two folios would be a transfer with no other side.
+    if (t.transaction.receiving && t.rows.some((r) => r.existingId) && !t.rows.every((r) => r.existingId)) t.problem = PART_OF_GIFT;
+  }
+  const likely = giftEntries(existing, funds, timeZone);
+  for (const t of planned) {
+    const { receiving } = t.transaction;
+    // Both sides of a gift between two folios count as imported once Wealthfolio has linked them.
+    if (receiving && t.rows.every((r) => r.existingId)) {
+      const [out, into] = t.rows.map((r) => byId.get(r.existingId!)!);
+      if (!groupOf(out) || groupOf(out) !== groupOf(into)) t.problem = UNLINKED_GIFT;
+    }
   }
   const completeEarlier = (t: PlannedTransaction) => t.earlier?.every(
     (r) => r.existingId && (!r.activity.symbol?.trim() || r.activity.unitPrice !== undefined),
@@ -359,6 +378,22 @@ export function planImport(
     if (earlier.some((r) => r.existingId) && !completeEarlier(t)) {
       const uncertain = earlier.some((r) => r.activity.symbol?.trim() && r.activity.unitPrice === undefined);
       t.problem = uncertain ? UNCERTAIN_EARLIER : PART_OF_EARLIER;
+      // An incomplete legacy merger must not hide a possible earlier gift entry.
+      for (const r of earlier) {
+        if (!r.existingId || !r.activity.symbol?.trim()) continue;
+        const a = byId.get(r.existingId)!;
+        available.get(activityIdentity(a, funds)!)!.push(a.id);
+      }
+    }
+  }
+  for (const t of planned) {
+    // A gift entered by hand has the same units on the same day, as a transfer or a trade.
+    for (const r of t.rows) {
+      if (!r.activity.activityType.startsWith("TRANSFER_") || !r.activity.symbol?.trim()) continue;
+      // A UTC match reserved on another day must not hide this day's hand-entered gift.
+      const found = likely(r.activity).filter((a) =>
+        available.get(activityIdentity(a, funds)!)?.includes(a.id) || day(a.date) !== day(r.activity.date));
+      if (found.length) t.problem ??= handEntered(found);
     }
   }
   for (const t of planned) {
@@ -381,6 +416,39 @@ const PART_OF_EARLIER =
 
 const UNCERTAIN_EARLIER =
   "Wealthfolio has rows that may belong to an earlier import of this merger, but this statement lacks the amount or NAV needed to check the earlier import, so the merger isn't imported again. Check the sale, purchase and their cash in Wealthfolio. To replace them with a conversion, delete those rows and read the statement again.";
+const PART_OF_GIFT =
+  "Wealthfolio has one side of this gift from an earlier import but not the other, so neither is imported: Wealthfolio links the two only when they're imported together. To import the gift, delete that side in Wealthfolio and read the statement again.";
+const UNLINKED_GIFT =
+  "Wealthfolio has both sides of this gift, but they aren't linked to each other, so the receiving account doesn't have the giver's costs and purchase dates. Link the two transfers in Wealthfolio, or delete both and read the statement again.";
+const handEntered = (found: ActivityDetails[]) => {
+  const names = found.map((a) => {
+    const type = { BUY: "purchase", SELL: "sale", TRANSFER_IN: "transfer in", TRANSFER_OUT: "transfer out" }[a.activityType as string];
+    const price = a.unitPrice ? ` at ${amount(a.unitPrice)}` : "";
+    return `a ${type}${price}${a.comment?.trim() ? ` ("${a.comment.trim()}")` : ""}`;
+  });
+  return `Wealthfolio has ${names.join(" and ")} of these units on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`;
+};
+
+/** Form edits preserve CSV origin but can change its date; untouched imports keep their UTC day. */
+const giftDay = (a: ActivityDetails, timeZone: string) =>
+  a.sourceSystem === "CSV" && !a.isUserModified ? day(a.date) : localDay(a.date, timeZone);
+
+/**
+ * Activities that may be a gift's row entered another way: in its account and fund, on its day,
+ * with its units, as a transfer or a trade in the same direction. CSV imports use their UTC day;
+ * edited ones may also use their engine day, since the edit needn't have changed the date. Other
+ * entries use their day in `timeZone`, from `engineTimeZone`. Exact import keys stay UTC.
+ */
+export function giftEntries(existing: ActivityDetails[], funds: FundRefs, timeZone: string) {
+  return (row: ActivityImport) => {
+    const types = row.activityType === "TRANSFER_IN" ? ["TRANSFER_IN", "BUY"] : ["TRANSFER_OUT", "SELL"];
+    const fund = fundRef(row.symbol!, row.exchangeMic);
+    const on = day(row.date);
+    return existing.filter((a) =>
+      a.accountId === row.accountId && types.includes(a.activityType) && !!a.assetId && funds.get(a.assetId) === fund &&
+      (giftDay(a, timeZone) === on || (a.sourceSystem === "CSV" && day(a.date) === on)) && amount(a.quantity) === amount(row.quantity));
+  };
+}
 
 /**
  * New transactions, plus the duplicates the user chose to import anyway. All rows of a transaction

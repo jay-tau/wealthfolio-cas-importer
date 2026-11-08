@@ -166,7 +166,9 @@ export function Preview({
           switches, a purchase comes with a deposit and a sale or payout with a withdrawal, as if the money came from
           or went outside Wealthfolio. When you use a bank row Wealthfolio already has, the add-on imports the trade
           first, then adds and links its cash. A fund house's merger is a fund conversion: the new fund's units keep
-          the old fund's cost and purchase dates, nothing is sold and no cash moves.
+          the old fund's cost and purchase dates, nothing is sold and no cash moves. A gift is a transfer of its units
+          at that day's NAV, with no cash; when both sides are in two of your accounts, Wealthfolio links them and the
+          receiving account keeps the giver's costs and purchase dates.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -207,7 +209,8 @@ export function Preview({
           </TableHeader>
           <TableBody>
             {plan.flatMap((t, i) => {
-              const { activity, cash, bank, arriving } = t.transaction;
+              const { activity, cash, bank, arriving, receiving } = t.transaction;
+              const second = arriving ?? receiving;
               const notes = [
                 ...t.rows.flatMap(reasons),
                 ...caveatsOf(t).map((w) => w.message),
@@ -241,7 +244,7 @@ export function Preview({
                       </span>
                     )}
                   </TableCell>
-                  <TableCell className="px-1.5" rowSpan={arriving ? 2 : undefined}>
+                  <TableCell className="px-1.5" rowSpan={second ? 2 : undefined}>
                     <div className="grid gap-1">
                       {/* The badge hides its overflow, so without a minimum width Chromium sizes the column without it.
                           Narrow padding keeps "Already in Wealthfolio" in view with the Mono font and Extra large text
@@ -277,10 +280,10 @@ export function Preview({
                     </div>
                   </TableCell>
                 </TableRow>,
-                ...(arriving
+                ...(second
                   ? [
-                      <TableRow key={`${i}-arriving`}>
-                        {cells(arriving.scheme, arriving.activity)}
+                      <TableRow key={`${i}-second`}>
+                        {cells(second.scheme, second.activity)}
                         <TableCell className="px-1.5" />
                       </TableRow>,
                     ]

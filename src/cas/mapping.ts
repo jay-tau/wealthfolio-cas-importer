@@ -33,6 +33,11 @@ export interface MappingInput {
   target(folio: CasFolio, scheme: CasScheme): SchemeTarget | undefined;
   /** Whether Wealthfolio has this row from an earlier import. Asked about reversed purchases and redemptions. */
   alreadyImported(activity: ActivityImport): boolean;
+  /**
+   * Whether Wealthfolio has activities that may be this gift's row, entered by hand or imported:
+   * `giftEntries` in `plan.ts`. Asked about gifts left out because both sides go to one account.
+   */
+  entered?(activity: ActivityImport): boolean;
 }
 
 export interface MappedTransaction {
@@ -55,6 +60,12 @@ export interface MappedTransaction {
   arriving?: { scheme: string; rows: CasTransaction[]; activity: ActivityImport };
   /** For a merger: the earlier sale, withdrawal, purchase and deposit, without price or amount when unknown. */
   earlier?: ActivityImport[];
+  /**
+   * A gift between two folios of this statement, in different accounts: the receiving folio's
+   * `TRANSFER_IN`. `activity` is then the giving folio's `TRANSFER_OUT`, and Wealthfolio's import
+   * links the two, as they have the same day, fund, units and price.
+   */
+  receiving?: { folio: string; scheme: string; rows: CasTransaction[]; activity: ActivityImport };
 }
 
 export interface MappingWarning {
@@ -81,7 +92,7 @@ const ZERO = dec("0");
 /** casparser's tolerance when it checks the rows against the printed unit balances. */
 const UNIT_TOLERANCE = dec("0.005");
 
-type Kind = "buy" | "sell" | "payout" | "reinvest";
+type Kind = "buy" | "sell" | "payout" | "reinvest" | "gift";
 
 const KINDS: Partial<Record<TransactionType, Kind>> = {
   PURCHASE: "buy",
@@ -93,13 +104,18 @@ const KINDS: Partial<Record<TransactionType, Kind>> = {
   SWITCH_OUT_MERGER: "sell",
   DIVIDEND_PAYOUT: "payout",
   DIVIDEND_REINVEST: "reinvest",
+  GIFT_IN: "gift",
+  GIFT_OUT: "gift",
 };
 
-/** Charge rows, and the transactions each kind can belong to. */
+/**
+ * Charge rows, and the transactions each kind can belong to. A charge on a gift's day may be the
+ * gift's, which a transfer can't carry, so it keeps the gift out.
+ */
 const CHARGES: Partial<Record<TransactionType, { name: string; kinds: Kind[] }>> = {
-  STAMP_DUTY_TAX: { name: "stamp duty", kinds: ["buy", "reinvest"] },
-  STT_TAX: { name: "STT", kinds: ["sell"] },
-  TDS_TAX: { name: "TDS", kinds: ["sell", "payout", "reinvest"] },
+  STAMP_DUTY_TAX: { name: "stamp duty", kinds: ["buy", "reinvest", "gift"] },
+  STT_TAX: { name: "STT", kinds: ["sell", "gift"] },
+  TDS_TAX: { name: "TDS", kinds: ["sell", "payout", "reinvest", "gift"] },
 };
 
 /** Rows whose money comes from or goes to the investor's bank account. */
@@ -107,8 +123,6 @@ const BANKED = new Set<TransactionType>(["PURCHASE", "PURCHASE_SIP", "REDEMPTION
 
 /** Rows #1 leaves for later. */
 const UNSUPPORTED: Partial<Record<TransactionType, string>> = {
-  GIFT_IN: "Gifts aren't imported yet.",
-  GIFT_OUT: "Gifts aren't imported yet.",
   SEGREGATION: "Segregated portfolios aren't imported yet.",
   UNKNOWN: "casparser couldn't tell what this row is, so it isn't imported.",
   MISC: "casparser couldn't tell what this row is, so it isn't imported.",
@@ -143,6 +157,8 @@ interface Entry {
   reversedBy?: Entry;
   /** The other leg of a merger. */
   partner?: Entry;
+  /** The other side of a gift between two folios of this statement. */
+  counterpart?: Entry;
   rows?: {
     activity: ActivityImport;
     cash?: ActivityImport;
@@ -159,10 +175,15 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
     folio.schemes.map((scheme) => readScheme(folio, scheme, data.statement_period.from, input)),
   );
   for (const folio of data.folios) matchMergers(schemes.filter((s) => s.folio === folio));
+  matchGifts(schemes);
   for (const entry of schemes.flatMap((s) => s.entries)) {
     const target = entry.scheme.target;
     if (!entry.kind || entry.problem || entry.scheme.problem || !target) continue;
-    const rows = entry.partner ? conversionRows(entry, target) : buildRows(entry, target);
+    const rows = entry.partner
+      ? conversionRows(entry, target)
+      : entry.kind === "gift"
+        ? giftRows(entry, target)
+        : buildRows(entry, target);
     if (typeof rows === "string") entry.problem = rows;
     else entry.rows = rows;
   }
@@ -174,6 +195,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
       }
     }
   }
+  pairGifts(schemes, fails, input);
 
   const mapping: Mapping = { transactions: [], warnings: [] };
   let lineNumber = 0;
@@ -218,6 +240,22 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
           arriving: { scheme: into.scheme.scheme.scheme, rows: [into.row, ...into.charges], activity: number(arriving.activity) },
           earlier: leaving.earlier && arriving.earlier && [...leaving.earlier, ...arriving.earlier],
         });
+      } else if (entry.rows && entry.counterpart) {
+        // The giving folio's side carries both rows of the transfer.
+        if (entry.row.type === "GIFT_IN") continue;
+        const into = entry.counterpart;
+        mapping.transactions.push({
+          ...names,
+          rows,
+          activity: number(entry.rows.activity),
+          receiving: {
+            folio: into.scheme.folio.folio,
+            scheme: into.scheme.scheme.scheme,
+            rows: [into.row, ...into.charges],
+            activity: number(into.rows!.activity),
+          },
+        });
+        if (entry.rows.note) warn(rows, entry.rows.note, false);
       } else if (entry.rows) {
         const { activity, cash, bank, note } = entry.rows;
         mapping.transactions.push({
@@ -385,6 +423,136 @@ function matchMergers(schemes: Scheme[]) {
     } else {
       leg.problem ??= `Can't match this merger with its other half: the folio has ${outs.length} merger sales and ${ins.length} merger purchases on this day.`;
     }
+  }
+}
+
+/** The fund as the statement names it, by ISIN or else by registrar code. */
+const statementFund = ({ scheme }: Scheme) => scheme.isin ?? `${scheme.rta}|${scheme.rta_code}`;
+const confirmedFund = ({ target }: Scheme) => target && fundRef(target.asset.symbol, target.asset.exchangeMic);
+/** The units × NAV Wealthfolio's import compares when it links a transfer in with a transfer out. */
+const giftValue = ({ row }: Entry) => (row.units !== null && row.nav !== null ? mul(abs(dec(row.units)), dec(row.nav)) : undefined);
+/** The folio number casparser reads from a gift's description: the folio's first run of digits. */
+const folioNumber = (folio: string) => folio.match(/\d+/)?.[0];
+
+/**
+ * #1: a gift whose other side is in this statement too. Wealthfolio's import links a transfer out
+ * and a transfer in of one day, symbol and value in two accounts, whatever else they say, so a gift
+ * that another gift the other way could be taken for is left out.
+ */
+function matchGifts(schemes: Scheme[]) {
+  const gifts = schemes.filter((s) => s.target).flatMap((s) => s.entries.filter((e) => e.kind === "gift"));
+  const opposite = (a: Entry, b: Entry) => a.row.type !== b.row.type && a.row.date === b.row.date;
+  // The import compares symbols without exchanges: two accounts, one day, symbol and value.
+  const linkable = (a: Entry, b: Entry) => {
+    const [x, y] = [giftValue(a), giftValue(b)];
+    const symbol = a.scheme.target?.asset.symbol.trim().toUpperCase();
+    return opposite(a, b) && !!symbol && symbol === b.scheme.target?.asset.symbol.trim().toUpperCase() &&
+      a.scheme.target!.accountId !== b.scheme.target!.accountId && !!x && !!y && cmp(x, y) === 0;
+  };
+  // At least one side names the other's folio, and neither names another.
+  const names = (a: Entry, b: Entry) => {
+    const [x, y] = [folioNumber(a.scheme.folio.folio), folioNumber(b.scheme.folio.folio)];
+    const { gift_folio: toB } = a.row;
+    const { gift_folio: toA } = b.row;
+    return (toB === y || toA === x) && (!toB || toB === y) && (!toA || toA === x);
+  };
+  const named = (a: Entry, b: Entry) =>
+    a.scheme.folio !== b.scheme.folio && opposite(a, b) && statementFund(a.scheme) === statementFund(b.scheme) && names(a, b);
+  const sides = (a: Entry, b: Entry) =>
+    named(a, b) &&
+    a.row.units !== null && b.row.units !== null && cmp(dec(a.row.units), neg(dec(b.row.units))) === 0 &&
+    a.row.nav !== null && b.row.nav !== null && cmp(dec(a.row.nav), dec(b.row.nav)) === 0;
+  for (const gift of gifts) {
+    const candidates = gifts.filter((other) => sides(gift, other));
+    const [other] = candidates;
+    if (candidates.length === 1 && gifts.filter((g) => sides(other, g)).length === 1) gift.counterpart = other;
+  }
+  for (const gift of gifts) {
+    // An unpaired other side, named but with other units or NAV, or none: one of the two rows is
+    // misread. Two gifts between the same folios on one day pair by their own units first.
+    const misread = gifts.filter((g) =>
+      !gift.counterpart && !g.counterpart && named(gift, g) && !sides(gift, g));
+    if (misread.length) {
+      gift.problem ??= `This gift and its other side, in folio ${misread[0].scheme.folio.folio}, don't have opposite units and the same NAV, so neither side is imported. Check both rows against the PDF.`;
+    }
+    // A gift left out here takes its other side with it, in `pairGifts`.
+    const rivals = gifts.filter((g) => g !== gift.counterpart && linkable(gift, g));
+    if (rivals.length) {
+      gift.problem ??=
+        "Wealthfolio's import could link this gift with another gift the other way on this day, with the same symbol and value, that may not be its other side, so it isn't imported. Enter these gifts in Wealthfolio by hand.";
+    }
+  }
+}
+
+/**
+ * A gift as a transfer of its units at the day's NAV, with no cash. On its own it's external: units
+ * received cost their value that day, and units given leave at their cost in Wealthfolio.
+ */
+function giftRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"]> | string {
+  const { row } = entry;
+  const into = row.type === "GIFT_IN";
+  if (entry.charges.length) {
+    const names = [...new Set(entry.charges.map((charge) => CHARGES[charge.type]!.name))].join(" and ");
+    return `This gift has ${names} on its day, which a transfer can't carry without a cash movement the statement doesn't show, so it isn't imported.`;
+  }
+  if (row.units === null || dec(row.units).n * (into ? 1n : -1n) <= 0n) return "This row has no units, or units with the wrong sign.";
+  if (row.nav === null || dec(row.nav).n <= 0n) return "This gift has no NAV, so its value on the day isn't known and it isn't imported.";
+  const quantity = row.units.replace(/^-/, "");
+  const units = dec(quantity);
+  const nav = dec(row.nav);
+  const tolerance = add(mul(mul(nav, HALF), step(units.scale)), PAISA);
+  const printed = row.amount === null ? undefined : abs(dec(row.amount));
+  const differs = printed && cmp(abs(sub(printed, mul(units, nav))), tolerance) > 0;
+  return {
+    activity: {
+      ...baseRow(entry, target),
+      ...assetOf(entry, target),
+      activityType: into ? "TRANSFER_IN" : "TRANSFER_OUT",
+      quantity,
+      unitPrice: row.nav,
+      isExternal: true,
+    },
+    note: differs
+      ? `The statement's ₹${format(printed)} differs from ${quantity} units × NAV ${row.nav} by more than the units' rounding. It's imported at NAV ${row.nav}.`
+      : undefined,
+  };
+}
+
+/**
+ * Both sides of a gift go together, in two accounts, as a transfer Wealthfolio links: the
+ * receiving account keeps the giving account's costs and purchase dates. When the user leaves one
+ * side's folio or fund out, the other is a gift on its own.
+ */
+function pairGifts(schemes: Scheme[], fails: (entry: Entry) => boolean, input: MappingInput) {
+  const gifts = schemes.flatMap((s) => s.entries.filter((e) => e.kind === "gift"));
+  for (const out of gifts.filter((g) => g.counterpart && g.row.type === "GIFT_OUT")) {
+    const into = out.counterpart!;
+    const failed = [out, into].filter(fails);
+    const problem = failed.length
+      ? "The other side of this gift can't be imported, so neither side is."
+      : confirmedFund(out.scheme) !== confirmedFund(into.scheme)
+        ? "The two sides of this gift are confirmed as different Wealthfolio assets, so neither side is imported. Confirm the same fund for both under Funds."
+        : out.scheme.target!.accountId === into.scheme.target!.accountId
+          ? [out, into].some((side) => side.rows && input.entered?.(side.rows.activity))
+            ? "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported. Wealthfolio has a transfer or trade of these units on this day, which changes their cost and purchase dates: delete it, with its other side or cash."
+            : "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported."
+          : undefined;
+    for (const side of [out, into]) if (problem && !failed.includes(side)) side.problem = problem;
+  }
+  for (const gift of gifts) {
+    const { rows } = gift;
+    if (!rows || gift.problem) continue;
+    const notes = [rows.note];
+    if (gift.counterpart) {
+      delete rows.activity.isExternal;
+      if (gift.row.type === "GIFT_OUT") {
+        notes.unshift(`A gift to folio ${gift.counterpart.scheme.folio.folio}: Wealthfolio links this transfer out with that folio's transfer in, so the units keep the costs and purchase dates Wealthfolio has for them here.`);
+        notes.push(gift.counterpart.rows?.note);
+      }
+    } else if (gift.row.type === "GIFT_IN") {
+      notes.unshift(`Imported at NAV ${gift.row.nav}, the units' value on the day of the gift: Wealthfolio counts their cost and holding period from that day. For tax, a gift keeps the giver's cost and purchase dates, which the statement doesn't show.`);
+    }
+    rows.note = notes.filter(Boolean).join(" ") || undefined;
   }
 }
 

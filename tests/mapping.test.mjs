@@ -63,8 +63,9 @@ const map = (data, overrides) => {
 };
 
 /** What Wealthfolio's import would keep, and that each pair nets to zero. */
-function checkRows({ activity, cash, bank, arriving }) {
+function checkRows({ activity, cash, bank, arriving, receiving }) {
   if (arriving) return checkConversion(activity, arriving.activity, cash, bank);
+  if (activity.activityType.startsWith("TRANSFER_")) return checkGift(activity, receiving?.activity, cash, bank);
   for (const row of [activity, cash, bank].filter(Boolean)) {
     for (const key of ["activityType", "currency", "date", "symbol", "isDraft", "isValid"]) assert.ok(key in row, key);
     assert.equal(row.currency, "INR");
@@ -129,6 +130,32 @@ function checkConversion(leaving, arriving, cash, bank) {
   assert.match(leaving.sourceGroupId, /^cas-importer-merger:[0-9a-f]{64}$/);
   for (const key of ["sourceGroupId", "accountId", "date"]) assert.equal(arriving[key], leaving[key], key);
   assert.notEqual(arriving.symbol, leaving.symbol);
+}
+
+/**
+ * A gift's transfer: positive units at a positive NAV, no amount or cash. On its own it's external;
+ * with its other side, Wealthfolio links the two by account, day, symbol and units × NAV.
+ */
+function checkGift(activity, receiving, cash, bank) {
+  assert.equal(cash, undefined);
+  assert.equal(bank, undefined);
+  for (const row of [activity, receiving].filter(Boolean)) {
+    assert.ok(["TRANSFER_IN", "TRANSFER_OUT"].includes(row.activityType));
+    assert.equal(row.currency, "INR");
+    assert.match(row.date, /^\d{4}-\d{2}-\d{2}$/);
+    assert.equal(row.isDraft, false);
+    assert.equal(row.isValid, true);
+    assert.ok(row.symbol && row.quoteCcy && row.instrumentType);
+    assert.ok(cmp(dec(row.quantity), dec("0")) > 0, "positive units");
+    assert.ok(cmp(dec(row.unitPrice), dec("0")) > 0, "positive NAV");
+    for (const key of ["amount", "fee", "tax", "comment", "assetId", "sourceGroupId", "subtype"]) assert.equal(row[key], undefined, key);
+  }
+  if (!receiving) return assert.equal(activity.isExternal, true);
+  assert.equal(activity.activityType, "TRANSFER_OUT");
+  assert.equal(receiving.activityType, "TRANSFER_IN");
+  assert.notEqual(receiving.accountId, activity.accountId);
+  for (const key of ["date", "symbol", "exchangeMic", "quantity", "unitPrice"]) assert.equal(receiving[key], activity[key], key);
+  for (const row of [activity, receiving]) assert.equal(row.isExternal, undefined, "Wealthfolio marks a linked pair internal");
 }
 
 const summary = ({ transactions, warnings }) => ({
@@ -677,6 +704,302 @@ describe("mergers", () => {
   });
 });
 
+describe("gifts", () => {
+  // Descriptions as in casparser 1.4.1's tests; the folios are made up.
+  const GIVER = "11111111 / 22";
+  const RECEIVER = "33333333";
+  const giftOut = (extra = {}) =>
+    tx("2024-06-03", "GIFT_OUT", "-50000.00", "-1000.000", "50.0000", {
+      description: "Gifting of units-TO Folio No: 33333333",
+      gift_folio: "33333333",
+      ...extra,
+    });
+  const giftIn = (extra = {}) =>
+    tx("2024-06-03", "GIFT_IN", "50000.00", "1000.000", "50.0000", {
+      description: "Gifting of units - From Folio No.11111111",
+      gift_folio: "11111111",
+      ...extra,
+    });
+  const folio = (number, ...schemes) => ({ folio: number, amc: "Made-up Mutual Fund", name: null, PAN: null, KYC: null, PANKYC: null, schemes });
+  const twoFolios = (out, into, outExtra = {}, inExtra = {}) => ({
+    ...statement(),
+    folios: [folio(GIVER, scheme("A", out, outExtra)), folio(RECEIVER, scheme("A", into, inExtra))],
+  });
+  const purchase = tx("2024-01-10", "PURCHASE", "40000.00", "1000.000", "40.0000");
+  const messages = (mapping) => mapping.warnings.map((w) => [w.folio, w.leftOut, w.message]);
+  const RECEIVED =
+    "Imported at NAV 50.0000, the units' value on the day of the gift: Wealthfolio counts their cost and holding period from that day. For tax, a gift keeps the giver's cost and purchase dates, which the statement doesn't show.";
+  const LINKED =
+    "A gift to folio 33333333: Wealthfolio links this transfer out with that folio's transfer in, so the units keep the costs and purchase dates Wealthfolio has for them here.";
+  const OTHER_SIDE = "The other side of this gift can't be imported, so neither side is.";
+  const RIVAL =
+    "Wealthfolio's import could link this gift with another gift the other way on this day, with the same symbol and value, that may not be its other side, so it isn't imported. Enter these gifts in Wealthfolio by hand.";
+
+  test("a gift received on its own is an external transfer in at the day's NAV, with no cash", () => {
+    const mapping = map(statement(scheme("A", [giftIn()])));
+    assert.deepEqual(
+      mapping.transactions.map(({ activity: a }) => [a.activityType, a.accountId, a.date, a.symbol, a.quantity, a.unitPrice, a.isExternal]),
+      [["TRANSFER_IN", "account-F1", "2024-06-03", "INF-A", "1000.000", "50.0000", true]],
+    );
+    assert.deepEqual(messages(mapping), [["F1", false, RECEIVED]]);
+  });
+
+  test("a gift given on its own is an external transfer out of positive units", () => {
+    const mapping = map(statement(scheme("A", [purchase, giftOut()])));
+    assert.deepEqual(
+      mapping.transactions.map(({ activity: a }) => [a.activityType, a.quantity, a.unitPrice ?? "", a.isExternal ?? ""]),
+      [["BUY", "1000.000", "40.0000", ""], ["TRANSFER_OUT", "1000.000", "50.0000", true]],
+    );
+    assert.deepEqual(mapping.warnings, []);
+  });
+
+  test("a printed amount further from units × NAV than the units' rounding is a caveat", () => {
+    for (const amount of ["50001", "0"]) {
+      const off = map(statement(scheme("A", [giftIn({ amount })])));
+      assert.deepEqual(messages(off), [
+        ["F1", false, `${RECEIVED} The statement's ₹${amount} differs from 1000.000 units × NAV 50.0000 by more than the units' rounding. It's imported at NAV 50.0000.`],
+      ]);
+    }
+    for (const amount of ["50000.03", null]) {
+      assert.deepEqual(messages(map(statement(scheme("A", [giftIn({ amount })])))), [["F1", false, RECEIVED]], String(amount));
+    }
+  });
+
+  test("gifts require signed nonzero units and a positive NAV", () => {
+    for (const make of [giftIn, giftOut]) {
+      for (const change of [
+        ...[null, "0", make === giftIn ? "-1000" : "1000"].map((units) => ({ units })),
+        ...[null, "0", "-50"].map((nav) => ({ nav })),
+      ]) {
+        const mapping = map(statement(scheme("A", [make(change)])));
+        assert.deepEqual(mapping.transactions, [], JSON.stringify(change));
+        assert.equal(mapping.warnings.length, 1);
+        assert.equal(mapping.warnings[0].leftOut, true);
+        assert.match(mapping.warnings[0].message, change.units !== undefined ? /no units|wrong sign/ : /no NAV/);
+      }
+    }
+  });
+
+  test("a gift without a NAV or with a charge on its day is left out", () => {
+    const noNav = map(statement(scheme("A", [giftIn({ nav: null })])));
+    assert.deepEqual(noNav.transactions, []);
+    assert.deepEqual(messages(noNav), [["F1", true, "This gift has no NAV, so its value on the day isn't known and it isn't imported."]]);
+    const stamped = map(statement(scheme("A", [giftIn(), charge("2024-06-03", "STAMP_DUTY_TAX", "0.15")])));
+    assert.deepEqual(stamped.transactions, []);
+    assert.deepEqual(stamped.warnings.map((w) => w.rows.map((row) => row.type)), [["GIFT_IN", "STAMP_DUTY_TAX"]]);
+    // A charge that could be the gift's or a purchase's keeps both out, as for two purchases.
+    const sameDay = map(statement(scheme("A", [{ ...purchase, date: "2024-06-03" }, giftIn(), charge("2024-06-03", "STAMP_DUTY_TAX", "2.00")])));
+    assert.deepEqual(sameDay.transactions, []);
+    assert.deepEqual(
+      sameDay.warnings.map((w) => w.message),
+      Array(2).fill("Can't tell which of the 2 transactions on this day the ₹2.00 stamp duty belongs to."),
+    );
+  });
+
+  test("both sides in different accounts are one transfer, which Wealthfolio links", () => {
+    for (const [out, into] of [[giftOut(), giftIn()], [giftOut(), giftIn({ gift_folio: null })], [giftOut({ gift_folio: null }), giftIn()]]) {
+      const mapping = map(twoFolios([purchase, out], [into]));
+      const gift = mapping.transactions.find((t) => t.receiving);
+      assert.ok(gift);
+      assert.equal(mapping.transactions.length, 2);
+      assert.deepEqual([gift.folio, gift.rows, gift.receiving.folio, gift.receiving.scheme, gift.receiving.rows], [GIVER, [out], RECEIVER, "A", [into]]);
+      assert.deepEqual(
+        [gift.activity, gift.receiving.activity].map((a) => [a.activityType, a.accountId, a.quantity, a.unitPrice]),
+        [
+          ["TRANSFER_OUT", `account-${GIVER}`, "1000.000", "50.0000"],
+          ["TRANSFER_IN", `account-${RECEIVER}`, "1000.000", "50.0000"],
+        ],
+      );
+      assert.deepEqual(messages(mapping), [[GIVER, false, LINKED]]);
+    }
+  });
+
+  test("gifts that only look alike aren't paired, and stay out when Wealthfolio could link them", () => {
+    // Neither names the other's folio, or one names a third folio.
+    for (const [out, into] of [[giftOut({ gift_folio: null }), giftIn({ gift_folio: null })], [giftOut({ gift_folio: "99999999" }), giftIn()]]) {
+      const mapping = map(twoFolios([purchase, out], [into]));
+      assert.deepEqual(mapping.transactions.map((t) => t.activity.activityType), ["BUY"]);
+      assert.deepEqual(messages(mapping), [[GIVER, true, RIVAL], [RECEIVER, true, RIVAL]]);
+    }
+    // In one account the import links nothing, so each is a gift on its own.
+    const oneAccount = map(twoFolios([purchase, giftOut({ gift_folio: null })], [giftIn({ gift_folio: null })]), {
+      target: (f, s) => ({ ...input().target(f, s), accountId: "account-1" }),
+    });
+    assert.deepEqual(oneAccount.transactions.map((t) => [t.activity.activityType, t.activity.isExternal ?? ""]), [
+      ["BUY", ""],
+      ["TRANSFER_OUT", true],
+      ["TRANSFER_IN", true],
+    ]);
+    // Another day or fund isn't the other side, and couldn't be linked with it.
+    for (const [out, into] of [[giftOut(), giftIn({ date: "2024-06-04" })], [giftOut(), giftIn({ units: "999.000" })]]) {
+      const data = twoFolios([purchase, out], [into]);
+      if (into.units === "999.000") data.folios[1].schemes[0] = scheme("B", [into]);
+      const mapping = map(data);
+      assert.deepEqual(mapping.transactions.map((t) => [t.activity.activityType, t.activity.isExternal ?? ""]), [
+        ["BUY", ""],
+        ["TRANSFER_OUT", true],
+        ["TRANSFER_IN", true],
+      ]);
+    }
+  });
+
+  test("two gifts of different sizes between the same folios on one day pair by their units", () => {
+    const small = (gift) => gift({ amount: gift === giftOut ? "-10000.00" : "10000.00", units: gift === giftOut ? "-200.000" : "200.000" });
+    for (const into of [[giftIn(), small(giftIn)], [small(giftIn), giftIn()]]) {
+      const mapping = map(twoFolios([purchase, giftOut(), small(giftOut)], into));
+      assert.deepEqual(mapping.warnings.filter((w) => w.leftOut), []);
+      assert.deepEqual(
+        mapping.transactions.filter((t) => t.receiving).map((t) => [t.activity.quantity, t.receiving.activity.quantity, t.receiving.rows[0].units]),
+        [["1000.000", "1000.000", "1000.000"], ["200.000", "200.000", "200.000"]],
+      );
+    }
+  });
+
+  test("an excluded exact counterpart neither hides a selected disagreement nor makes a pair ambiguous", () => {
+    for (const units of ["200.000", "1000.000"]) {
+      const data = twoFolios([purchase, giftOut({ gift_folio: null })], [giftIn()]);
+      data.folios.push(folio("55555555", scheme("A", [giftIn({ units, amount: null })])));
+      for (const folios of [data.folios, [...data.folios].reverse()]) {
+        const mapping = map({ ...data, folios }, {
+          target: (f, s) => f.folio === RECEIVER ? undefined : input().target(f, s),
+        });
+        const gifts = mapping.transactions.filter((t) => t.activity.activityType.startsWith("TRANSFER_"));
+        assert.equal(gifts.length, units === "1000.000" ? 1 : 0);
+        if (gifts.length) assert.equal(gifts[0].receiving.folio, "55555555");
+        else assert.equal(mapping.warnings.filter((w) => /don't have opposite units/.test(w.message)).length, 2);
+      }
+    }
+  });
+
+  test("a named other side with other units or NAV, or none, keeps both out", () => {
+    for (const into of [
+      ...["999.000", null, "0", "-1000.000"].map((units) => giftIn({ units })),
+      ...["50.0100", null, "0", "-50"].map((nav) => giftIn({ nav })),
+    ]) {
+      const mapping = map(twoFolios([purchase, giftOut()], [into]));
+      assert.deepEqual(mapping.transactions.map((t) => t.activity.activityType), ["BUY"]);
+      const misread = (other) => `This gift and its other side, in folio ${other}, don't have opposite units and the same NAV, so neither side is imported. Check both rows against the PDF.`;
+      assert.deepEqual(messages(mapping), [[GIVER, true, misread(RECEIVER)], [RECEIVER, true, misread(GIVER)]]);
+    }
+    // With the other side's folio or fund left out, the one chosen is a gift on its own.
+    const alone = map(twoFolios([purchase, giftOut()], [giftIn({ units: "999.000" })]), {
+      target: (f, s) => (f.folio === RECEIVER ? undefined : input().target(f, s)),
+    });
+    assert.deepEqual(alone.transactions.map((t) => [t.activity.activityType, t.activity.isExternal ?? ""]), [["BUY", ""], ["TRANSFER_OUT", true]]);
+  });
+
+  test("two pairs with the same values are left out, as the import could link them crosswise", () => {
+    const data = {
+      ...statement(),
+      folios: [
+        folio(GIVER, scheme("A", [purchase, giftOut()])),
+        folio(RECEIVER, scheme("A", [giftIn()])),
+        folio("55555555", scheme("A", [purchase, giftOut({ gift_folio: "77777777" })])),
+        folio("77777777", scheme("A", [giftIn({ gift_folio: "55555555" })])),
+      ],
+    };
+    const mapping = map(data);
+    assert.deepEqual(mapping.transactions.map((t) => t.activity.activityType), ["BUY", "BUY"]);
+    assert.deepEqual(
+      mapping.warnings.map((w) => [w.folio, w.message]),
+      [GIVER, RECEIVER, "55555555", "77777777"].map((f) => [f, RIVAL]),
+    );
+  });
+
+  test("the import's symbol-only key can link unrelated gifts on different exchanges", () => {
+    const data = twoFolios([purchase, giftOut({ gift_folio: null })], [giftIn({ gift_folio: null })]);
+    data.folios[1].schemes[0] = scheme("B", [giftIn({ gift_folio: null })]);
+    const mapping = map(data, {
+      target: (f, s) => ({
+        ...input().target(f, s),
+        asset: { ...input().target(f, s).asset, symbol: "SHARED", exchangeMic: f.folio === GIVER ? "XBOM" : "XNSE" },
+      }),
+    });
+    assert.deepEqual(mapping.transactions.map((t) => t.activity.activityType), ["BUY"]);
+    assert.deepEqual(messages(mapping), [[GIVER, true, RIVAL], [RECEIVER, true, RIVAL]]);
+  });
+
+  test("ambiguous candidates remain standalone when excluded or in one account", () => {
+    const data = twoFolios([purchase, giftOut(), giftOut()], [giftIn(), giftIn()]);
+    for (const target of [
+      (f, s) => (f.folio === RECEIVER ? undefined : input().target(f, s)),
+      (f, s) => ({ ...input().target(f, s), accountId: "account-1" }),
+    ]) {
+      const mapping = map(data, { target });
+      const gifts = mapping.transactions.filter((t) => t.activity.activityType.startsWith("TRANSFER_"));
+      assert.equal(gifts.length, target(data.folios[1], data.folios[1].schemes[0]) ? 4 : 2);
+      assert.ok(gifts.every((t) => t.activity.isExternal && !t.receiving));
+      assert.ok(!mapping.warnings.some((w) => w.message === RIVAL));
+    }
+  });
+
+  test("a folio cannot be its own gift counterpart", () => {
+    const data = { ...statement(), folios: [folio(GIVER, scheme("A", [purchase, giftOut({ gift_folio: "11111111" }), giftIn()]))] };
+    const mapping = map(data);
+    assert.deepEqual(mapping.transactions.map((t) => [t.activity.activityType, t.activity.isExternal ?? ""]), [
+      ["BUY", ""], ["TRANSFER_OUT", true], ["TRANSFER_IN", true],
+    ]);
+    assert.ok(mapping.transactions.every((t) => !t.receiving));
+  });
+
+  test("both sides in one account are left out: the units stay there", () => {
+    const oneAccount = { target: (f, s) => ({ ...input().target(f, s), accountId: "account-1" }) };
+    const mapping = map(twoFolios([purchase, giftOut()], [giftIn()]), oneAccount);
+    assert.deepEqual(mapping.transactions.map((t) => t.activity.activityType), ["BUY"]);
+    const message = "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported.";
+    assert.deepEqual(messages(mapping), [[GIVER, true, message], [RECEIVER, true, message]]);
+    // A side Wealthfolio has, imported before or entered by hand, changed the units' cost and dates.
+    for (const type of ["TRANSFER_IN", "TRANSFER_OUT"]) {
+      const entered = map(twoFolios([purchase, giftOut()], [giftIn()]), { ...oneAccount, entered: (activity) => activity.activityType === type });
+      assert.deepEqual(messages(entered).map(([, , m]) => m), Array(2).fill(
+        `${message} Wealthfolio has a transfer or trade of these units on this day, which changes their cost and purchase dates: delete it, with its other side or cash.`,
+      ));
+    }
+  });
+
+  test("when the user leaves one side out, the other is a gift on its own", () => {
+    const withoutReceiver = map(twoFolios([purchase, giftOut()], [giftIn()]), {
+      target: (f, s) => (f.folio === RECEIVER ? undefined : input().target(f, s)),
+    });
+    assert.deepEqual(withoutReceiver.transactions.map((t) => [t.activity.activityType, t.activity.isExternal ?? ""]), [["BUY", ""], ["TRANSFER_OUT", true]]);
+    const withoutGiver = map(twoFolios([purchase, giftOut()], [giftIn()]), {
+      target: (f, s) => (f.folio === GIVER ? undefined : input().target(f, s)),
+    });
+    assert.deepEqual(withoutGiver.transactions.map((t) => [t.activity.activityType, t.activity.isExternal]), [["TRANSFER_IN", true]]);
+    assert.deepEqual(messages(withoutGiver).slice(1), [[RECEIVER, false, RECEIVED]]);
+  });
+
+  test("when one side can't be imported, neither is", () => {
+    const stamped = map(twoFolios([purchase, giftOut()], [giftIn(), charge("2024-06-03", "STAMP_DUTY_TAX", "0.15")]));
+    const heldBack = map(twoFolios([purchase, giftOut()], [giftIn()], {}, { close: "1" }));
+    const noHistory = map(twoFolios([giftOut()], [giftIn()], { open: "1000" }), {
+      target: (f, s) => ({ ...input().target(f, s), openingCovered: f.folio !== GIVER }),
+    });
+    for (const mapping of [stamped, heldBack, noHistory]) {
+      assert.ok(!mapping.transactions.some((t) => t.activity.activityType.startsWith("TRANSFER_")));
+      assert.equal(mapping.warnings.filter((w) => w.message === OTHER_SIDE).length, 1);
+    }
+  });
+
+  test("both sides confirmed as different Wealthfolio funds are left out", () => {
+    const message = "The two sides of this gift are confirmed as different Wealthfolio assets, so neither side is imported. Confirm the same fund for both under Funds.";
+    for (const oneAccount of [false, true]) {
+      const mapping = map(twoFolios([purchase, giftOut()], [giftIn()]), {
+        target: (f, s) => {
+          const t = input().target(f, s);
+          return {
+            ...t,
+            accountId: oneAccount ? "account-1" : t.accountId,
+            asset: f.folio === RECEIVER ? { ...t.asset, symbol: "OTHER" } : t.asset,
+          };
+        },
+      });
+      assert.deepEqual(mapping.transactions.map((t) => t.activity.activityType), ["BUY"]);
+      assert.deepEqual(messages(mapping), [[GIVER, true, message], [RECEIVER, true, message]]);
+    }
+  });
+});
+
 test("rows #1 leaves for later are warnings; event-only rows are skipped", () => {
   const mapping = map(
     statement(
@@ -693,7 +1016,7 @@ test("rows #1 leaves for later are warnings; event-only rows are skipped", () =>
   assert.deepEqual(
     mapping.warnings.map((w) => [w.rows.map((row) => row.type), w.message]),
     [
-      [["GIFT_IN", "STAMP_DUTY_TAX"], "Gifts aren't imported yet."],
+      [["GIFT_IN", "STAMP_DUTY_TAX"], "This gift has stamp duty on its day, which a transfer can't carry without a cash movement the statement doesn't show, so it isn't imported."],
       [["SEGREGATION"], "Segregated portfolios aren't imported yet."],
       [["UNKNOWN"], "casparser couldn't tell what this row is, so it isn't imported."],
       [["MISC"], "casparser couldn't tell what this row is, so it isn't imported."],

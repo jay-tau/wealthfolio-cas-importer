@@ -76,6 +76,8 @@ const host = {
   noPanFolio: "",
   // An invented fund house merger in the first folio, added to what the parser reads.
   merger: false,
+  // Invented gifts: one received in the first folio, and one between two new folios of the same fund house.
+  gifts: false,
   // Holdings dropped from a depository statement as if they had been sold.
   soldIsins: [] as string[],
   parseWarnings: [] as string[],
@@ -256,6 +258,16 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
   }
   if (host.noPanFolio) data.folios = data.folios.map((f) => (f.folio === host.noPanFolio ? { ...f, PAN: null } : f));
   if (host.merger) data.folios[0].schemes.push(...mergedSchemes());
+  if (host.gifts) {
+    const [first] = data.folios;
+    const [received, given, taken] = giftedSchemes();
+    data.folios = [
+      { ...first, schemes: [...first.schemes, received] },
+      ...data.folios.slice(1),
+      { ...first, folio: "92345678", schemes: [given] },
+      { ...first, folio: "93456789", schemes: [taken] },
+    ];
+  }
   const [folio] = data.folios;
   const scheme = folio.schemes.find((s) => s.isin === host.sharedIsin);
   return scheme ? { ...data, folios: [...data.folios, { ...folio, folio: "91234568 / 34", schemes: [scheme] }] } : data;
@@ -277,6 +289,28 @@ function mergedSchemes() {
     ]),
     scheme("FNFDG", "Fictiva New Fund - Direct Plan - Growth", "INFZ90K01NF5", "69.996", [
       row("2024-08-01", "SWITCH_IN_MERGER", "1399.93", "69.996", "20.0000", "69.996"),
+    ]),
+  ] as unknown as CasScheme[];
+}
+
+/** Gifts in casparser's form: one from a folio the statement doesn't include, and both sides of another. */
+function giftedSchemes() {
+  const row = (date: string, type: string, amount: string, units: string, nav: string, balance: string, description = type, gift_folio: string | null = null) =>
+    ({ date, description, amount, units, nav, balance, type, dividend_rate: null, gift_folio }) as const;
+  const scheme = (code: string, name: string, isin: string, close: string, transactions: ReturnType<typeof row>[]) => ({
+    scheme: name, advisor: "DIRECT", rta_code: code, rta: "CAMS", type: "EQUITY", isin, amfi: null, nominees: [],
+    open: "0", close, close_calculated: close, valuation: { date: "2025-03-31", nav: "26", cost: null, value: "0" }, transactions,
+  });
+  return [
+    scheme("FGFDG", "Fictiva Gifted Fund - Direct Plan - Growth", "INFZ90K01GF3", "10.000", [
+      row("2024-06-04", "GIFT_IN", "250.00", "10.000", "25.0000", "10.000", "Gifting of units - From Folio No.70000001", "70000001"),
+    ]),
+    scheme("FSFDG", "Fictiva Shared Fund - Direct Plan - Growth", "INFZ90K01SF6", "30.000", [
+      row("2024-05-10", "PURCHASE", "1000.00", "50.000", "20.0000", "50.000"),
+      row("2024-06-03", "GIFT_OUT", "-500.00", "-20.000", "25.0000", "30.000", "Gifting of units-TO Folio No: 93456789", "93456789"),
+    ]),
+    scheme("FSFDG", "Fictiva Shared Fund - Direct Plan - Growth", "INFZ90K01SF6", "20.000", [
+      row("2024-06-03", "GIFT_IN", "500.00", "20.000", "25.0000", "20.000", "Gifting of units - From Folio No.92345678", "92345678"),
     ]),
   ] as unknown as CasScheme[];
 }
@@ -481,7 +515,16 @@ const api = {
           host.assets[`asset-${r.symbol.toUpperCase()}`] ??= { symbol: r.symbol.toUpperCase(), exchangeMic: null, instrumentType: instrumentType(r.instrumentType), name: r.symbolName, quoteCcy: r.quoteCcy, providerId: r.providerId };
         }
       }
-      host.activities.push(...accepted.map(stored));
+      const added = accepted.map(stored);
+      // Like Wealthfolio's import, link a fund's transfer in with the first unused transfer out of the
+      // same day, symbol and value in another account, and group them. Cash transfers' links are `linked`.
+      const value = (a: ActivityDetails) => `${a.date}|${a.currency}|${a.assetSymbol}|${Number(a.quantity) * Number(a.unitPrice)}`;
+      const outs = added.filter((a) => a.activityType === "TRANSFER_OUT" && a.assetSymbol);
+      for (const into of added.filter((a) => a.activityType === "TRANSFER_IN" && a.assetSymbol)) {
+        const out = outs.find((o) => !(o as { sourceGroupId?: string }).sourceGroupId && o.accountId !== into.accountId && value(o) === value(into));
+        if (out) for (const leg of [into, out]) Object.assign(leg, { sourceGroupId: `link-${into.id}` });
+      }
+      host.activities.push(...added);
       const total = rows.length;
       const summary = { total, imported: accepted.length, skipped: total - accepted.length, duplicates: rows.filter(skipped).length, assetsCreated: 0, success: true };
       return {
