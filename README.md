@@ -81,8 +81,8 @@ If Wealthfolio also tracks the bank account a PAN's purchases are paid from, cho
 **Bank account** (a folio can have a different one, or none). Each purchase then comes with a transfer
 from that account to the funds' account, and each redemption or IDCW payout with a transfer back,
 which Wealthfolio links, instead of a deposit or withdrawal. Switches keep their deposit and
-withdrawal, since their money stays with the fund house; mergers and reinvested dividends have no
-cash row.
+withdrawal, since their money stays with the fund house; mergers, gifts and reinvested dividends have
+no cash row.
 
 If the bank account already has the debit or credit, from a bank statement import for example, the
 preview offers to use it: a withdrawal or deposit (or a transfer not yet linked) within 7 days, for
@@ -119,6 +119,36 @@ check those rows in Wealthfolio.
 If you moved a conversion to an account and then archived that account, unarchive it before
 previewing that merger again. Wealthfolio hides archived activities from add-ons, but their groups
 can still cause the whole import to fail.
+
+### Gifts
+
+A gift moves units from one investor's folio to another's without a sale. casparser marks the
+statement's row as a gift when its description says so. The add-on imports it as a transfer of the
+units at that day's NAV, with no cash:
+
+- Units received from a folio this import doesn't include are an external transfer in. They cost
+  their value on the day of the gift, and Wealthfolio counts their gains and holding period from
+  that day. That's what the gift added to your portfolio, but not their cost for tax: the receiver
+  takes over the giver's cost and purchase dates, which the statement doesn't show and a transfer
+  can't carry.
+- Units given to a folio this import doesn't include are an external transfer out. They leave at
+  their cost in Wealthfolio, with no gain or loss.
+- When the statement has both sides, the add-on pairs them by day, fund, opposite units and the same
+  NAV, if at least one side names the other's folio and neither names a different one. In two
+  Wealthfolio accounts, both go in together, and Wealthfolio links them: the receiving account keeps
+  the costs and purchase dates Wealthfolio has for the giver's units. In one account the units don't
+  move, so the preview leaves out both. If you leave one side's folio or fund out, the other side is
+  a gift on its own.
+
+Wealthfolio links a transfer in and a transfer out of the same day, symbol and value that are imported
+together in two accounts, whatever else they say. So the preview leaves out a gift that could be
+linked with any gift but its own other side, both sides when one can't be imported or their units
+or NAV don't match, and a pair Wealthfolio has only one side of, or both sides but not linked to
+each other. It also leaves out a gift with stamp duty or another charge on its day, which a transfer
+can't carry, and one with no NAV. If Wealthfolio has a transfer, purchase or sale of the same units
+in the same account and fund on that day at another price or with a comment, such as one entered by
+hand, the preview leaves the gift out and names it. For both sides in one account it says when
+Wealthfolio has such a row, which changed the units' cost and purchase dates.
 
 ## Summary and depository statements
 

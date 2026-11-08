@@ -50,7 +50,7 @@ export interface PlannedTransaction {
 }
 
 const rowsOfTransaction = (t: MappedTransaction) =>
-  [t.activity, t.cash, t.bank, t.arriving?.activity].filter((row) => row !== undefined);
+  [t.activity, t.cash, t.bank, t.arriving?.activity, t.receiving?.activity].filter((row) => row !== undefined);
 
 /**
  * The rows for checkImport and the import, in the order `planImport` reads its results. Each
@@ -283,8 +283,9 @@ export function planImport(
     tradeFound = !!rows[0].existingId;
     if (transaction.cash) rows.push(plan(transaction.cash));
     if (transaction.arriving) rows.push(plan(transaction.arriving.activity));
+    if (transaction.receiving) rows.push(plan(transaction.receiving.activity));
     // Wealthfolio has the transaction when it has the trade and the fund account's cash, whatever
-    // the bank account shows, or both rows of a conversion.
+    // the bank account shows, or both rows of a conversion or of a gift between two folios.
     const settled = rows.every((r) => r.existingId);
     if (transaction.bank) rows.push(plan(transaction.bank, settled));
     return { transaction, rows, status: "new" };
@@ -346,6 +347,18 @@ export function planImport(
   }
   for (const t of planned) {
     if (t.transaction.cash && !t.rows[0].existingId) takeAvailable(t.rows[1]);
+    // Sent alone, one side of a gift between two folios would be a transfer with no other side.
+    if (t.transaction.receiving && t.rows.some((r) => r.existingId) && !t.rows.every((r) => r.existingId)) t.problem = PART_OF_GIFT;
+  }
+  const likely = giftEntries(existing, funds);
+  const byId = new Map(existing.map((a) => [a.id, a]));
+  for (const t of planned) {
+    const { receiving } = t.transaction;
+    // Both sides of a gift between two folios count as imported once Wealthfolio has linked them.
+    if (receiving && t.rows.every((r) => r.existingId)) {
+      const [out, into] = t.rows.map((r) => byId.get(r.existingId!)!);
+      if (!groupOf(out) || groupOf(out) !== groupOf(into)) t.problem = UNLINKED_GIFT;
+    }
   }
   const completeEarlier = (t: PlannedTransaction) => t.earlier?.every(
     (r) => r.existingId && (!r.activity.symbol?.trim() || r.activity.unitPrice !== undefined),
@@ -359,6 +372,20 @@ export function planImport(
     if (earlier.some((r) => r.existingId) && !completeEarlier(t)) {
       const uncertain = earlier.some((r) => r.activity.symbol?.trim() && r.activity.unitPrice === undefined);
       t.problem = uncertain ? UNCERTAIN_EARLIER : PART_OF_EARLIER;
+      // An incomplete legacy merger must not hide a possible earlier gift entry.
+      for (const r of earlier) {
+        if (!r.existingId || !r.activity.symbol?.trim()) continue;
+        const a = byId.get(r.existingId)!;
+        available.get(activityIdentity(a, funds)!)!.push(a.id);
+      }
+    }
+  }
+  for (const t of planned) {
+    // A gift entered by hand has the same units on the same day, as a transfer or a trade.
+    for (const r of t.rows) {
+      if (!r.activity.activityType.startsWith("TRANSFER_") || !r.activity.symbol?.trim()) continue;
+      const found = likely(r.activity).filter((a) => available.get(activityIdentity(a, funds)!)?.includes(a.id));
+      if (found.length) t.problem ??= handEntered(found);
     }
   }
   for (const t of planned) {
@@ -381,6 +408,32 @@ const PART_OF_EARLIER =
 
 const UNCERTAIN_EARLIER =
   "Wealthfolio has rows that may belong to an earlier import of this merger, but this statement lacks the amount or NAV needed to check the earlier import, so the merger isn't imported again. Check the sale, purchase and their cash in Wealthfolio. To replace them with a conversion, delete those rows and read the statement again.";
+const PART_OF_GIFT =
+  "Wealthfolio has one side of this gift from an earlier import but not the other, so neither is imported: Wealthfolio links the two only when they're imported together. To import the gift, delete that side in Wealthfolio and read the statement again.";
+const UNLINKED_GIFT =
+  "Wealthfolio has both sides of this gift, but they aren't linked to each other, so the receiving account doesn't have the giver's costs and purchase dates. Link the two transfers in Wealthfolio, or delete both and read the statement again.";
+const handEntered = (found: ActivityDetails[]) => {
+  const names = found.map((a) => {
+    const type = { BUY: "purchase", SELL: "sale", TRANSFER_IN: "transfer in", TRANSFER_OUT: "transfer out" }[a.activityType as string];
+    const price = a.unitPrice ? ` at ${amount(a.unitPrice)}` : "";
+    return `a ${type}${price}${a.comment?.trim() ? ` ("${a.comment.trim()}")` : ""}`;
+  });
+  return `Wealthfolio has ${names.join(" and ")} of these units on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`;
+};
+
+/**
+ * Activities that may be a gift's row entered another way: in its account and fund, on its day,
+ * with its units, as a transfer or a trade in the same direction.
+ */
+export function giftEntries(existing: ActivityDetails[], funds: FundRefs) {
+  return (row: ActivityImport) => {
+    const types = row.activityType === "TRANSFER_IN" ? ["TRANSFER_IN", "BUY"] : ["TRANSFER_OUT", "SELL"];
+    const fund = fundRef(row.symbol!, row.exchangeMic);
+    return existing.filter((a) =>
+      a.accountId === row.accountId && types.includes(a.activityType) && !!a.assetId && funds.get(a.assetId) === fund &&
+      day(a.date) === day(row.date) && amount(a.quantity) === amount(row.quantity));
+  };
+}
 
 /**
  * New transactions, plus the duplicates the user chose to import anyway. All rows of a transaction

@@ -13,6 +13,7 @@ import {
   fundRef,
   fundRefs,
   type FundUnits,
+  giftEntries,
   importRows,
   indexActivities,
   linkBankRow,
@@ -307,6 +308,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
           .filter(sameUnits)
           .flatMap((f) => f.schemes),
       );
+      const entered = giftEntries(existing, funds);
       const mapping = mapStatement(data, {
         target: (folio, scheme) => {
           const t = target(folio, scheme);
@@ -317,6 +319,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
           };
         },
         alreadyImported: indexActivities(existing, funds).has,
+        entered: (row) => entered(row).length > 0,
       });
       const rows = rowsOf(mapping);
       const checked = rows.length ? await api.activities.checkImport(rows) : [];

@@ -12,6 +12,7 @@ import {
   engineTimeZone,
   fundRef,
   fundRefs,
+  giftEntries,
   importRows,
   indexActivities,
   linkBankRow,
@@ -505,6 +506,178 @@ describe("mergers", () => {
     for (const separator of ["_", "-", " "]) {
       const spelled = activities.map((a) => (a.subtype ? { ...a, subtype: ` ${a.subtype.toLowerCase().replace("_", separator)} ` } : a));
       assert.deepEqual(closingUnits(merged, target, spelled, funds, "UTC").map((f) => format(f.held)), ["0", "50"]);
+    }
+  });
+});
+
+describe("gifts", () => {
+  const GIVER = "11111111";
+  const RECEIVER = "33333333";
+  const giftOut = tx("2024-06-03", "GIFT_OUT", "-500.00", "-10.000", "50.0000", {
+    description: `Gifting of units-TO Folio No: ${RECEIVER}`, gift_folio: RECEIVER,
+  });
+  const giftIn = tx("2024-06-03", "GIFT_IN", "500.00", "10.000", "50.0000", {
+    description: `Gifting of units - From Folio No.${GIVER}`, gift_folio: GIVER,
+  });
+  const folio = (number, ...schemes) => ({ folio: number, amc: "Made-up Mutual Fund", name: null, PAN: "ABCDE1234F", KYC: null, PANKYC: null, schemes });
+  const pair = { ...statement(), folios: [folio(GIVER, scheme("A", [giftOut])), folio(RECEIVER, scheme("A", [giftIn]))] };
+  const received = statement(scheme("A", [giftIn]));
+  const given = statement(scheme("A", [giftOut]));
+  /** Each folio in its own account. */
+  const planGifts = (data, existing = [], errors = {}) => {
+    const funds = fundsOf(data);
+    const mapping = mapStatement(data, {
+      target: (f, s) => ({ ...target(f, s), accountId: `account-${f.folio}`, openingCovered: true }),
+      alreadyImported: indexActivities(existing, funds).has,
+    });
+    return planImport(mapping, existing, check(rowsOf(mapping), errors), funds);
+  };
+
+  test("a gift between two folios sends both sides together, and a second read finds both", () => {
+    const planned = planGifts(pair);
+    assert.deepEqual(statuses(planned), ["new"]);
+    const sent = importRows(planned, () => false);
+    assert.deepEqual(sent.map((r) => `${r.activityType} ${r.accountId} ${r.quantity}`), [
+      `TRANSFER_OUT account-${GIVER} 10.000`,
+      `TRANSFER_IN account-${RECEIVER} 10.000`,
+    ]);
+    // Wealthfolio's import links the two with a group.
+    const linked = sent.map(stored).map((a) => ({ ...a, sourceGroupId: "linked-1" }));
+    const again = planGifts(pair, linked);
+    assert.deepEqual(statuses(again), ["existing"]);
+    assert.deepEqual(importRows(again, () => true).map((r) => [r.activityType, r.forceImport]), [["TRANSFER_OUT", true], ["TRANSFER_IN", true]]);
+    // Imported separately, or unlinked since, they need linking or importing again.
+    for (const groups of [[null, null], ["linked-1", null], ["linked-1", "linked-2"]]) {
+      const unlinked = planGifts(pair, sent.map(stored).map((a, i) => ({ ...a, sourceGroupId: groups[i] })));
+      assert.deepEqual(statuses(unlinked), ["invalid"]);
+      assert.match(unlinked[0].problem, /^Wealthfolio has both sides of this gift, but they aren't linked to each other/);
+    }
+  });
+
+  test("Wealthfolio having only one side of a gift keeps both out", () => {
+    const [out, into] = importRows(planGifts(pair), () => false);
+    for (const side of [out, into]) {
+      const planned = planGifts(pair, [stored(side)]);
+      assert.deepEqual(statuses(planned), ["invalid"]);
+      assert.match(planned[0].problem, /^Wealthfolio has one side of this gift from an earlier import but not the other/);
+      assert.deepEqual(importRows(planned, () => true), []);
+    }
+  });
+
+  test("a gift on its own is found again on a second read", () => {
+    for (const [data, type] of [[received, "TRANSFER_IN"], [given, "TRANSFER_OUT"]]) {
+      const sent = importRows(planGifts(data), () => false);
+      assert.deepEqual(sent.map((r) => [r.activityType, r.isExternal]), [[type, true]]);
+      const again = planGifts(data, sent.map(stored));
+      assert.deepEqual(statuses(again), ["existing"]);
+      assert.deepEqual(importRows(again, () => false), []);
+    }
+  });
+
+  test("a prior transfer or trade of these units keeps an incoming or outgoing gift out", () => {
+    for (const [data, direction, trade, name] of [[received, "in", "BUY", "purchase"], [given, "out", "SELL", "sale"]]) {
+      const [row] = importRows(planGifts(data), () => false);
+      for (const [change, found] of [
+        [{ unitPrice: "40" }, `a transfer ${direction} at 40`],
+        [{ comment: "Earlier gift" }, `a transfer ${direction} at 50 ("Earlier gift")`],
+        [{ amount: "500.00" }, `a transfer ${direction} at 50`],
+        [{ fee: "1.00" }, `a transfer ${direction} at 50`],
+        [{ activityType: trade, amount: "500.0000" }, `a ${name} at 50`],
+      ]) {
+        const existing = [{ ...stored(row), ...change }];
+        const planned = planGifts(data, existing);
+        assert.deepEqual(statuses(planned), ["invalid"], JSON.stringify(change));
+        assert.equal(
+          planned[0].problem,
+          `Wealthfolio has ${found} of these units on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`,
+        );
+        const again = planGifts(data, existing);
+        assert.deepEqual(statuses(again), ["invalid"]);
+        assert.deepEqual(importRows(again, () => true), []);
+      }
+    }
+    // Another day, account, fund, direction or number of units isn't this gift.
+    const [row] = importRows(planGifts(received), () => false);
+    for (const change of [
+      { date: "2024-06-04T00:00:00+00:00" },
+      { accountId: "elsewhere" },
+      otherFund(stored(row)),
+      { activityType: "TRANSFER_OUT" },
+      { activityType: "SELL" },
+      { quantity: "11.000" },
+    ]) {
+      assert.deepEqual(statuses(planGifts(received, [{ ...stored(row), unitPrice: "40", ...change }])), ["new"], JSON.stringify(change));
+    }
+  });
+
+  test("rejecting either row of a gift pair keeps both out, even when forced", () => {
+    for (const line of [1, 2]) {
+      const planned = planGifts(pair, [], { [line]: "This row is invalid." });
+      assert.deepEqual(statuses(planned), ["invalid"]);
+      assert.deepEqual(planned[0].rows[line - 1].errors, ["This row is invalid."]);
+      assert.deepEqual(importRows(planned, () => true), []);
+    }
+  });
+
+  test("an exact earlier gift does not hide another changed entry of the same units", () => {
+    for (const data of [received, given, pair]) {
+      const rows = importRows(planGifts(data), () => false);
+      const exact = rows.map(stored).map((a) => ({ ...a, sourceGroupId: rows.length === 2 ? "linked-1" : null }));
+      for (const side of rows) {
+        const planned = planGifts(data, [...exact, { ...stored(side), unitPrice: "40" }]);
+        assert.deepEqual(statuses(planned), ["invalid"]);
+        assert.match(planned[0].problem, /^Wealthfolio has a transfer (in|out) at 40/);
+        assert.deepEqual(importRows(planned, () => true), []);
+      }
+    }
+  });
+
+  test("an incomplete legacy merger cannot hide a prior gift trade, but confirmed trades can", () => {
+    const combined = structuredClone(pair);
+    combined.folios[1].schemes.unshift(scheme("B", [tx(giftOut.date, "SWITCH_OUT_MERGER", "-500.00", "-10.000", "50.0000")]));
+    combined.folios[1].schemes[1].transactions.unshift(tx(giftIn.date, "SWITCH_IN_MERGER", "500.00", "10.000", "50.0000"));
+    const earlier = planGifts(combined).find((t) => t.transaction.arriving).transaction.earlier.map(stored);
+    const purchase = earlier.filter((a) => a.activityType === "BUY");
+    for (const nav of ["50.0000", null]) {
+      const data = structuredClone(combined);
+      data.folios[1].schemes[1].transactions[0].nav = nav;
+      const planned = planGifts(data, purchase);
+      assert.deepEqual(statuses(planned), ["invalid", "invalid"], `merger NAV ${nav}`);
+      assert.match(planned[0].problem, /^Wealthfolio has a purchase at 50/);
+      assert.ok(planned[1].problem);
+      assert.deepEqual(importRows(planned, () => true), []);
+    }
+    const complete = planGifts(combined, earlier);
+    assert.deepEqual(statuses(complete), ["new", "existing"]);
+    assert.deepEqual(importRows(complete, () => false).map((r) => r.activityType), ["TRANSFER_OUT", "TRANSFER_IN"]);
+    combined.folios[1].schemes[1].transactions.push(tx(giftIn.date, "PURCHASE", "500.00", "10.000", "50.0000"));
+    const current = planGifts(combined, earlier.filter((a) => ["BUY", "DEPOSIT"].includes(a.activityType)));
+    assert.deepEqual(statuses(current), ["new", "new", "existing"]);
+    assert.equal(current[0].problem, undefined);
+  });
+
+  test("a same-account pair stays skipped and checks actual prior gift entries before skipping", () => {
+    const legs = importRows(planGifts(pair), () => false).map((r) => ({ ...r, accountId: ACCOUNT }));
+    for (const sides of [[], [0], [1], [0, 1]]) {
+      for (const change of [{}, { unitPrice: "40" }, { comment: "Earlier gift" }]) {
+        const existing = sides.map((i) => ({ ...stored(legs[i]), ...change }));
+        const funds = fundsOf(pair);
+        const entered = giftEntries(existing, funds);
+        const input = {
+          target: (f, s) => ({ ...target(f, s), openingCovered: true }),
+          alreadyImported: indexActivities(existing, funds).has,
+          entered: (r) => entered(r).length > 0,
+        };
+        const mapping = mapStatement(pair, input);
+        assert.deepEqual(mapping.transactions, []);
+        assert.equal(mapping.warnings.length, 2);
+        for (const warning of mapping.warnings) {
+          assert.equal(warning.leftOut, true);
+          assert.match(warning.message, /^Both sides of this gift go to the same Wealthfolio account/);
+          assert.equal(warning.message.includes("Wealthfolio has a transfer or trade"), sides.length > 0);
+        }
+        assert.deepEqual(mapStatement(pair, input), mapping, "a second read keeps the pair skipped");
+      }
     }
   });
 });
