@@ -1,6 +1,7 @@
 import type { AddonAssets } from "@wealthfolio/addon-sdk";
 import casParse from "./cas_parse.py?raw";
 import casparserIsin from "./casparser_isin.py?raw";
+import { statementDay } from "./plan";
 import type { Statement } from "./types";
 import workerSource from "./worker.js?raw";
 
@@ -144,6 +145,13 @@ export class CasParser {
     const data = JSON.parse(reply.json) as Statement;
     if ("cas_type" in data && data.cas_type !== "DETAILED" && data.cas_type !== "SUMMARY") {
       throw new CasError("unsupported", `Couldn't tell whether this ${data.file_type} statement is detailed or a summary.`);
+    }
+    // casparser leaves the period's dates empty when it can't find them, rather than failing.
+    try {
+      statementDay(data.statement_period.from);
+      statementDay(data.statement_period.to);
+    } catch {
+      throw new CasError("parse", "casparser couldn't read this statement's date or period, so it can't be imported.");
     }
     return data;
   }

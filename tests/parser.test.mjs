@@ -10,6 +10,7 @@ const [bundle] = await build({
   logLevel: "silent",
   build: { write: false, lib: { entry: "src/cas/parser.ts", formats: ["iife"], name: "parser" } },
 });
+const PERIOD = { from: "01-Apr-2023", to: "31-Mar-2025" };
 const assets = { getBlob: async () => new Blob([JSON.stringify({ files: [], wasmParts: [], wheels: [] })]) };
 
 // Looks up the timers when called, so the bundle sees node:test's mock timers.
@@ -101,7 +102,7 @@ test("a reply in time keeps the parser running", { timeout: 1000 }, async (t) =>
   await setImmediate();
   t.mock.timers.tick(299_999);
   const { id } = worker.messages.find((message) => message.type === "parse");
-  worker.onmessage({ data: { id, json: JSON.stringify({ file_type: "NSDL", accounts: [] }) } });
+  worker.onmessage({ data: { id, json: JSON.stringify({ file_type: "NSDL", accounts: [], statement_period: PERIOD }) } });
   await parsed;
   t.mock.timers.tick(600_000);
   assert.equal(parser.stopped, false);
@@ -141,7 +142,7 @@ test("a read that can't be posted leaves no timeout behind", { timeout: 1000 }, 
   const parsed = parser.parse(new ArrayBuffer(1), "test");
   await setImmediate();
   const { id } = worker.messages.find((message) => message.type === "parse");
-  worker.onmessage({ data: { id, json: JSON.stringify({ file_type: "NSDL", accounts: [] }) } });
+  worker.onmessage({ data: { id, json: JSON.stringify({ file_type: "NSDL", accounts: [], statement_period: PERIOD }) } });
   await parsed;
   parser.dispose();
 });
@@ -176,10 +177,10 @@ async function reply(data) {
 }
 
 for (const data of [
-  { file_type: "CAMS", cas_type: "DETAILED" },
-  { file_type: "KFINTECH", cas_type: "SUMMARY" },
-  { file_type: "NSDL", accounts: [] },
-  { file_type: "CDSL", accounts: [] },
+  { file_type: "CAMS", cas_type: "DETAILED", statement_period: { from: "01-Apr-2023", to: "31-Mar-2025" } },
+  { file_type: "KFINTECH", cas_type: "SUMMARY", statement_period: { from: "31-Mar-2025", to: "31-Mar-2025" } },
+  { file_type: "NSDL", accounts: [], statement_period: { from: "01-03-2025", to: "31-03-2025" } },
+  { file_type: "CDSL", accounts: [], statement_period: { from: "01/03/2025", to: "31/03/2025" } },
 ]) {
   test(`reads ${data.cas_type ?? data.file_type} statements`, { timeout: 1000 }, async () => {
     // Parsed in the bundle's own realm, so compare plain copies.
@@ -188,8 +189,24 @@ for (const data of [
 }
 
 test("rejects a CAMS statement that is neither detailed nor a summary", { timeout: 1000 }, async () => {
-  await assert.rejects(reply({ file_type: "CAMS", cas_type: "UNKNOWN" }), { kind: "unsupported" });
+  await assert.rejects(reply({ file_type: "CAMS", cas_type: "UNKNOWN", statement_period: PERIOD }), { kind: "unsupported" });
 });
+
+// casparser 1.4.1 returns an empty period when it can't find the statement's.
+for (const [name, data, period] of [
+  ["a detailed", { file_type: "CAMS", cas_type: "DETAILED", folios: [] }, { from: "", to: "" }],
+  ["a detailed", { file_type: "KFINTECH", cas_type: "DETAILED", folios: [] }, { from: "01-Apr-2023", to: "" }],
+  ["a summary", { file_type: "CAMS", cas_type: "SUMMARY", folios: [] }, { from: "", to: "" }],
+  ["an NSDL", { file_type: "NSDL", accounts: [] }, { from: "", to: "" }],
+  ["a CDSL", { file_type: "CDSL", accounts: [] }, { from: "", to: "31/03/2025" }],
+]) {
+  test(`rejects ${name} statement with period ${JSON.stringify(period)}`, { timeout: 1000 }, async () => {
+    await assert.rejects(reply({ ...data, statement_period: period }), {
+      kind: "parse",
+      message: "casparser couldn't read this statement's date or period, so it can't be imported.",
+    });
+  });
+}
 
 test("parse errors do not put extracted data into the Worker reply", async () => {
   const source = await readFile("src/cas/worker.js", "utf8");
