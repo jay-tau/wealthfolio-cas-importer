@@ -524,13 +524,13 @@ describe("gifts", () => {
   const received = statement(scheme("A", [giftIn]));
   const given = statement(scheme("A", [giftOut]));
   /** Each folio in its own account. */
-  const planGifts = (data, existing = [], errors = {}) => {
+  const planGifts = (data, existing = [], errors = {}, timeZone = undefined) => {
     const funds = fundsOf(data);
     const mapping = mapStatement(data, {
       target: (f, s) => ({ ...target(f, s), accountId: `account-${f.folio}`, openingCovered: true }),
       alreadyImported: indexActivities(existing, funds).has,
     });
-    return planImport(mapping, existing, check(rowsOf(mapping), errors), funds);
+    return planImport(mapping, existing, check(rowsOf(mapping), errors), funds, timeZone);
   };
 
   test("a gift between two folios sends both sides together, and a second read finds both", () => {
@@ -610,6 +610,126 @@ describe("gifts", () => {
     }
   });
 
+  test("a gift entered by hand is found on its day in Wealthfolio's timezone", () => {
+    for (const [data, trade] of [[received, "BUY"], [given, "SELL"]]) {
+      const [row] = importRows(planGifts(data), () => false);
+      for (const activityType of [row.activityType, trade]) {
+        // Entered at 02:00 on 03-Jun in India, and at 21:00 on 03-Jun in Toronto.
+        const india = { ...stored(row), activityType, unitPrice: "40", date: "2024-06-02T20:30:00+00:00" };
+        const toronto = { ...stored(row), activityType, unitPrice: "40", date: "2024-06-04T01:00:00+00:00" };
+        inLocalTimeZones(() => {
+          assert.deepEqual(statuses(planGifts(data, [india], {}, "Asia/Kolkata")), ["invalid"]);
+          assert.deepEqual(statuses(planGifts(data, [toronto], {}, "America/Toronto")), ["invalid"]);
+          // Another local day isn't this gift, even when its UTC day is the statement's.
+          assert.deepEqual(statuses(planGifts(data, [india], {}, "America/Toronto")), ["new"]);
+          assert.deepEqual(statuses(planGifts(data, [toronto], {}, "Asia/Kolkata")), ["new"]);
+          assert.deepEqual(statuses(planGifts(data, [{ ...india, date: "2024-06-03T20:30:00+00:00" }], {}, "Asia/Kolkata")), ["new"]);
+          assert.deepEqual(statuses(planGifts(data, [{ ...toronto, date: "2024-06-03T01:00:00+00:00" }], {}, "America/Toronto")), ["new"]);
+        });
+      }
+      // Wealthfolio stores a bare imported date on that day in UTC and in its timezone.
+      const imported = { ...stored(row), sourceSystem: "CSV", date: "2024-06-03T04:00:00+00:00" };
+      assert.deepEqual(statuses(planGifts(data, [imported], {}, "America/Toronto")), ["existing"]);
+      assert.deepEqual(statuses(planGifts(data, [{ ...imported, unitPrice: "40" }], {}, "America/Toronto")), ["invalid"]);
+    }
+  });
+
+  test("an exact UTC reservation on another day cannot hide a hand-entered gift", () => {
+    for (const base of [received, given]) {
+      const [row] = importRows(planGifts(base), () => false);
+      for (const [timeZone, date, otherDay] of [
+        ["America/Toronto", "2024-06-04T01:00:00+00:00", "2024-06-04"],
+        ["Asia/Kolkata", "2024-06-02T20:30:00+00:00", "2024-06-02"],
+      ]) {
+        const data = structuredClone(base);
+        const transactions = data.folios[0].schemes[0].transactions;
+        transactions.push({ ...transactions[0], date: otherDay });
+        const existing = [{ ...stored(row), date }];
+        const planned = planGifts(data, existing, {}, timeZone);
+        assert.deepEqual(statuses(planned), ["invalid", "new"]);
+        assert.deepEqual(importRows(planned, () => true).map((r) => r.date), [otherDay]);
+        // An imported row belongs to its UTC day, even if the setting changed since its import.
+        assert.deepEqual(statuses(planGifts(data, [{ ...existing[0], sourceSystem: "CSV" }], {}, timeZone)), ["new", "existing"]);
+        // A current trade can reserve the UTC key too; it must not hide the gift's local day.
+        const into = row.activityType === "TRANSFER_IN";
+        transactions[1] = tx(otherDay, into ? "PURCHASE" : "REDEMPTION", into ? "500.00" : "-500.00", into ? "10.000" : "-10.000", "50.0000");
+        const trade = { ...existing[0], activityType: into ? "BUY" : "SELL", amount: "500.00" };
+        const withTrade = planGifts(data, [trade], {}, timeZone);
+        assert.equal(withTrade[0].status, "invalid");
+        assert.equal(withTrade[1].rows[0].existingId, trade.id);
+        assert.match(withTrade[0].problem, /^Wealthfolio has a (purchase|sale) at 50/);
+      }
+    }
+  });
+
+  test("imported gifts keep their UTC day after a timezone change, including changed and forced copies", () => {
+    for (const data of [received, given, pair]) {
+      const mapping = { transactions: planGifts(data).map((t) => t.transaction), warnings: [] };
+      const rows = rowsOf(mapping);
+      const existing = rows.map(stored).map((a) => ({ ...a, sourceSystem: "CSV", sourceGroupId: rows.length === 2 ? "linked-1" : null }));
+      const funds = fundsOf(data);
+      for (const flagged of [false, true]) {
+        const checked = check(rows).map((r, i) => ({ ...r, duplicateOfId: flagged ? existing[i].id : undefined }));
+        const planned = planImport(mapping, existing, checked, funds, "America/Toronto");
+        assert.deepEqual(statuses(planned), ["existing"]);
+        assert.deepEqual(planned[0].rows.map((r) => r.existingId), existing.map((a) => a.id));
+        assert.deepEqual(importRows(planned, () => false), []);
+      }
+      for (let side = 0; side < rows.length; side++) {
+        const changed = existing.map((a, i) => i === side ? { ...a, unitPrice: "40", isUserModified: true } : a);
+        const planned = planImport(mapping, changed, check(rows), funds, "America/Toronto");
+        assert.deepEqual(statuses(planned), ["invalid"]);
+        assert.deepEqual(importRows(planned, () => true), []);
+      }
+      // The same instant from the form is on June 2 in Toronto, not this June 3 gift.
+      const manual = existing.map((a) => ({ ...a, sourceSystem: "MANUAL" }));
+      assert.deepEqual(statuses(planImport(mapping, manual, check(rows), funds, "America/Toronto")), ["new"]);
+    }
+  });
+
+  test("a CSV gift edited in the form is found by its local day even when its UTC key is reserved", () => {
+    for (const base of [received, given]) {
+      const [row] = importRows(planGifts(base), () => false);
+      for (const [timeZone, date, otherDay] of [
+        ["Asia/Kolkata", "2024-06-02T20:30:00+00:00", "2024-06-02"],
+        ["America/Toronto", "2024-06-04T01:00:00+00:00", "2024-06-04"],
+      ]) {
+        const edited = { ...stored(row), sourceSystem: "CSV", isUserModified: true, date };
+        assert.deepEqual(statuses(planGifts(base, [edited], {}, timeZone)), ["invalid"]);
+        const data = structuredClone(base);
+        const transactions = data.folios[0].schemes[0].transactions;
+        transactions.push({ ...transactions[0], date: otherDay });
+        // The edited row may belong to either day; neither gift may be forced.
+        const planned = planGifts(data, [edited], {}, timeZone);
+        assert.deepEqual(statuses(planned), ["invalid", "invalid"]);
+        assert.deepEqual(importRows(planned, () => true), []);
+        const into = row.activityType === "TRANSFER_IN";
+        transactions[1] = tx(otherDay, into ? "PURCHASE" : "REDEMPTION", into ? "500.00" : "-500.00", into ? "10.000" : "-10.000", "50.0000");
+        const trade = { ...edited, activityType: into ? "BUY" : "SELL", amount: "500.00" };
+        const withTrade = planGifts(data, [trade], {}, timeZone);
+        assert.equal(withTrade[0].status, "invalid");
+        assert.equal(withTrade[1].rows[0].existingId, trade.id);
+        assert.match(withTrade[0].problem, /^Wealthfolio has a (purchase|sale) at 50/);
+      }
+    }
+  });
+
+  test("a confirmed same-day trade is not mistaken for a gift after a timezone change", () => {
+    for (const [base, type, amount, units] of [[received, "PURCHASE", "400.00", "10.000"], [given, "REDEMPTION", "-400.00", "-10.000"]]) {
+      const data = structuredClone(base);
+      data.folios[0].schemes[0].transactions.push(tx("2024-06-03", type, amount, units, "40.0000"));
+      const [gift, trade] = planGifts(data);
+      const storedTrade = importRows([trade], () => false).map(stored).map((a) => ({ ...a, sourceSystem: "CSV" }));
+      for (const isUserModified of [false, true]) {
+        const existing = storedTrade.map((a) => ({ ...a, isUserModified }));
+        const planned = planGifts(data, existing, {}, "America/Toronto");
+        assert.deepEqual(statuses(planned), ["new", "existing"]);
+        assert.deepEqual(planned[1].rows.map((r) => r.existingId), existing.map((a) => a.id));
+        assert.deepEqual(importRows(planned, () => false), [gift.transaction.activity]);
+      }
+    }
+  });
+
   test("rejecting either row of a gift pair keeps both out, even when forced", () => {
     for (const line of [1, 2]) {
       const planned = planGifts(pair, [], { [line]: "This row is invalid." });
@@ -659,10 +779,14 @@ describe("gifts", () => {
   test("a same-account pair stays skipped and checks actual prior gift entries before skipping", () => {
     const legs = importRows(planGifts(pair), () => false).map((r) => ({ ...r, accountId: ACCOUNT }));
     for (const sides of [[], [0], [1], [0, 1]]) {
-      for (const change of [{}, { unitPrice: "40" }, { comment: "Earlier gift" }]) {
+      for (const [timeZone, change] of [
+        ["Asia/Kolkata", {}], ["Asia/Kolkata", { unitPrice: "40" }], ["Asia/Kolkata", { comment: "Earlier gift" }],
+        ["Asia/Kolkata", { date: "2024-06-02T20:30:00+00:00" }], ["America/Toronto", { sourceSystem: "CSV" }],
+        ["Asia/Kolkata", { sourceSystem: "CSV", isUserModified: true, date: "2024-06-02T20:30:00+00:00" }],
+      ]) {
         const existing = sides.map((i) => ({ ...stored(legs[i]), ...change }));
         const funds = fundsOf(pair);
-        const entered = giftEntries(existing, funds);
+        const entered = giftEntries(existing, funds, timeZone);
         const input = {
           target: (f, s) => ({ ...target(f, s), openingCovered: true }),
           alreadyImported: indexActivities(existing, funds).has,

@@ -843,6 +843,34 @@ describe("gifts", () => {
     }
   });
 
+  test("two gifts of different sizes between the same folios on one day pair by their units", () => {
+    const small = (gift) => gift({ amount: gift === giftOut ? "-10000.00" : "10000.00", units: gift === giftOut ? "-200.000" : "200.000" });
+    for (const into of [[giftIn(), small(giftIn)], [small(giftIn), giftIn()]]) {
+      const mapping = map(twoFolios([purchase, giftOut(), small(giftOut)], into));
+      assert.deepEqual(mapping.warnings.filter((w) => w.leftOut), []);
+      assert.deepEqual(
+        mapping.transactions.filter((t) => t.receiving).map((t) => [t.activity.quantity, t.receiving.activity.quantity, t.receiving.rows[0].units]),
+        [["1000.000", "1000.000", "1000.000"], ["200.000", "200.000", "200.000"]],
+      );
+    }
+  });
+
+  test("an excluded exact counterpart neither hides a selected disagreement nor makes a pair ambiguous", () => {
+    for (const units of ["200.000", "1000.000"]) {
+      const data = twoFolios([purchase, giftOut({ gift_folio: null })], [giftIn()]);
+      data.folios.push(folio("55555555", scheme("A", [giftIn({ units, amount: null })])));
+      for (const folios of [data.folios, [...data.folios].reverse()]) {
+        const mapping = map({ ...data, folios }, {
+          target: (f, s) => f.folio === RECEIVER ? undefined : input().target(f, s),
+        });
+        const gifts = mapping.transactions.filter((t) => t.activity.activityType.startsWith("TRANSFER_"));
+        assert.equal(gifts.length, units === "1000.000" ? 1 : 0);
+        if (gifts.length) assert.equal(gifts[0].receiving.folio, "55555555");
+        else assert.equal(mapping.warnings.filter((w) => /don't have opposite units/.test(w.message)).length, 2);
+      }
+    }
+  });
+
   test("a named other side with other units or NAV, or none, keeps both out", () => {
     for (const into of [
       ...["999.000", null, "0", "-1000.000"].map((units) => giftIn({ units })),

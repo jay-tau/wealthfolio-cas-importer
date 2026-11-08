@@ -440,7 +440,7 @@ const folioNumber = (folio: string) => folio.match(/\d+/)?.[0];
  * that another gift the other way could be taken for is left out.
  */
 function matchGifts(schemes: Scheme[]) {
-  const gifts = schemes.flatMap((s) => s.entries.filter((e) => e.kind === "gift"));
+  const gifts = schemes.filter((s) => s.target).flatMap((s) => s.entries.filter((e) => e.kind === "gift"));
   const opposite = (a: Entry, b: Entry) => a.row.type !== b.row.type && a.row.date === b.row.date;
   // The import compares symbols without exchanges: two accounts, one day, symbol and value.
   const linkable = (a: Entry, b: Entry) => {
@@ -463,14 +463,18 @@ function matchGifts(schemes: Scheme[]) {
     a.row.units !== null && b.row.units !== null && cmp(dec(a.row.units), neg(dec(b.row.units))) === 0 &&
     a.row.nav !== null && b.row.nav !== null && cmp(dec(a.row.nav), dec(b.row.nav)) === 0;
   for (const gift of gifts) {
-    // The other side, named but with other units or NAV, or none: one of the two rows is misread.
-    const misread = gifts.filter((g) => named(gift, g) && !sides(gift, g) && gift.scheme.target && g.scheme.target);
-    if (misread.length) {
-      gift.problem ??= `This gift and its other side, in folio ${misread[0].scheme.folio.folio}, don't have opposite units and the same NAV, so neither side is imported. Check both rows against the PDF.`;
-    }
     const candidates = gifts.filter((other) => sides(gift, other));
     const [other] = candidates;
     if (candidates.length === 1 && gifts.filter((g) => sides(other, g)).length === 1) gift.counterpart = other;
+  }
+  for (const gift of gifts) {
+    // An unpaired other side, named but with other units or NAV, or none: one of the two rows is
+    // misread. Two gifts between the same folios on one day pair by their own units first.
+    const misread = gifts.filter((g) =>
+      !gift.counterpart && !g.counterpart && named(gift, g) && !sides(gift, g));
+    if (misread.length) {
+      gift.problem ??= `This gift and its other side, in folio ${misread[0].scheme.folio.folio}, don't have opposite units and the same NAV, so neither side is imported. Check both rows against the PDF.`;
+    }
     // A gift left out here takes its other side with it, in `pairGifts`.
     const rivals = gifts.filter((g) => g !== gift.counterpart && linkable(gift, g));
     if (rivals.length) {
@@ -523,16 +527,12 @@ function pairGifts(schemes: Scheme[], fails: (entry: Entry) => boolean, input: M
   const gifts = schemes.flatMap((s) => s.entries.filter((e) => e.kind === "gift"));
   for (const out of gifts.filter((g) => g.counterpart && g.row.type === "GIFT_OUT")) {
     const into = out.counterpart!;
-    if (!out.scheme.target || !into.scheme.target) {
-      out.counterpart = into.counterpart = undefined;
-      continue;
-    }
     const failed = [out, into].filter(fails);
     const problem = failed.length
       ? "The other side of this gift can't be imported, so neither side is."
       : confirmedFund(out.scheme) !== confirmedFund(into.scheme)
         ? "The two sides of this gift are confirmed as different Wealthfolio assets, so neither side is imported. Confirm the same fund for both under Funds."
-        : out.scheme.target.accountId === into.scheme.target.accountId
+        : out.scheme.target!.accountId === into.scheme.target!.accountId
           ? [out, into].some((side) => side.rows && input.entered?.(side.rows.activity))
             ? "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported. Wealthfolio has a transfer or trade of these units on this day, which changes their cost and purchase dates: delete it, with its other side or cash."
             : "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported."

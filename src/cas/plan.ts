@@ -248,8 +248,11 @@ export function planImport(
   existing: ActivityDetails[],
   checked: ActivityImport[],
   funds: FundRefs,
+  /** Wealthfolio's timezone setting, from `engineTimeZone`: the day it counts a hand-entered activity on. */
+  timeZone = "UTC",
 ): PlannedTransaction[] {
   const available = indexActivities(existing, funds).index;
+  const byId = new Map(existing.map((a) => [a.id, a]));
   // Stored group rows can make a new conversion fail the whole import.
   const groups = new Set(existing.flatMap((a) => groupOf(a) ?? []));
   const seen = new Map<string, number>();
@@ -264,12 +267,16 @@ export function planImport(
       const keys = activity === transaction.cash ? cashIdentities(activity) : [{ key: rowIdentity(activity), type: undefined }];
       const deferCash = activity === transaction.cash && !tradeFound;
       const match = settled || deferCash ? undefined : keys.find(({ key }) => available.get(key)?.length);
+      // Keep untouched imported dates; form entries and edited gifts must also match their engine day.
+      const ids = match && available.get(match.key)!;
+      const at = ids?.findIndex((id) => !activity.activityType.startsWith("TRANSFER_") || !activity.symbol?.trim() ||
+        giftDay(byId.get(id)!, timeZone) === day(activity.date)) ?? -1;
       const unchecked = newAmfiFund(activity, result);
       const row: PlannedRow = {
         activity,
         errors: unchecked ? [] : messages(result?.errors),
         warnings: messages(result?.warnings, "_duplicate"),
-        existingId: match && available.get(match.key)!.shift(),
+        existingId: at < 0 ? undefined : ids!.splice(at, 1)[0],
         existingType: match?.type,
         repeatsLine: settled ? undefined : seen.get(keys[0].key),
         flagged: !!(result?.duplicateOfId || result?.duplicateOfLineNumber),
@@ -350,8 +357,7 @@ export function planImport(
     // Sent alone, one side of a gift between two folios would be a transfer with no other side.
     if (t.transaction.receiving && t.rows.some((r) => r.existingId) && !t.rows.every((r) => r.existingId)) t.problem = PART_OF_GIFT;
   }
-  const likely = giftEntries(existing, funds);
-  const byId = new Map(existing.map((a) => [a.id, a]));
+  const likely = giftEntries(existing, funds, timeZone);
   for (const t of planned) {
     const { receiving } = t.transaction;
     // Both sides of a gift between two folios count as imported once Wealthfolio has linked them.
@@ -384,7 +390,9 @@ export function planImport(
     // A gift entered by hand has the same units on the same day, as a transfer or a trade.
     for (const r of t.rows) {
       if (!r.activity.activityType.startsWith("TRANSFER_") || !r.activity.symbol?.trim()) continue;
-      const found = likely(r.activity).filter((a) => available.get(activityIdentity(a, funds)!)?.includes(a.id));
+      // A UTC match reserved on another day must not hide this day's hand-entered gift.
+      const found = likely(r.activity).filter((a) =>
+        available.get(activityIdentity(a, funds)!)?.includes(a.id) || day(a.date) !== day(r.activity.date));
       if (found.length) t.problem ??= handEntered(found);
     }
   }
@@ -421,17 +429,24 @@ const handEntered = (found: ActivityDetails[]) => {
   return `Wealthfolio has ${names.join(" and ")} of these units on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`;
 };
 
+/** Form edits preserve CSV origin but can change its date; untouched imports keep their UTC day. */
+const giftDay = (a: ActivityDetails, timeZone: string) =>
+  a.sourceSystem === "CSV" && !a.isUserModified ? day(a.date) : localDay(a.date, timeZone);
+
 /**
  * Activities that may be a gift's row entered another way: in its account and fund, on its day,
- * with its units, as a transfer or a trade in the same direction.
+ * with its units, as a transfer or a trade in the same direction. CSV imports use their UTC day;
+ * edited ones may also use their engine day, since the edit needn't have changed the date. Other
+ * entries use their day in `timeZone`, from `engineTimeZone`. Exact import keys stay UTC.
  */
-export function giftEntries(existing: ActivityDetails[], funds: FundRefs) {
+export function giftEntries(existing: ActivityDetails[], funds: FundRefs, timeZone: string) {
   return (row: ActivityImport) => {
     const types = row.activityType === "TRANSFER_IN" ? ["TRANSFER_IN", "BUY"] : ["TRANSFER_OUT", "SELL"];
     const fund = fundRef(row.symbol!, row.exchangeMic);
+    const on = day(row.date);
     return existing.filter((a) =>
       a.accountId === row.accountId && types.includes(a.activityType) && !!a.assetId && funds.get(a.assetId) === fund &&
-      day(a.date) === day(row.date) && amount(a.quantity) === amount(row.quantity));
+      (giftDay(a, timeZone) === on || (a.sourceSystem === "CSV" && day(a.date) === on)) && amount(a.quantity) === amount(row.quantity));
   };
 }
 

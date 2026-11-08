@@ -302,13 +302,14 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       // Groups span accounts; shortcut: the host hides archived activities until its search API includes them.
       const existing = await api.activities.getAll();
       const funds = await fundsIn(existing);
+      const timeZone = await engineTimeZone(api.settings);
       // A fund that starts with units needs Wealthfolio to hold exactly those before the statement.
       const covered = new Set(
-        openingUnits(data, target, existing, funds, await engineTimeZone(api.settings))
+        openingUnits(data, target, existing, funds, timeZone)
           .filter(sameUnits)
           .flatMap((f) => f.schemes),
       );
-      const entered = giftEntries(existing, funds);
+      const entered = giftEntries(existing, funds, timeZone);
       const mapping = mapStatement(data, {
         target: (folio, scheme) => {
           const t = target(folio, scheme);
@@ -323,7 +324,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       });
       const rows = rowsOf(mapping);
       const checked = rows.length ? await api.activities.checkImport(rows) : [];
-      const plan = planImport(mapping, existing, checked, funds);
+      const plan = planImport(mapping, existing, checked, funds, timeZone);
       // A bank transfer already linked to another can't be reused.
       const transfers = new Set(
         plan.flatMap((t) => bankCandidates(t, existing)).flatMap((a) => (a.activityType.startsWith("TRANSFER") ? [a.id] : [])),
