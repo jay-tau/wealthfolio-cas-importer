@@ -89,6 +89,8 @@ const host = {
   ambiguousSummary: false,
   // Summary statements print no ISIN for the funds with these.
   summaryWithoutIsin: [] as string[],
+  // Summary statements print these funds' units as "N.A.", which the parser reads as 0.
+  summaryMisread: [] as string[],
   reopen: () => {},
   // Asset pricing mode belongs to the asset, independently of any account or snapshot.
   pricingModes: {} as Record<string, string>,
@@ -250,6 +252,11 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
   if (data.cas_type === "SUMMARY" && host.summaryWithoutIsin.length) {
     data.folios = data.folios.map((f) => ({
       ...f, schemes: f.schemes.map((s) => (s.isin && host.summaryWithoutIsin.includes(s.isin) ? { ...s, isin: null } : s)),
+    }));
+  }
+  if (data.cas_type === "SUMMARY" && host.summaryMisread.length) {
+    data.folios = data.folios.map((f) => ({
+      ...f, schemes: f.schemes.map((s) => (s.isin && host.summaryMisread.includes(s.isin) ? { ...s, close: "0" } : s)),
     }));
   }
   if (host.ambiguousSummary && data.cas_type === "SUMMARY") {

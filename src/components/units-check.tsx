@@ -26,7 +26,10 @@ const BADGES = {
 
 /** Where the statement lists the holding: each folio, demat account or PRAN once. */
 const listedIn = (check: UnitCheck) =>
-  [...new Set(check.lines.map(({ source, holding }) => `${source.label}${isZero(dec(holding.units)) ? " (no units)" : ""}`))].join("; ");
+  [...new Set([
+    ...check.lines.map(({ source, holding }) => `${source.label}${isZero(dec(holding.units)) ? " (no units)" : ""}`),
+    ...(check.misread ?? []).map(({ source }) => `${source.label} (may be misread)`),
+  ])].join("; ");
 
 export interface Checked {
   checks: UnitCheck[];
@@ -120,7 +123,7 @@ export function UnitsCheckCard({
                           ))}
                         </div>
                       </TableCell>
-                      <TableCell className="text-end tabular-nums">{format(check.statement)}</TableCell>
+                      <TableCell className="text-end tabular-nums">{check.misread ? "Unknown" : format(check.statement)}</TableCell>
                       <TableCell className="text-end tabular-nums">
                         {check.held !== undefined ? format(check.held) : check.accounts.length ? "Unknown" : ""}
                       </TableCell>

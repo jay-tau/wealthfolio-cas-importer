@@ -42,6 +42,7 @@ export const ready = (plans: AccountPlan[], choices: ReadonlyMap<string, Choices
   });
 
 function status(position: PlannedPosition, yes: boolean) {
+  if (position.misread) return position.existing ? { badge: "Kept", variant: "secondary" as const } : { badge: "Left out", variant: "secondary" as const };
   if (!position.lines.length) return yes ? { badge: "Kept", variant: "secondary" as const } : { badge: "Removed", variant: "warning-subtle" as const };
   if (!yes) return { badge: "Left out", variant: "secondary" as const };
   return position.existing ? { badge: "Updated", variant: "success-subtle" as const } : { badge: "New", variant: "success-subtle" as const };
@@ -164,13 +165,14 @@ function AccountPreview({
             const { badge, variant } = status(position, yes);
             const statement = position.lines.length > 0;
             const before = position.existing?.units;
+            const listedIn = [...new Set([...position.lines, ...(position.misread ?? [])].map((l) => l.source.label))];
             return (
               <TableRow key={position.key}>
                 <TableCell>
                   <div className="grid gap-1">
                     <span>{position.name}</span>
                     <span className="text-muted-foreground text-xs">
-                      {statement ? position.lines.map((l) => l.source.label).join("; ") : "Not on the statement"}
+                      {listedIn.length ? listedIn.join("; ") : "Not on the statement"}
                     </span>
                   </div>
                 </TableCell>
@@ -198,10 +200,13 @@ function AccountPreview({
                         {note}
                       </span>
                     ))}
-                    <Label className="flex items-center gap-2 text-xs font-normal">
-                      <Checkbox disabled={importing} checked={yes} onCheckedChange={() => onFlip(position.key)} />
-                      {statement ? "Import" : "Keep"}
-                    </Label>
+                    {/* A misread line holds it back: the import leaves the account's position as it is. */}
+                    {!position.misread && (
+                      <Label className="flex items-center gap-2 text-xs font-normal">
+                        <Checkbox disabled={importing} checked={yes} onCheckedChange={() => onFlip(position.key)} />
+                        {statement ? "Import" : "Keep"}
+                      </Label>
+                    )}
                   </div>
                 </TableCell>
               </TableRow>

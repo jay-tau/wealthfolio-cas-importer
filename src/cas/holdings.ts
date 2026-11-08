@@ -1,5 +1,5 @@
 import type { ActivityDetails, SnapshotHoldingInput } from "@wealthfolio/addon-sdk";
-import { add, dec, type Dec, div, format, isZero, mul } from "./decimal.ts";
+import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
 import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
 import { type CasData, type DepositoryData, isDepository, type Statement } from "./types.ts";
@@ -50,6 +50,11 @@ export interface Source {
   holdings: StatementHolding[];
   /** Holdings printed with zero units: checked against transactions, never put in a snapshot. */
   zero?: StatementHolding[];
+  /**
+   * Summary statement lines that may have been misread: kept to reconcile their identifiers, never
+   * put in a snapshot. Their asset's holding stays as it is.
+   */
+  misread?: StatementHolding[];
 }
 
 export interface LeftOutLine {
@@ -78,6 +83,27 @@ function withUnits(leftOut: LeftOutLine[], label: string, source: Source, h: Sta
   leftOut.push({ source: label, name: h.name, reason: "No units on the statement." });
   if (zero(h.units)) (source.zero ??= []).push(h);
   return false;
+}
+
+const PAISA = dec("0.01");
+const HALF = dec("0.5");
+
+/**
+ * Why a summary statement's line may have been misread, or undefined when its units × NAV give its
+ * value to the paisa plus the units' and NAV's rounding, or it has neither units nor value. casparser
+ * reads a cell it can't read as 0, and a number too wide for its column without its leading
+ * digits, without a warning.
+ */
+function misread(h: StatementHolding) {
+  if (!positive(h.units)) return positive(h.value) ? `It has no units but a value of ₹${h.value}` : undefined;
+  if (!positive(h.price)) return `It has ${h.units} units but no NAV`;
+  const units = dec(h.units);
+  const nav = dec(h.price);
+  const halfUnit = mul(HALF, step(units.scale));
+  const halfNav = mul(HALF, step(nav.scale));
+  const tolerance = add(add(mul(nav, halfUnit), mul(add(units, halfUnit), halfNav)), PAISA);
+  if (cmp(abs(sub(mul(units, nav), dec(h.value || "0"))), tolerance) <= 0) return undefined;
+  return `Its value of ₹${h.value || "0"} differs from ${h.units} units × NAV ${h.price} by more than the units' and NAV's rounding`;
 }
 
 /** Keep both identities: a later summary can omit an ISIN that was printed before. */
@@ -172,7 +198,11 @@ function readSummary(data: CasData): Holdings {
         cost: printedCost(scheme.valuation.cost),
         details: printed({ name: scheme.scheme, isin: scheme.isin, registrar: scheme.rta, schemeCode: scheme.rta_code }),
       };
-      if (withUnits(leftOut, label, source, holding)) source.holdings.push(holding);
+      const why = misread(holding);
+      if (why) {
+        leftOut.push({ source: label, name: holding.name, reason: `${why}, so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.` });
+        (source.misread ??= []).push(holding);
+      } else if (withUnits(leftOut, label, source, holding)) source.holdings.push(holding);
     }
   }
   return {
@@ -364,6 +394,12 @@ export interface PlanInput {
   heldElsewhere(ref: string, accountId: string): OtherAccount[];
 }
 
+/** A holding as a folio, demat account or PRAN lists it. */
+export interface Line {
+  source: Source;
+  holding: StatementHolding;
+}
+
 /** A bond's face value times the number of bonds stands in for its unprinted cost. */
 export type CostSource = "statement" | "wealthfolio" | "face";
 
@@ -376,7 +412,12 @@ export interface PlannedPosition {
   /** Set when the account's snapshot has the asset. */
   existing?: ExistingPosition;
   /** The statement's lines for the asset; empty when only the account has it. */
-  lines: { source: Source; holding: StatementHolding }[];
+  lines: Line[];
+  /**
+   * The statement's lines that may have been misread and may be this asset. With any, the account's
+   * position stays as it is, without the statement's lines, and the user can't change that.
+   */
+  misread?: Line[];
   asset?: ChosenAsset;
   /** The statement's units, summed over its lines. */
   units?: string;
@@ -402,7 +443,7 @@ export interface AccountPlan {
 
 /** Each account's snapshot, before the user's changes in the preview. */
 export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan[] {
-  const plans = new Map<string, AccountPlan & { byRef: Map<string, PlannedPosition> }>();
+  const plans = new Map<string, AccountPlan & { byRef: Map<string, PlannedPosition>; misread: Line[] }>();
   let order = 0;
   for (const source of holdings.sources) {
     const accountId = input.account(source);
@@ -418,11 +459,12 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
           { key: p.ref, ref: p.ref, name: p.name, existing: p, lines: [], include: true, notes: [], order: Infinity },
         ]),
       );
-      plan = { accountId, date: holdings.date, existing, sources: [], remembered: new Map(), positions: [], byRef };
+      plan = { accountId, date: holdings.date, existing, sources: [], remembered: new Map(), positions: [], byRef, misread: [] };
       plans.set(accountId, plan);
     }
     plan.sources.push(source);
     plan.remembered.set(source.id, input.remembered(source, accountId));
+    plan.misread.push(...(source.misread ?? []).map((holding) => ({ source, holding })));
     for (const holding of source.holdings) {
       const chosen = input.asset(holding);
       if (!chosen) continue;
@@ -445,12 +487,14 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     }
   }
 
-  return [...plans.values()].map(({ byRef, ...plan }) => {
+  return [...plans.values()].map(({ byRef, misread, ...plan }) => {
     for (const [key, position] of byRef) {
       if (!position.lines.length && [...byRef.values()].some((p) => p.ref === position.ref && p.lines.length)) byRef.delete(key);
     }
+    holdBack([...byRef.values()], misread, plan.remembered, input);
     for (const position of byRef.values()) {
-      if (position.lines.length) settleStatement(position, plan.accountId, input);
+      if (position.misread) settleHeldBack(position);
+      else if (position.lines.length) settleStatement(position, plan.accountId, input);
       else settleOther(position, plan.sources, plan.accountId, input);
     }
     // The statement's holdings in its order, then the account's others in theirs.
@@ -460,6 +504,49 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
 }
 
 const sum = (values: string[]) => values.reduce((total, v) => add(total, dec(v)), dec("0"));
+
+/**
+ * Gives each misread line to the positions that may be its asset: the one the user confirmed for
+ * it, any whose lines print one of its identifiers, and any an earlier import recorded under one.
+ * Their lines would add up to only part of the account's units, so none of them changes.
+ */
+function holdBack(positions: PlannedPosition[], misread: Line[], remembered: AccountPlan["remembered"], input: PlanInput) {
+  for (const line of misread) {
+    const ids = new Set(security(line.holding));
+    const shares = (list: readonly string[] | undefined) => !!list?.some((id) => ids.has(id));
+    const chosen = input.asset(line.holding);
+    const chosenRef = chosen && fundRef(chosen.symbol, chosen.exchangeMic);
+    const refs = new Set(positions.filter((p) =>
+      p.ref === chosenRef ||
+      (chosen?.assetId !== undefined && p.existing?.assetId === chosen.assetId) ||
+      p.lines.some((l) => shares(security(l.holding))) ||
+      (p.existing && [...remembered.values()].some((r) => shares(r.get(p.ref)) || shares(r.get(p.existing!.ref)))),
+    ).map((p) => p.ref));
+    for (const p of positions) if (refs.has(p.ref)) (p.misread ??= []).push(line);
+  }
+}
+
+const misreadIn = (lines: Line[]) =>
+  `Its ${lines.length > 1 ? "lines" : "line"} in ${[...new Set(lines.map((l) => l.source.label))].join(" and ")} may have been misread`;
+const checkPdf = (lines: Line[]) => `Check ${lines.length > 1 ? "them" : "it"} against the PDF.`;
+
+/** A position a misread line may be: the account keeps it as it is, or doesn't get it. */
+function settleHeldBack(position: PlannedPosition) {
+  // Statement lines aren't imported; the account's position is kept.
+  position.include = !position.lines.length;
+  const misread = position.misread!;
+  position.notes.push(
+    position.existing
+      ? `${misreadIn(misread)}, so this import leaves it as it is: its units, cost and price stay. ${checkPdf(misread)}`
+      : `${misreadIn(misread)}, so it isn't imported. ${checkPdf(misread)}`,
+  );
+  if (position.existing?.split) {
+    position.notes.push("A split was recorded since the account's snapshot, so these units predate it. Correct its units in Wealthfolio after saving.");
+  }
+  if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
+    position.notes.push("It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
+  }
+}
 
 function settleStatement(position: PlannedPosition, accountId: string, input: PlanInput) {
   const holdings = position.lines.map((l) => l.holding);
@@ -488,7 +575,11 @@ function settleStatement(position: PlannedPosition, accountId: string, input: Pl
     position.notes.push("The statement prints a cost for only some of its lines for this holding.");
   }
 
-  if (pricedByHand(position)) position.notes.push("Priced by hand: saving also saves the statement's price as its price on this date.");
+  if (pricedByHand(position)) {
+    position.notes.push(statementPrice(position) !== undefined
+      ? "Priced by hand: saving also saves the statement's price as its price on this date."
+      : "Priced by hand, but the statement prints no price for it. Enter its price for this date on its asset page after saving.");
+  }
 
   const others = input.heldElsewhere(position.ref, accountId);
   const tracked = others.filter((o) => o.tracksTransactions);
@@ -505,13 +596,14 @@ function settleStatement(position: PlannedPosition, accountId: string, input: Pl
 
 function settleOther(position: PlannedPosition, sources: Source[], accountId: string, input: PlanInput) {
   // A holding the statement still lists, but that this import leaves out, wasn't sold.
-  const listed = new Set(sources.flatMap((s) => s.holdings.flatMap(security)));
+  const lines = (s: Source) => [...s.holdings, ...(s.misread ?? [])];
+  const listed = new Set(sources.flatMap((s) => lines(s).flatMap(security)));
   let uncertain = false;
   const from = sources.filter((s) => {
     const earlier = input.remembered(s, accountId).get(position.ref);
     if (!earlier || earlier.some((id) => listed.has(id))) return false;
     // Missing ISINs across formats can leave no common identity to compare.
-    if (s.holdings.some((h) => !security(h).some((id) => earlier.some((old) => old.includes("|") === id.includes("|"))))) {
+    if (lines(s).some((h) => !security(h).some((id) => earlier.some((old) => old.includes("|") === id.includes("|"))))) {
       uncertain = true;
       return false;
     }
@@ -549,6 +641,9 @@ const keepsAverageCost = (p: ExistingPosition | undefined) => !!p?.manual && non
 
 const names = (accounts: { name: string }[]) => accounts.map((a) => a.name).join(", ");
 
+/** The first positive price the statement's lines print for the position. */
+const statementPrice = (position: PlannedPosition) => position.lines.map((l) => l.holding.price).find((price) => positive(price));
+
 /** The total cost a position goes in with, after the user's typing; undefined when unknown. */
 export function costOf(position: PlannedPosition, typed: string | undefined) {
   if (position.cost?.from === "statement") return position.cost.total;
@@ -566,8 +661,9 @@ export interface Choices {
   costs: ReadonlyMap<string, string>;
 }
 
+/** Whether the statement's lines replace the account's units, or for others whether the account keeps them. */
 export const included = (position: PlannedPosition, choices: Choices) =>
-  position.include !== choices.flipped.has(position.key);
+  position.misread ? position.include : position.include !== choices.flipped.has(position.key);
 
 /** What `snapshots.save` gets for the account. */
 export function snapshotOf(plan: AccountPlan, choices: Choices) {
@@ -629,8 +725,12 @@ function existingHolding(p: ExistingPosition): SnapshotHoldingInput {
 export function importedRefs(plan: AccountPlan, choices: Choices) {
   const updated = new Set(plan.positions.filter((p) => p.lines.length && included(p, choices)).map((p) => p.ref));
   const kept = new Set(plan.positions.filter((p) => p.existing && !updated.has(p.ref) && (p.lines.length || included(p, choices))).map((p) => p.ref));
+  const heldBack = plan.positions.filter((p) => p.misread && p.existing);
+  const ids = new Set(heldBack.flatMap((p) => [...p.lines, ...p.misread!].flatMap((l) => security(l.holding))));
+  for (const p of heldBack) kept.add(p.existing!.ref);
   const refs = new Map(plan.sources.map((source) => [source.id, {
-    source, refs: Object.fromEntries([...(plan.remembered.get(source.id) ?? [])].filter(([ref]) => kept.has(ref))),
+    // Held-back positions keep their recorded identifiers even under an earlier symbol.
+    source, refs: Object.fromEntries([...(plan.remembered.get(source.id) ?? [])].filter(([ref, security]) => kept.has(ref) || security.some((id) => ids.has(id)))),
   }]));
   for (const position of plan.positions) {
     if (!position.lines.length || !included(position, choices)) continue;
@@ -664,15 +764,16 @@ export interface PriceToSave {
  * The manual-priced holdings in the account's snapshot, and the price each should have on its date.
  * `listed` has the statement's price for each asset any account's import lists (`fundRef` → price):
  * one this account only keeps gets it too, since saving this snapshot writes its average cost over it.
+ * A statement's price that isn't positive is never saved; a kept holding then gets the price it had.
  */
 export function pricesToSave(plan: AccountPlan, choices: Choices, listed: ReadonlyMap<string, string> = new Map()): PriceToSave[] {
   const prices = new Map<string, PriceToSave>();
   for (const position of plan.positions) {
     if (!position.lines.length || !included(position, choices) || prices.has(position.ref)) continue;
-    if (!pricedByHand(position)) continue;
-    const { holding } = position.lines[0];
+    const price = pricedByHand(position) ? statementPrice(position) : undefined;
+    if (price === undefined) continue;
     prices.set(position.ref, {
-      ref: position.ref, assetId: position.existing?.assetId ?? position.asset?.assetId, name: position.name, price: holding.price, currency: CURRENCY, from: "statement",
+      ref: position.ref, assetId: position.existing?.assetId ?? position.asset?.assetId, name: position.name, price, currency: CURRENCY, from: "statement",
     });
   }
   for (const position of plan.positions) {
@@ -680,8 +781,8 @@ export function pricesToSave(plan: AccountPlan, choices: Choices, listed: Readon
     if (!p || prices.has(position.ref) || !(position.lines.length || included(position, choices))) continue;
     if (!keepsAverageCost(p)) continue;
     const statement = listed.get(position.ref);
-    if (statement !== undefined) {
-      prices.set(position.ref, { ref: position.ref, assetId: p.assetId, name: position.name, price: statement, currency: CURRENCY, from: "statement" });
+    if (positive(statement)) {
+      prices.set(position.ref, { ref: position.ref, assetId: p.assetId, name: position.name, price: statement!, currency: CURRENCY, from: "statement" });
     } else if (p.price) {
       prices.set(position.ref, { ref: position.ref, assetId: p.assetId, name: position.name, price: p.price.close, currency: p.price.currency, from: "earlier" });
     }
@@ -703,8 +804,10 @@ export interface UnitCheck {
   ref: string;
   name: string;
   /** The statement's lines for the asset, printed zeros included. */
-  lines: { source: Source; holding: StatementHolding }[];
-  /** Summed over its lines. */
+  lines: Line[];
+  /** Lines that may have been misread and may be this asset: its units on the statement are unknown. */
+  misread?: Line[];
+  /** Summed over its lines, without any misread ones. */
   statement: Dec;
   /** Accounts with posted activities for the asset on or before the statement's date. */
   accounts: CheckedAccount[];
@@ -771,6 +874,22 @@ export function checkUnits(holdings: Holdings, input: CheckInput): UnitCheck[] {
       checks.set(ref, check);
     }
   }
+  // A misread line goes with its asset's check, and with the checks of lines that print one of its identifiers.
+  for (const source of holdings.sources) {
+    for (const holding of source.misread ?? []) {
+      const ids = new Set(security(holding));
+      const targets = new Set([...checks.values()].filter((c) => c.lines.some((l) => security(l.holding).some((id) => ids.has(id)))));
+      const asset = input.asset(holding);
+      if (asset) {
+        const { ref, problem } = identify(asset);
+        const check = checks.get(ref) ?? { ref, name: holding.name, lines: [], statement: dec("0"), accounts: [], held: undefined };
+        check.problem ??= problem;
+        checks.set(ref, check);
+        targets.add(check);
+      }
+      for (const check of targets) (check.misread ??= []).push({ source, holding });
+    }
+  }
   return [...checks.values()].map((check) => {
     if (!Array.isArray(activities)) return { ...check, problem: `Couldn't read Wealthfolio's activities: ${activities.error}` };
     if (check.problem) return check;
@@ -787,6 +906,10 @@ export function checkUnits(holdings: Holdings, input: CheckInput): UnitCheck[] {
       check.held = check.accounts.reduce((total, a) => add(total, a.units!), dec("0"));
     }
     return check;
+  }).map((check) => {
+    if (!check.misread) return check;
+    const misread = `${misreadIn(check.misread)}, so its units on the statement are unknown. ${checkPdf(check.misread)}`;
+    return { ...check, problem: check.problem ? `${misread} ${check.problem}` : misread };
   });
 }
 

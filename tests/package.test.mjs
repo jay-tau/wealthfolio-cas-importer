@@ -39,6 +39,28 @@ function archive(main, file, method) {
 
 const temporary = await mkdtemp(join(tmpdir(), "cas-package-"));
 after(() => rm(temporary, { recursive: true, force: true }));
+
+// Every top-level await comes before the first test: node:test can run the root's after() once
+// the tests registered so far finish, deleting `temporary` under a test registered later.
+// A made-up add-on with every file pnpm package zips, and a source map it leaves out. Its README,
+// LICENSE, notices and licenses/ are the real ones, which the zip must carry unchanged.
+const LICENSES = (await readdir("licenses")).sort();
+const ADDON = {
+  "package.json": JSON.stringify({ name: "addon", version: "1.0.0" }),
+  "manifest.json": JSON.stringify({ main: "dist/addon.js" }),
+  "dist/addon.js": "void 0;",
+  "dist/addon.js.map": "{}",
+  "assets/runtime/b.whl": "b".repeat(1000),
+  "assets/runtime/a.json": "{}",
+  "assets/runtime/C.txt": "C",
+  "README.md": await readFile("README.md"),
+  LICENSE: await readFile("LICENSE"),
+  "THIRD_PARTY_NOTICES.md": await readFile("THIRD_PARTY_NOTICES.md"),
+  ...Object.fromEntries(await Promise.all(LICENSES.map(async (name) => [
+    `licenses/${name}`, await readFile(join("licenses", name)),
+  ]))),
+};
+
 for (const method of [0, 8]) {
   test(`checks the archived manifest with compression ${method}`, async () => {
     const path = join(temporary, `main-${method}.zip`);
@@ -59,24 +81,6 @@ test("labels the add-on AGPL-3.0-or-later in package.json and manifest.json", as
   }
 });
 
-// A made-up add-on with every file pnpm package zips, and a source map it leaves out. Its README,
-// LICENSE, notices and licenses/ are the real ones, which the zip must carry unchanged.
-const LICENSES = (await readdir("licenses")).sort();
-const ADDON = {
-  "package.json": JSON.stringify({ name: "addon", version: "1.0.0" }),
-  "manifest.json": JSON.stringify({ main: "dist/addon.js" }),
-  "dist/addon.js": "void 0;",
-  "dist/addon.js.map": "{}",
-  "assets/runtime/b.whl": "b".repeat(1000),
-  "assets/runtime/a.json": "{}",
-  "assets/runtime/C.txt": "C",
-  "README.md": await readFile("README.md"),
-  LICENSE: await readFile("LICENSE"),
-  "THIRD_PARTY_NOTICES.md": await readFile("THIRD_PARTY_NOTICES.md"),
-  ...Object.fromEntries(await Promise.all(LICENSES.map(async (name) => [
-    `licenses/${name}`, await readFile(join("licenses", name)),
-  ]))),
-};
 // 2026-10-27 13:54:18 UTC, in seconds and as a zip's time and date.
 const COMMIT_TIME = 1793109258;
 const ZIP_TIME = (13 << 11) | (54 << 5) | (18 >> 1);
