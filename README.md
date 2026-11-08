@@ -12,7 +12,7 @@ imported as holdings (see [Summary and depository statements](#summary-and-depos
 Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0 and 3.12.0) and
 Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on macOS.
 
-To import, pick the PDF and enter its password, choose a Wealthfolio account that tracks
+To import, pick the PDF and enter its password, if it has one, choose a Wealthfolio account that tracks
 transactions for each PAN (and, if you like, a different one for a folio), and confirm the
 Wealthfolio fund for each scheme; the
 add-on searches by the ISIN printed on the statement, and by the fund's name if the ISIN finds
@@ -303,7 +303,8 @@ Install the browsers first with `pnpm exec playwright-core install chromium fire
 
 The statements in `tests/fixtures/` are made up. `make_cas.py` (detailed), `make_summary_cas.py`,
 `make_nsdl_cas.py` and `make_cdsl_cas.py` write them (they need `reportlab` and `pikepdf`); their
-password is `ABCDE1234F`. Never commit a real statement.
+password is `ABCDE1234F`, except `made-up-cas-no-password.pdf` (`make_cas.py --no-password`), which has
+none. Never commit a real statement.
 
 ## Updating casparser and Pyodide
 

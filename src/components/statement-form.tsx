@@ -50,6 +50,8 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
   const keepPassword = async () => {
     try {
       if (remember) {
+        // An empty password, for a statement without one, doesn't replace a saved one.
+        if (!password) return;
         await ctx.api.secrets.set(PASSWORD_SECRET, password);
         setSaved(true);
       } else if (saved) {
@@ -90,7 +92,8 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
   };
 
   const locked = disabled || reading || loadingPassword;
-  const canRead = Boolean(file && password) && !locked;
+  // A statement without a password reads with any password, an empty one included.
+  const canRead = Boolean(file) && !locked;
 
   return (
     <div className="space-y-4">
@@ -116,12 +119,16 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
             id="cas-password"
             type="password"
             autoComplete="off"
+            aria-describedby="cas-password-hint"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && canRead) void read();
             }}
           />
+          <p id="cas-password-hint" className="text-muted-foreground text-xs">
+            Leave it empty for a statement without a password.
+          </p>
           <div className="flex flex-wrap items-center gap-3">
             <Label className="flex items-center gap-2">
               <Checkbox checked={remember} disabled={locked} onCheckedChange={(checked) => setRemember(checked)} />
