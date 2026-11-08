@@ -71,4 +71,11 @@ for (const name of ["made-up-summary-cams", "made-up-summary-kfintech", "made-up
 test("rejects a wrong password", async () => {
   const { pdf } = await fixture("made-up-cas");
   assert.throws(() => parse(pdf, "WRONGPASS1"), { type: "IncorrectPasswordError" });
+  assert.throws(() => parse(pdf, ""), { type: "IncorrectPasswordError" });
+});
+
+test("reads a statement without a password, whatever the password", async () => {
+  const { expected } = await fixture("made-up-cas");
+  const pdf = new Uint8Array(await readFile("tests/fixtures/made-up-cas-no-password.pdf"));
+  for (const password of ["", "anything"]) assert.deepEqual(JSON.parse(parse(pdf, password)), expected, password);
 });

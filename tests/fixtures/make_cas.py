@@ -1,6 +1,6 @@
 """Write a MADE-UP CAMS detailed Consolidated Account Statement PDF.
 
-Usage: python make_cas.py out.pdf [--mismatch] [--no-price]
+Usage: python make_cas.py out.pdf [--mismatch] [--no-price] [--no-password]
 
 Everything in the statement is invented: investor, PAN (ABCDE1234F, the
 PDF's user password), address, email, phone, folios, AMCs ("Fictiva Mutual
@@ -28,7 +28,8 @@ unit-balance discontinuity in parse_warnings. --no-price leaves out the Price
 column, header and cells, as casparser says some older CAMS and KFintech
 layouts do; casparser then gives each trade amount / units as its NAV.
 
-Output is AES-256 (R6) encrypted with user password "ABCDE1234F".
+Output is AES-256 (R6) encrypted with user password "ABCDE1234F", or with
+--no-password not encrypted, like a statement saved again without its password.
 """
 
 from __future__ import annotations
@@ -574,16 +575,18 @@ def page_one_banner(c, folios: List[Folio]):
 def main(argv: List[str]) -> None:
     args = [a for a in argv if not a.startswith("--")]
     flags = {a for a in argv if a.startswith("--")}
-    if len(args) != 1 or flags - {"--mismatch", "--no-price"}:
-        raise SystemExit("usage: python make_cas.py out.pdf [--mismatch] [--no-price]")
+    if len(args) != 1 or flags - {"--mismatch", "--no-price", "--no-password"}:
+        raise SystemExit("usage: python make_cas.py out.pdf [--mismatch] [--no-price] [--no-password]")
     folios = build_portfolio()
     drop = "sip6" if "--mismatch" in flags else None
     plain = render(folios, lay_out(folios, drop, "--no-price" not in flags))
+    encryption = (
+        False
+        if "--no-password" in flags
+        else pikepdf.Encryption(owner=OWNER_PASSWORD, user=PAN, R=6, aes=True)
+    )
     with pikepdf.open(io.BytesIO(plain)) as pdf:
-        pdf.save(
-            args[0],
-            encryption=pikepdf.Encryption(owner=OWNER_PASSWORD, user=PAN, R=6, aes=True),
-        )
+        pdf.save(args[0], encryption=encryption)
     print("wrote", args[0], "(dropped row: %s)" % drop if drop else "")
 
 

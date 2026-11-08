@@ -109,8 +109,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     assert.equal(await remember.getAttribute("aria-checked"), "false");
     assert.deepEqual((await host()).secrets, []);
+    // A statement without a password reads with the box left empty, so a file is all Read statement
+    // needs; one with a password then says it's wrong.
+    const hint = await frame.locator("#cas-password").getAttribute("aria-describedby");
+    assert.equal(await frame.locator(`#${hint}`).textContent(), "Leave it empty for a statement without a password.");
+    assert.equal(await frame.getByRole("button", { name: "Read statement", exact: true }).isDisabled(), true);
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
-    await frame.locator("#cas-password").fill("WRONGPASS1");
+    assert.equal(await frame.locator("#cas-password").inputValue(), "");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.locator("#cas-file:disabled").waitFor();
     assert.equal(await frame.locator("#cas-password").isDisabled(), true);
@@ -2241,10 +2246,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       [pretend.modes[symbol], pretend.assets[id].instrumentType, pretend.assets[id].quoteCcy]), [["MANUAL", "EQUITY", "INR"], ["MANUAL", "EQUITY", "INR"]]);
 
     // A detailed statement searches for that fund again instead of using the asset priced from statements.
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
-    await frame.locator("#cas-password").fill("ABCDE1234F");
+    // This copy has no password, so it reads with the box empty, and Remember the password keeps the saved one.
+    assert.equal(await remember.getAttribute("aria-checked"), "true");
+    assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-no-password.pdf");
+    await frame.locator("#cas-password").fill("");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
+    assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
     const detailedCorporate = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
     await detailedCorporate.getByLabel("Search for the fund").waitFor();
     assert.equal(await detailedCorporate.getByLabel("Search for the fund").inputValue(), "INFZ91T01CB6");
