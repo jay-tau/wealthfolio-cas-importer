@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Say when casparser couldn't read a statement's date or period, as soon as the statement is read: "casparser couldn't read this statement's date or period, so it can't be imported." casparser leaves the period empty when it doesn't recognise where a statement prints it. Before, a detailed statement was read anyway, and only after its accounts were chosen and every fund confirmed did each Preview the import fail with "Couldn't prepare the preview: Error: Not a statement date: ". A summary or depository statement showed "Couldn't read the statement" with only "Not a statement date: "
 
 ### Security
 
