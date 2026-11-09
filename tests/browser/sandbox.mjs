@@ -2657,7 +2657,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await resume();
     const checkRow = (name) => frame.getByRole("row").filter({ hasText: name });
     await checkRow(flexiName).getByText("Needs review", { exact: true }).waitFor();
-    assert.equal(await checkStatus.textContent(), "Checked the units of 6 holdings.");
+    assert.equal(await checkStatus.textContent(), "Compared the units of 2 of 6 holdings.");
     await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
     assert.deepEqual(await checkRow(flexiName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "2892.104", "2892.104"]);
     // Each holding's Same holdings names it.
@@ -2672,6 +2672,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await checkRow(liquidName).getByText("No account that tracks transactions has posted activities for it on or before 2025-03-31.", { exact: true }).waitFor();
     assert.equal(await checkRow(liquidName).getByRole("checkbox").count(), 0);
     assert.equal(await accountData(), before);
+    // A check that can't read Wealthfolio's activities compares none, and says so.
+    await tab.frames()[1].evaluate(() => { window.host.failHistory = true; });
+    await frame.getByRole("button", { name: "Check units", exact: true }).click();
+    await checkStatus.getByText("Compared the units of 0 of 6 holdings.", { exact: true }).waitFor();
+    await checkRow(flexiName).getByText("Couldn't read Wealthfolio's activities: Error: History unavailable", { exact: true }).waitFor();
+    await tab.frames()[1].evaluate(() => { window.host.failHistory = false; });
     // The next read finds Not set archived, so it isn't compared.
     await editAccounts({ "unset-1": { isArchived: true } });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();

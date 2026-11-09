@@ -75,7 +75,11 @@ export function UnitsCheckCard({
           </Button>
           {blocked && <span className="text-muted-foreground text-sm">{blocked}</span>}
           <p role="status" className="sr-only">
-            {checking ? "Checking the units…" : checked ? `Checked the units of ${plural(checked.checks.length, "holding")}.` : ""}
+            {checking
+              ? "Checking the units…"
+              : checked
+                ? `Compared the units of ${checked.checks.filter((c) => !c.problem).length} of ${plural(checked.checks.length, "holding")}.`
+                : ""}
           </p>
         </div>
         {checked && (
