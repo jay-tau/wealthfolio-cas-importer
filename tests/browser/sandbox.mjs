@@ -1683,6 +1683,59 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["INFZ90K01BA1", "3540.293"],
     ]);
 
+    // A fund left out because Mutual funds holds it, but that an earlier import of its folio added
+    // here, keeps the account's units or removes them only by the user's choice, and removing them
+    // confirms that all of them came from the folio.
+    const replaceBoth = async () => {
+      await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
+      await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
+    };
+    const importFlexiHolding = flexiRow.getByRole("checkbox", { name: "Import Fund INFZ90K01FC8 in Fund folios", exact: true });
+    await preview.click();
+    await importFlexiHolding.dispatchEvent("click");
+    await replaceBoth();
+    await save.click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01FC8").quantity, "2892.104");
+    await preview.click();
+    // Each choice names the holding and account after its visible text, for screen readers.
+    const keepFlexi = flexiRow.getByRole("radio", { name: "Keep its 2892.104 units for Fund INFZ90K01FC8 in Fund folios", exact: true });
+    const removeFlexi = flexiRow.getByRole("radio", {
+      name: "Remove its 2892.104 units: all of them came from Folio 91234567/12 for Fund INFZ90K01FC8 in Fund folios", exact: true,
+    });
+    await keepFlexi.waitFor({ state: "attached" });
+    await flexiRow.getByRole("radiogroup", { name: "Keep or remove its 2892.104 units for Fund INFZ90K01FC8 in Fund folios", exact: true }).waitFor();
+    await flexiRow.getByText(
+      "An earlier import of Folio 91234567/12 recorded adding this holding. Leaving this row out keeps the 2892.104 units this account holds unless you remove them. Keeping them counts them here and in Mutual funds. " +
+      "Keep them, or remove them only if all of them came from Folio 91234567/12: imports don't record how many units each folio, demat account or PRAN added.",
+      { exact: true },
+    ).waitFor();
+    assert.equal(await flexiRow.getByText("Needs a choice", { exact: true }).count(), 1);
+    assert.deepEqual([await keepFlexi.getAttribute("aria-checked"), await removeFlexi.getAttribute("aria-checked")], ["false", "false"]);
+    await replaceBoth();
+    assert.equal(await save.isDisabled(), true);
+    await keepFlexi.dispatchEvent("click");
+    await flexiRow.getByText("Kept", { exact: true }).waitFor();
+    assert.equal(await save.isDisabled(), false);
+    // Importing the statement's units replaces the account's, so there's nothing to choose.
+    await importFlexiHolding.dispatchEvent("click");
+    await flexiRow.getByText("Updated", { exact: true }).waitFor();
+    assert.equal(await flexiRow.getByRole("radio").count(), 0);
+    await importFlexiHolding.dispatchEvent("click");
+    await removeFlexi.dispatchEvent("click");
+    await flexiRow.getByText("Removed", { exact: true }).waitFor();
+    assert.equal(await removeFlexi.getAttribute("aria-checked"), "true");
+    assert.equal(await save.isDisabled(), false);
+    await save.click();
+    await frame.getByText("Saved 2 snapshots").waitFor();
+    assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.symbol), ["GILT", "INFZ90K01LQ6", "INFZ90K01BA1"]);
+    // Removed with the earlier import's record, so the next preview has nothing to choose.
+    await preview.click();
+    await flexiRow.getByText("Left out", { exact: true }).waitFor();
+    assert.equal(await flexiRow.getByRole("radio").count(), 0);
+    await flexiRow.getByText("Mutual funds already holds this fund, from its transactions. Including it here counts it twice.", { exact: true }).waitFor();
+    assert.equal(await flexiRow.getByText(/^(An earlier import|Leaving this row out)/).count(), 0);
+
     // Leaving a still-listed fund out keeps both its units and the earlier import's provenance.
     await leaveOut(frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" }));
     await preview.click();

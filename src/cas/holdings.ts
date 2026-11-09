@@ -433,6 +433,15 @@ export interface PlannedPosition {
   replaces?: string[];
   /** The key of the statement's position whose import replaces this one. */
   replacedBy?: string;
+  /** Accounts that track transactions and hold it, so its folio lines are left out by default. */
+  heldBy?: OtherAccount[];
+  /**
+   * The folios, demat accounts or PRANs whose earlier import added the account's units of it, set
+   * when keeping those units counts them twice: the holding they were added for is left out because
+   * an account that tracks transactions holds it. Saving needs the user's choice to keep them, or
+   * to remove them once all of them came from these sources.
+   */
+  removable?: Source[];
   notes: string[];
   /** Where the statement first lists it. */
   order: number;
@@ -503,6 +512,9 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     for (const position of positions) {
       if (position.misread) settleHeldBack(position);
       else if (position.lines.length) settleStatement(position, plan.accountId, input);
+    }
+    for (const position of positions) {
+      if (position.heldBy && position.existing) settleOverlap(position, positions, plan.sources, plan.accountId, input);
     }
     // The account's others last: an earlier import may have added one for a line the statement's now take.
     settleOthers(positions, plan.sources, plan.accountId, input);
@@ -584,23 +596,71 @@ function settleStatement(position: PlannedPosition, accountId: string, input: Pl
     position.notes.push("The statement prints a cost for only some of its lines for this holding.");
   }
 
-  if (pricedByHand(position)) {
-    position.notes.push(statementPrice(position) !== undefined
-      ? "Priced by hand: saving also saves the statement's price as its price on this date."
-      : "Priced by hand, but the statement prints no price for it. Enter its price for this date on its asset page after saving.");
-  }
-
   const others = input.heldElsewhere(position.ref, accountId);
   const tracked = others.filter((o) => o.tracksTransactions);
   // A folio's fund that an account tracking transactions holds most likely came from a detailed statement.
-  if (tracked.length && position.lines.some((l) => l.source.kind === "folio")) {
+  const overlap = tracked.length > 0 && position.lines.some((l) => l.source.kind === "folio");
+  if (pricedByHand(position)) {
+    position.notes.push(statementPrice(position) !== undefined
+      ? `Priced by hand: ${overlap ? "importing this row" : "saving"} also saves the statement's price as its price on this date.`
+      : `Priced by hand, but the statement prints no price for it. ${overlap ? "If you keep or import it, enter" : "Enter"} its price for this date on its asset page after saving.`);
+  }
+
+  if (overlap) {
     position.include = false;
+    position.heldBy = tracked;
     position.notes.push(
-      `${names(tracked)} already ${tracked.length === 1 ? "holds" : "hold"} this fund, from its transactions. Including it here counts it twice.`,
+      `${alreadyHold(tracked)} this fund, from its transactions. Including it here counts it twice.`,
     );
   } else if (others.length) {
     position.notes.push(`${names(others)} also ${others.length === 1 ? "holds" : "hold"} it.`);
   }
+}
+
+/** A source's listed holdings, possibly misread ones included. */
+const listedIn = (s: Source) => [...s.holdings, ...(s.misread ?? [])];
+/** Missing ISINs across formats can leave no common identity to compare. */
+const incomparable = (s: Source, earlier: string[]) =>
+  listedIn(s).some((h) => !security(h).some((id) => earlier.some((old) => old.includes("|") === id.includes("|"))));
+const IMPORTS_DONT_RECORD = "imports don't record how many units each folio, demat account or PRAN added";
+
+/**
+ * A folio's holding left out because an account that tracks transactions holds it, when this
+ * account's snapshot has its asset too. Leaving the row out keeps the account's units, which counts
+ * them in both accounts. The user may remove them only when an earlier import of the row's own
+ * folios added them for its own lines and nothing else, and must then choose; otherwise they stay,
+ * with a note to check them.
+ */
+function settleOverlap(position: PlannedPosition, positions: PlannedPosition[], sources: Source[], accountId: string, input: PlanInput) {
+  const existing = position.existing!;
+  // Another statement row for the asset replaces the account's units when it's imported.
+  if (positions.some((p) => p !== position && p.lines.length && (p.ref === position.ref || p.existing?.assetId === existing.assetId))) return;
+  const own = new Set(position.lines.map((l) => l.source));
+  const listed = new Set(sources.flatMap((s) => listedIn(s).flatMap(security)));
+  const from: Source[] = [];
+  let mixed = false;
+  for (const s of sources) {
+    const record = input.remembered(s, accountId);
+    const earlier = record.get(position.ref) ?? record.get(existing.ref);
+    if (!earlier) continue;
+    from.push(s);
+    // Added for this row's lines alone, as far as the identifiers tell.
+    const ids = new Set(position.lines.filter((l) => l.source === s).flatMap((l) => security(l.holding)));
+    if (!earlier.some((id) => ids.has(id)) || earlier.some((id) => listed.has(id) && !ids.has(id)) || incomparable(s, earlier)) mixed = true;
+  }
+  const units = existing.units;
+  if (from.length && !mixed) {
+    position.removable = from;
+    position.notes.push(
+      `An earlier import of ${labels(from)} recorded adding this holding. Leaving this row out keeps the ${units} units this account holds unless you remove them. Keeping them counts them here and in ${names(position.heldBy!)}. ` +
+      `Keep them, or remove them only if all of them came from ${labels(from)}: ${IMPORTS_DONT_RECORD}.`,
+    );
+    return;
+  }
+  const why = from.length
+    ? `An earlier import of ${labels(from)} recorded adding this holding, but its units may also include others.`
+    : `No earlier import of ${labels(own)} recorded adding this holding.`;
+  position.notes.push(`Leaving this row out keeps this account's ${units} units of it, so ${names(position.heldBy!)} may count them too. ${why} Check them in Wealthfolio.`);
 }
 
 /** A position's name, with its symbol and exchange to tell apart two assets of one holding. */
@@ -612,7 +672,7 @@ export const assetName = (position: PlannedPosition) => {
   return identity && identity !== position.name ? `${position.name} (${identity})` : position.name;
 };
 
-const labels = (sources: Iterable<Source>) => [...new Set([...sources].map((s) => s.label))].join(" and ");
+export const labels = (sources: Iterable<Source>) => [...new Set([...sources].map((s) => s.label))].join(" and ");
 export const assetNames = (positions: Iterable<PlannedPosition>) => [...new Set([...positions].map(assetName))].join(" and ");
 
 /** A position an earlier import added for lines the statement now puts under another asset. */
@@ -678,11 +738,7 @@ function settleOther(
   input: PlanInput,
 ) {
   // A holding the statement still lists, but that this import leaves out, wasn't sold.
-  const lines = (s: Source) => [...s.holdings, ...(s.misread ?? [])];
-  const listed = new Set(sources.flatMap((s) => lines(s).flatMap(security)));
-  // Missing ISINs across formats can leave no common identity to compare.
-  const incomparable = (s: Source, earlier: string[]) =>
-    lines(s).some((h) => !security(h).some((id) => earlier.some((old) => old.includes("|") === id.includes("|"))));
+  const listed = new Set(sources.flatMap((s) => listedIn(s).flatMap(security)));
   let uncertain = false;
   // It may also hold units that no listed holding under another asset replaces.
   let mixed = !!position.misread;
@@ -723,12 +779,24 @@ function settleOther(
     if (whole) {
       position.replacedBy = targets[0].key;
       position.notes.push(`${added} It's kept unless you replace it with ${assetName(targets[0])}.`);
+    } else if (!mixed && targets.length === 1 && targets[0].heldBy) {
+      // Left out because an account that tracks transactions holds it: keeping this one counts its units twice.
+      position.removable = recorded;
+      position.notes.push(
+        `${added} ${alreadyHold(targets[0].heldBy)} ${them ? "those holdings" : "that holding"}, so keeping this one counts its units in both accounts. ` +
+        `Keep it, or remove it only if all its units came from ${labels(recorded)}: ${IMPORTS_DONT_RECORD}.`,
+      );
     } else {
       const left = targets.filter((t) => importable.has(t));
       position.notes.push(left.length
         ? `${added} The add-on can't tell how many of its units ${them ? "those holdings account" : "that holding accounts"} for, so it's kept and ${assetNames(left)} ${left.length > 1 ? "are" : "is"} left out by default. ` +
           `If you keep both, correct this holding's units in Wealthfolio so that they aren't counted twice.`
         : added);
+      const overlapping = targets.filter((t) => t.heldBy);
+      const heldBy = [...new Map(overlapping.flatMap((t) => t.heldBy!).map((a) => [a.name, a])).values()];
+      if (heldBy.length) {
+        position.notes.push(`${alreadyHold(heldBy)} ${assetNames(overlapping)}, so this holding's units may be counted there too. Check them in Wealthfolio.`);
+      }
     }
   } else if (from.length) {
     position.include = false;
@@ -763,6 +831,8 @@ const pricedByHand = (p: PlannedPosition) => p.existing?.manual ?? p.asset?.manu
 const keepsAverageCost = (p: ExistingPosition | undefined) => !!p?.manual && nonzero(p.units) && nonzero(p.cost);
 
 const names = (accounts: { name: string }[]) => accounts.map((a) => a.name).join(", ");
+const alreadyHold = (accounts: { name: string }[]) =>
+  `${names(accounts)} already ${accounts.length === 1 ? "holds" : "hold"}`;
 
 /** The first positive price the statement's lines print for the position. */
 const statementPrice = (position: PlannedPosition) => position.lines.map((l) => l.holding.price).find((price) => positive(price));
@@ -782,6 +852,8 @@ export interface Choices {
   flipped: ReadonlySet<string>;
   /** Typed total costs by `key`. */
   costs: ReadonlyMap<string, string>;
+  /** For `removable` rows, by `key`: true keeps the account's units, false removes them. Undecided until set. */
+  keep?: ReadonlyMap<string, boolean>;
 }
 
 /**
@@ -789,7 +861,17 @@ export interface Choices {
  * them. One that a statement position replaces is kept unless that position is imported.
  */
 export const included = (position: PlannedPosition, choices: Choices) =>
-  position.misread ? position.include : position.include !== choices.flipped.has(position.replacedBy ?? position.key);
+  position.misread ? position.include
+  : position.removable && !position.lines.length ? choices.keep?.get(position.key) !== false
+  : position.include !== choices.flipped.has(position.replacedBy ?? position.key);
+
+/** Whether the account's units of a `removable` row still need the user's choice to keep or remove them. */
+export const undecided = (position: PlannedPosition, choices: Choices) =>
+  !!position.removable && !choices.keep?.has(position.key) && !(position.lines.length && included(position, choices));
+
+/** Whether saving removes the account's units of a statement row that isn't imported: the user chose to. */
+const removed = (position: PlannedPosition, choices: Choices) =>
+  !!position.removable && position.lines.length > 0 && !included(position, choices) && choices.keep?.get(position.key) === false;
 
 /** What `snapshots.save` gets for the account. */
 export function snapshotOf(plan: AccountPlan, choices: Choices) {
@@ -823,7 +905,7 @@ export function snapshotOf(plan: AccountPlan, choices: Choices) {
         ...(total && { averageCost: format(div(dec(total), dec(quantity), COST_PLACES)) }),
       };
       listed.set(position.ref, { holding, total });
-    } else if (position.existing && (statement || included(position, choices))) {
+    } else if (position.existing && !removed(position, choices) && (statement || included(position, choices))) {
       // Left out of the statement's side, or kept: the account's units stay as they are.
       kept.set(position.existing.assetId, { ref: position.ref, holding: existingHolding(position.existing) });
     }
@@ -850,7 +932,8 @@ function existingHolding(p: ExistingPosition): SnapshotHoldingInput {
 /** What each source put into the account (`fundRef` → `security`), to remember after the import. */
 export function importedRefs(plan: AccountPlan, choices: Choices) {
   const updated = new Set(plan.positions.filter((p) => p.lines.length && included(p, choices)).map((p) => p.ref));
-  const kept = new Set(plan.positions.filter((p) => p.existing && !updated.has(p.ref) && (p.lines.length || included(p, choices))).map((p) => p.ref));
+  const kept = new Set(plan.positions.filter((p) =>
+    p.existing && !updated.has(p.ref) && !removed(p, choices) && (p.lines.length || included(p, choices))).map((p) => p.ref));
   const heldBack = plan.positions.filter((p) => p.misread && p.existing);
   const ids = new Set(heldBack.flatMap((p) => [...p.lines, ...p.misread!].flatMap((l) => security(l.holding))));
   for (const p of heldBack) kept.add(p.existing!.ref);
@@ -904,7 +987,7 @@ export function pricesToSave(plan: AccountPlan, choices: Choices, listed: Readon
   }
   for (const position of plan.positions) {
     const p = position.existing;
-    if (!p || prices.has(position.ref) || !(position.lines.length || included(position, choices))) continue;
+    if (!p || prices.has(position.ref) || removed(position, choices) || !(position.lines.length || included(position, choices))) continue;
     if (!keepsAverageCost(p)) continue;
     const statement = listed.get(position.ref);
     if (positive(statement)) {

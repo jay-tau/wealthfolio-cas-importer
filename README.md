@@ -248,8 +248,15 @@ account's complete snapshot before anything is saved:
   there isn't reused. Splits recorded in archived accounts are hidden from add-ons, so those go
   unnoticed.
 - A folio's fund that an account tracking transactions already holds, most likely from a detailed
-  statement, is left out by default so it isn't counted twice. Another account holding a fund or
-  share gets a warning.
+  statement, is left out by default so it isn't counted twice. Leaving it out keeps the units the
+  account already has of it unless you remove them; keeping them counts them in both accounts.
+  When an earlier import of that folio recorded adding the holding for its own lines alone,
+  saving waits until you choose to keep or remove its units; remove them only if all of them
+  came from that folio, since imports don't record how many units each folio, demat account or
+  PRAN added. An old asset that an earlier import of the folio added for the fund, now confirmed to
+  another asset left out for overlap, gets the same choice. If its units may include others,
+  or no earlier import of that folio recorded the holding, they are kept with a note to check
+  them in Wealthfolio. Another account holding a fund or share gets a warning.
 - The cost is the one printed on the statement. Otherwise, the preview tries the account's average
   cost in INR for the statement's units, then a bond's face value times its units. You can change
   that proposed amount or leave it blank. An existing cost in another currency is not reused and

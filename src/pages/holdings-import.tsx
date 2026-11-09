@@ -659,6 +659,7 @@ export function HoldingsImport({
             })
           }
           onCost={(accountId, key, text) => update(accountId, (c) => ({ ...c, costs: new Map(c.costs).set(key, text) }))}
+          onKeep={(accountId, key, keep) => update(accountId, (c) => ({ ...c, keep: new Map(c.keep).set(key, keep) }))}
           onConfirm={(accountId, yes) =>
             setConfirmed((set) => {
               const next = new Set(set);
