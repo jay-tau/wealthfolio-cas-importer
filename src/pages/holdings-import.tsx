@@ -32,6 +32,7 @@ import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } f
 import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
 import { type Checked, UnitsCheckCard } from "../components/units-check";
 import { holdingKey, LEFT_OUT, readImported, saveImports, sourceKey } from "../lib/choices";
+import { useFocusReturn } from "../lib/focus";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
 
@@ -339,6 +340,8 @@ export function HoldingsImport({
   const [checked, setChecked] = useState<Checked | null>(null);
   // Holdings whose accounts compared the user confirmed hold the same units as the statement, by `ref`.
   const [same, setSame] = useState<Set<string>>(new Set());
+  // Preview the snapshots and Check units stay, so they get the focus back.
+  const focusReturn = useFocusReturn(busy !== "");
   const items = holdingItems(holdings);
   // Printed zeros never go in a snapshot, so the snapshot preview doesn't wait for them. It waits
   // for misread lines, whose asset it holds back.
@@ -375,6 +378,7 @@ export function HoldingsImport({
   ];
 
   const runPreview = async () => {
+    focusReturn.hold();
     setBusy("preview");
     setError("");
     changed();
@@ -522,6 +526,7 @@ export function HoldingsImport({
   };
 
   const runCheck = async () => {
+    focusReturn.hold();
     setBusy("check");
     setError("");
     setChecked(null);
