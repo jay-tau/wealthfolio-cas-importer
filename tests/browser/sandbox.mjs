@@ -150,6 +150,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await noIsin.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Overnight Fund");
     assert.equal(await noIsin.getByRole("radio").count(), 1);
     assert.equal(await noIsin.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
+    // Each section has a live region for its search's progress, count and notes. The searches every
+    // section starts by itself stay quiet until the focus has been in the section's search.
+    const outcome = (section) => section.locator("[aria-live]");
+    assert.equal(await outcome(noIsin).getAttribute("aria-live"), "off");
+    assert.equal(await outcome(noIsin).getAttribute("aria-atomic"), "true");
+    assert.match(await outcome(noIsin).textContent(), /^1 result\.No ISIN on the statement; showing results for "Testbridge Overnight Fund"\./);
     // Each section repeats the same controls, so their names say which fund, share, bond or NPS scheme
     // they're for: each name is in its section, and only once on the page.
     const namedFor = async (section, controls) => {
@@ -217,6 +223,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await search.fill("Fictiva Flexi Cap");
     await search.press("Enter");
     await firstFund.getByRole("radio").nth(4).waitFor({ state: "attached" });
+    assert.equal(await outcome(firstFund).getAttribute("aria-live"), "polite");
+    assert.equal(await outcome(firstFund).textContent(), "5 results.");
     assert.deepEqual(await resultBadges(firstFund), [
       ["Direct secondary", "Growth secondary"],
       ["Regular warning-subtle", "IDCW warning-subtle"],
@@ -232,6 +240,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
     await firstFund.getByRole("button", { name: /^Change the / }).press("Enter");
     await focused(search, "Change");
+    assert.equal(await outcome(firstFund).getAttribute("aria-live"), "polite", "a section opened again announces its own search");
     for (const [index, expected] of [[2, ["Direct secondary"]], [3, []], [4, ["Growth secondary"]]]) {
       await search.fill("Fictiva Flexi Cap");
       await search.press("Enter");
@@ -254,6 +263,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await search.fill("WAIT");
     await search.press("Enter");
     await waiting();
+    assert.equal(await outcome(firstFund).textContent(), "Searching…");
     assert.equal(await useFund.isDisabled(), true, "a new search cannot confirm old results");
     assert.equal(await firstFund.getByRole("radio").count(), 0);
     // Fail a newer search, then deliver the older response: neither can restore stale results.
@@ -261,8 +271,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await search.fill("FAIL");
     await search.press("Enter");
     await firstFund.getByText(/The search failed/).waitFor();
+    assert.equal(await outcome(firstFund).textContent(), "The search failed: Error: Search unavailable");
     await resume();
     assert.equal(await useFund.isDisabled(), true);
+    await search.fill("INFZ91T01CB6");
+    await search.press("Enter");
+    await outcome(firstFund).getByText("Nothing found. Try the fund's name.", { exact: true }).waitFor();
+    assert.equal(await outcome(firstFund).textContent(), "Nothing found. Try the fund's name.");
     await search.fill(expected.folios[0].schemes[0].isin);
     await search.press("Enter");
     // The Corporate Bond fund's ISIN finds nothing, so its name is searched without the plan and option.
@@ -289,6 +304,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await nameSearch.fill("INFZ91T01CB6");
     await nameSearch.press("Enter");
     await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund".').waitFor();
+    assert.equal(await outcome(byName).getAttribute("aria-live"), "polite");
+    assert.match(await outcome(byName).textContent(), /^1 result\.Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund"\./);
     await byName.getByRole("radio").first().dispatchEvent("click");
     await noIsin.getByRole("radio").first().dispatchEvent("click");
     for (const section of await frame.locator("section").all()) {
@@ -320,26 +337,38 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     // The Flexi Cap fund starts with units the fake host has no history for.
     await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    // A status line beside the button reads out the work that locks the page, and the counts once the preview is ready.
+    const pageStatus = frame.getByRole("button", { name: /^Preview the / }).locator("xpath=..").getByRole("status");
+    assert.equal(await pageStatus.textContent(), "The preview is ready: 13 new transactions, 0 already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import.");
     await frame.getByText(/starts with 1250\.000 units bought before 01-Apr-2023/).waitFor();
     // Rechecking removes the old preview and locks every input until its answer arrives.
     await pause("check");
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await waiting();
+    assert.equal(await pageStatus.textContent(), "Preparing the preview…");
     assert.equal(await frame.getByRole("button", { name: "Import 23 activities" }).count(), 0);
     assert.equal(await frame.locator("#cas-file").isDisabled(), true);
     assert.equal(await frame.getByLabel("PAN ABCDE1234F", { exact: true }).isDisabled(), true);
     assert.equal(await remember.isDisabled(), true);
     assert.equal(await frame.getByRole("button", { name: /^Change the / }).first().isDisabled(), true);
     await resume();
+    // A failed import keeps the preview, and its alert says why: the status line doesn't say it's ready again.
+    await tab.frames()[1].evaluate(() => { window.host.failImport = true; });
+    await frame.getByRole("button", { name: "Import 23 activities", disabled: false }).click();
+    await frame.getByText("The import failed: Error: Import unavailable", { exact: true }).waitFor();
+    assert.equal(await pageStatus.textContent(), "");
+    await tab.frames()[1].evaluate(() => { window.host.failImport = false; });
     await pause("import");
     await frame.getByRole("button", { name: "Import 23 activities", disabled: false }).press("Enter");
     await waiting();
+    assert.equal(await pageStatus.textContent(), "Importing…");
     assert.equal(await frame.getByRole("button", { name: "Preview the import" }).isDisabled(), true);
     assert.equal(await frame.locator("#cas-file").isDisabled(), true);
     assert.equal(await remember.isDisabled(), true);
     await resume();
     await frame.getByText("Imported 23 of 23 activities").waitFor();
     await focused(frame.getByRole("alert").filter({ hasText: /^Imported 23 of 23 activities/ }), "Import 23 activities");
+    assert.equal(await pageStatus.textContent(), "");
     const units = frame.locator("table").last().locator("tbody tr");
     assert.equal(await units.count(), 5);
     assert.equal(await units.filter({ hasText: "Match" }).count(), 4);
@@ -1313,6 +1342,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await bondSearch.fill("INEZ91A07012");
     await bondSearch.press("Enter");
     await bondSection.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
+    assert.equal(await outcome(bondSection).getAttribute("aria-live"), "polite");
+    assert.match(await outcome(bondSection).textContent(), /^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/);
     for (const section of await frame.locator("section").all()) {
       if (await section.getByText("PLACEHOLDER PHARMA LIMITED").count()) {
         await section.getByRole("button", { name: "Leave this share out" }).click();
@@ -1438,8 +1469,20 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const isins = (type) => depository.accounts.find((a) => a.type === type).equities
       .concat(...["mutual_funds", "bonds"].map((kind) => depository.accounts.find((a) => a.type === type)[kind])).map((h) => h.isin);
     const savesBefore = JSON.parse(beforeUnavailableHoldings).saves.length;
+    const snapshotStatus = preview.locator("xpath=..").getByRole("status");
+    assert.equal(await snapshotStatus.textContent(), "");
+    await pause("holdings");
     await preview.click();
+    await waiting();
+    await snapshotStatus.getByText("Preparing the preview…", { exact: true }).waitFor();
+    assert.equal(await snapshotStatus.textContent(), "Preparing the preview…");
+    await resume();
+    await snapshotStatus.getByText("The preview is ready: 2 snapshots.", { exact: true }).waitFor();
+    await pause("snapshot");
     await frame.getByRole("button", { name: "Save 2 snapshots", disabled: false }).press("Enter");
+    await waiting();
+    assert.equal(await snapshotStatus.textContent(), "Saving…");
+    await resume();
     await frame.getByText("Saved 2 snapshots").waitFor();
     await focused(frame.getByRole("alert").filter({ hasText: /^Saved 2 snapshots/ }), "Save 2 snapshots");
     const savedTo = await hosted(() => ({ saves: window.host.saves, snapshots: window.host.snapshots }));
@@ -2604,9 +2647,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       quotes: window.host.quotes, assets: window.host.assets, modes: window.host.pricingModes, links: window.host.links,
     }));
     const before = await accountData();
+    const checkStatus = frame.getByRole("button", { name: "Check units", exact: true }).locator("xpath=..").getByRole("status");
+    assert.equal(await checkStatus.textContent(), "");
+    await pause("history");
     await frame.getByRole("button", { name: "Check units", exact: true }).click();
+    await waiting();
+    await checkStatus.getByText("Checking the units…", { exact: true }).waitFor();
+    assert.equal(await checkStatus.textContent(), "Checking the units…");
+    await resume();
     const checkRow = (name) => frame.getByRole("row").filter({ hasText: name });
     await checkRow(flexiName).getByText("Needs review", { exact: true }).waitFor();
+    assert.equal(await checkStatus.textContent(), "Compared the units of 2 of 6 holdings.");
     await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
     assert.deepEqual(await checkRow(flexiName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "2892.104", "2892.104"]);
     // Each holding's Same holdings names it.
@@ -2621,6 +2672,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await checkRow(liquidName).getByText("No account that tracks transactions has posted activities for it on or before 2025-03-31.", { exact: true }).waitFor();
     assert.equal(await checkRow(liquidName).getByRole("checkbox").count(), 0);
     assert.equal(await accountData(), before);
+    // A check that can't read Wealthfolio's activities compares none, and says so.
+    await tab.frames()[1].evaluate(() => { window.host.failHistory = true; });
+    await frame.getByRole("button", { name: "Check units", exact: true }).click();
+    await checkStatus.getByText("Compared the units of 0 of 6 holdings.", { exact: true }).waitFor();
+    await checkRow(flexiName).getByText("Couldn't read Wealthfolio's activities: Error: History unavailable", { exact: true }).waitFor();
+    await tab.frames()[1].evaluate(() => { window.host.failHistory = false; });
     // The next read finds Not set archived, so it isn't compared.
     await editAccounts({ "unset-1": { isArchived: true } });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();

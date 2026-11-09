@@ -18,6 +18,7 @@ import {
 import { dec, format, isZero } from "../cas/decimal";
 import { type UnitCheck, unitStatus } from "../cas/holdings";
 import { nameNumber } from "../lib/name-number";
+import { plural } from "../lib/plural";
 
 const BADGES = {
   match: { badge: "Match", variant: "success-subtle" },
@@ -73,6 +74,13 @@ export function UnitsCheckCard({
             Check units
           </Button>
           {blocked && <span className="text-muted-foreground text-sm">{blocked}</span>}
+          <p role="status" className="sr-only">
+            {checking
+              ? "Checking the units…"
+              : checked
+                ? `Compared the units of ${checked.checks.filter((c) => !c.problem).length} of ${plural(checked.checks.length, "holding")}.`
+                : ""}
+          </p>
         </div>
         {checked && (
           <>

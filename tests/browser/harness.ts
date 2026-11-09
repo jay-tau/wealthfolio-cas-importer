@@ -68,6 +68,7 @@ const host = {
   resume: undefined as (() => void) | undefined,
   failHistory: false,
   failDelete: false,
+  failImport: false,
   rejectLine: undefined as number | undefined,
   skipLine: undefined as number | undefined,
   // An invented second folio holding the fund with this ISIN, added to what the parser reads.
@@ -405,6 +406,7 @@ const api = {
   },
   portfolio: {
     getHoldings: async (accountId: string) => {
+      await wait("holdings");
       if (archivedOther(accountId)) return [];
       const date = latest(accountId);
       if (date) return snapshotHoldings(accountId, date);
@@ -500,6 +502,7 @@ const api = {
   },
   activities: {
     getAll: async (accountId?: string) => {
+      await wait("history");
       if (host.failHistory) throw new Error("History unavailable");
       return host.activities.filter((a) => accountId === undefined || a.accountId === accountId);
     },
@@ -514,6 +517,7 @@ const api = {
     },
     import: async (rows: ActivityImport[]) => {
       await wait("import");
+      if (host.failImport) throw new Error("Import unavailable");
       const skipped = (r: ActivityImport) => r.lineNumber === host.skipLine && !r.forceImport;
       const accepted = rows.filter((r) => r.lineNumber !== host.rejectLine && !skipped(r));
       // The import creates a new fund with no exchange as it is.
