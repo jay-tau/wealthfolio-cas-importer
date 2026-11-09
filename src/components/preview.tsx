@@ -54,6 +54,12 @@ const which = ({ transaction: { activity, scheme, folio } }: PlannedTransaction,
 const list = (names: string[]) =>
   names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "";
 
+/** How many transactions the preview has of each status: "13 new transactions, 0 already in Wealthfolio, …". */
+export function previewCounts(plan: PlannedTransaction[]) {
+  const count = (status: Status) => plan.filter((t) => t.status === status).length;
+  return `${plural(count("new"), "new transaction")}, ${count("existing")} already in Wealthfolio, ${plural(count("duplicate"), "possible duplicate")} and ${count("invalid")} Wealthfolio can't import`;
+}
+
 /** A merger an earlier version imported as a sale and a purchase, as far as Wealthfolio has it. */
 function earlierNote(t: PlannedTransaction) {
   const found = t.earlier?.filter((r) => r.existingId).map((r) => label(r.activity)) ?? [];
@@ -176,9 +182,7 @@ export function Preview({
       <CardHeader>
         <CardTitle>Preview</CardTitle>
         <p className="text-muted-foreground text-sm">
-          {plural(count("new"), "new transaction")}, {count("existing")} already in Wealthfolio,{" "}
-          {plural(count("duplicate"), "possible duplicate")} and {count("invalid")} Wealthfolio can't import.
-          Each purchase comes with a transfer from the
+          {previewCounts(plan)}. Each purchase comes with a transfer from the
           bank account you chose, and each sale or dividend payout with a transfer to it. Without one, and for
           switches, a purchase comes with a deposit and a sale or payout with a withdrawal, as if the money came from
           or went outside Wealthfolio. When you use a bank row Wealthfolio already has, the add-on imports the trade

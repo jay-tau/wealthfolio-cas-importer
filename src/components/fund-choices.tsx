@@ -19,6 +19,7 @@ import { type ChosenFund, fundKey } from "../lib/choices";
 import { useFocusMove } from "../lib/focus";
 import { fundName, type PlanAndOption, planAndOption } from "../lib/fund-name";
 import { nameNumber } from "../lib/name-number";
+import { plural } from "../lib/plural";
 
 /** Undefined while undecided. */
 export type FundChoice = { fund: ChosenFund } | { leftOut: true };
@@ -141,6 +142,9 @@ function FundSearch({
   const [own, setOwn] = useState(false);
   // Answers can arrive out of order; only the latest search's counts.
   const latest = useRef(0);
+  // Every section searches by itself when a statement is read, and reading each of those out would
+  // drown the page: a section's outcome is read out once the focus has been in its search.
+  const [live, setLive] = useState(false);
 
   const search = async (text: string) => {
     if (!text.trim()) return;
@@ -191,41 +195,49 @@ function FundSearch({
   const result = picked === "" ? undefined : results?.[Number(picked)];
   return (
     <div className="grid gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <Input
-          ref={searchRef}
-          aria-label={`Search for ${label}`}
-          className="w-72"
-          value={query}
-          placeholder={isin ? "ISIN, name or ticker" : "Name or ticker"}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") void search(query);
-          }}
-        />
-        <Button type="button" variant="outline" disabled={!query.trim()} onClick={() => void search(query)}>
-          {searching && <Spinner />}
-          Search
-          {forItem}
-        </Button>
+      <div onFocus={() => setLive(true)}>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            ref={searchRef}
+            aria-label={`Search for ${label}`}
+            className="w-72"
+            value={query}
+            placeholder={isin ? "ISIN, name or ticker" : "Name or ticker"}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") void search(query);
+            }}
+          />
+          <Button type="button" variant="outline" disabled={!query.trim()} onClick={() => void search(query)}>
+            {searching && <Spinner />}
+            Search
+            {forItem}
+          </Button>
+        </div>
+        {/* The search's progress and outcome, read out as they change. Its notes keep their space
+            with a top margin, so the region takes none while it holds only hidden text. */}
+        <div aria-live={live ? "polite" : "off"} aria-atomic="true">
+          {searching && <span className="sr-only">Searching…</span>}
+          {!!results?.length && <span className="sr-only">{plural(results.length, "result")}.</span>}
+          {error && <p className="text-destructive mt-3 text-sm">{error}</p>}
+          {results && byName && (
+            <p className="text-muted-foreground mt-3 text-sm">
+              {isin
+                ? results.length
+                  ? `Nothing found for the ISIN; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(item)}`
+                  : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker${statementAsset ? ", or use the statement's prices" : ""}.`
+                : results.length
+                  ? `No ISIN on the statement; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(item)}`
+                  : `No ISIN on the statement, and nothing found for "${byName}". Try another name or a ticker${statementAsset ? ", or use the statement's prices" : ""}.`}
+            </p>
+          )}
+          {results?.length === 0 && !byName && (
+            <p className="text-muted-foreground mt-3 text-sm">
+              Nothing found. Try the {noun}'s name{statementAsset ? ", or use the statement's prices" : ""}.
+            </p>
+          )}
+        </div>
       </div>
-      {error && <p className="text-destructive text-sm">{error}</p>}
-      {results && byName && (
-        <p className="text-muted-foreground text-sm">
-          {isin
-            ? results.length
-              ? `Nothing found for the ISIN; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(item)}`
-              : `Nothing found for the ISIN or for "${byName}". Try another name or a ticker${statementAsset ? ", or use the statement's prices" : ""}.`
-            : results.length
-              ? `No ISIN on the statement; showing results for "${byName}". These results can be other ${noun}s. ${pickHint(item)}`
-              : `No ISIN on the statement, and nothing found for "${byName}". Try another name or a ticker${statementAsset ? ", or use the statement's prices" : ""}.`}
-        </p>
-      )}
-      {results?.length === 0 && !byName && (
-        <p className="text-muted-foreground text-sm">
-          Nothing found. Try the {noun}'s name{statementAsset ? ", or use the statement's prices" : ""}.
-        </p>
-      )}
       {results?.some(fromAmfi) && results.some(pricedElsewhere) && (
         <p className="text-muted-foreground text-sm">
           Wealthfolio already has this fund, priced from another source, and picking AMFI's result adds a second asset

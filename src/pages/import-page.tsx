@@ -33,7 +33,7 @@ import {
   type Ignored,
 } from "../components/account-choices";
 import { type FundChoice, FundChoicesCard, fundItems, fundsOf } from "../components/fund-choices";
-import { type BankLink, ImportResult, Preview } from "../components/preview";
+import { type BankLink, ImportResult, Preview, previewCounts } from "../components/preview";
 import { StatementForm } from "../components/statement-form";
 import {
   bankKey,
@@ -457,6 +457,17 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
                       : "Choose the bank accounts again where they say so first."}
                   </span>
                 )}
+                {/* Read out while the page is locked, and when the preview is ready. A failed import keeps
+                    the preview, and its alert says why. */}
+                <p role="status" className="sr-only">
+                  {busy === "preview"
+                    ? "Preparing the preview…"
+                    : busy === "import"
+                      ? "Importing…"
+                      : preview && !error
+                        ? `The preview is ready: ${previewCounts(preview.plan)}.`
+                        : ""}
+                </p>
               </div>
             </>
           )}

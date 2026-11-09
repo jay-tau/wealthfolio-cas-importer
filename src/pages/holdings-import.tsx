@@ -641,6 +641,16 @@ export function HoldingsImport({
                 : "Everything is left out, so there's nothing to import."}
           </span>
         )}
+        {/* Read out while the page is locked for the preview or the save, and when the preview is ready. */}
+        <p role="status" className="sr-only">
+          {busy === "preview"
+            ? "Preparing the preview…"
+            : busy === "import"
+              ? "Saving…"
+              : preview
+                ? `The preview is ready: ${plural(preview.plans.length, "snapshot")}.`
+                : ""}
+        </p>
       </div>
       {error && (
         <Alert variant="destructive">
