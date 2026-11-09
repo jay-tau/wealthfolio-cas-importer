@@ -44,6 +44,20 @@ const worth = (scheme, close) =>
 const none = { date: null, positions: [], cash: {}, later: [] };
 const noChoices = { flipped: new Set(), costs: new Map() };
 
+/** Runs `run` on a device far east of UTC, then on one far west. */
+const inLocalTimeZones = (run) => {
+  const saved = process.env.TZ;
+  try {
+    for (const local of ["Pacific/Kiritimati", "Pacific/Pago_Pago"]) {
+      process.env.TZ = local;
+      run();
+    }
+  } finally {
+    if (saved === undefined) delete process.env.TZ;
+    else process.env.TZ = saved;
+  }
+};
+
 function plan(holdings, overrides = {}) {
   return planSnapshots(holdings, {
     account: () => "holdings-1",
@@ -1489,19 +1503,61 @@ test("a split recorded since an older snapshot is flagged, not carried", async (
     assetId: "share", ref: ref("SHARE"), symbol: "SHARE", name: "Share", units: "10", cost: "1000", currency: "INR",
   }] };
   const split = (date, overrides = {}) => ({ assetId: "share", activityType: "SPLIT", status: "POSTED", date, ...overrides });
-  for (const date of ["2025-02-15T00:00:00Z", "2025-01-31T12:00:00Z", "2025-04-01T04:00:00Z", "invalid"]) {
-    assert.deepEqual([...splitSince(existing, "2025-03-31", [split(date)])], ["share"], date);
-  }
-  assert.deepEqual([...splitSince(existing, "2025-03-31", [split("2025-02-15", { activityType: "BUY", activityTypeOverride: "SPLIT" })])], ["share"]);
+  // Each split counts on its day in Wealthfolio's timezone, whatever the device's. The snapshot is
+  // dated 31-Jan-2025 and the statement 31-Mar-2025; each date lists the timezones that flag it.
+  const india = "Asia/Kolkata";
+  const newYork = "America/New_York";
+  const everywhere = [india, newYork, "UTC"];
+  inLocalTimeZones(() => {
+    for (const [date, flagged] of [
+      ["2025-01-30T23:59:00+05:30", []],
+      ["2025-01-31T00:30:00+05:30", [india]],
+      ["2025-01-31T05:29:00+05:30", [india]],
+      ["2025-01-31T05:30:00+05:30", [india, "UTC"]],
+      ["2025-01-31T12:00:00Z", everywhere],
+      ["2025-01-30T23:00:00-05:00", [india, "UTC"]],
+      ["2025-01-31T00:00:00-05:00", everywhere],
+      ["2025-02-15T00:00:00Z", everywhere],
+      ["2025-03-31T23:59:00+05:30", everywhere],
+      ["2025-04-01T00:30:00+05:30", [newYork, "UTC"]],
+      ["2025-03-31T23:59:00-04:00", [newYork]],
+      ["2025-04-01T00:00:00-04:00", []],
+      [new Date("2025-01-31T00:30:00+05:30"), [india]],
+      [new Date("2025-03-31T23:59:00-04:00"), [newYork]],
+      // A bare date stays as given, and an unreadable one is flagged.
+      ["2025-01-30", []],
+      ["2025-01-31", everywhere],
+      ["2025-03-31", everywhere],
+      ["2025-04-01", []],
+      ["invalid", everywhere],
+      [undefined, everywhere],
+      ["", everywhere],
+      [null, everywhere],
+      [new Date(NaN), everywhere],
+      ["2025-13-01", everywhere],
+      ["2025-02-30", everywhere],
+      ["2025-04-31", everywhere],
+      ["2025-01-31T00:30:00", everywhere],
+      ["2025-03-31T23:59:00", everywhere],
+    ]) {
+      for (const timeZone of everywhere) {
+        const expected = flagged.includes(timeZone) ? ["share"] : [];
+        assert.deepEqual([...splitSince(existing, "2025-03-31", [split(date)], timeZone)], expected, `${date} in ${timeZone}`);
+      }
+    }
+    for (const timeZone of everywhere) {
+      assert.deepEqual([...splitSince({ ...existing, date: "2025-03-01" }, "2025-03-31", [split("2025-02-30")], timeZone)], ["share"]);
+    }
+  });
+  assert.deepEqual([...splitSince(existing, "2025-03-31", [split("2025-02-15", { activityType: "BUY", activityTypeOverride: "SPLIT" })], "UTC")], ["share"]);
   assert.deepEqual([...splitSince(existing, "2025-03-31", [
-    split("2025-01-30"), split("2025-04-02"),
     split("2025-02-15", { assetId: "other" }),
     split("2025-02-15", { status: "DRAFT" }),
     split("2025-02-15", { activityType: "BUY" }),
-  ])], []);
+  ], "UTC")], []);
   // A snapshot on the statement's date is replaced, not carried.
-  assert.deepEqual([...splitSince({ ...existing, date: "2025-03-31" }, "2025-03-31", [split("invalid")])], []);
-  assert.deepEqual([...splitSince(none, "2025-03-31", [split("2025-02-15")])], []);
+  assert.deepEqual([...splitSince({ ...existing, date: "2025-03-31" }, "2025-03-31", [split("invalid")], "UTC")], []);
+  assert.deepEqual([...splitSince(none, "2025-03-31", [split("2025-02-15")], "UTC")], []);
 
   // Not on the statement: kept, with a note. On it: Wealthfolio's cost isn't reused.
   const holdings = readHoldings(await fixture("made-up-summary-cams"));
@@ -1675,22 +1731,15 @@ test("activities count towards the statement's date on their day in Wealthfolio'
   const toronto = { ...activity("account-1", "BUY", "2025-03-31", "INFZ90K01FC8", "2"), date: "2025-04-01T01:00:00+00:00" };
   const bare = (date) => ({ ...activity("account-1", "BUY", date, "INFZ90K01FC8", "4"), date });
   const held = (row, timeZone) => format(check(holdings, [bought, row], { timeZone }).find((c) => c.ref === "asset-INFZ90K01FC8").held);
-  const saved = process.env.TZ;
-  try {
-    for (const local of ["Pacific/Kiritimati", "Pacific/Pago_Pago"]) {
-      process.env.TZ = local;
-      assert.equal(held(india, "Asia/Kolkata"), "3000");
-      assert.equal(held(toronto, "America/Toronto"), "3002");
-      assert.equal(held(india, "UTC"), "3001");
-      assert.equal(held(toronto, "UTC"), "3000");
-      // A bare date stays as given, not UTC midnight on it.
-      assert.equal(held(bare("2025-03-31"), "America/Toronto"), "3004");
-      assert.equal(held(bare("2025-04-01"), "America/Toronto"), "3000");
-    }
-  } finally {
-    if (saved === undefined) delete process.env.TZ;
-    else process.env.TZ = saved;
-  }
+  inLocalTimeZones(() => {
+    assert.equal(held(india, "Asia/Kolkata"), "3000");
+    assert.equal(held(toronto, "America/Toronto"), "3002");
+    assert.equal(held(india, "UTC"), "3001");
+    assert.equal(held(toronto, "UTC"), "3000");
+    // A bare date stays as given, not UTC midnight on it.
+    assert.equal(held(bare("2025-03-31"), "America/Toronto"), "3004");
+    assert.equal(held(bare("2025-04-01"), "America/Toronto"), "3000");
+  });
 });
 
 test("a depository statement's printed zero and an asset in two demat accounts are checked", async () => {

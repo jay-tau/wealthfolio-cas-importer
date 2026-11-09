@@ -357,21 +357,24 @@ export interface ExistingSnapshot {
 }
 
 /**
- * Assets of an older snapshot with a split recorded since: the snapshot's units and cost predate it.
- * Splits in archived accounts are hidden from add-ons, so they go unnoticed.
+ * Assets of an older snapshot whose units and cost may predate a recorded split.
+ * A split counts on its `localDay` in `timeZone`, from `engineTimeZone`; one with an unreadable date
+ * is flagged. Splits in archived accounts are hidden from add-ons, so they go unnoticed.
  */
-export function splitSince(existing: ExistingSnapshot, date: string, activities: ActivityDetails[]) {
+export function splitSince(existing: ExistingSnapshot, date: string, activities: ActivityDetails[], timeZone: string) {
   const split = new Set<string>();
   if (!existing.date || existing.date >= date) return split;
   const ids = new Set(existing.positions.map((p) => p.assetId));
-  // This UTC envelope covers every host timezone; do not replay its split selection here.
-  const last = new Date(Date.parse(date) + 86_400_000).toISOString().slice(0, 10);
   for (const a of activities) {
     if (!a.assetId || !ids.has(a.assetId) || (a.status !== undefined && a.status !== "POSTED")) continue;
     if (a.activityType !== "SPLIT" && !("activityTypeOverride" in a && a.activityTypeOverride === "SPLIT")) continue;
-    const time = new Date(a.date).getTime();
-    const day = Number.isFinite(time) ? new Date(time).toISOString().slice(0, 10) : undefined;
-    if (day === undefined || (day >= existing.date && day <= last)) split.add(a.assetId);
+    const time = a.date == null ? NaN : new Date(a.date).getTime();
+    const bare = typeof a.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(a.date);
+    // An impossible bare date or a timestamp without an offset has no known day.
+    const readable = Number.isFinite(time) && (typeof a.date !== "string" ||
+      (bare ? new Date(time).toISOString().slice(0, 10) === a.date : /(?:Z|[+-]\d{2}:?\d{2})$/i.test(a.date)));
+    const day = readable ? localDay(a.date, timeZone) : undefined;
+    if (day === undefined || (day >= existing.date && day <= date)) split.add(a.assetId);
   }
   return split;
 }

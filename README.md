@@ -252,8 +252,9 @@ account's complete snapshot before anything is saved:
   a possibly misread line holds back is kept as it is, and the new one left out the same way.
 - A holding carried over from an older snapshot whose asset has a split recorded since gets a
   note: its units predate the split, so correct them in Wealthfolio after saving, and its cost
-  there isn't reused. Splits recorded in archived accounts are hidden from add-ons, so those go
-  unnoticed.
+  there isn't reused. A split counts on its day in Wealthfolio's timezone setting (UTC if none is
+  set), from the snapshot's date to the statement's. Splits recorded in archived accounts are
+  hidden from add-ons, so those go unnoticed.
 - A folio's fund that an account tracking transactions already holds, most likely from a detailed
   statement, is left out by default so it isn't counted twice. Leaving it out keeps the units the
   account already has of it unless you remove them; keeping them counts them in both accounts.
