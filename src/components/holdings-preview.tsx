@@ -22,6 +22,7 @@ import {
   TableHeader,
   TableRow,
 } from "@wealthfolio/ui";
+import { useEffect, useRef } from "react";
 import {
   type AccountPlan,
   assetName,
@@ -373,14 +374,20 @@ export interface SavedSnapshots {
 
 export function HoldingsResult({ result, accounts }: { result: SavedSnapshots; accounts: Account[] }) {
   const name = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;
+  // Shown in place of the preview and its Save button, which had the focus: the first message takes
+  // it, or the title if the import stopped before saving or failing any snapshot.
+  const first = useRef<HTMLDivElement>(null);
+  useEffect(() => first.current?.focus(), []);
+  const lead = result.saved.length ? "saved" : result.failed.length ? "failed" : "title";
+  const takesFocus = (part: typeof lead) => (part === lead ? { ref: first, tabIndex: -1 } : {});
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Import</CardTitle>
+        <CardTitle {...takesFocus("title")}>Import</CardTitle>
       </CardHeader>
       <CardContent className="space-y-6">
         {result.saved.length > 0 && (
-          <Alert variant="success">
+          <Alert {...takesFocus("saved")} variant="success">
             <AlertTitle>
               Saved {result.saved.length} {result.saved.length === 1 ? "snapshot" : "snapshots"}
             </AlertTitle>
@@ -396,7 +403,7 @@ export function HoldingsResult({ result, accounts }: { result: SavedSnapshots; a
           </Alert>
         )}
         {result.failed.length > 0 && (
-          <Alert variant="destructive">
+          <Alert {...takesFocus("failed")} variant="destructive">
             <AlertTitle>Wealthfolio didn't save these snapshots</AlertTitle>
             <AlertDescription>
               <ul className="list-disc ps-4">

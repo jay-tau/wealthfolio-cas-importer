@@ -47,6 +47,7 @@ import {
   saveFund,
   sourceKey,
 } from "../lib/choices";
+import { useFocusMove } from "../lib/focus";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
 import { HoldingsImport, holdingItems } from "./holdings-import";
@@ -94,6 +95,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const [imported, setImported] = useState<Imported | null>(null);
   const [busy, setBusy] = useState<"" | "preview" | "import" | "check">("");
   const [error, setError] = useState("");
+  // "Import this fund anyway" previews again, which replaces its checkbox: the new one takes the focus.
+  const focus = useFocusMove();
 
   // Remembered accounts that are hidden, archived or no longer listed are ignored, and their rows say why.
   const accountChoices: AccountChoices = Object.fromEntries(
@@ -293,8 +296,10 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       return key in ignored || inherited || (!!bank && bank === accountFor(transactionChoices, f));
     }) ?? false;
 
-  const runPreview = async (importUnbalanced = unbalanced) => {
+  /** `unbalancedKey` is the scheme whose "Import this fund anyway" checkbox asked for it. */
+  const runPreview = async (importUnbalanced = unbalanced, unbalancedKey?: string) => {
     if (!data) return;
+    focus.expect(unbalancedKey ?? null);
     setBusy("preview");
     setError("");
     setPreview(null);
@@ -468,10 +473,12 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
               importAnyway={importAnyway}
               onImportAnyway={(t, yes) => setImportAnyway((set) => toggle(set, t, yes))}
               onImportUnbalanced={(w, yes) => {
-                const next = toggle(unbalanced, schemeKey(w.folio, w.scheme), yes);
+                const key = schemeKey(w.folio, w.scheme);
+                const next = toggle(unbalanced, key, yes);
                 setUnbalanced(next);
-                void runPreview(next);
+                void runPreview(next, key);
               }}
+              unbalancedRef={(w) => focus.target(schemeKey(w.folio, w.scheme))}
               matches={preview.matches}
               reuse={reuse}
               onReuse={(t, yes) => setReuse((set) => toggle(set, t, yes))}

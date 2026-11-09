@@ -160,6 +160,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         assert.equal(await frame.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
       }
     };
+    // A control pressed with the keyboard that goes away hands the focus to what takes its place.
+    const focused = async (locator, what) => {
+      await locator.waitFor({ state: "attached" });
+      const element = await locator.elementHandle();
+      try {
+        await tab.frames()[1].waitForFunction((element) => document.activeElement === element, element, { timeout: 5_000 });
+      } catch {
+        const active = await tab.frames()[1].evaluate(() =>
+          document.activeElement === document.body ? "<body>" : document.activeElement?.outerHTML.slice(0, 150));
+        assert.fail(`${what}: the focus is on ${active}`);
+      }
+    };
     for (const section of await frame.locator("section").all()) {
       await namedFor(section, (fund) => [
         ["textbox", `Search for ${fund}`],
@@ -213,11 +225,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ["Growth secondary"],
     ]);
     await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
-    await useFund.click();
+    await firstFund.getByRole("button", { name: "Use this fund", disabled: false }).press("Enter");
     await firstFund.getByText("Confirmed", { exact: true }).waitFor();
+    await focused(firstFund.getByRole("button", { name: /^Change the / }), "Use this fund");
     assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW warning-subtle"]);
     assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
-    await firstFund.getByRole("button", { name: /^Change the / }).click();
+    await firstFund.getByRole("button", { name: /^Change the / }).press("Enter");
+    await focused(search, "Change");
     for (const [index, expected] of [[2, ["Direct secondary"]], [3, []], [4, ["Growth secondary"]]]) {
       await search.fill("Fictiva Flexi Cap");
       await search.press("Enter");
@@ -318,13 +332,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByRole("button", { name: /^Change the / }).first().isDisabled(), true);
     await resume();
     await pause("import");
-    await frame.getByRole("button", { name: "Import 23 activities" }).click();
+    await frame.getByRole("button", { name: "Import 23 activities", disabled: false }).press("Enter");
     await waiting();
     assert.equal(await frame.getByRole("button", { name: "Preview the import" }).isDisabled(), true);
     assert.equal(await frame.locator("#cas-file").isDisabled(), true);
     assert.equal(await remember.isDisabled(), true);
     await resume();
     await frame.getByText("Imported 23 of 23 activities").waitFor();
+    await focused(frame.getByRole("alert").filter({ hasText: /^Imported 23 of 23 activities/ }), "Import 23 activities");
     const units = frame.locator("table").last().locator("tbody tr");
     assert.equal(await units.count(), 5);
     assert.equal(await units.filter({ hasText: "Match" }).count(), 4);
@@ -569,15 +584,28 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     await leftOutAlert.getByText(gap).waitFor();
     assert.equal(await importFlexi.getAttribute("aria-checked"), "false");
-    await importFlexi.dispatchEvent("click");
+    // Each tick previews again, and the new preview's checkbox takes the focus back.
+    await importFlexi.press("Space");
     await frame.getByText(/^38 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     await anywayAlert.getByText(gap).waitFor();
+    await focused(anywayAlert.getByRole("checkbox"), "Import this fund anyway");
     assert.equal(await leftOutAlert.getByText(gap).count(), 0);
     await frame.getByRole("button", { name: "Import 73 activities" }).waitFor();
-    await importFlexi.dispatchEvent("click");
+    await importFlexi.press("Space");
     await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     await leftOutAlert.getByText(gap).waitFor();
+    await focused(leftOutAlert.getByRole("checkbox"), "Import this fund anyway, unticked");
     assert.equal(await anywayAlert.count(), 0);
+    // A tick whose preview fails shows no checkbox, and a later preview leaves the focus alone.
+    await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = ["asset-INFZ90K01FC8"]; });
+    await importFlexi.press("Space");
+    await frame.getByText(/^Couldn't prepare the preview/).waitFor();
+    await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = []; });
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^38 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    assert.equal(await importFlexi.evaluate((box) => box === document.activeElement), false);
+    await importFlexi.dispatchEvent("click");
+    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     await frame.getByRole("button", { name: "Import 23 activities" }).click();
     await frame.getByText("Imported 23 of 23 activities").waitFor();
     const afterGap = await tab.frames()[1].evaluate(() => window.host.activities);
@@ -867,9 +895,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await storage(), forgotten);
 
     // Choosing a fund after leaving it out doesn't bring the old one back; confirming another saves it.
-    await flexi.getByRole("button", { name: "Leave this fund out" }).click();
+    await flexi.getByRole("button", { name: "Leave this fund out" }).press("Enter");
     await namedFor(flexi, (fund) => [["button", `Choose a fund for ${fund}`]]);
-    await flexi.getByRole("button", { name: "Choose a fund" }).click();
+    await focused(flexi.getByRole("button", { name: "Choose a fund" }), "Leave this fund out");
+    await flexi.getByRole("button", { name: "Choose a fund" }).press("Enter");
+    await focused(flexi.getByRole("textbox", { name: /^Search for / }), "Choose a fund");
     await flexi.getByRole("radio").first().waitFor({ state: "attached" });
     assert.deepEqual(await storage(), forgotten);
     await flexi.getByRole("textbox", { name: /^Search for / }).fill("MULTI");
@@ -1293,8 +1323,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).or(nothing).first().waitFor();
       if (await section.getByText("Confirmed", { exact: true }).count()) continue;
       // Bonds the search can't find use the statement's prices; the one it finds is used as found.
-      if (await nothing.count()) await section.getByRole("button", { name: "Use the statement's prices" }).click();
-      else {
+      if (await nothing.count()) {
+        await section.getByRole("button", { name: "Use the statement's prices" }).press("Enter");
+        await focused(section.getByRole("button", { name: /^Change the / }), "Use the statement's prices on the Holdings card");
+      } else {
         if (await use.isDisabled()) await section.getByRole("radio").first().click();
         await use.click();
       }
@@ -1302,16 +1334,21 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }
     await noAmfiNote();
     // Leaving out the only qualifying Holdings fund removes the note too; restore its choice after.
+    // With the keyboard, each control's replacement in the holding's section takes the focus.
     const holdingsFund = frame.locator("section").filter({ hasText: "ISIN INFZ90K01NE8" });
-    await holdingsFund.getByRole("button", { name: /^Change the / }).click();
+    await holdingsFund.getByRole("button", { name: /^Change the / }).press("Enter");
+    await focused(holdingsFund.getByRole("textbox", { name: /^Search for / }), "Change on the Holdings card");
     await amfiNoteShown(holdingsIntro);
-    await holdingsFund.getByRole("button", { name: "Leave this fund out" }).click();
+    await holdingsFund.getByRole("button", { name: "Leave this fund out" }).press("Enter");
     await holdingsFund.getByText("Left out", { exact: true }).waitFor();
+    await focused(holdingsFund.getByRole("button", { name: "Choose a fund" }), "Leave this fund out on the Holdings card");
     await noAmfiNote();
-    await holdingsFund.getByRole("button", { name: "Choose a fund" }).click();
+    await holdingsFund.getByRole("button", { name: "Choose a fund" }).press("Enter");
+    await focused(holdingsFund.getByRole("textbox", { name: /^Search for / }), "Choose a fund on the Holdings card");
     await amfiNoteShown(holdingsIntro);
-    await holdingsFund.getByRole("button", { name: "Use this fund" }).click();
+    await holdingsFund.getByRole("button", { name: "Use this fund", disabled: false }).press("Enter");
     await holdingsFund.getByText("Confirmed", { exact: true }).waitFor();
+    await focused(holdingsFund.getByRole("button", { name: /^Change the / }), "Use this fund on the Holdings card");
     await noAmfiNote();
     await frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" }).getByText("INEZ91A07012 · BOND · INR · priced from statements").waitFor();
     await frame.locator("section").filter({ hasText: "ISIN INEZ93A08016" }).getByText("Democorp Infra 7.60% 2033").waitFor();
@@ -1402,8 +1439,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       .concat(...["mutual_funds", "bonds"].map((kind) => depository.accounts.find((a) => a.type === type)[kind])).map((h) => h.isin);
     const savesBefore = JSON.parse(beforeUnavailableHoldings).saves.length;
     await preview.click();
-    await frame.getByRole("button", { name: "Save 2 snapshots" }).click();
+    await frame.getByRole("button", { name: "Save 2 snapshots", disabled: false }).press("Enter");
     await frame.getByText("Saved 2 snapshots").waitFor();
+    await focused(frame.getByRole("alert").filter({ hasText: /^Saved 2 snapshots/ }), "Save 2 snapshots");
     const savedTo = await hosted(() => ({ saves: window.host.saves, snapshots: window.host.snapshots }));
     assert.deepEqual(savedTo.saves.slice(savesBefore).map((s) => [s.accountId, s.date]).sort(), [["holdings-1", "2025-03-31"], ["holdings-2", "2025-03-31"]]);
     for (const [accountId, own] of [["holdings-1", isins("NSDL Demat Account")], ["holdings-2", [...isins("CDSL Demat Account"), "GILT"]]]) {
