@@ -407,6 +407,45 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).isDisabled(), true);
+    // Statements are in rupees. A result or a confirmed fund quoted in another currency has a warning
+    // badge with its currency and a line saying so, and so has each of its fund's transactions in the
+    // preview. A result in rupees, the other funds and their transactions say nothing about currency.
+    const inUsd = "The statement's prices and amounts are in rupees, but this asset is quoted in USD. Check that it's the right listing.";
+    const usdRowNote = "The statement's prices and amounts are in rupees, but DMCB is quoted in USD. Check that it's the right listing.";
+    const quotedIn = (locator) => locator.getByText(/^The statement's prices and amounts are in rupees, but /);
+    const usdResults = ["Democorp Bank ADR USD (DMCB · XNYS · EQUITY)" + inUsd, "Democorp Bank Ltd (DEMOCORPBK · XNSE · EQUITY · INR)"];
+    const usdFund = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
+    const usdSearch = usdFund.getByRole("textbox", { name: /^Search for / });
+    await usdFund.getByRole("button", { name: /^Change the / }).click();
+    await usdSearch.fill("Democorp Bank");
+    await usdSearch.press("Enter");
+    await usdFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    assert.deepEqual(await usdFund.locator("label").allTextContents(), usdResults);
+    assert.deepEqual(await resultBadges(usdFund), [["USD warning-subtle"], []]);
+    assert.equal(await quotedIn(frame).count(), 1);
+    // A warning, not a block.
+    await usdFund.getByRole("radio").first().dispatchEvent("click");
+    await usdFund.getByRole("button", { name: "Use this fund", disabled: false }).click();
+    await usdFund.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(usdFund), ["Confirmed success-subtle", "USD warning-subtle"]);
+    assert.equal(await usdFund.getByText("(DMCB · XNYS · EQUITY)", { exact: true }).count(), 1);
+    assert.equal(await usdFund.getByText(inUsd, { exact: true }).count(), 1);
+    assert.equal(await quotedIn(frame).count(), 1);
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^\d+ new transactions?, \d+ already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    const previewRows = frame.locator("table").last().locator("tbody tr");
+    const usdRows = previewRows.filter({ hasText: "Fictiva Liquid Fund - Direct Plan - Growth" });
+    assert.ok(await usdRows.count() > 0);
+    assert.equal(await usdRows.filter({ has: frame.getByText(usdRowNote, { exact: true }) }).count(), await usdRows.count());
+    assert.equal(await quotedIn(previewRows).count(), await usdRows.count());
+    // Back to the fund's own listing for the checks that follow: its ISIN's only result, preselected.
+    await usdFund.getByRole("button", { name: /^Change the / }).click();
+    await usdFund.getByRole("button", { name: "Use this fund", disabled: false }).click();
+    await usdFund.getByText("Confirmed", { exact: true }).waitFor();
+    assert.equal(await quotedIn(frame).count(), 0);
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    assert.equal(await quotedIn(frame).count(), 0);
     // So it does when activities show display codes other than the funds' symbols: each fund goes by
     // the symbol and exchange on its asset's profile.
     const renameFunds = (prefix) => tab.frames()[1].evaluate((prefix) => {
@@ -1573,6 +1612,35 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       assert.equal(await frame.getByRole("textbox", { name: `Total cost of Fund INEZ90B01015 in ${account}`, exact: true }).count(), 1);
     }
     await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
+
+    // On the Holdings card too, a result or a confirmed share quoted in another currency has a warning
+    // badge with its currency and a line saying so, and so has its row in the snapshot preview. A result
+    // in rupees, the other holdings and their rows say nothing about currency.
+    const democorpShare = frame.locator("section").filter({ hasText: "ISIN INEZ90C01021" });
+    const democorpSearch = democorpShare.getByRole("textbox", { name: /^Search for / });
+    await democorpShare.getByRole("button", { name: /^Change the / }).click();
+    await democorpSearch.fill("Democorp Bank");
+    await democorpSearch.press("Enter");
+    await democorpShare.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    assert.deepEqual(await democorpShare.locator("label").allTextContents(), usdResults);
+    assert.deepEqual(await resultBadges(democorpShare), [["USD warning-subtle"], []]);
+    assert.equal(await quotedIn(frame).count(), 1);
+    await democorpShare.getByRole("radio").first().dispatchEvent("click");
+    await democorpShare.getByRole("button", { name: "Use this share", disabled: false }).click();
+    await democorpShare.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(democorpShare), ["Confirmed success-subtle", "USD warning-subtle"]);
+    assert.equal(await democorpShare.getByText("(DMCB · XNYS · EQUITY)", { exact: true }).count(), 1);
+    assert.equal(await democorpShare.getByText(inUsd, { exact: true }).count(), 1);
+    assert.equal(await quotedIn(frame).count(), 1);
+    await preview.click();
+    const usdSnapshot = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-03-31" });
+    await usdSnapshot.getByRole("row").filter({ hasText: "Democorp Bank ADR" }).getByText(usdRowNote, { exact: true }).waitFor();
+    assert.equal(await quotedIn(frame.locator("table")).count(), 1);
+    // Back to the share's own listing for the checks that follow: its ISIN's only result, preselected.
+    await democorpShare.getByRole("button", { name: /^Change the / }).click();
+    await democorpShare.getByRole("button", { name: "Use this share", disabled: false }).click();
+    await democorpShare.getByText("Confirmed", { exact: true }).waitFor();
+    assert.equal(await quotedIn(frame).count(), 0);
 
     // A known MANUAL asset in an inactive account gets the statement's price, even when the target starts empty.
     const priced = "Priced by hand: saving also saves the statement's price as its price on this date.";
