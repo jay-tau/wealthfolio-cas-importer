@@ -388,7 +388,10 @@ export interface PlanInput {
   /** Undefined leaves the holding out. */
   asset(holding: StatementHolding): ChosenAsset | undefined;
   existing(accountId: string): ExistingSnapshot;
-  /** What an earlier import put into the baseline snapshot: `fundRef` → security identities. */
+  /**
+   * What an earlier import put into the baseline snapshot: `fundRef` → security identities. Asked
+   * for the folios, demat accounts and PRANs this import leaves out too.
+   */
   remembered(source: Source, accountId: string): ReadonlyMap<string, string[]>;
   /** Other accounts that hold this asset now. */
   heldElsewhere(ref: string, accountId: string): OtherAccount[];
@@ -460,10 +463,15 @@ export interface AccountPlan {
 /** Each account's snapshot, before the user's changes in the preview. */
 export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan[] {
   const plans = new Map<string, AccountPlan & { byRef: Map<string, PlannedPosition>; misread: Line[] }>();
+  // The folios, demat accounts and PRANs left out: the units their earlier imports added stay.
+  const unread: Source[] = [];
   let order = 0;
   for (const source of holdings.sources) {
     const accountId = input.account(source);
-    if (!accountId) continue;
+    if (!accountId) {
+      unread.push(source);
+      continue;
+    }
     let plan = plans.get(accountId);
     if (!plan) {
       const existing = input.existing(accountId);
@@ -509,15 +517,16 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     }
     const positions = [...byRef.values()];
     holdBack(positions, misread, plan.remembered, input);
+    const addedByUnread = (position: PlannedPosition) => unreadOf(position, unread, plan.accountId, input);
     for (const position of positions) {
       if (position.misread) settleHeldBack(position);
-      else if (position.lines.length) settleStatement(position, plan.accountId, input);
+      else if (position.lines.length) settleStatement(position, plan.accountId, input, addedByUnread(position));
     }
     for (const position of positions) {
-      if (position.heldBy && position.existing) settleOverlap(position, positions, plan.sources, plan.accountId, input);
+      if (position.heldBy && position.existing) settleOverlap(position, positions, plan.sources, plan.accountId, input, addedByUnread);
     }
     // The account's others last: an earlier import may have added one for a line the statement's now take.
-    settleOthers(positions, plan.sources, plan.accountId, input);
+    settleOthers(positions, plan.sources, plan.accountId, input, addedByUnread);
     // The statement's holdings in its order, then the account's others in theirs.
     positions.sort((a, b) => a.order - b.order);
     return { ...plan, positions };
@@ -569,7 +578,7 @@ function settleHeldBack(position: PlannedPosition) {
   }
 }
 
-function settleStatement(position: PlannedPosition, accountId: string, input: PlanInput) {
+function settleStatement(position: PlannedPosition, accountId: string, input: PlanInput, unread: Source[]) {
   const holdings = position.lines.map((l) => l.holding);
   const units = sum(holdings.map((h) => h.units));
   position.units = format(units);
@@ -600,10 +609,11 @@ function settleStatement(position: PlannedPosition, accountId: string, input: Pl
   const tracked = others.filter((o) => o.tracksTransactions);
   // A folio's fund that an account tracking transactions holds most likely came from a detailed statement.
   const overlap = tracked.length > 0 && position.lines.some((l) => l.source.kind === "folio");
+  const leftOut = overlap || unread.length > 0;
   if (pricedByHand(position)) {
     position.notes.push(statementPrice(position) !== undefined
-      ? `Priced by hand: ${overlap ? "importing this row" : "saving"} also saves the statement's price as its price on this date.`
-      : `Priced by hand, but the statement prints no price for it. ${overlap ? "If you keep or import it, enter" : "Enter"} its price for this date on its asset page after saving.`);
+      ? `Priced by hand: ${leftOut ? "importing this row" : "saving"} also saves the statement's price as its price on this date.`
+      : `Priced by hand, but the statement prints no price for it. ${leftOut ? "If you keep or import it, enter" : "Enter"} its price for this date on its asset page after saving.`);
   }
 
   if (overlap) {
@@ -614,6 +624,42 @@ function settleStatement(position: PlannedPosition, accountId: string, input: Pl
     );
   } else if (others.length) {
     position.notes.push(`${names(others)} also ${others.length === 1 ? "holds" : "hold"} it.`);
+  }
+  settleUnread(position, unread);
+}
+
+/**
+ * The folios, demat accounts or PRANs this import leaves out whose earlier import recorded adding the
+ * account's units of the position: some of those units may be theirs, which none of its lines count.
+ */
+function unreadOf(position: PlannedPosition, unread: Source[], accountId: string, input: PlanInput) {
+  const existing = position.existing;
+  if (!existing) return [];
+  return unread.filter((s) => {
+    const record = input.remembered(s, accountId);
+    return record.has(position.ref) || record.has(existing.ref);
+  });
+}
+
+/** Whether `labels` names more than one. */
+const several = (sources: Iterable<Source>) => new Set([...sources].map((s) => s.label)).size > 1;
+const holds = (sources: Source[]) => `${labels(sources)} ${several(sources) ? "hold" : "holds"}`;
+const leavesOut = (sources: Source[]) => `An earlier import of ${labels(sources)}, which this import leaves out,`;
+const onlyIfNoneIn = (sources: Source[]) => `only if ${labels(sources)} no longer ${several(sources) ? "hold" : "holds"} any`;
+
+/**
+ * A statement row whose lines would replace units that a left-out source's earlier import added: it's
+ * left out by default, so the account keeps them, as it keeps that source's other holdings.
+ */
+function settleUnread(position: PlannedPosition, unread: Source[]) {
+  if (!unread.length) return;
+  const replaces = `Importing this row replaces the ${position.existing!.units} units this account holds with the statement's ${position.units}, which don't count any that ${holds(unread)}`;
+  position.notes.push(`${leavesOut(unread)} recorded adding this holding. ${replaces}${position.include
+    ? `, so it's left out by default. Import it ${onlyIfNoneIn(unread)}.`
+    : "."}`);
+  position.include = false;
+  if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
+    position.notes.push("It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
   }
 }
 
@@ -631,14 +677,22 @@ const IMPORTS_DONT_RECORD = "imports don't record how many units each folio, dem
  * folios added them for its own lines and nothing else, and must then choose; otherwise they stay,
  * with a note to check them.
  */
-function settleOverlap(position: PlannedPosition, positions: PlannedPosition[], sources: Source[], accountId: string, input: PlanInput) {
+function settleOverlap(
+  position: PlannedPosition,
+  positions: PlannedPosition[],
+  sources: Source[],
+  accountId: string,
+  input: PlanInput,
+  addedByUnread: (position: PlannedPosition) => Source[],
+) {
   const existing = position.existing!;
   // Another statement row for the asset replaces the account's units when it's imported.
   if (positions.some((p) => p !== position && p.lines.length && (p.ref === position.ref || p.existing?.assetId === existing.assetId))) return;
   const own = new Set(position.lines.map((l) => l.source));
   const listed = new Set(sources.flatMap((s) => listedIn(s).flatMap(security)));
   const from: Source[] = [];
-  let mixed = false;
+  // A left-out source's earlier import may have added some of them too.
+  let mixed = addedByUnread(position).length > 0;
   for (const s of sources) {
     const record = input.remembered(s, accountId);
     const earlier = record.get(position.ref) ?? record.get(existing.ref);
@@ -690,14 +744,20 @@ interface Moved {
  * lines left out, until the user replaces it with them. Import records hold identifiers, not units,
  * so a holding that may also have other units is only kept, with a note.
  */
-function settleOthers(positions: PlannedPosition[], sources: Source[], accountId: string, input: PlanInput) {
+function settleOthers(
+  positions: PlannedPosition[],
+  sources: Source[],
+  accountId: string,
+  input: PlanInput,
+  addedByUnread: (position: PlannedPosition) => Source[],
+) {
   const importable = new Set(positions.filter((p) => p.lines.length && p.include && !p.misread));
   const under = new Map(positions.flatMap((p) => p.lines.map((l) => [l.holding, p] as const)));
   const replacing = new Map<PlannedPosition, { whole: Moved[]; part: Moved[] }>();
   for (const position of positions) {
     // A statement row's lines replace its own units; a held-back one keeps them.
     if (!position.existing || (position.lines.length && !position.misread)) continue;
-    const moved = settleOther(position, under, importable, sources, accountId, input);
+    const moved = settleOther(position, under, importable, sources, accountId, input, addedByUnread(position));
     if (!moved) continue;
     for (const target of moved.targets) {
       const entry = replacing.get(target) ?? { whole: [], part: [] };
@@ -736,12 +796,13 @@ function settleOther(
   sources: Source[],
   accountId: string,
   input: PlanInput,
+  unread: Source[],
 ) {
   // A holding the statement still lists, but that this import leaves out, wasn't sold.
   const listed = new Set(sources.flatMap((s) => listedIn(s).flatMap(security)));
   let uncertain = false;
-  // It may also hold units that no listed holding under another asset replaces.
-  let mixed = !!position.misread;
+  // It may also hold units that no listed holding under another asset replaces, such as a left-out source's.
+  let mixed = !!position.misread || unread.length > 0;
   const moved: { source: Source; to: PlannedPosition }[] = [];
   const recorded: Source[] = [];
   const from = sources.filter((s) => {
@@ -798,6 +859,13 @@ function settleOther(
         position.notes.push(`${alreadyHold(heldBy)} ${assetNames(overlapping)}, so this holding's units may be counted there too. Check them in Wealthfolio.`);
       }
     }
+    if (unread.length) position.notes.push(`${leavesOut(unread)} added it too.`);
+  } else if (from.length && unread.length) {
+    // Removing it would take the left-out source's units too.
+    position.notes.push(
+      `An earlier import of ${labels(from)} added it, and ${labels(from)} no longer ${several(from) ? "list" : "lists"} it. ${leavesOut(unread)} added it too, so it's kept. ` +
+      `Remove it ${onlyIfNoneIn(unread)}. If you keep it, correct its units in Wealthfolio: they may include some that came from ${labels(from)}.`,
+    );
   } else if (from.length) {
     position.include = false;
     position.notes.push(`Not on the statement any more. An earlier import of ${from.map((s) => s.label).join(" and ")} added it.`);

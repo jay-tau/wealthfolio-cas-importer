@@ -235,6 +235,11 @@ account's complete snapshot before anything is saved:
   and that the statement no longer lists, defaults to removed. If the printed identifiers can't
   be compared, it stays with a note to check it. You can keep or remove each one, and include or
   leave out each holding.
+- A folio, demat account or PRAN you leave out keeps what its earlier imports added. When one of
+  those holdings would change because the statement's other lines list it too, or no longer list
+  it, its row names the left-out one. A listed holding is left out by default, since its lines
+  don't count the left-out one's units, and one they no longer list is kept. Import or remove it
+  only if the left-out one no longer holds any.
 - A holding the statement still lists, but that you now confirm to another asset than the one an
   earlier import of the same folio, demat account or PRAN added (AMFI's result instead of Yahoo's,
   say, or a summary statement's fund that now prints its ISIN), isn't counted twice: the old asset

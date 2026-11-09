@@ -447,7 +447,11 @@ export function HoldingsImport({
         for (const position of snapshot.positions) position.price = prices.get(position.assetId);
       }
       const remembered = new Map(await Promise.all(
-        bySource.map(async ({ source, accountId }) => [
+        [
+          ...bySource,
+          // A left-out folio, demat account or PRAN's earlier import into each account: its units stay.
+          ...holdings.sources.filter((source) => !accountOf(source)).flatMap((source) => ids.map((accountId) => ({ source, accountId }))),
+        ].map(async ({ source, accountId }) => [
           `${source.id}|${accountId}`,
           await readImported(api.storage, source, accountId, existing.get(accountId)!.date),
         ] as const),
