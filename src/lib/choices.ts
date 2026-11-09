@@ -115,6 +115,37 @@ export async function saveImported(storage: Storage, source: Source, accountId: 
   for (const key of keys) await storage.set(key, value);
 }
 
+/**
+ * One import's records for an account: each source's at the date. Linked folios share one history,
+ * so each of those sources saves all of their refs, and none erases what another saved.
+ */
+export async function saveImports(storage: Storage, accountId: string, date: string, records: { source: Source; refs: ImportedRefs }[]) {
+  // Sever mixed-issuer links before another source can follow their stale copies.
+  records = [...records].sort((a, b) => Number(b.source.aliases?.length === 0) - Number(a.source.aliases?.length === 0));
+  const keys = await Promise.all(records.map(async ({ source }) => (await importedHistory(storage, source, accountId)).keys));
+  for (const [i, { source }] of records.entries()) {
+    if (source.aliases?.length === 0) {
+      for (const [j, other] of keys.entries()) if (i !== j) other.delete(importedKey(source.id, accountId));
+    }
+  }
+  const linked = (i: number) => {
+    const found = new Set([i]);
+    for (const j of found) {
+      keys.forEach((other, k) => {
+        if (!found.has(k) && [...other].some((key) => keys[j].has(key))) found.add(k);
+      });
+    }
+    return found;
+  };
+  for (const [i, { source }] of records.entries()) {
+    const refs: ImportedRefs = {};
+    for (const j of linked(i)) {
+      for (const [ref, ids] of Object.entries(records[j].refs)) refs[ref] = [...new Set([...(refs[ref] ?? []), ...ids])];
+    }
+    await saveImported(storage, source, accountId, date, refs);
+  }
+}
+
 /** A fund the user confirmed, with the name `market.searchTicker` gave it, or a holding priced from statements. */
 export interface ChosenFund extends FundAsset {
   assetId?: string;

@@ -457,6 +457,8 @@ export interface AccountPlan {
   /** The statement's folios and demat accounts that go to this account. */
   sources: Source[];
   remembered: Map<string, ReadonlyMap<string, string[]>>;
+  /** The statement's folios, demat accounts and PRANs this import leaves out, with what their earlier imports into this account recorded. */
+  unread: { source: Source; remembered: ReadonlyMap<string, string[]> }[];
   positions: PlannedPosition[];
 }
 
@@ -483,7 +485,7 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
           { key: p.ref, ref: p.ref, name: p.name, existing: p, lines: [], include: true, notes: [], order: Infinity },
         ]),
       );
-      plan = { accountId, date: holdings.date, existing, sources: [], remembered: new Map(), positions: [], byRef, misread: [] };
+      plan = { accountId, date: holdings.date, existing, sources: [], remembered: new Map(), unread: [], positions: [], byRef, misread: [] };
       plans.set(accountId, plan);
     }
     plan.sources.push(source);
@@ -529,7 +531,7 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     settleOthers(positions, plan.sources, plan.accountId, input, addedByUnread);
     // The statement's holdings in its order, then the account's others in theirs.
     positions.sort((a, b) => a.order - b.order);
-    return { ...plan, positions };
+    return { ...plan, unread: unread.map((source) => ({ source, remembered: input.remembered(source, plan.accountId) })), positions };
   });
 }
 
@@ -943,6 +945,18 @@ const removed = (position: PlannedPosition, choices: Choices) =>
 
 /** What `snapshots.save` gets for the account. */
 export function snapshotOf(plan: AccountPlan, choices: Choices) {
+  const { listed, kept } = composition(plan, choices);
+  return {
+    holdings: [...kept.values()].map((p) => p.holding).concat([...listed.values()].map((p) => p.holding)),
+    cash: plan.existing.cash,
+  };
+}
+
+/**
+ * The snapshot's holdings: the statement's, by `fundRef`, and the account's that it keeps as they
+ * are, by asset ID.
+ */
+function composition(plan: AccountPlan, choices: Choices) {
   const listed = new Map<string, { holding: SnapshotHoldingInput; total: string | undefined }>();
   const kept = new Map<string, { ref: string; holding: SnapshotHoldingInput }>();
   for (const position of plan.positions) {
@@ -980,10 +994,8 @@ export function snapshotOf(plan: AccountPlan, choices: Choices) {
   }
   // Wealthfolio keeps the last of two holdings of one asset. A kept holding matches none of the
   // statement's only when the asset's symbol was renamed, so the statement's come last and win.
-  return {
-    holdings: [...kept.values()].filter((p) => !listed.has(p.ref)).map((p) => p.holding).concat([...listed.values()].map((p) => p.holding)),
-    cash: plan.existing.cash,
-  };
+  for (const [assetId, p] of kept) if (listed.has(p.ref)) kept.delete(assetId);
+  return { listed, kept };
 }
 
 function existingHolding(p: ExistingPosition): SnapshotHoldingInput {
@@ -997,7 +1009,11 @@ function existingHolding(p: ExistingPosition): SnapshotHoldingInput {
   };
 }
 
-/** What each source put into the account (`fundRef` → `security`), to remember after the import. */
+/**
+ * What each source put into the account (`fundRef` → `security`), to remember after the import. A
+ * left-out source's record comes too when the import replaces or removes the account's units of a
+ * holding it recorded: without that holding, since none of those units are its own any more.
+ */
 export function importedRefs(plan: AccountPlan, choices: Choices) {
   const updated = new Set(plan.positions.filter((p) => p.lines.length && included(p, choices)).map((p) => p.ref));
   const kept = new Set(plan.positions.filter((p) =>
@@ -1016,7 +1032,31 @@ export function importedRefs(plan: AccountPlan, choices: Choices) {
       saved[position.ref] = [...new Set([...(saved[position.ref] ?? []), ...security(holding)])];
     }
   }
-  return [...refs.values()];
+  const replaced = replacedRefs(plan, choices);
+  const cleared = plan.unread.flatMap(({ source, remembered }) => {
+    const left = [...remembered].filter(([ref]) => !replaced.has(ref));
+    return left.length < remembered.size ? [{ source, refs: Object.fromEntries(left) }] : [];
+  });
+  return [...refs.values(), ...cleared];
+}
+
+/**
+ * The `fundRef`s, as `unreadOf` matches them, of the holdings whose units the snapshot sets to the
+ * statement's or removes. Those of a holding it keeps as it is never count.
+ */
+function replacedRefs(plan: AccountPlan, choices: Choices) {
+  const { listed, kept } = composition(plan, choices);
+  const listedIds = new Set([...listed.values()].map((l) => l.holding.assetId));
+  const replaced = new Set<string>();
+  const unchanged = new Set<string>();
+  for (const position of plan.positions) {
+    const refs = [position.ref, ...(position.existing ? [position.existing.ref] : [])];
+    const same = position.existing && kept.has(position.existing.assetId) && !listedIds.has(position.existing.assetId);
+    if (same) for (const ref of refs) unchanged.add(ref);
+    else if (position.existing || listed.has(position.ref)) for (const ref of refs) replaced.add(ref);
+  }
+  for (const ref of unchanged) replaced.delete(ref);
+  return replaced;
 }
 
 /** Whether the snapshot changes anything the account has on the statement's date. */
