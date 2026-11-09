@@ -17,6 +17,7 @@ import type { CasData, CasScheme } from "../cas/types";
 import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
 import { fundName, type PlanAndOption, planAndOption } from "../lib/fund-name";
+import { nameNumber } from "../lib/name-number";
 
 /** Undefined while undecided. */
 export type FundChoice = { fund: ChosenFund } | { leftOut: true };
@@ -105,12 +106,14 @@ export const fundItems = (data: CasData): FundItem[] =>
 function FundSearch({
   ctx,
   item,
+  label,
   onChoose,
   onLeaveOut,
   onNoAmfi,
 }: {
   ctx: AddonContext;
   item: FundItem;
+  label: string;
   onChoose: (fund: ChosenFund) => void;
   onLeaveOut: () => void;
   /** Called with true while the fund's own search finds no AMFI result, and with false after. */
@@ -120,6 +123,9 @@ function FundSearch({
   // printed, or what the user types is sent to market-data providers.
   const name = fundName(item.name);
   const { isin, noun, statementAsset } = item;
+  // Every section repeats these controls, so hidden text after each one's visible text tells screen
+  // readers which fund it's for. Browsers read a space before hidden text, so it starts with a word.
+  const forItem = <span className="sr-only"> for {label}</span>;
   const plan = statementPlan(item);
   const [query, setQuery] = useState(isin ?? name);
   const [results, setResults] = useState<SymbolSearchResult[] | null>(null);
@@ -184,7 +190,7 @@ function FundSearch({
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <Input
-          aria-label={`Search for the ${noun}`}
+          aria-label={`Search for ${label}`}
           className="w-72"
           value={query}
           placeholder={isin ? "ISIN, name or ticker" : "Name or ticker"}
@@ -196,6 +202,7 @@ function FundSearch({
         <Button type="button" variant="outline" disabled={!query.trim()} onClick={() => void search(query)}>
           {searching && <Spinner />}
           Search
+          {forItem}
         </Button>
       </div>
       {error && <p className="text-destructive text-sm">{error}</p>}
@@ -224,7 +231,12 @@ function FundSearch({
         </p>
       )}
       {results && results.length > 0 && (
-        <RadioGroup value={picked} onValueChange={(value) => setPicked(String(value))} className="grid gap-2">
+        <RadioGroup
+          aria-label={`Search results for ${label}`}
+          value={picked}
+          onValueChange={(value) => setPicked(String(value))}
+          className="grid gap-2"
+        >
           {results.map((r, i) => (
             <Label key={`${r.symbol} ${r.exchangeMic} ${i}`} className="flex items-center gap-2 font-normal">
               <RadioGroupItem value={String(i)} />
@@ -240,14 +252,17 @@ function FundSearch({
       <div className="flex flex-wrap items-center gap-2">
         <Button type="button" disabled={!result} onClick={() => result && onChoose(toFund(result))}>
           Use this {noun}
+          {forItem}
         </Button>
         {statementAsset && (
           <Button type="button" variant="outline" onClick={() => onChoose(statementAsset)}>
             Use the statement's prices
+            {forItem}
           </Button>
         )}
         <Button type="button" variant="ghost" onClick={onLeaveOut}>
           Leave this {noun} out
+          {forItem}
         </Button>
       </div>
     </div>
@@ -284,8 +299,9 @@ export function FundChoicesCard({
         )}
       </CardHeader>
       <CardContent className="space-y-6">
-        {items.map((item) => {
+        {items.map((item, i) => {
           const { key } = item;
+          const label = `${item.name.trim()}${nameNumber(items, i, item.noun)}`;
           const choice = choices[key];
           const plan = statementPlan(item);
           return (
@@ -307,7 +323,7 @@ export function FundChoicesCard({
                     <span className="text-muted-foreground">({describe(choice.fund)})</span>
                   </span>
                   <Button type="button" variant="link" size="sm" onClick={() => onChange(key, undefined)}>
-                    Change
+                    Change<span className="sr-only"> the {item.noun} for {label}</span>
                   </Button>
                 </div>
               ) : choice ? (
@@ -315,12 +331,14 @@ export function FundChoicesCard({
                   <Badge variant="secondary">Left out</Badge>
                   <Button type="button" variant="link" size="sm" onClick={() => onChange(key, undefined)}>
                     Choose a {item.noun}
+                    <span className="sr-only"> for {label}</span>
                   </Button>
                 </div>
               ) : (
                 <FundSearch
                   ctx={ctx}
                   item={item}
+                  label={label}
                   onChoose={(fund) => onChange(key, { fund })}
                   onLeaveOut={() => onChange(key, { leftOut: true })}
                   onNoAmfi={(missing) =>

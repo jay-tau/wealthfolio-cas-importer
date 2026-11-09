@@ -20,6 +20,10 @@ before(async () => {
   });
   components = {
     ...(await server.ssrLoadModule("/src/components/preview.tsx")),
+    ...(await server.ssrLoadModule("/src/components/fund-choices.tsx")),
+    ...(await server.ssrLoadModule("/src/components/holdings-preview.tsx")),
+    ...(await server.ssrLoadModule("/src/components/units-check.tsx")),
+    ...(await server.ssrLoadModule("/src/cas/holdings.ts")),
     ...(await server.ssrLoadModule("/src/pages/import-page.tsx")),
     ...(await server.ssrLoadModule("/src/pages/holdings-import.tsx")),
   };
@@ -47,6 +51,7 @@ test("the preview counts transactions and activities", () => {
     status,
     rows: [],
     transaction: {
+      folio: "12345",
       scheme: "Made-up Flexi Cap Fund",
       activity: { date: "2024-01-01", activityType: "BUY", quantity: "10", unitPrice: "10", amount: "100" },
       rows: [],
@@ -73,6 +78,65 @@ test("the preview counts transactions and activities", () => {
   const two = preview(["new", "new", "duplicate", "duplicate"], 2);
   assert.match(two, / 2 new transactions, 0 already in Wealthfolio, 2 possible duplicates and 0 Wealthfolio can't import\. /);
   assert.match(two, / Import 2 activities $/);
+  for (const row of [3, 4]) {
+    assert.ok(two.includes(`Import anyway for the 2024-01-01 purchase of Made-up Flexi Cap Fund, 100, folio 12345, transaction ${row}`));
+  }
+});
+
+test("controls distinguish equal holding names and overlap contributions", () => {
+  const share = (isin) => ({ kind: "share", name: "Example Share", isin, units: "10", price: "2", value: "20", cost: null });
+  const first = share("INEZ90A01017");
+  const holdings = { date: "2025-03-31", sources: [
+    { id: "demat|1", kind: "demat", label: "Made-up demat", holdings: [first, { ...share("INEZ90B01015"), name: "Example  Share" }] },
+  ] };
+  const asset = (h) => ({ symbol: h.isin, exchangeMic: "XBOM", name: h.name, quoteCcy: "INR" });
+  const fund = { ...first, kind: "fund", name: "Example Fund", isin: "INFZ90K01FC8" };
+  const overlapping = { date: holdings.date, sources: [
+    { id: "demat|1", kind: "demat", label: "Made-up demat", holdings: [fund, { ...fund, isin: "INFZ90K01LQ6", name: "Example  Fund" }] },
+    { id: "folio|1", kind: "folio", label: "Made-up folio", holdings: [fund] },
+    { id: "demat|2", kind: "demat", label: "Other made-up demat", holdings: [fund] },
+  ] };
+  const plans = components.planSnapshots(overlapping, {
+    account: (s) => s.id === "demat|2" ? "b" : "a", asset,
+    existing: () => ({ date: "2025-03-31", positions: [], cash: {}, later: [] }),
+    remembered: () => new Map(), heldElsewhere: () => [{ name: "Transactions", tracksTransactions: true }],
+  });
+  const props = {
+    plans, accounts: [{ id: "a", name: "Demat" }, { id: "b", name: " Demat " }],
+    choices: new Map([["a", { flipped: new Set([plans[0].positions[2].key]), costs: new Map() }]]),
+    confirmed: new Set(), importing: false,
+  };
+  const snapshot = text("HoldingsPreview", props);
+  for (const row of [1, 2, 3]) {
+    assert.ok(snapshot.includes(`Import Example Fund in Demat, account 1, holding ${row}`));
+  }
+  const markup = renderToStaticMarkup(createElement(components.HoldingsPreview, props));
+  for (const row of [1, 2, 3]) assert.ok(markup.replace(/\s+/g, " ").includes(`aria-label="Total cost of Example Fund in Demat, account 1, holding ${row}"`));
+  assert.ok(snapshot.includes("Replace the snapshot of 2025-03-31 in Demat, account 1"));
+  assert.ok(snapshot.includes("Replace the snapshot of 2025-03-31 in Demat, account 2"));
+  assert.ok(snapshot.includes("Import Example Fund in Demat, account 2"));
+  const items = components.holdingItems(holdings);
+  for (const [choices, controls] of [
+    [{}, ["Search for", "Use this share for", "Use the statement's prices for", "Leave this share out for"]],
+    [Object.fromEntries(items.map((item) => [item.key, { fund: asset(first) }])), ["Change the share for"]],
+    [Object.fromEntries(items.map((item) => [item.key, { leftOut: true }])), ["Choose a share for"]],
+  ]) {
+    const card = renderToStaticMarkup(createElement(components.FundChoicesCard, { ctx: {}, items, choices }));
+    const names = card.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").replaceAll("&#x27;", "'");
+    for (const row of [1, 2]) {
+      for (const control of controls) {
+        assert.ok((control === "Search for" ? card.replace(/\s+/g, " ") : names).includes(`${control} Example Share, share ${row}`));
+      }
+    }
+  }
+  const checks = components.checkUnits(holdings, {
+    asset: (h) => ({ ...asset(h), assetId: h.isin }), accounts: [{ id: "t", name: "Transactions" }], timeZone: "UTC",
+    activities: holdings.sources[0].holdings.map((h) => ({
+      accountId: "t", assetId: h.isin, status: "POSTED", activityType: "BUY", date: "2025-03-01T00:00:00Z", quantity: "10",
+    })),
+  });
+  const units = text("UnitsCheckCard", { checked: { checks, archived: [] }, same: new Set(), checking: false, blocked: "" });
+  for (const row of [1, 2]) assert.ok(units.includes(`Same holdings for Example Share, holding ${row}`));
 });
 
 test("the import result counts activities, duplicates, funds and bank rows", () => {

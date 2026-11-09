@@ -17,6 +17,7 @@ import {
 } from "@wealthfolio/ui";
 import { dec, format, isZero } from "../cas/decimal";
 import { type UnitCheck, unitStatus } from "../cas/holdings";
+import { nameNumber } from "../lib/name-number";
 
 const BADGES = {
   match: { badge: "Match", variant: "success-subtle" },
@@ -97,7 +98,8 @@ export function UnitsCheckCard({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {checked.checks.map((check) => {
+                {checked.checks.map((check, i) => {
+                  const label = `${check.name.trim()}${nameNumber(checked.checks, i, "holding")}`;
                   const yes = same.has(check.ref);
                   const { badge, variant } = BADGES[unitStatus(check, yes)];
                   return (
@@ -145,6 +147,7 @@ export function UnitsCheckCard({
                               <Label className="flex items-center gap-2 text-xs font-normal">
                                 <Checkbox checked={yes} onCheckedChange={(value) => onSame(check.ref, value === true)} />
                                 Same holdings
+                                <span className="sr-only"> for {label}</span>
                               </Label>
                             </>
                           )}
