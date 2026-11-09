@@ -429,8 +429,9 @@ export function HoldingsImport({
       const refs = new Map([...resolved.values()].map((asset) => [asset.assetId, fundRef(asset.symbol, asset.exchangeMic)]));
       const older = [...existing.values()].some((snapshot) => snapshot.date && snapshot.date < holdings.date && snapshot.positions.length > 0);
       const activities = older ? await api.activities.getAll() : [];
+      const timeZone = older ? await engineTimeZone(api.settings) : "UTC";
       for (const snapshot of existing.values()) {
-        const split = splitSince(snapshot, holdings.date, activities);
+        const split = splitSince(snapshot, holdings.date, activities, timeZone);
         for (const position of snapshot.positions) {
           position.ref = refs.get(position.assetId) ?? position.ref;
           position.manual = modes.get(position.ref) ?? position.manual;
