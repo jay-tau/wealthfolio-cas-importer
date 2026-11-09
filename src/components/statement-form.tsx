@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import { CasError, CasParser } from "../cas/parser";
 import type { Statement } from "../cas/types";
 import { PASSWORD_SECRET } from "../lib/choices";
+import { useFocusReturn } from "../lib/focus";
 
 export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
   ctx: AddonContext;
@@ -19,6 +20,8 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
   const [loadingPassword, setLoadingPassword] = useState(true);
   const [reading, setReading] = useState(false);
   const [error, setError] = useState<CasError | null>(null);
+  // Read statement and PDF password stay, so whichever started the read gets the focus back.
+  const focusReturn = useFocusReturn(reading);
 
   useEffect(() => () => parser.current?.dispose(), []);
 
@@ -77,6 +80,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
   const read = async () => {
     const casParser = startParser();
     if (!file || !casParser) return;
+    focusReturn.hold();
     setReading(true);
     onClear();
     setError(null);

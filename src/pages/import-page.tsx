@@ -47,7 +47,7 @@ import {
   saveFund,
   sourceKey,
 } from "../lib/choices";
-import { useFocusMove } from "../lib/focus";
+import { useFocusMove, useFocusReturn } from "../lib/focus";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
 import { HoldingsImport, holdingItems } from "./holdings-import";
@@ -97,6 +97,10 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const [error, setError] = useState("");
   // "Import this fund anyway" previews again, which replaces its checkbox: the new one takes the focus.
   const focus = useFocusMove();
+  // Preview the import and Import N activities stay, so they get the focus back. A failed preview
+  // from "Import this fund anyway" leaves no checkbox, so its error gets it.
+  const focusReturn = useFocusReturn(busy !== "");
+  const errorRef = useRef<HTMLDivElement>(null);
 
   // Remembered accounts that are hidden, archived or no longer listed are ignored, and their rows say why.
   const accountChoices: AccountChoices = Object.fromEntries(
@@ -300,6 +304,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const runPreview = async (importUnbalanced = unbalanced, unbalancedKey?: string) => {
     if (!data) return;
     focus.expect(unbalancedKey ?? null);
+    focusReturn.hold(unbalancedKey ? errorRef : undefined);
     setBusy("preview");
     setError("");
     setPreview(null);
@@ -356,6 +361,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   const runImport = async () => {
     if (!data || !preview) return;
     const sent = importRows(preview.plan, (t) => importAnyway.has(t), reused);
+    focusReturn.hold();
     setBusy("import");
     setError("");
     try {
@@ -472,7 +478,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
             </>
           )}
           {error && (
-            <Alert variant="destructive">
+            <Alert ref={errorRef} tabIndex={-1} variant="destructive">
               <AlertTitle>Something went wrong</AlertTitle>
               <AlertDescription>{error}</AlertDescription>
             </Alert>

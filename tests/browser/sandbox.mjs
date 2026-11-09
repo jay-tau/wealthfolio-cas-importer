@@ -99,6 +99,21 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
     }, changes);
     const remember = frame.getByRole("checkbox", { name: "Remember the password" });
+    const readButton = frame.getByRole("button", { name: "Read statement", exact: true });
+    const passwordBox = frame.locator("#cas-password");
+    // A control pressed with the keyboard that goes away hands the focus to what takes its place. One
+    // that stays while the page is locked gets it back once the page is unlocked.
+    const focused = async (locator, what) => {
+      await locator.waitFor({ state: "attached" });
+      const element = await locator.elementHandle();
+      try {
+        await tab.frames()[1].waitForFunction((element) => document.activeElement === element, element, { timeout: 5_000 });
+      } catch {
+        const active = await tab.frames()[1].evaluate(() =>
+          document.activeElement === document.body ? "<body>" : document.activeElement?.outerHTML.slice(0, 150));
+        assert.fail(`${what}: the focus is on ${active}`);
+      }
+    };
     // A slow secret load cannot override an editable Remember opt-out.
     await waiting();
     assert.equal(await remember.getAttribute("aria-checked"), "false");
@@ -116,22 +131,25 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByRole("button", { name: "Read statement", exact: true }).isDisabled(), true);
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
     assert.equal(await frame.locator("#cas-password").inputValue(), "");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await readButton.press("Enter");
     await frame.locator("#cas-file:disabled").waitFor();
     assert.equal(await frame.locator("#cas-password").isDisabled(), true);
     await frame.getByText("Wrong password", { exact: true }).waitFor({ timeout: 180_000 });
+    await focused(readButton, "Read statement, failed");
     await frame.locator("#cas-password").fill("ABCDE1234F");
     // Unstyled here, so the checkbox has no width to click on.
     await remember.dispatchEvent("click");
     assert.equal(await remember.getAttribute("aria-checked"), "true");
     await pause("storage");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    // Enter in PDF password reads the statement too.
+    await passwordBox.press("Enter");
     await waiting();
     assert.equal(await frame.locator("#cas-file").isDisabled(), true);
     assert.equal(await frame.getByRole("button", { name: "Reading…", exact: true }).isDisabled(), true);
     assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
     await resume();
     await frame.getByText(/2 folios, 7 schemes, 78 rows\. Skipping 2 closed schemes, with no units and nothing to import\./).waitFor({ timeout: 180_000 });
+    await focused(passwordBox, "PDF password");
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
 
     await frame.getByLabel("PAN ABCDE1234F", { exact: true }).click();
@@ -164,18 +182,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await section.getByRole(role, { name, exact: true }).waitFor({ state: "attached" });
         assert.equal(await section.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
         assert.equal(await frame.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
-      }
-    };
-    // A control pressed with the keyboard that goes away hands the focus to what takes its place.
-    const focused = async (locator, what) => {
-      await locator.waitFor({ state: "attached" });
-      const element = await locator.elementHandle();
-      try {
-        await tab.frames()[1].waitForFunction((element) => document.activeElement === element, element, { timeout: 5_000 });
-      } catch {
-        const active = await tab.frames()[1].evaluate(() =>
-          document.activeElement === document.body ? "<body>" : document.activeElement?.outerHTML.slice(0, 150));
-        assert.fail(`${what}: the focus is on ${active}`);
       }
     };
     for (const section of await frame.locator("section").all()) {
@@ -334,9 +340,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       assert.ok(!folio.PAN || !JSON.stringify(saved).includes(folio.PAN));
     }
 
-    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByRole("button", { name: "Preview the import" }).press("Enter");
     // The Flexi Cap fund starts with units the fake host has no history for.
     await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    await focused(frame.getByRole("button", { name: "Preview the import" }), "Preview the import");
     // A status line beside the button reads out the work that locks the page, and the counts once the preview is ready.
     const pageStatus = frame.getByRole("button", { name: /^Preview the / }).locator("xpath=..").getByRole("status");
     assert.equal(await pageStatus.textContent(), "The preview is ready: 13 new transactions, 0 already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import.");
@@ -354,8 +361,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await resume();
     // A failed import keeps the preview, and its alert says why: the status line doesn't say it's ready again.
     await tab.frames()[1].evaluate(() => { window.host.failImport = true; });
-    await frame.getByRole("button", { name: "Import 23 activities", disabled: false }).click();
+    await frame.getByRole("button", { name: "Import 23 activities", disabled: false }).press("Enter");
     await frame.getByText("The import failed: Error: Import unavailable", { exact: true }).waitFor();
+    await focused(frame.getByRole("button", { name: "Import 23 activities" }), "Import 23 activities, failed");
     assert.equal(await pageStatus.textContent(), "");
     await tab.frames()[1].evaluate(() => { window.host.failImport = false; });
     await pause("import");
@@ -392,8 +400,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }).waitFor({ state: "attached" });
     // Equal purchases of the same fund in two folios still have distinct transaction names.
     await tab.frames()[1].evaluate(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await readButton.press("Enter");
     await frame.getByText(/3 folios, 8 schemes, 83 rows\./).waitFor({ timeout: 180_000 });
+    await focused(readButton, "Read statement");
     await frame.getByRole("button", { name: "Preview the import" }).click();
     const twins = frame.getByRole("checkbox", { name: /^Import anyway for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001\.1470564,/ });
     await twins.nth(1).waitFor({ state: "attached" });
@@ -469,8 +478,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // A profile failure stops a symbol-only match instead of offering the trade again.
     await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = [window.host.activities.find((a) => a.assetId).assetId]; });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByRole("button", { name: "Preview the import" }).press("Enter");
     await frame.getByText(/Couldn't read a Wealthfolio asset's profile/).waitFor();
+    await focused(frame.getByRole("button", { name: "Preview the import" }), "Preview the import, failed");
     assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).count(), 0);
     await tab.frames()[1].evaluate((symbol) => { window.host.failGetProfileIds = []; window.host.assets["chosen-fund"] = { symbol, exchangeMic: "XBOM" }; }, expected.folios[0].schemes[0].isin);
     // Search lists an untyped asset as OTHER, but symbol-based imports cannot target it.
@@ -664,10 +674,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leftOutAlert.getByText(gap).waitFor();
     await focused(leftOutAlert.getByRole("checkbox"), "Import this fund anyway, unticked");
     assert.equal(await anywayAlert.count(), 0);
-    // A tick whose preview fails shows no checkbox, and a later preview leaves the focus alone.
+    // A tick whose preview fails shows no checkbox, so its error takes the focus, and a later preview
+    // leaves the checkbox's focus alone.
     await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = ["asset-INFZ90K01FC8"]; });
     await importFlexi.press("Space");
     await frame.getByText(/^Couldn't prepare the preview/).waitFor();
+    await focused(frame.getByRole("alert").filter({ hasText: /^Something went wrong/ }), "Import this fund anyway, failed");
     await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = []; });
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^38 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
@@ -1510,13 +1522,20 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const savesBefore = JSON.parse(beforeUnavailableHoldings).saves.length;
     const snapshotStatus = preview.locator("xpath=..").getByRole("status");
     assert.equal(await snapshotStatus.textContent(), "");
+    // Fund folios' Gilt fund can't be read, so the preview fails.
+    await hosted(() => { window.host.failGetProfileIds = ["asset-gilt"]; });
+    await preview.press("Enter");
+    await frame.getByText(/^Couldn't prepare the preview: Error: Couldn't read the Wealthfolio profile of /).waitFor();
+    await focused(preview, "Preview the snapshots, failed");
+    await hosted(() => { window.host.failGetProfileIds = []; });
     await pause("holdings");
-    await preview.click();
+    await preview.press("Enter");
     await waiting();
     await snapshotStatus.getByText("Preparing the preview…", { exact: true }).waitFor();
     assert.equal(await snapshotStatus.textContent(), "Preparing the preview…");
     await resume();
     await snapshotStatus.getByText("The preview is ready: 2 snapshots.", { exact: true }).waitFor();
+    await focused(preview, "Preview the snapshots");
     await pause("snapshot");
     await frame.getByRole("button", { name: "Save 2 snapshots", disabled: false }).press("Enter");
     await waiting();
@@ -2715,17 +2734,25 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       quotes: window.host.quotes, assets: window.host.assets, modes: window.host.pricingModes, links: window.host.links,
     }));
     const before = await accountData();
-    const checkStatus = frame.getByRole("button", { name: "Check units", exact: true }).locator("xpath=..").getByRole("status");
+    const checkButton = frame.getByRole("button", { name: "Check units", exact: true });
+    const checkStatus = checkButton.locator("xpath=..").getByRole("status");
     assert.equal(await checkStatus.textContent(), "");
     await pause("history");
-    await frame.getByRole("button", { name: "Check units", exact: true }).click();
+    await checkButton.press("Enter");
     await waiting();
     await checkStatus.getByText("Checking the units…", { exact: true }).waitFor();
     assert.equal(await checkStatus.textContent(), "Checking the units…");
+    // A click outside the add-on while the page is locked keeps the focus there, as it would on
+    // Wealthfolio's own pages.
+    const outside = await tab.locator("iframe").boundingBox();
+    await tab.mouse.click(outside.x + outside.width + 20, outside.y + 20);
+    assert.equal(await hosted(() => document.hasFocus()), false);
     await resume();
     const checkRow = (name) => frame.getByRole("row").filter({ hasText: name });
     await checkRow(flexiName).getByText("Needs review", { exact: true }).waitFor();
     assert.equal(await checkStatus.textContent(), "Compared the units of 2 of 6 holdings.");
+    assert.equal(await tab.evaluate(() => document.activeElement.tagName), "BODY");
+    assert.equal(await hosted(() => document.hasFocus()), false);
     await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
     assert.deepEqual(await checkRow(flexiName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "2892.104", "2892.104"]);
     // Each holding's Same holdings names it.
@@ -2742,10 +2769,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await accountData(), before);
     // A check that can't read Wealthfolio's activities compares none, and says so.
     await tab.frames()[1].evaluate(() => { window.host.failHistory = true; });
-    await frame.getByRole("button", { name: "Check units", exact: true }).click();
+    await checkButton.press("Enter");
     await checkStatus.getByText("Compared the units of 0 of 6 holdings.", { exact: true }).waitFor();
+    await focused(checkButton, "Check units");
     await checkRow(flexiName).getByText("Couldn't read Wealthfolio's activities: Error: History unavailable", { exact: true }).waitFor();
     await tab.frames()[1].evaluate(() => { window.host.failHistory = false; });
+    // A check that fails gives the focus back too.
+    await hosted(() => { window.host.failSettings = true; });
+    await checkButton.press("Enter");
+    await frame.getByText("Couldn't check the units: Error: Settings unavailable", { exact: true }).waitFor();
+    await focused(checkButton, "Check units, failed");
+    await hosted(() => { window.host.failSettings = false; });
     // The next read finds Not set archived, so it isn't compared.
     await editAccounts({ "unset-1": { isArchived: true } });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
@@ -2877,15 +2911,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // form stays usable, and the next read starts a new parser.
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
     await frame.locator("#cas-password").fill("ABCDE1234F");
-    const readButton = frame.getByRole("button", { name: "Read statement", exact: true });
     const workers = () => hosted(() => window.host.workers);
-    const failRead = async (fault, message) => {
+    const failRead = async (fault, message, control = readButton) => {
       await hosted((fault) => window.host.breakWorkers(fault), fault);
       const before = await workers();
-      await readButton.click();
+      await control.press("Enter");
       await frame.getByText(message, { exact: true }).waitFor({ timeout: 180_000 });
       await frame.locator("#cas-file:enabled").waitFor();
       assert.equal(await readButton.isDisabled(), false, fault);
+      await focused(control, `A read that failed with ${fault}`);
       return (await workers()) - before;
     };
     const readAfterFault = async () => {
@@ -2906,7 +2940,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readAfterFault();
     assert.equal(await failRead("fatal", stopped), 0);
     await readAfterFault();
-    assert.equal(await failRead("no-reply", "The parser didn't finish reading this PDF in time. Try reading it again."), 0);
+    assert.equal(await failRead("no-reply", "The parser didn't finish reading this PDF in time. Try reading it again.", passwordBox), 0);
     await readAfterFault();
   } catch (error) {
     failed = true;
