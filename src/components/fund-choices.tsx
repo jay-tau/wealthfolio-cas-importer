@@ -12,10 +12,11 @@ import {
   RadioGroupItem,
   Spinner,
 } from "@wealthfolio/ui";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, type RefCallback, useEffect, useRef, useState } from "react";
 import type { CasData, CasScheme } from "../cas/types";
 import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
+import { useFocusMove } from "../lib/focus";
 import { fundName, type PlanAndOption, planAndOption } from "../lib/fund-name";
 import { nameNumber } from "../lib/name-number";
 
@@ -107,6 +108,7 @@ function FundSearch({
   ctx,
   item,
   label,
+  searchRef,
   onChoose,
   onLeaveOut,
   onNoAmfi,
@@ -114,6 +116,7 @@ function FundSearch({
   ctx: AddonContext;
   item: FundItem;
   label: string;
+  searchRef: RefCallback<HTMLInputElement>;
   onChoose: (fund: ChosenFund) => void;
   onLeaveOut: () => void;
   /** Called with true while the fund's own search finds no AMFI result, and with false after. */
@@ -190,6 +193,7 @@ function FundSearch({
     <div className="grid gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <Input
+          ref={searchRef}
           aria-label={`Search for ${label}`}
           className="w-72"
           value={query}
@@ -286,6 +290,12 @@ export function FundChoicesCard({
 }) {
   // The open fund searches that find no AMFI result.
   const [noAmfi, setNoAmfi] = useState<readonly string[]>([]);
+  // Each choice replaces the control pressed with another in the fund's section, which takes the focus.
+  const focus = useFocusMove();
+  const choose = (key: string, choice: FundChoice | undefined) => {
+    focus.expect(key);
+    onChange(key, choice);
+  };
   return (
     <Card>
       <CardHeader>
@@ -322,14 +332,14 @@ export function FundChoicesCard({
                     {plan && <PlanBadges own={planAndOption(choice.fund.name)} statement={plan} />}{" "}
                     <span className="text-muted-foreground">({describe(choice.fund)})</span>
                   </span>
-                  <Button type="button" variant="link" size="sm" onClick={() => onChange(key, undefined)}>
+                  <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
                     Change<span className="sr-only"> the {item.noun} for {label}</span>
                   </Button>
                 </div>
               ) : choice ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="secondary">Left out</Badge>
-                  <Button type="button" variant="link" size="sm" onClick={() => onChange(key, undefined)}>
+                  <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
                     Choose a {item.noun}
                     <span className="sr-only"> for {label}</span>
                   </Button>
@@ -339,8 +349,9 @@ export function FundChoicesCard({
                   ctx={ctx}
                   item={item}
                   label={label}
-                  onChoose={(fund) => onChange(key, { fund })}
-                  onLeaveOut={() => onChange(key, { leftOut: true })}
+                  searchRef={focus.target(key)}
+                  onChoose={(fund) => choose(key, { fund })}
+                  onLeaveOut={() => choose(key, { leftOut: true })}
                   onNoAmfi={(missing) =>
                     setNoAmfi((keys) => (missing ? [...keys.filter((k) => k !== key), key] : keys.filter((k) => k !== key)))
                   }

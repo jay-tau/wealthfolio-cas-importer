@@ -19,6 +19,7 @@ import {
   TableHeader,
   TableRow,
 } from "@wealthfolio/ui";
+import { type RefCallback, useEffect, useRef } from "react";
 import { format } from "../cas/decimal";
 import type { Mapping, MappingWarning } from "../cas/mapping";
 import {
@@ -95,11 +96,13 @@ function Warnings({
   title,
   warnings,
   onImportUnbalanced,
+  unbalancedRef,
   importing,
 }: {
   title: string;
   warnings: MappingWarning[];
   onImportUnbalanced: (w: MappingWarning, yes: boolean) => void;
+  unbalancedRef?: (w: MappingWarning) => RefCallback<HTMLElement>;
   importing: boolean;
 }) {
   if (!warnings.length) return null;
@@ -114,7 +117,12 @@ function Warnings({
               {w.rows.length > 0 && `, ${w.rows[0].date} ${w.rows[0].description}`}: {w.message}
               {w.unbalanced && (
                 <Label className="mt-1 flex items-center gap-2 font-normal">
-                  <Checkbox disabled={importing} checked={!w.leftOut} onCheckedChange={(yes) => onImportUnbalanced(w, yes)} />
+                  <Checkbox
+                    ref={unbalancedRef?.(w)}
+                    disabled={importing}
+                    checked={!w.leftOut}
+                    onCheckedChange={(yes) => onImportUnbalanced(w, yes)}
+                  />
                   Import this fund anyway
                   <span className="sr-only"> for {w.scheme}, folio {w.folio}</span>
                 </Label>
@@ -133,6 +141,7 @@ export function Preview({
   importAnyway,
   onImportAnyway,
   onImportUnbalanced,
+  unbalancedRef,
   onImport,
   importing,
   rowCount,
@@ -147,6 +156,8 @@ export function Preview({
   onImportAnyway: (t: PlannedTransaction, yes: boolean) => void;
   /** Includes or leaves out a scheme whose rows don't add up to its closing balance, and previews again. */
   onImportUnbalanced: (w: MappingWarning, yes: boolean) => void;
+  /** The ref of each scheme's checkbox for `onImportUnbalanced`. */
+  unbalancedRef?: (w: MappingWarning) => RefCallback<HTMLElement>;
   onImport: () => void;
   importing: boolean;
   rowCount: number;
@@ -182,12 +193,14 @@ export function Preview({
           title="Left out"
           warnings={mapping.warnings.filter((w) => w.leftOut)}
           onImportUnbalanced={onImportUnbalanced}
+          unbalancedRef={unbalancedRef}
           importing={importing}
         />
         <Warnings
           title="Imported anyway"
           warnings={caveats.filter((w) => w.unbalanced)}
           onImportUnbalanced={onImportUnbalanced}
+          unbalancedRef={unbalancedRef}
           importing={importing}
         />
         {count("duplicate") + count("existing") > 0 && (
@@ -321,6 +334,9 @@ export function ImportResult({
   closing: FundUnits[];
   links: BankLink[];
 }) {
+  // Shown in place of the preview and its Import button, which had the focus: the summary takes it.
+  const summaryRef = useRef<HTMLDivElement>(null);
+  useEffect(() => summaryRef.current?.focus(), []);
   const failedLinks = links.filter((l) => l.error);
   const { summary } = result;
   const failed = result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0);
@@ -336,7 +352,7 @@ export function ImportResult({
       </CardHeader>
       <CardContent className="space-y-6">
         {summary.success ? (
-          <Alert variant="success">
+          <Alert ref={summaryRef} tabIndex={-1} variant="success">
             <AlertTitle>
               Imported {summary.imported} of {plural(summary.total, "activity", "activities")}
             </AlertTitle>
@@ -346,7 +362,7 @@ export function ImportResult({
             </AlertDescription>
           </Alert>
         ) : (
-          <Alert variant="destructive">
+          <Alert ref={summaryRef} tabIndex={-1} variant="destructive">
             <AlertTitle>Nothing was imported</AlertTitle>
             <AlertDescription>
               {(summary as { errorMessage?: string }).errorMessage ?? "Wealthfolio rejected the import."}
