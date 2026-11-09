@@ -31,7 +31,7 @@ import { type FundChoice, FundChoicesCard, type FundItem } from "../components/f
 import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } from "../components/holdings-accounts";
 import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
 import { type Checked, UnitsCheckCard } from "../components/units-check";
-import { holdingKey, LEFT_OUT, readImported, saveImported, sourceKey } from "../lib/choices";
+import { holdingKey, LEFT_OUT, readImported, saveImports, sourceKey } from "../lib/choices";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
 
@@ -503,7 +503,7 @@ export function HoldingsImport({
         }
         saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, preview.quotes)));
         try {
-          for (const { source, refs } of importedRefs(plan, chosen)) await saveImported(api.storage, source, plan.accountId, plan.date, refs);
+          await saveImports(api.storage, plan.accountId, plan.date, importedRefs(plan, chosen));
         } catch {
           saved.unremembered = true;
         }

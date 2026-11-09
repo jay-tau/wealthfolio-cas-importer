@@ -239,7 +239,9 @@ account's complete snapshot before anything is saved:
   those holdings would change because the statement's other lines list it too, or no longer list
   it, its row names the left-out one. A listed holding is left out by default, since its lines
   don't count the left-out one's units, and one they no longer list is kept. Import or remove it
-  only if the left-out one no longer holds any.
+  only if the left-out one no longer holds any. Once you do, the left-out one's import record no
+  longer lists it, so later imports don't ask again. A folio that shares one record with an
+  included folio, linked through the issuer's folio number, still lists what that one imported.
 - A holding the statement still lists, but that you now confirm to another asset than the one an
   earlier import of the same folio, demat account or PRAN added (AMFI's result instead of Yahoo's,
   say, or a summary statement's fund that now prints its ISIN), isn't counted twice: the old asset

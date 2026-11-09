@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { planSnapshots, readHoldings, snapshotOf } from "../src/cas/holdings.ts";
+import { importedRefs, planSnapshots, readHoldings, snapshotOf } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
-import { fundKey, holdingKey, readFund, readImported, saveFund, saveImported } from "../src/lib/choices.ts";
+import { fundKey, holdingKey, readFund, readImported, saveFund, saveImported, saveImports } from "../src/lib/choices.ts";
 
 const summary = { id: "folio|90123456789/45|amc:Made-up Fund", aliases: ["folio|90123456789/45|INFTEST"] };
 const depository = { id: summary.aliases[0] };
@@ -237,5 +237,106 @@ test("invalid or obsolete provenance storage is ignored", async () => {
   })]) {
     for (const key of store.data.keys()) store.data.set(key, invalid);
     assert.deepEqual(await readImported(store, summary, "account", "2026-12-31"), new Map());
+  }
+});
+
+// Demat accounts 1 and 2 go to one account, which held 150 S and 10 T. Demat account 2 has sold its S.
+const refOf = (isin) => fundRef(isin, "XBOM");
+const held = (...isins) => Object.fromEntries(isins.map((isin) => [refOf(isin), [isin]]));
+const shareOf = (isin, units) => ({ kind: "share", isin, rta: null, rtaCode: null, name: `Share ${isin}`, units, price: "10", value: "0", cost: null });
+const sharesBefore = (date) => ({
+  date, cash: {}, later: [],
+  positions: [["S", "150"], ["T", "10"]].map(([isin, units]) => ({
+    assetId: `asset-${isin}`, symbol: isin, ref: refOf(isin), name: `Share ${isin}`, units, cost: null, currency: "INR",
+  })),
+});
+
+/** Plans the import of `sources`, any `leftOut` left out, as the page reads their records, and imports S. */
+async function importS(store, date, baseline, sources, leftOut) {
+  const remembered = new Map(await Promise.all(sources.map(async (s) => [s.id, await readImported(store, s, "account", baseline)])));
+  const [plan] = planSnapshots({ date, investor: "x", leftOut: [], sources }, {
+    account: (s) => (s === leftOut ? undefined : "account"),
+    asset: (h) => ({ symbol: h.isin, exchangeMic: "XBOM", quoteCcy: "INR", name: h.name }),
+    existing: () => sharesBefore(baseline),
+    remembered: (s) => remembered.get(s.id),
+    heldElsewhere: () => [],
+  });
+  const row = plan.positions.find((p) => p.ref === refOf("S"));
+  // Left out by default only for a left-out source's record.
+  assert.equal(row.include, !leftOut);
+  await saveImports(store, "account", date, importedRefs(plan, { flipped: new Set(leftOut ? [row.key] : []), costs: new Map() }));
+}
+
+test("a left-out source's cleared record is saved at the statement's date from the baseline's, leaving its other dates", async () => {
+  const store = storage();
+  const first = { id: "demat|1|1", kind: "demat", label: "Demat account 1", holdings: [shareOf("S", "100")] };
+  const second = { id: "demat|2|2", kind: "demat", label: "Demat account 2", holdings: [shareOf("T", "10")] };
+  await saveImported(store, first, "account", "2025-03-31", held("S"));
+  await saveImported(store, second, "account", "2025-03-31", held("S", "T"));
+  await saveImported(store, first, "account", "2025-06-30", held("S", "U"));
+  await saveImported(store, second, "account", "2025-06-30", held("S", "U"));
+  // Imported after June's, April's statement starts from March's snapshot: T stays, and June's U isn't copied.
+  await importS(store, "2025-04-30", "2025-03-31", [first, second], second);
+  assert.deepEqual(await readImported(store, second, "account", "2025-04-30"), entries(held("T")));
+  assert.deepEqual(await readImported(store, first, "account", "2025-04-30"), entries(held("S")));
+  // A later baseline reads it; the records at other dates stay.
+  assert.deepEqual(await readImported(store, second, "account", "2025-05-31"), entries(held("T")));
+  for (const source of [first, second]) {
+    assert.deepEqual(await readImported(store, source, "account", "2025-03-31"), entries(source === first ? held("S") : held("S", "T")));
+    assert.deepEqual(await readImported(store, source, "account", "2025-06-30"), entries(held("S", "U")));
+  }
+});
+
+test("a left-out folio's cleared record keeps what a linked included folio just imported", async () => {
+  const store = storage();
+  const included = { ...summary, kind: "folio", label: "Made-up Fund, folio 90123456789/45", holdings: [shareOf("S", "100")] };
+  // The same folio under the AMC's earlier name, linked through the issuer's folio.
+  const renamed = {
+    id: "folio|90123456789/45|amc:Made-up Fund (earlier name)", aliases: summary.aliases,
+    kind: "folio", label: "Made-up Fund (earlier name), folio 90123456789/45", holdings: [shareOf("T", "10")],
+  };
+  const separate = { id: "demat|1|1", kind: "demat", label: "Demat account 1", holdings: [] };
+  await saveImported(store, included, "account", "2025-03-31", held("S", "T"));
+  await saveImported(store, separate, "account", "2025-03-31", held("T"));
+  await importS(store, "2025-04-30", "2025-03-31", [included, renamed, separate], renamed);
+  for (const source of [included, renamed, depository]) {
+    assert.deepEqual(await readImported(store, source, "account", "2025-04-30"), entries(held("S", "T")));
+  }
+  // An unlinked source keeps its own record, without the linked folios' S, and links stay as they were.
+  assert.deepEqual(await readImported(store, separate, "account", "2025-04-30"), entries(held("T")));
+  assert.equal(store.data.size, 4);
+});
+
+test("linked folios imported together keep each other's refs", async () => {
+  const store = storage();
+  const first = { ...summary, kind: "folio", label: "Made-up Fund, folio 90123456789/45", holdings: [shareOf("S", "100")] };
+  const second = {
+    id: "folio|90123456789/45|amc:Made-up Fund (earlier name)", aliases: summary.aliases,
+    kind: "folio", label: "Made-up Fund (earlier name), folio 90123456789/45", holdings: [shareOf("T", "10")],
+  };
+  await saveImported(store, first, "account", "2025-03-31", held("S", "T"));
+  await importS(store, "2025-04-30", "2025-03-31", [first, second]);
+  for (const source of [first, second, depository]) {
+    assert.deepEqual(await readImported(store, source, "account", "2025-04-30"), entries(held("S", "T")));
+  }
+});
+
+test("mixed-issuer folios stay separate from their earlier links when saved together, in either order", async () => {
+  const mixed = { ...summary, aliases: [] };
+  const other = { id: "folio|90123456789/45|amc:Made-up Fund (earlier name)", aliases: summary.aliases };
+  for (const reverse of [false, true]) {
+    const store = storage();
+    await saveImported(store, summary, "account", "2025-03-31", held("S"));
+    await saveImported(store, other, "account", "2025-06-30", held("U"));
+    const records = [{ source: mixed, refs: held("S", "T") }, { source: other, refs: held("S") }];
+    await saveImports(store, "account", "2025-04-30", reverse ? records.reverse() : records);
+    assert.deepEqual(await readImported(store, mixed, "account", "2025-04-30"), entries(held("S", "T")));
+    for (const source of [other, depository]) {
+      assert.deepEqual(await readImported(store, source, "account", "2025-04-30"), entries(held("S")));
+    }
+    for (const source of [mixed, other, depository]) {
+      assert.deepEqual(await readImported(store, source, "account", "2025-03-31"), entries(held("S")));
+      assert.deepEqual(await readImported(store, source, "account", "2025-06-30"), entries(held("U")));
+    }
   }
 });
