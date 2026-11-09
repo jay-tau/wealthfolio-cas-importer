@@ -46,10 +46,41 @@ const pickHint = (item: FundItem) => {
   return `Pick one with the statement's ${name}, ${item.statementAsset ? "use the statement's prices, " : ""}or leave this ${item.noun} out.`;
 };
 
+/** The currency of the statement and its imported activities and snapshot holdings. */
+const RUPEES = "INR";
+
+/**
+ * Why an asset quoted in another currency than the statement's rupees needs checking, or undefined
+ * for one quoted in rupees: Wealthfolio values the units at the chosen listing's price, in its currency.
+ */
+export const otherCurrency = (quoteCcy: string | undefined, asset = "this asset") =>
+  quoteCcy && quoteCcy !== RUPEES
+    ? `The statement's prices and amounts are in rupees, but ${asset} is quoted in ${quoteCcy}. Check that it's the right listing.`
+    : undefined;
+
+/** A non-rupee currency is a warning badge instead, so it isn't listed twice. */
 const describe = (fund: ChosenFund) =>
-  [fund.symbol, fund.exchangeMic, fund.instrumentType, fund.quoteCcy, fromAmfi(fund) && "AMFI selected", fund.statementPrices && "priced from statements"]
+  [
+    fund.symbol,
+    fund.exchangeMic,
+    fund.instrumentType,
+    !otherCurrency(fund.quoteCcy) && fund.quoteCcy,
+    fromAmfi(fund) && "AMFI selected",
+    fund.statementPrices && "priced from statements",
+  ]
     .filter(Boolean)
     .join(" · ");
+
+/** A search result's or confirmed fund's currency as a warning badge, with a space before it, unless it's rupees. */
+function CurrencyBadge({ fund }: { fund: ChosenFund }) {
+  if (!otherCurrency(fund.quoteCcy)) return null;
+  return (
+    <>
+      {" "}
+      <Badge variant="warning-subtle">{fund.quoteCcy}</Badge>
+    </>
+  );
+}
 
 /** The plan and option of a fund's name on the statement. Shares, bonds and NPS schemes have none. */
 const statementPlan = (item: FundItem) => (item.noun === "fund" ? planAndOption(item.name) : undefined);
@@ -253,16 +284,22 @@ function FundSearch({
           onValueChange={(value) => setPicked(String(value))}
           className="grid gap-2"
         >
-          {results.map((r, i) => (
-            <Label key={`${r.symbol} ${r.exchangeMic} ${i}`} className="flex items-center gap-2 font-normal">
-              <RadioGroupItem value={String(i)} />
-              <span>
-                {r.longName || r.shortName}
-                {plan && <PlanBadges own={planAndOption(r.longName || r.shortName || "")} statement={plan} />}{" "}
-                <span className="text-muted-foreground">({describe(toFund(r))})</span>
-              </span>
-            </Label>
-          ))}
+          {results.map((r, i) => {
+            const fund = toFund(r);
+            const currency = otherCurrency(fund.quoteCcy);
+            return (
+              <Label key={`${r.symbol} ${r.exchangeMic} ${i}`} className="flex items-center gap-2 font-normal">
+                <RadioGroupItem value={String(i)} />
+                <span>
+                  {r.longName || r.shortName}
+                  {plan && <PlanBadges own={planAndOption(r.longName || r.shortName || "")} statement={plan} />}
+                  <CurrencyBadge fund={fund} />{" "}
+                  <span className="text-muted-foreground">({describe(fund)})</span>
+                  {currency && <span className="text-muted-foreground block">{currency}</span>}
+                </span>
+              </Label>
+            );
+          })}
         </RadioGroup>
       )}
       <div className="flex flex-wrap items-center gap-2">
@@ -326,6 +363,7 @@ export function FundChoicesCard({
           const label = `${item.name.trim()}${nameNumber(items, i, item.noun)}`;
           const choice = choices[key];
           const plan = statementPlan(item);
+          const currency = choice && "fund" in choice ? otherCurrency(choice.fund.quoteCcy) : undefined;
           return (
             <section key={key} className="grid gap-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -337,17 +375,21 @@ export function FundChoicesCard({
                 {item.where && ` · ${item.where}`}
               </p>
               {choice && "fund" in choice ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="success-subtle">Confirmed</Badge>
-                  <span>
-                    {choice.fund.name}
-                    {plan && <PlanBadges own={planAndOption(choice.fund.name)} statement={plan} />}{" "}
-                    <span className="text-muted-foreground">({describe(choice.fund)})</span>
-                  </span>
-                  <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
-                    Change<span className="sr-only"> the {item.noun} for {label}</span>
-                  </Button>
-                </div>
+                <>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="success-subtle">Confirmed</Badge>
+                    <span>
+                      {choice.fund.name}
+                      {plan && <PlanBadges own={planAndOption(choice.fund.name)} statement={plan} />}
+                      <CurrencyBadge fund={choice.fund} />{" "}
+                      <span className="text-muted-foreground">({describe(choice.fund)})</span>
+                    </span>
+                    <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
+                      Change<span className="sr-only"> the {item.noun} for {label}</span>
+                    </Button>
+                  </div>
+                  {currency && <p className="text-muted-foreground text-sm">{currency}</p>}
+                </>
               ) : choice ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="secondary">Left out</Badge>

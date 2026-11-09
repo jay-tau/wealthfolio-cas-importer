@@ -572,6 +572,13 @@ const api = {
     if (named) {
       return named.map((longName, i) => ({ ...fund(`${query.replace(/\W/g, "").toUpperCase()}${i + 1}`), longName }));
     }
+    // A made-up bank's ADR in New York, quoted in dollars, then its share in Mumbai, in rupees.
+    if (query === "Democorp Bank") {
+      return [
+        { ...fund("DMCB"), symbol: "DMCB", canonicalExchangeMic: "XNYS", exchangeMic: "XNYS", exchange: "NYSE", currency: "USD", quoteType: "EQUITY", longName: "Democorp Bank ADR", providerSymbol: "DMCB" },
+        { ...fund("DEMOCORPBK"), symbol: "DEMOCORPBK.NS", canonicalExchangeMic: "XNSE", exchangeMic: "XNSE", exchange: "NSE", quoteType: "EQUITY", longName: "Democorp Bank Ltd", providerSymbol: "DEMOCORPBK.NS" },
+      ];
+    }
     if (host.emptySearchQueries.includes(query)) return [];
     // AMFI finds a fund's exact ISIN or scheme code, listed after Yahoo's results.
     const amfi = host.amfi && /^(INF\w{9}|\d{6})$/.test(query) ? [amfiScheme(/^\d/.test(query) ? query : amfiCode(query))] : [];

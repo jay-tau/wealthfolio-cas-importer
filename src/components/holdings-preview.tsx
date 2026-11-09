@@ -37,6 +37,7 @@ import {
   validCost,
 } from "../cas/holdings";
 import { nameNumber } from "../lib/name-number";
+import { otherCurrency } from "./fund-choices";
 
 export const noChoices = (): Choices => ({ flipped: new Set(), costs: new Map() });
 
@@ -197,6 +198,8 @@ function AccountPreview({
             const before = position.existing?.units;
             const listedIn = [...new Set([...position.lines, ...(position.misread ?? [])].map((l) => l.source.label))];
             const replaces = plan.positions.filter((p) => position.replaces?.includes(p.key));
+            // A misread line holds back the statement's lines, so its asset gets nothing from them.
+            const currency = statement && !position.misread && position.asset ? otherCurrency(position.asset.quoteCcy, position.asset.symbol) : undefined;
             return (
               <TableRow key={position.key}>
                 <TableCell>
@@ -227,7 +230,7 @@ function AccountPreview({
                     <Badge className="min-w-fit" variant={variant}>
                       {badge}
                     </Badge>
-                    {position.notes.map((note, i) => (
+                    {[...position.notes, ...(currency ? [currency] : [])].map((note, i) => (
                       <span key={i} className="text-muted-foreground text-xs">
                         {note}
                       </span>

@@ -32,6 +32,7 @@ import {
   type Status,
 } from "../cas/plan";
 import { plural } from "../lib/plural";
+import { otherCurrency } from "./fund-choices";
 
 const LABELS: Record<string, string> = {
   BUY: "purchase",
@@ -69,6 +70,13 @@ function earlierNote(t: PlannedTransaction) {
   }
   return `From that import, Wealthfolio has the ${list(found)}.`;
 }
+
+/** A note for each of a transaction's assets quoted in another currency than the statement's rupees. */
+const currencyNotes = ({ transaction: { activity, arriving, receiving } }: PlannedTransaction) => [
+  ...new Set(
+    [activity, arriving?.activity, receiving?.activity].flatMap((row) => (row?.symbol && otherCurrency(row.quoteCcy, row.symbol)) || []),
+  ),
+];
 
 /** A transaction whose cash went to a bank row already in Wealthfolio, and what went wrong. */
 export interface BankLink {
@@ -239,6 +247,7 @@ export function Preview({
                 ...caveatsOf(t).map((w) => w.message),
                 t.problem,
                 earlierNote(t),
+                ...currencyNotes(t),
               ].filter((note) => note !== undefined);
               const match = matches.get(t);
               const cells = (scheme: string, row: ActivityImport) => (
