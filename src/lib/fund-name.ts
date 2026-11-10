@@ -88,30 +88,45 @@ const LAST_GROUP = new RegExp(String.raw`\(([^()]*)\)${SEPARATORS}*$`);
 function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string } {
   const found: PlanAndOption = {};
   let rest = text;
+  // The plan found is a bare word before the option, so it can belong to the option.
+  let beforeOption = false;
+  // The word after the one read, in the name's order.
+  let next = "";
   // The fund's own name can have these words in it ("Growth Fund", "Regular Savings Fund"), so outside
-  // parentheses stop at the first unknown word or once both fields are found.
-  while (inGroup || !(found.plan && found.option)) {
+  // parentheses stop at the first unknown word, or once both fields are found and the plan can't
+  // belong to the option.
+  while (inGroup || !(found.plan && found.option) || beforeOption) {
     const group = LAST_GROUP.exec(rest);
     if (group) {
       // A part in parentheses counts when it holds nothing else, like "(Direct Plan)"; another, like
       // "(Non-Demat)", is skipped.
       const inside = readEnd(group[1], true);
-      if (!inside.rest.trim()) {
-        found.plan ??= inside.plan;
-        found.option ??= inside.option;
-      }
       rest = rest.slice(0, group.index);
+      if (!inside.rest.trim()) {
+        // Read recognized group words in context; only inside parentheses does "G" mean Growth.
+        rest += ` ${group[1].replace(/(?<![a-z])g(?![a-z])/gi, "Growth")}`;
+      } else next = "";
       continue;
     }
     const last = LAST.exec(rest);
     if (!last) break;
     const word = last[1].toLowerCase().replace(/[\s–—-]+/g, " ");
-    // Read from the end, the last plan or option given wins.
-    if (PLANS.has(word)) found.plan ??= PLANS.get(word);
-    else if (OPTIONS.has(word)) found.option ??= OPTIONS.get(word);
-    // "(G)" is Growth in compact depository names; a bare Plan G can name an FMP.
-    else if (inGroup && word === "g") found.option ??= "Growth";
-    else if (!FILLERS.has(word) && !OTHER_FILLER.test(word)) break;
+    if (PLANS.has(word)) {
+      // Read from the end, the last plan given wins, except that a bare plan word before the option
+      // can be part of the option's name, like Axis's "Regular" in "Direct Plan - Regular IDCW Option":
+      // a plan followed by "Plan" before it wins.
+      const named = /^plan\b/.test(next);
+      if (!found.plan || (beforeOption && named)) {
+        found.plan = PLANS.get(word);
+        beforeOption = !named && !!found.option;
+      }
+    } else if (OPTIONS.has(word) || (inGroup && word === "g")) {
+      // An earlier option ends the look past a bare plan word: don't reach into "Regular Plan Growth
+      // Dir IDCW".
+      if (!inGroup && found.plan && found.option) break;
+      found.option ??= OPTIONS.get(word) ?? "Growth";
+    } else if (!FILLERS.has(word) && !OTHER_FILLER.test(word)) break;
+    next = word;
     rest = rest.slice(0, last.index);
   }
   return { ...found, rest };

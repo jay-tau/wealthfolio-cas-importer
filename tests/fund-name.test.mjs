@@ -128,6 +128,10 @@ test("reads the plan and option however they're spelled", () => {
     ["Fictiva FMP-XXXVII-1302D-SEP 2016(1)-REG(G)", both("Regular", "Growth")],
     ["Fictiva FTP-178-1154D-Reg(G)", both("Regular", "Growth")],
     ["Fictiva FMP-82-1136D-P(G)-DIRECT PLAN", both("Direct", "Growth")],
+    ["Fictiva Fund (Direct_G)", both("Direct", "Growth")],
+    ["Fictiva Fund (G_Direct)", both("Direct", "Growth")],
+    ["Fictiva Fund (Direct_Plan_G)", both("Direct", "Growth")],
+    ["Fictiva Fund (G_)", { option: "Growth" }],
     // A note in parentheses after them is skipped.
     ["Fictiva Flexi Cap Fund - Direct Plan - Growth (Non-Demat)", both("Direct", "Growth")],
     ["Fictiva Liquid Sup Inst Dir Gr", both("Direct", "Growth")],
@@ -310,5 +314,53 @@ test("doesn't read the plan or option from the fund's own name", () => {
     ["Fictiva Annual Interval Instl Gr", { option: "Growth" }],
     ["Fictiva FoF Gr", { option: "Growth" }],
     ["Fictiva DirectEdge Fund", {}],
+  ]) assert.deepEqual(planAndOption(name), expected, name);
+});
+
+test("reads a bare plan word between a named plan and the option as part of the option", () => {
+  const both = (plan, option) => ({ plan, option });
+  for (const [name, expected] of [
+    // Axis calls an IDCW option "Regular IDCW" in both plans.
+    ["Fictiva Gilt Fund - Direct Plan - Regular IDCW Option", both("Direct", "IDCW")],
+    ["Fictiva Aggressive Hybrid Fund - Direct Plan - Regular IDCW", both("Direct", "IDCW")],
+    ["FICTIVA ULTRA SHORT TERM FUND - DIRECT PLAN - REGULAR IDCW OPTION", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund - Regular Plan - Regular IDCW Option", both("Regular", "IDCW")],
+    ["Fictiva Gilt Fund (Direct Plan) - Regular IDCW Option", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund (Direct Plan - Regular IDCW Option)", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund (Direct Plan - Regular) IDCW", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund (Direct Plan - Regular) Growth", both("Direct", "Growth")],
+    ["FICTIVA GILT FUND (DIRECT PLAN - REGULAR) (IDCW)", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund - Direct (Plan) - Regular IDCW Option", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund (Direct) Plan - Regular IDCW Option", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund - Direct Plan - Regular IDCW (Option)", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund - Direct Plan A - Regular IDCW", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund - Regular Plan B - Direct IDCW", both("Regular", "IDCW")],
+    // Others repeat their own plan.
+    ["Fictiva Liquid Fund - Regular Plan - Regular IDCW", both("Regular", "IDCW")],
+    ["Fictiva Liquid Fund - Direct Plan - Direct IDCW", both("Direct", "IDCW")],
+    ["Fictiva Focused Fund - Direct Plan - Direct - IDCW", both("Direct", "IDCW")],
+  ]) assert.deepEqual(planAndOption(name), expected, name);
+});
+
+test("still reads a bare plan word as the plan without a named plan before it", () => {
+  const both = (plan, option) => ({ plan, option });
+  for (const [name, expected] of [
+    ["Fictiva Aggressive Hybrid Fund Reg IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Focused Reg IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Ultra Short Term Fd Dir IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Gilt Fund - Regular IDCW Option", both("Regular", "IDCW")],
+    ["Fictiva Gilt Fund (Regular IDCW Option)", both("Regular", "IDCW")],
+    ["Fictiva Gilt Fund (Direct) - IDCW", both("Direct", "IDCW")],
+    // Nor from the fund's own name, past a word that isn't a plan or option.
+    ["Fictiva Regular Savings Fund - Direct IDCW", both("Direct", "IDCW")],
+    ["Fictiva Direct Opportunities Fund - Regular IDCW", both("Regular", "IDCW")],
+    ["Fictiva Fixed Maturity Plan Dir Gr", both("Direct", "Growth")],
+    // An earlier option stops the look-back before the fund's own "Regular Plan".
+    ["Fictiva Regular Plan Growth Dir IDCW", both("Direct", "IDCW")],
+    ["FICTIVA REGULAR PLAN GROWTH DIR IDCW", both("Direct", "IDCW")],
+    ["Fictiva Regular Plan Growth (Dir) (IDCW)", both("Direct", "IDCW")],
+    ["Fictiva Regular Plan (Growth - Direct) - IDCW", both("Direct", "IDCW")],
+    ["Fictiva Regular Plan (Growth Dir IDCW)", both("Direct", "IDCW")],
+    ["Fictiva Regular Plan (G - Direct) - IDCW", both("Direct", "IDCW")],
   ]) assert.deepEqual(planAndOption(name), expected, name);
 });
