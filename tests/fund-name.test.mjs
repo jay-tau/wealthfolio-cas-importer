@@ -83,6 +83,9 @@ test("reads the plan and option however they're spelled", () => {
     ["FICTIVA FLEXI CAP FUND DIRECT PLAN GROWTH", both("Direct", "Growth")],
     ["Fictiva Flexi Cap Fund Dir Gr", both("Direct", "Growth")],
     ["Fictiva Flexi Cap Fund Reg IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Fund - dIrect PLan - gRowth", both("Direct", "Growth")],
+    ["Fictiva Fund (Direct Plan) - IDcw", both("Direct", "IDCW")],
+    ["Fictiva Fund (dIrect PLan - INcome DistRibution CUm CApital WithDrawal OPtion - RE INvestment)", both("Direct", "IDCW")],
     ["Fictiva Flexi Cap Fund - Growth - Direct Plan", both("Direct", "Growth")],
     ["Fictiva Flexi Cap Fund - Direct Plan-Growth Option", both("Direct", "Growth")],
     ["Fictiva Nifty 50 Index Fund (Direct Plan) (Growth)", both("Direct", "Growth")],
@@ -112,6 +115,90 @@ test("reads the plan and option however they're spelled", () => {
     ["Fictiva FMP-82-1136D-P(G)-DIRECT PLAN", both("Direct", "Growth")],
     // A note in parentheses after them is skipped.
     ["Fictiva Flexi Cap Fund - Direct Plan - Growth (Non-Demat)", both("Direct", "Growth")],
+    ["Fictiva Liquid Sup Inst Dir Gr", both("Direct", "Growth")],
+    ["Fictiva Liquid Unclmd Div Reg Gr", both("Regular", "Growth")],
+  ]) assert.deepEqual(planAndOption(name), expected, name);
+});
+
+test("reads Yahoo's abbreviations between or after the plan and option", () => {
+  const both = (plan, option) => ({ plan, option });
+  for (const [name, expected] of [
+    // Daily, weekly, fortnightly, monthly, quarterly, half-yearly, annual and periodic IDCW.
+    ["Fictiva Liquid Dir Dl IDCW-R", both("Direct", "IDCW")],
+    ["Fictiva Overnight Reg Wk IDCW-R", both("Regular", "IDCW")],
+    ["Fictiva Money Market Reg Wkly IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Ultra Short Dir Wly IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Liquid Dir Fn IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Savings Reg Fr IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Money Market Dir Ft IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Overnight Reg Fortn IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Liquid Dir Mn IDCW-R", both("Direct", "IDCW")],
+    ["Fictiva Conservative Hybrid Reg Mly IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Banking and PSU Debt Reg Mth IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Conservative Hybrid Dir Mthly IDCW-R", both("Direct", "IDCW")],
+    ["Fictiva Medium Term Dir Bi-M IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Corporate Bond Dir Qt IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Conservative Hybrid Reg Qtly IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Dynamic Term Dir HY IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Large Cap Reg Hy IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Equity Savings Dir Hf Yr IDCW-R", both("Direct", "IDCW")],
+    ["Fictiva Credit Risk Reg Hf Yrly IDCW-R", both("Regular", "IDCW")],
+    ["Fictiva Gilt Dir Ann IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Large & Mid Cap Dir An IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Hybrid Dir Annually IDCW-R", both("Direct", "IDCW")],
+    ["Fictiva Flexi Cap Dir Yr IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Credit Risk Reg Pd IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Credit Risk Reg Prd IDCW-R", both("Regular", "IDCW")],
+    ["Fictiva Gilt Reg Prdic IDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Ultra Short Reg Prdc IDCW-P", both("Regular", "IDCW")],
+    // Normal, flexi, standard and discretionary IDCW, and a monthly payment plan.
+    ["Fictiva Medium Term Dir Nrm IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Medium Term Dir Nor IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Medium Term Reg Normal IDCW-R", both("Regular", "IDCW")],
+    ["Fictiva Money Market Dir Flexi IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Money Market Dir Fl IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Medium Term Reg Std IDCW-P", both("Regular", "IDCW")],
+    ["FICTIVA MEDIUM TERM FUND - REGULAR PLAN - STANDARD IDCW", both("Regular", "IDCW")],
+    ["Fictiva Corporate Bond Dir Disc IDCW-R", both("Direct", "IDCW")],
+    ["Fictiva Ultra Short Dir Discr IDCW-P", both("Direct", "IDCW")],
+    ["FICTIVA CORPORATE BOND FUND - DIRECT PLAN - DISCRETIONARY IDCW", both("Direct", "IDCW")],
+    ["Fictiva Conservative Hybrid Reg Mn Py IDCW-P", both("Regular", "IDCW")],
+    // Rg and Dr, also after the frequency.
+    ["Fictiva Nifty 50 Index Rg Gr", both("Regular", "Growth")],
+    ["Fictiva Nifty G-Sec 1230 Ann Dr IDCW-P", both("Direct", "IDCW")],
+    // IDCW-T, IDCW-P without its dash, one fund's "ICDW", and other IDCW.
+    ["Fictiva Focused Dir IDCW-T", both("Direct", "IDCW")],
+    ["Fictiva Nifty SDL 0927 Reg Ann IDCWP", both("Regular", "IDCW")],
+    ["Fictiva Ultra Short Term Dir Flexi IDCWR", both("Direct", "IDCW")],
+    ["Fictiva Overnight Dir ICDW", both("Direct", "IDCW")],
+    ["Fictiva Floating Rate Dir IDCW-P Oths", both("Direct", "IDCW")],
+    ["Fictiva Floating Rate Fund - Regular Plan - IDCW Others", both("Regular", "IDCW")],
+    // Lock-in options.
+    ["Fictiva Children's Dir Loc in IDCW-P", both("Direct", "IDCW")],
+    ["Fictiva Children's Reg No Loc in Gr", both("Regular", "Growth")],
+    ["Fictiva Children's Fund - Direct Plan - Lock-in - Growth", both("Direct", "Growth")],
+    ["Fictiva Children's Fund - Direct Plan - No Lock-in - Growth", both("Direct", "Growth")],
+    ["Fictiva Liquid Fund (Dir Mn IDCW-P)", both("Direct", "IDCW")],
+  ]) assert.deepEqual(planAndOption(name), expected, name);
+  // Bonus is neither displayed option, but the plan before it counts.
+  for (const name of ["Fictiva Ultra Short Dir Bns", "Fictiva Ultra Short Dir Bns Princ", "Fictiva Liquid Fund - Direct Plan - Bonus Option - Principal Units"]) {
+    assert.deepEqual(planAndOption(name), { plan: "Direct" }, name);
+  }
+});
+
+test("reads a Yahoo name whose words lost their spaces", () => {
+  const both = (plan, option) => ({ plan, option });
+  for (const [name, expected] of [
+    ["Fictiva ELSS Tax Saver DirGr", both("Direct", "Growth")],
+    ["Fictiva Banking and PSU Debt Reg MthIDCW-P", both("Regular", "IDCW")],
+    ["Fictiva CRISIL IBX Gilt 0428 RgIDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Gold ETF FOF DirIDCWP", both("Direct", "IDCW")],
+    ["Fictiva Long Term DirHYIDCWP", both("Direct", "IDCW")],
+    ["Fictiva Ultra Shrt toS/TDirDlIDCW-R", both("Direct", "IDCW")],
+    ["Fictiva Intl REIT Omni FOFRegIDCW-P", both("Regular", "IDCW")],
+    ["Fictiva Nifty500 Multicap Idx RegIDCW-R", both("Regular", "IDCW")],
+    ["Fictiva Children's Dir No Loc inIDCW-R", both("Direct", "IDCW")],
+    ["Fictiva Liquid RegMnIDCW-P(Discon)", both("Regular", "IDCW")],
   ]) assert.deepEqual(planAndOption(name), expected, name);
 });
 
@@ -130,6 +217,17 @@ test("leaves out a plan or option the name doesn't give", () => {
     // A part in parentheses with anything else in it says nothing.
     ["Fictiva Fund (Old Name - Direct) - Growth", { option: "Growth" }],
     ["Fictiva Fund (Old Name - Direct Growth)", {}],
+    // Yahoo's names for retail, institutional, super institutional and Eco plans, or with no plan.
+    ["Fictiva Liquid Retl Wk IDCW-P", { option: "IDCW" }],
+    ["Fictiva Liquid Instl Dl IDCW-R", { option: "IDCW" }],
+    ["Fictiva Liquid Inst Dl IDCW-R", { option: "IDCW" }],
+    ["Fictiva Liquid SI Wk IDCW-P", { option: "IDCW" }],
+    ["Fictiva Conservative Hybrid Eco Mly IDCW-P", { option: "IDCW" }],
+    ["Fictiva Liquid Wk IDCW-P", { option: "IDCW" }],
+    ["Fictiva Growth Md Cp Reg InstlIDCWP", { option: "IDCW" }],
+    ["Fictiva Overnight Dir Unc Red Stb Sch", {}],
+    ["Fictiva Gilt Dir PFAutoYrIDCW-R", { option: "IDCW" }],
+    ["Fictiva Fund (Old Name Dir Mn IDCW-P)", {}],
   ]) assert.deepEqual(planAndOption(name), expected, name);
 });
 
@@ -147,5 +245,10 @@ test("doesn't read the plan or option from the fund's own name", () => {
     ["Fictiva Fixed Maturity Plan A - Growth", { option: "Growth" }],
     ["Fictiva Fixed Maturity Plan G", {}],
     ["Fictiva Fund Constructor", {}],
+    // Nor from a word that only looks like one of Yahoo's abbreviations, or a capital inside a word.
+    ["Fictiva Regular Savings Mn IDCW-P", { option: "IDCW" }],
+    ["Fictiva Annual Interval Instl Gr", { option: "Growth" }],
+    ["Fictiva FoF Gr", { option: "Growth" }],
+    ["Fictiva DirectEdge Fund", {}],
   ]) assert.deepEqual(planAndOption(name), expected, name);
 });
