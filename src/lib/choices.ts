@@ -28,6 +28,17 @@ export const holdingKey = (h: Pick<StatementHolding, "isin" | "rta" | "rtaCode" 
       ? `nps:${sha256(`cas-importer nps ${h.code}`)}`
       : `fund:${sha256(`cas-importer fund ${h.rta}|${h.rtaCode}`)}`;
 
+/**
+ * The key of a holding's confirmed choice, from one of the identifiers an import recorded for it
+ * (`security`): its ISIN, its registrar and scheme code, or its NPS symbol.
+ */
+export function securityKey(id: string) {
+  const at = id.indexOf("|");
+  if (at < 0) return holdingKey({ isin: id, rta: null, rtaCode: null });
+  const [prefix, rest] = [id.slice(0, at), id.slice(at + 1)];
+  return prefix === "nps" ? holdingKey({ isin: null, rta: null, rtaCode: null, code: rest }) : holdingKey({ isin: null, rta: prefix, rtaCode: rest });
+}
+
 // Holdings imports keep their own account choices: accounts that track holdings, not the
 // PAN's or folio's account for transactions.
 
@@ -255,15 +266,29 @@ export interface ChosenFund extends FundAsset {
   statementPrices?: boolean;
 }
 
-export async function readFund(storage: Storage, key: string): Promise<ChosenFund | undefined> {
+function parseFund(value: string | null): ChosenFund | undefined {
   try {
-    const fund = JSON.parse((await storage.get(key)) ?? "null");
+    const fund = JSON.parse(value ?? "null");
     if (typeof fund?.symbol !== "string" || typeof fund?.quoteCcy !== "string") return undefined;
     const { manual, ...choice } = fund;
     return choice;
   } catch {
     return undefined;
   }
+}
+
+export async function readFund(storage: Storage, key: string): Promise<ChosenFund | undefined> {
+  return parseFund(await storage.get(key).catch(() => null));
+}
+
+/**
+ * The remembered choices under `keys`, for `reconcileRecord`: the Holdings card's own as they are there,
+ * undecided ones too, and the others from storage. A failed read rejects, so the preview stops.
+ */
+export async function readRecordChoices(storage: Storage, keys: Iterable<string>, current: ReadonlyMap<string, ChosenFund | undefined>) {
+  const choices = await Promise.all([...keys].map(async (key) =>
+    current.has(key) ? current.get(key) : parseFund(await storage.get(key))));
+  return choices.filter((choice) => choice !== undefined);
 }
 
 export const saveFund = (storage: Storage, key: string, fund: ChosenFund) => {

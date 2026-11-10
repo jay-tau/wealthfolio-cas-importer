@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { importedRefs, planSnapshots, readHoldings, snapshotOf, unlistedRefs } from "../src/cas/holdings.ts";
+import { importedRefs, planSnapshots, readHoldings, security, snapshotOf, unlistedRefs } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
 import {
-  fundKey, holdingKey, indexSources, investorKey, readFund, readImported, readUnlisted, saveFund, saveImported, saveImports, saveUnlisted,
+  fundKey, holdingKey, indexSources, investorKey, readFund, readImported, readRecordChoices, readUnlisted, saveFund, saveImported, saveImports,
+  saveUnlisted, securityKey,
 } from "../src/lib/choices.ts";
 
 const summary = { id: "folio|90123456789/45|amc:Made-up Fund", aliases: ["folio|90123456789/45|INFTEST"] };
@@ -42,6 +43,34 @@ test("a choice to use the statement's prices is remembered, under the bond's ISI
   // Not the key of a fund without an ISIN or registrar code.
   assert.notEqual(holdingKey(nps), fundKey({ isin: null, rta: undefined, rta_code: undefined }));
   assert.equal(holdingKey({ ...nps, isin: "INEZ91A07012" }), "isin:INEZ91A07012");
+});
+
+test("each identifier an import records leads to the key its holding's choice is remembered under", () => {
+  const fund = { kind: "fund", isin: "INFZ90K01FC8", rta: "CAMS", rtaCode: "FFCDG", name: "Fund", units: "1", price: "1", value: "1", cost: null };
+  const withoutIsin = { ...fund, isin: null };
+  const nps = { kind: "nps", isin: null, rta: null, rtaCode: null, code: "NPS-SBI-E-TIER-I", name: "NPS", units: "1", price: "1", value: "1", cost: null };
+  assert.deepEqual(security(fund).map(securityKey), [holdingKey(fund), holdingKey(withoutIsin)]);
+  assert.deepEqual(security(withoutIsin).map(securityKey), [holdingKey(withoutIsin)]);
+  assert.equal(holdingKey(withoutIsin), fundKey({ isin: null, rta: "CAMS", rta_code: "FFCDG" }));
+  assert.deepEqual(security(nps).map(securityKey), [holdingKey(nps)]);
+});
+
+test("record choices use the card's entries, including undecided or left out, and stop on a storage failure", async () => {
+  const store = storage();
+  const saved = { assetId: "old-asset", symbol: "OLD", quoteCcy: "INR", name: "Made-up Fund" };
+  const chosen = { ...saved, assetId: "new-asset", symbol: "NEW" };
+  for (const key of ["confirmed", "undecided", "left-out", "absent"]) await saveFund(store, key, saved);
+  store.data.set("malformed", "{");
+  const current = new Map([["confirmed", chosen], ["undecided", undefined], ["left-out", undefined]]);
+  const read = [];
+  const recorded = { get: async (key) => { read.push(key); return store.get(key); } };
+  assert.deepEqual(await readRecordChoices(recorded, [...current.keys(), "absent", "missing", "malformed"], current), [chosen, saved]);
+  assert.deepEqual(read, ["absent", "missing", "malformed"]);
+  const failed = { get: async () => { throw new Error("Storage unavailable"); } };
+  assert.deepEqual(await readRecordChoices(failed, current.keys(), current), [chosen]);
+  await assert.rejects(readRecordChoices(failed, ["absent"], current), /Storage unavailable/);
+  // Loading the Holdings card still treats an unreadable saved choice as unconfirmed.
+  assert.equal(await readFund(failed, "absent"), undefined);
 });
 
 test("import provenance follows the baseline snapshot date, including out-of-order imports", async () => {

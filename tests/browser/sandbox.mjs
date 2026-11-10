@@ -1937,12 +1937,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
 
-    // Once that fund is no longer listed, the remembered import still removes it by default.
-    // Replacing a snapshot on the same date needs confirming; Wealthfolio's cost carries over, also
-    // to a holding whose display code was changed.
+    // Once that fund is no longer listed, the remembered import still removes it by default, also
+    // after its asset's symbol changed in Wealthfolio: the fund's remembered choice of the asset,
+    // made when it had the recorded symbol, tells the record's asset. Replacing a snapshot on the
+    // same date needs confirming; Wealthfolio's cost carries over, also to a holding whose display
+    // code was changed.
     await hosted(() => {
       window.host.soldIsins = ["INFZ90K01LQ6"];
       window.host.assets["asset-INEZ90A01017"].displayCode = "MY SHARE";
+      window.host.assets["asset-INFZ90K01LQ6"].instrumentSymbol = "MY-LIQUID";
+      window.host.storage.set("isin:INFZ90K01LQ6", JSON.stringify({
+        assetId: "asset-INFZ90K01LQ6", symbol: "INFZ90K01LQ6", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "EQUITY", name: "Fund INFZ90K01LQ6",
+      }));
     });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 16 holdings.").waitFor({ timeout: 180_000 });
@@ -1967,7 +1973,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ["asset-gilt", "asset-INFZ90K01BA1"],
     );
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, "1234.5");
-    await hosted(() => { window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90A01017"; });
+    await hosted(() => {
+      window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90A01017";
+      delete window.host.assets["asset-INFZ90K01LQ6"].instrumentSymbol;
+      window.host.storage.delete("isin:INFZ90K01LQ6");
+    });
     // A resolved choice still supplies its symbol when its profile has none, even when the display
     // code matches another asset's symbol. Restore the remembered choice before the next read.
     const shareChoiceBefore = (await storage())["isin:INEZ90A01017"];
