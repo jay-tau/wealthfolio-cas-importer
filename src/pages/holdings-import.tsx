@@ -18,6 +18,7 @@ import {
   type PlannedPosition,
   planSnapshots,
   pricesToSave,
+  reconcileRecord,
   snapshotOf,
   type Source,
   splitSince,
@@ -32,7 +33,7 @@ import { type FundChoice, FundChoicesCard, type FundItem } from "../components/f
 import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } from "../components/holdings-accounts";
 import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
 import { type Checked, UnitsCheckCard } from "../components/units-check";
-import { holdingKey, indexSources, LEFT_OUT, readImported, readUnlisted, saveImports, saveUnlisted, sourceKey } from "../lib/choices";
+import { holdingKey, indexSources, LEFT_OUT, readImported, readRecordChoices, readUnlisted, saveImports, saveUnlisted, securityKey, sourceKey } from "../lib/choices";
 import { useFocusReturn } from "../lib/focus";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
@@ -452,19 +453,36 @@ export function HoldingsImport({
       for (const snapshot of existing.values()) {
         for (const position of snapshot.positions) position.price = prices.get(position.assetId);
       }
-      const remembered = new Map(await Promise.all(
+      const records = await Promise.all(
         [
           ...bySource,
           // A left-out folio, demat account or PRAN's earlier import into each account: its units stay.
           ...holdings.sources.filter((source) => !accountOf(source)).flatMap((source) => ids.map((accountId) => ({ source, accountId }))),
-        ].map(async ({ source, accountId }) => [
-          `${source.id}|${accountId}`,
-          await readImported(api.storage, source, accountId, existing.get(accountId)!.date),
-        ] as const),
-      ));
+        ].map(async ({ source, accountId }) => {
+          const snapshot = existing.get(accountId)!;
+          return { key: `${source.id}|${accountId}`, snapshot, record: await readImported(api.storage, source, accountId, snapshot.date) };
+        }),
+      );
       // Earlier imports of the investor's folios, demat accounts and PRANs this statement doesn't list.
-      const unlisted = new Map(await Promise.all(ids.map(async (accountId) =>
-        [accountId, await readUnlisted(api.storage, accountId, holdings.investor, holdings.sources, existing.get(accountId)!.date)] as const)));
+      const unlistedRecords = await Promise.all(ids.map(async (accountId) => {
+        const snapshot = existing.get(accountId)!;
+        return { accountId, snapshot, records: await readUnlisted(api.storage, accountId, holdings.investor, holdings.sources, snapshot.date) };
+      }));
+      // The remembered choices of holdings recorded under a `fundRef` the account doesn't hold, which
+      // may be their asset's earlier one; the statement's holdings' as they are on the Holdings card.
+      const read = [...records, ...unlistedRecords.flatMap(({ snapshot, records }) => records.map((u) => ({ snapshot, record: u.remembered })))];
+      const keys = new Set(read.flatMap(({ snapshot, record }) => {
+        const held = new Set(snapshot.positions.map((p) => p.ref));
+        return [...record].flatMap(([ref, security]) => (held.has(ref) ? [] : security.map(securityKey)));
+      }));
+      const current = new Map(items.map(({ key }) => {
+        const choice = fundChoices[key];
+        return [key, choice && "fund" in choice ? choice.fund : undefined] as const;
+      }));
+      const confirmed = await readRecordChoices(api.storage, keys, current);
+      const remembered = new Map(records.map(({ key, snapshot, record }) => [key, reconcileRecord(record, snapshot, confirmed)]));
+      const unlisted = new Map(unlistedRecords.map(({ accountId, snapshot, records }) =>
+        [accountId, records.map((u) => ({ ...u, remembered: reconcileRecord(u.remembered, snapshot, confirmed) }))]));
       const plans = planSnapshots(holdings, {
         account: accountOf,
         asset: (holding) => {

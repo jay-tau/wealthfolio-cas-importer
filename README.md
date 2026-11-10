@@ -235,6 +235,12 @@ account's complete snapshot before anything is saved:
   and that the statement no longer lists, defaults to removed. If the printed identifiers can't
   be compared, it stays with a note to check it. You can keep or remove each one, and include or
   leave out each holding.
+- An earlier import's record of a holding can follow its asset after the asset's symbol or exchange
+  changes in Wealthfolio, if the holding's remembered choice is that asset, confirmed while it had
+  the recorded symbol and exchange. The preview then applies the other snapshot rules using the
+  asset's current symbol and exchange. Without such a choice, the preview may treat the asset like
+  a holding no import added, and saving a kept holding can drop its record. Importing the statement's
+  units records the holding under its chosen asset's current symbol and exchange.
 - A folio, demat account or PRAN you leave out keeps what its earlier imports added. When one of
   those holdings would change because the statement's other lines list it too, or no longer list
   it, its row names the left-out one. A listed holding is left out by default, since its lines
