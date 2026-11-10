@@ -48,18 +48,35 @@ export const investorKey = (investor: string) => `holdings-investor:${sha256(`ca
 export const sourceKey = (source: Source) => `holdings-source:${sha256(`cas-importer holdings source ${source.id}`)}`;
 export const LEFT_OUT = "left-out";
 
-/** Imports by snapshot date: `fundRef` → the printed ISIN and/or registrar's scheme code. */
+/**
+ * Imports by snapshot date: `fundRef` → the printed ISIN and/or registrar's scheme code, and in `ids`,
+ * `fundRef` → the Wealthfolio asset's ID where the import knew it.
+ */
 const importedKey = (id: string, accountId: string) =>
   `holdings-imported:${sha256(`cas-importer holdings imported ${id}|${accountId}`)}`;
 
 type ImportedRefs = Record<string, string[]>;
-type ImportEntry = { savedAt: number; refs: ImportedRefs };
+type ImportedIds = Record<string, string>;
+/**
+ * Versions before asset IDs read `refs` alone. They keep `ids` only on an entry they select as stored:
+ * their own saves, and the equal-time copies they merge, such as linked folios', go without it. Read
+ * `ids` through `idsOf`.
+ */
+type ImportEntry = { savedAt: number; refs: ImportedRefs; ids?: unknown };
 type History = { keys: Set<string>; dates: Record<string, ImportEntry> };
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const validDate = (date: string) =>
   /^\d{4}-\d{2}-\d{2}$/.test(date) && new Date(date).toJSON()?.slice(0, 10) === date;
 const IMPORTED = /^holdings-imported:[a-f0-9]{64}$/;
+
+/** An entry's asset IDs of its own refs. Malformed ones are ignored, and its refs still count. */
+function idsOf(entry: ImportEntry) {
+  const refs = new Set(Object.keys(entry.refs));
+  return new Map(record(entry.ids)
+    ? Object.entries(entry.ids).filter((pair): pair is [string, string] => refs.has(pair[0]) && typeof pair[1] === "string" && pair[1] !== "")
+    : []);
+}
 
 /** A source's own keys: its ID's and its issuer-scoped aliases'. */
 const keysOf = (source: Source, accountId: string) => [source.id, ...(source.aliases ?? [])].map((id) => importedKey(id, accountId));
@@ -70,6 +87,8 @@ async function importedHistory(storage: Storage, start: string[], follow: boolea
   const initial = new Set(keys);
   const siblings = new Set(keys);
   const dates: Record<string, ImportEntry> = {};
+  // A copy without IDs must not hide a conflict between the other equal-time copies.
+  const observed = new Map<string, Map<string, string>>();
   for (const key of keys) {
     const raw = await storage.get(key);
     let stored: unknown;
@@ -102,17 +121,24 @@ async function importedHistory(storage: Storage, start: string[], follow: boolea
       ) continue;
       const next = entry as ImportEntry;
       const previous = dates[date];
-      if (!previous || next.savedAt > previous.savedAt) dates[date] = next;
-      else if (next.savedAt === previous.savedAt) {
-        // Conflicting device writes at the same time must not invent removals.
-        dates[date] = {
-          savedAt: next.savedAt,
-          refs: Object.fromEntries(Object.entries(previous.refs).flatMap(([ref, securities]) => {
-            const other = next.refs[ref];
-            const agreed = Array.isArray(other) && securities.every((id) => other.includes(id)) && other.every((id) => securities.includes(id));
-            return agreed && securities.length ? [[ref, securities]] : [];
-          })),
-        };
+      if (!previous || next.savedAt > previous.savedAt) {
+        dates[date] = next;
+        observed.set(date, idsOf(next));
+      } else if (next.savedAt === previous.savedAt) {
+        // Conflicting device writes at the same time must not invent removals. Asset IDs that differ
+        // dispute their ref too; one only a copy has is dropped, and its ref goes by choices.
+        const [before, after] = [idsOf(previous), idsOf(next)];
+        const known = observed.get(date)!;
+        const refs: ImportedRefs = Object.fromEntries(Object.entries(previous.refs).flatMap(([ref, securities]) => {
+          const other = next.refs[ref];
+          const agreed = Array.isArray(other) && securities.every((id) => other.includes(id)) && other.every((id) => securities.includes(id));
+          const disputed = known.has(ref) && after.has(ref) && known.get(ref) !== after.get(ref);
+          return agreed && !disputed && securities.length ? [[ref, securities]] : [];
+        }));
+        const agreed = new Set(Object.keys(refs));
+        const ids = Object.fromEntries([...before].filter(([ref, id]) => agreed.has(ref) && after.get(ref) === id));
+        dates[date] = { savedAt: next.savedAt, refs, ...(Object.keys(ids).length > 0 && { ids }) };
+        for (const [ref, id] of after) if (!known.has(ref)) known.set(ref, id);
       }
     }
   }
@@ -122,37 +148,45 @@ async function importedHistory(storage: Storage, start: string[], follow: boolea
 const sourceHistory = (storage: Storage, source: Source, accountId: string) =>
   importedHistory(storage, keysOf(source, accountId), source.aliases?.length !== 0);
 
-/** The refs of the latest date on or before `baseDate`. */
-const refsAt = ({ dates }: History, baseDate: string) => {
+/** The record of the latest date on or before `baseDate`. */
+const recordAt = ({ dates }: History, baseDate: string) => {
   const date = Object.keys(dates).filter((date) => date <= baseDate).sort().at(-1);
-  return new Map(Object.entries(date ? dates[date].refs : {}));
+  return date
+    ? { remembered: new Map(Object.entries(dates[date].refs)), ids: idsOf(dates[date]) }
+    : { remembered: new Map<string, string[]>(), ids: new Map<string, string>() };
 };
 
-export async function readImported(storage: Storage, source: Source, accountId: string, baseDate: string | null): Promise<Map<string, string[]>> {
-  if (baseDate === null) return new Map();
-  try {
-    return refsAt(await sourceHistory(storage, source, accountId), baseDate);
-  } catch {
-    return new Map();
+export async function readImported(storage: Storage, source: Source, accountId: string, baseDate: string | null) {
+  if (baseDate !== null) {
+    try {
+      return recordAt(await sourceHistory(storage, source, accountId), baseDate);
+    } catch {
+      // Read as no record.
+    }
   }
+  return { remembered: new Map<string, string[]>(), ids: new Map<string, string>() };
 }
 
-async function saveHistory(storage: Storage, { keys, dates }: History, date: string, refs: ImportedRefs) {
+async function saveHistory(storage: Storage, { keys, dates }: History, date: string, refs: ImportedRefs, ids: ImportedIds = {}) {
   const savedAt = Math.max(Date.now(), ...Object.values(dates).map((entry) => entry.savedAt + 1));
-  dates[date] = { savedAt, refs };
+  dates[date] = { savedAt, refs, ...(Object.keys(ids).length > 0 && { ids }) };
   const value = JSON.stringify({ aliases: [...keys], dates });
   for (const key of keys) await storage.set(key, value);
 }
 
-export async function saveImported(storage: Storage, source: Source, accountId: string, date: string, refs: ImportedRefs) {
-  await saveHistory(storage, await sourceHistory(storage, source, accountId), date, refs);
+export async function saveImported(storage: Storage, source: Source, accountId: string, date: string, refs: ImportedRefs, ids?: ImportedIds) {
+  await saveHistory(storage, await sourceHistory(storage, source, accountId), date, refs, ids);
 }
 
 /**
  * One import's records for an account: each source's at the date. Linked folios share one history,
- * so each of those sources saves all of their refs, and none erases what another saved.
+ * so each of those sources saves all of their refs, and none erases what another saved. Each ref keeps
+ * the asset ID any of them gives it, unless two of them give it different ones. A set-aside entry gives
+ * way to a linked source's entry for the current asset; the set-aside markers aren't stored.
  */
-export async function saveImports(storage: Storage, accountId: string, date: string, records: { source: Source; refs: ImportedRefs }[]) {
+export async function saveImports(
+  storage: Storage, accountId: string, date: string, records: { source: Source; refs: ImportedRefs; ids?: ImportedIds; aside?: ReadonlySet<string> }[],
+) {
   // Sever mixed-issuer links before another source can follow their stale copies.
   records = [...records].sort((a, b) => Number(b.source.aliases?.length === 0) - Number(a.source.aliases?.length === 0));
   const keys = await Promise.all(records.map(async ({ source }) => (await sourceHistory(storage, source, accountId)).keys));
@@ -172,10 +206,18 @@ export async function saveImports(storage: Storage, accountId: string, date: str
   };
   for (const [i, { source }] of records.entries()) {
     const refs: ImportedRefs = {};
-    for (const j of linked(i)) {
-      for (const [ref, ids] of Object.entries(records[j].refs)) refs[ref] = [...new Set([...(refs[ref] ?? []), ...ids])];
+    const ids = new Map<string, string | null>();
+    const group = [...linked(i)];
+    const regular = new Set(group.flatMap((j) => Object.keys(records[j].refs).filter((ref) => !records[j].aside?.has(ref))));
+    for (const j of group) {
+      for (const [ref, security] of Object.entries(records[j].refs)) {
+        if (records[j].aside?.has(ref) && regular.has(ref)) continue;
+        refs[ref] = [...new Set([...(refs[ref] ?? []), ...security])];
+        const id = records[j].ids?.[ref];
+        if (id) ids.set(ref, ids.has(ref) && ids.get(ref) !== id ? null : id);
+      }
     }
-    await saveImported(storage, source, accountId, date, refs);
+    await saveImported(storage, source, accountId, date, refs, Object.fromEntries([...ids].filter((pair): pair is [string, string] => pair[1] !== null)));
   }
 }
 
@@ -245,15 +287,15 @@ export async function readUnlisted(storage: Storage, accountId: string, investor
   }
   return groups.flatMap(({ keys, history }) => {
     if ([...history.keys].some((key) => known.has(key))) return [];
-    const remembered = refsAt(history, baseDate);
-    return remembered.size ? [{ keys, remembered }] : [];
+    const record = recordAt(history, baseDate);
+    return record.remembered.size ? [{ keys, ...record }] : [];
   });
 }
 
 /** Saves an import's records of folios, demat accounts and PRANs it doesn't list, by their indexed keys. */
-export async function saveUnlisted(storage: Storage, date: string, records: { keys: string[]; refs: ImportedRefs }[]) {
-  for (const { keys, refs } of records) {
-    for (const key of keys) await saveHistory(storage, await importedHistory(storage, [key], true, true), date, refs);
+export async function saveUnlisted(storage: Storage, date: string, records: { keys: string[]; refs: ImportedRefs; ids?: ImportedIds }[]) {
+  for (const { keys, refs, ids } of records) {
+    for (const key of keys) await saveHistory(storage, await importedHistory(storage, [key], true, true), date, refs, ids);
   }
 }
 

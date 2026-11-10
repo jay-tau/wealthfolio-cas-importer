@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { importedRefs, planSnapshots, readHoldings, security, snapshotOf, unlistedRefs } from "../src/cas/holdings.ts";
+import { importedRefs, planSnapshots, readHoldings, reconcileRecord, security, snapshotOf, unlistedRefs } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
 import {
   fundKey, holdingKey, indexSources, investorKey, readFund, readImported, readRecordChoices, readUnlisted, saveFund, saveImported, saveImports,
@@ -13,6 +13,8 @@ const depository = { id: summary.aliases[0] };
 const noIsin = { id: summary.id };
 const refs = (value) => ({ [value]: [`ISIN-${value}`, `CAMS|${value}`] });
 const entries = (value) => new Map(Object.entries(value));
+/** The holdings a source's record has at the baseline date, by `fundRef`. */
+const readRefs = async (...args) => (await readImported(...args)).remembered;
 
 function storage() {
   const data = new Map();
@@ -76,24 +78,24 @@ test("record choices use the card's entries, including undecided or left out, an
 test("import provenance follows the baseline snapshot date, including out-of-order imports", async () => {
   const store = storage();
   await saveImported(store, summary, "account", "2026-06-30", refs("june"));
-  assert.deepEqual(await readImported(store, summary, "account", null), new Map());
-  assert.deepEqual(await readImported(store, summary, "account", "2026-03-31"), new Map());
+  assert.deepEqual(await readRefs(store, summary, "account", null), new Map());
+  assert.deepEqual(await readRefs(store, summary, "account", "2026-03-31"), new Map());
   await saveImported(store, summary, "account", "2026-03-31", refs("march"));
-  assert.deepEqual(await readImported(store, summary, "account", "2026-04-30"), entries(refs("march")));
-  assert.deepEqual(await readImported(store, summary, "account", "2026-06-30"), entries(refs("june")));
+  assert.deepEqual(await readRefs(store, summary, "account", "2026-04-30"), entries(refs("march")));
+  assert.deepEqual(await readRefs(store, summary, "account", "2026-06-30"), entries(refs("june")));
   await saveImported(store, summary, "account", "2026-03-31", refs("revised-march"));
-  assert.deepEqual(await readImported(store, summary, "account", "2026-03-31"), entries(refs("revised-march")));
-  assert.deepEqual(await readImported(store, summary, "account", "2026-07-31"), entries(refs("june")));
+  assert.deepEqual(await readRefs(store, summary, "account", "2026-03-31"), entries(refs("revised-march")));
+  assert.deepEqual(await readRefs(store, summary, "account", "2026-07-31"), entries(refs("june")));
 });
 
 test("folio aliases stay linked after the ISIN disappears, in both directions", async () => {
   const store = storage();
   await saveImported(store, summary, "account", "2026-03-31", refs("march"));
   await saveImported(store, noIsin, "account", "2026-04-30", refs("april"));
-  assert.deepEqual(await readImported(store, depository, "account", "2026-04-30"), entries(refs("april")));
+  assert.deepEqual(await readRefs(store, depository, "account", "2026-04-30"), entries(refs("april")));
   await saveImported(store, depository, "account", "2026-05-31", refs("may"));
-  assert.deepEqual(await readImported(store, noIsin, "account", "2026-05-31"), entries(refs("may")));
-  assert.deepEqual(await readImported(store, noIsin, "other-account", "2026-05-31"), new Map());
+  assert.deepEqual(await readRefs(store, noIsin, "account", "2026-05-31"), entries(refs("may")));
+  assert.deepEqual(await readRefs(store, noIsin, "other-account", "2026-05-31"), new Map());
   for (const [key, value] of store.data) {
     assert.match(key, /^holdings-imported:[a-f0-9]{64}$/);
     assert.ok(!value.includes("90123456789/45"));
@@ -122,7 +124,7 @@ test("a mixed-issuer summary stops sharing earlier links without losing its own 
   await saveImported(store, mixed, "account", "2026-02-28", both);
 
   const depository = { id: first.aliases[0], kind: "folio", label: "Folio", holdings: [a] };
-  const remembered = await readImported(store, depository, "account", "2026-02-28");
+  const remembered = await readRefs(store, depository, "account", "2026-02-28");
   assert.deepEqual(remembered, entries(onlyA));
   const [plan] = planSnapshots({
     date: "2026-03-31", investor: "made-up", sources: [depository], leftOut: [],
@@ -146,17 +148,17 @@ test("a mixed-issuer summary stops sharing earlier links without losing its own 
 
   // The issuer's stale copy must not overwrite the now-separate mixed summary on its next save.
   await saveImported(store, depository, "account", "2026-03-31", onlyA);
-  assert.deepEqual(await readImported(store, mixed, "account", "2026-03-31"), entries(both));
-  assert.deepEqual(await readImported(store, depository, "account", "2026-03-31"), entries(onlyA));
+  assert.deepEqual(await readRefs(store, mixed, "account", "2026-03-31"), entries(both));
+  assert.deepEqual(await readRefs(store, depository, "account", "2026-03-31"), entries(onlyA));
 });
 
 test("linking previously separate folio histories preserves both dates", async () => {
   const store = storage();
   await saveImported(store, noIsin, "account", "2026-01-31", refs("january"));
   await saveImported(store, depository, "account", "2026-02-28", refs("february"));
-  assert.deepEqual(await readImported(store, summary, "account", "2026-02-28"), entries(refs("february")));
+  assert.deepEqual(await readRefs(store, summary, "account", "2026-02-28"), entries(refs("february")));
   await saveImported(store, summary, "account", "2026-03-31", refs("march"));
-  assert.deepEqual(await readImported(store, depository, "account", "2026-01-31"), entries(refs("january")));
+  assert.deepEqual(await readRefs(store, depository, "account", "2026-01-31"), entries(refs("january")));
 });
 
 test("partly written alias copies resolve to the most recently saved entry", async () => {
@@ -171,9 +173,9 @@ test("partly written alias copies resolve to the most recently saved entry", asy
     },
   };
   await assert.rejects(saveImported(failing, summary, "account", "2026-03-31", refs("latest")), /storage failed/);
-  assert.deepEqual(await readImported(store, depository, "account", "2026-03-31"), entries(refs("latest")));
+  assert.deepEqual(await readRefs(store, depository, "account", "2026-03-31"), entries(refs("latest")));
   await saveImported(store, depository, "account", "2026-03-31", refs("next"));
-  assert.deepEqual(await readImported(store, noIsin, "account", "2026-03-31"), entries(refs("next")));
+  assert.deepEqual(await readRefs(store, noIsin, "account", "2026-03-31"), entries(refs("next")));
 });
 
 test("equal-time conflicting alias entries discard whole disputed references", async () => {
@@ -183,7 +185,7 @@ test("equal-time conflicting alias entries discard whole disputed references", a
   const conflicting = JSON.parse(store.data.get(second));
   conflicting.dates["2026-03-31"].refs = { shared: ["ISIN-shared"], ...refs("second") };
   store.data.set(second, JSON.stringify(conflicting));
-  assert.deepEqual(await readImported(store, summary, "account", "2026-03-31"), new Map());
+  assert.deepEqual(await readRefs(store, summary, "account", "2026-03-31"), new Map());
   assert.equal(JSON.parse(store.data.get(first)).dates["2026-03-31"].savedAt, conflicting.dates["2026-03-31"].savedAt);
 });
 
@@ -194,7 +196,7 @@ test("equal-time aliases agree when identity sets have a different order", async
   const reordered = JSON.parse(store.data.get(second));
   reordered.dates["2026-03-31"].refs.shared.reverse();
   store.data.set(second, JSON.stringify(reordered));
-  assert.deepEqual(await readImported(store, summary, "account", "2026-03-31"), entries(refs("shared")));
+  assert.deepEqual(await readRefs(store, summary, "account", "2026-03-31"), entries(refs("shared")));
 });
 
 test("conflicting identities cannot remove a still-listed fund left out of the import", async () => {
@@ -207,7 +209,7 @@ test("conflicting identities cannot remove a still-listed fund left out of the i
   const conflicting = JSON.parse(store.data.get(second));
   conflicting.dates["2026-03-31"].refs[ref] = ["ISIN-A", "CAMS|A"];
   store.data.set(second, JSON.stringify(conflicting));
-  const remembered = await readImported(store, summary, "account", "2026-03-31");
+  const remembered = await readRefs(store, summary, "account", "2026-03-31");
   const source = {
     ...summary, kind: "folio", label: "Made-up Fund folio",
     holdings: [{
@@ -249,7 +251,7 @@ test("a failed history read never overwrites stored imports", async () => {
     },
     set: store.set,
   };
-  assert.deepEqual(await readImported(failing, summary, "account", "2026-06-30"), new Map());
+  assert.deepEqual(await readRefs(failing, summary, "account", "2026-06-30"), new Map());
   await assert.rejects(saveImported(failing, summary, "account", "2026-03-31", refs("march")), /storage unavailable/);
   assert.deepEqual([...store.data], before);
 });
@@ -267,7 +269,176 @@ test("invalid or obsolete provenance storage is ignored", async () => {
     },
   })]) {
     for (const key of store.data.keys()) store.data.set(key, invalid);
-    assert.deepEqual(await readImported(store, summary, "account", "2026-12-31"), new Map());
+    assert.deepEqual(await readRefs(store, summary, "account", "2026-12-31"), new Map());
+  }
+});
+
+/** Whether versions before asset IDs read a stored entry: they check its time and that each ref lists strings. */
+const olderReads = (entry) => Number.isSafeInteger(entry.savedAt) && entry.savedAt >= 0 &&
+  Object.values(entry.refs).every((ids) => Array.isArray(ids) && ids.every((id) => typeof id === "string"));
+/**
+ * What a version before asset IDs does on saving a record at `date`, in a store of one history: it keeps
+ * each other date's latest copy as stored, but builds equal-time copies, such as linked folios', anew with
+ * refs only, and saves refs only.
+ */
+function olderSave(store, date, saved) {
+  const dates = {};
+  for (const value of store.data.values()) {
+    for (const [day, entry] of Object.entries(JSON.parse(value).dates)) {
+      const previous = dates[day];
+      if (!previous || entry.savedAt > previous.savedAt) dates[day] = entry;
+      else if (entry.savedAt === previous.savedAt) dates[day] = { savedAt: entry.savedAt, refs: previous.refs };
+    }
+  }
+  dates[date] = { savedAt: Math.max(Date.now(), ...Object.values(dates).map((entry) => entry.savedAt + 1)), refs: saved };
+  for (const [key, value] of store.data) store.data.set(key, JSON.stringify({ ...JSON.parse(value), dates }));
+}
+
+test("asset IDs are saved beside each date's refs, where older versions still read the refs", async () => {
+  const store = storage();
+  await saveImported(store, summary, "account", "2026-03-31", { ...refs("a"), ...refs("b") }, { a: "asset-a" });
+  for (const value of store.data.values()) {
+    const entry = JSON.parse(value).dates["2026-03-31"];
+    assert.deepEqual([entry.refs, entry.ids, olderReads(entry)], [{ ...refs("a"), ...refs("b") }, { a: "asset-a" }, true]);
+  }
+  assert.deepEqual(await readImported(store, depository, "account", "2026-03-31"), { remembered: entries({ ...refs("a"), ...refs("b") }), ids: new Map([["a", "asset-a"]]) });
+  // A record without IDs is stored as before.
+  await saveImported(store, summary, "account", "2026-04-30", refs("c"));
+  assert.ok(!("ids" in JSON.parse([...store.data.values()][0]).dates["2026-04-30"]));
+  // An older version's save at the same date goes without them, and at another date drops linked copies' too:
+  // those records go by remembered choices.
+  olderSave(store, "2026-03-31", refs("a"));
+  assert.deepEqual(await readImported(store, summary, "account", "2026-03-31"), { remembered: entries(refs("a")), ids: new Map() });
+  await saveImported(store, summary, "account", "2026-03-31", refs("a"), { a: "asset-a" });
+  olderSave(store, "2026-05-31", refs("d"));
+  assert.deepEqual((await readImported(store, summary, "account", "2026-03-31")).ids, new Map());
+  // A single copy's stay.
+  const single = storage();
+  await saveImported(single, noIsin, "account", "2026-03-31", refs("a"), { a: "asset-a" });
+  olderSave(single, "2026-05-31", refs("d"));
+  assert.deepEqual(await readImported(single, noIsin, "account", "2026-03-31"), { remembered: entries(refs("a")), ids: new Map([["a", "asset-a"]]) });
+  // A backdated save keeps later dates' IDs.
+  await saveImported(store, summary, "account", "2026-06-30", refs("e"), { e: "asset-e" });
+  await saveImported(store, summary, "account", "2026-02-28", refs("f"), { f: "asset-f" });
+  assert.deepEqual((await readImported(store, summary, "account", "2026-06-30")).ids, new Map([["e", "asset-e"]]));
+  assert.deepEqual((await readImported(store, summary, "account", "2026-02-28")).ids, new Map([["f", "asset-f"]]));
+});
+
+test("malformed asset IDs are ignored without losing their refs", async () => {
+  const store = storage();
+  await saveImported(store, summary, "account", "2026-03-31", { ...refs("a"), ...refs("b") }, { a: "asset-a", b: "asset-b" });
+  for (const [ids, kept] of [
+    ["asset-a", []], [["asset-a"], []], [null, []], [{ a: 5, b: "asset-b" }, [["b", "asset-b"]]],
+    [{ a: "", b: ["asset-b"] }, []], [{ a: "asset-a", missing: "asset-m", toString: "asset-t" }, [["a", "asset-a"]]],
+  ]) {
+    for (const key of store.data.keys()) {
+      const stored = JSON.parse(store.data.get(key));
+      stored.dates["2026-03-31"].ids = ids;
+      store.data.set(key, JSON.stringify(stored));
+    }
+    assert.deepEqual(await readImported(store, summary, "account", "2026-03-31"), { remembered: entries({ ...refs("a"), ...refs("b") }), ids: new Map(kept) });
+  }
+});
+
+test("equal-time copies keep the asset IDs they agree on, drop one only a copy has, and discard a ref they give different IDs", async () => {
+  const store = storage();
+  await saveImported(store, summary, "account", "2026-03-31", { ...refs("a"), ...refs("b"), ...refs("c") }, { a: "asset-a", b: "asset-b", c: "asset-c" });
+  const second = [...store.data.keys()][1];
+  const copy = JSON.parse(store.data.get(second));
+  copy.dates["2026-03-31"].ids = { a: "asset-a", c: "other-asset" };
+  store.data.set(second, JSON.stringify(copy));
+  const read = await readImported(store, summary, "account", "2026-03-31");
+  assert.deepEqual(read, { remembered: entries({ ...refs("a"), ...refs("b") }), ids: new Map([["a", "asset-a"]]) });
+  // An older version's copy at the same time has none.
+  delete copy.dates["2026-03-31"].ids;
+  store.data.set(second, JSON.stringify(copy));
+  assert.deepEqual((await readImported(store, summary, "account", "2026-03-31")).ids, new Map());
+});
+
+test("equal-time ID conflicts survive an ID-free copy in every read order", async () => {
+  const source = { ...summary, aliases: [...summary.aliases, "folio|90123456789/45|amc:Earlier name"] };
+  for (const ids of [
+    ["asset-a", undefined, "other-asset"], ["asset-a", "other-asset", undefined],
+    [undefined, "asset-a", "other-asset"], [undefined, "other-asset", "asset-a"],
+    ["other-asset", "asset-a", undefined], ["other-asset", undefined, "asset-a"],
+  ]) {
+    const store = storage();
+    await saveImported(store, source, "account", "2026-03-31", refs("a"));
+    for (const [i, key] of [...store.data.keys()].entries()) {
+      const copy = JSON.parse(store.data.get(key));
+      copy.dates["2026-03-31"].ids = ids[i] ? { a: ids[i] } : undefined;
+      store.data.set(key, JSON.stringify(copy));
+    }
+    assert.deepEqual(await readImported(store, source, "account", "2026-03-31"), { remembered: new Map(), ids: new Map() });
+    // A newer copy replaces the disputed record, including the IDs observed at the earlier time.
+    const key = [...store.data.keys()].at(-1);
+    const newer = JSON.parse(store.data.get(key));
+    newer.dates["2026-03-31"].savedAt++;
+    newer.dates["2026-03-31"].ids = { a: "newest-asset" };
+    store.data.set(key, JSON.stringify(newer));
+    assert.deepEqual(await readImported(store, source, "account", "2026-03-31"), {
+      remembered: entries(refs("a")), ids: new Map([["a", "newest-asset"]]),
+    });
+  }
+});
+
+test("linked folios saved together keep each other's asset IDs, except for a ref they give different ones", async () => {
+  const store = storage();
+  const first = { ...summary, kind: "folio", label: "Made-up Fund, folio 90123456789/45", holdings: [] };
+  const second = { id: "folio|90123456789/45|amc:Made-up Fund (earlier name)", aliases: summary.aliases, kind: "folio", label: "Earlier name", holdings: [] };
+  const separate = { id: "demat|1|1", kind: "demat", label: "Demat account 1", holdings: [] };
+  await saveImports(store, "account", "2026-03-31", [
+    { source: first, refs: { ...refs("a"), ...refs("b") }, ids: { a: "asset-a", b: "asset-b" } },
+    { source: second, refs: { ...refs("b"), ...refs("c") }, ids: { b: "other-asset" } },
+    { source: separate, refs: refs("c"), ids: { c: "asset-c" } },
+  ]);
+  for (const source of [first, second, depository]) {
+    assert.deepEqual(await readImported(store, source, "account", "2026-03-31"), {
+      remembered: entries({ ...refs("a"), ...refs("b"), ...refs("c") }), ids: new Map([["a", "asset-a"]]),
+    });
+  }
+  assert.deepEqual(await readImported(store, separate, "account", "2026-03-31"), { remembered: entries(refs("c")), ids: new Map([["c", "asset-c"]]) });
+  // Unlisted, the linked records are read and saved again with their IDs.
+  await indexSources(store, "account", "investor", [first, separate]);
+  const [unlisted, other] = await readUnlisted(store, "account", "investor", [], "2026-03-31");
+  assert.deepEqual([unlisted.ids, other.ids], [new Map([["a", "asset-a"]]), new Map([["c", "asset-c"]])]);
+  await saveUnlisted(store, "2026-04-30", [{ keys: unlisted.keys, refs: refs("a"), ids: { a: "asset-a" } }]);
+  assert.deepEqual(await readImported(store, second, "account", "2026-04-30"), { remembered: entries(refs("a")), ids: new Map([["a", "asset-a"]]) });
+});
+
+test("an imported entry replaces set-aside history in its own or a learned linked record, but not a separate one", async () => {
+  const X = "INEZ90X01017", Y = "INEZ90Y01015";
+  const old = fundRef("OLD", "XBOM");
+  const existing = {
+    date: "2026-03-31", later: [], cash: {},
+    positions: [["current-asset", "OLD"], ["held-back-asset", "OTHER"]].map(([assetId, symbol]) => ({
+      assetId, symbol, ref: fundRef(symbol, "XBOM"), name: symbol, units: "10", cost: "100", currency: "INR",
+    })),
+  };
+  for (const kind of ["own", "linked", "separate"]) {
+    const store = storage();
+    const first = { id: "made-up-first", kind: "demat", label: "First demat", holdings: [], misread: [shareOf(X, "10")] };
+    const second = { id: "made-up-second", kind: "demat", label: "Second demat", holdings: [shareOf(Y, "10")] };
+    // The later statement doesn't carry the earlier link; storage still knows it.
+    await saveImported(store, { ...first, ...(kind === "linked" && { aliases: [second.id] }) }, "account", existing.date,
+      { [old]: [X] }, { [old]: "absent-asset" });
+    if (kind === "own") first.holdings = second.holdings;
+    const sources = kind === "own" ? [first] : [first, second];
+    const records = new Map(await Promise.all(sources.map(async (s) =>
+      [s.id, reconcileRecord(await readImported(store, s, "account", existing.date), existing, [])])));
+    const [plan] = planSnapshots({ date: "2026-04-30", investor: "made-up", sources, leftOut: [] }, {
+      account: () => "account", existing: () => existing, heldElsewhere: () => [],
+      asset: (h) => ({ symbol: h.isin === Y ? "OLD" : "OTHER", exchangeMic: "XBOM", quoteCcy: "INR", name: h.name,
+        assetId: h.isin === Y ? "current-asset" : "held-back-asset" }),
+      remembered: (s) => records.get(s.id).remembered, recorded: (s) => records.get(s.id),
+    });
+    assert.deepEqual(plan.positions.map((p) => [p.ref, !!p.misread]), [[old, false], [fundRef("OTHER", "XBOM"), true]]);
+    await saveImports(store, "account", plan.date, importedRefs(plan, { flipped: new Set(), costs: new Map() }));
+    const expected = { remembered: entries({ [old]: [Y] }), ids: new Map([[old, "current-asset"]]) };
+    assert.deepEqual(await readImported(store, kind === "own" ? first : second, "account", plan.date), expected);
+    assert.deepEqual(await readImported(store, first, "account", plan.date), kind === "separate"
+      ? { remembered: entries({ [old]: [X] }), ids: new Map([[old, "absent-asset"]]) } : expected);
+    for (const value of store.data.values()) assert.ok(!value.includes('"aside"'));
   }
 });
 
@@ -284,7 +455,7 @@ const sharesBefore = (date) => ({
 
 /** Plans the import of `sources`, any `leftOut` left out, as the page reads their records, and imports S. */
 async function importS(store, date, baseline, sources, leftOut) {
-  const remembered = new Map(await Promise.all(sources.map(async (s) => [s.id, await readImported(store, s, "account", baseline)])));
+  const remembered = new Map(await Promise.all(sources.map(async (s) => [s.id, await readRefs(store, s, "account", baseline)])));
   const [plan] = planSnapshots({ date, investor: "x", leftOut: [], sources }, {
     account: (s) => (s === leftOut ? undefined : "account"),
     asset: (h) => ({ symbol: h.isin, exchangeMic: "XBOM", quoteCcy: "INR", name: h.name }),
@@ -308,13 +479,13 @@ test("a left-out source's cleared record is saved at the statement's date from t
   await saveImported(store, second, "account", "2025-06-30", held("S", "U"));
   // Imported after June's, April's statement starts from March's snapshot: T stays, and June's U isn't copied.
   await importS(store, "2025-04-30", "2025-03-31", [first, second], second);
-  assert.deepEqual(await readImported(store, second, "account", "2025-04-30"), entries(held("T")));
-  assert.deepEqual(await readImported(store, first, "account", "2025-04-30"), entries(held("S")));
+  assert.deepEqual(await readRefs(store, second, "account", "2025-04-30"), entries(held("T")));
+  assert.deepEqual(await readRefs(store, first, "account", "2025-04-30"), entries(held("S")));
   // A later baseline reads it; the records at other dates stay.
-  assert.deepEqual(await readImported(store, second, "account", "2025-05-31"), entries(held("T")));
+  assert.deepEqual(await readRefs(store, second, "account", "2025-05-31"), entries(held("T")));
   for (const source of [first, second]) {
-    assert.deepEqual(await readImported(store, source, "account", "2025-03-31"), entries(source === first ? held("S") : held("S", "T")));
-    assert.deepEqual(await readImported(store, source, "account", "2025-06-30"), entries(held("S", "U")));
+    assert.deepEqual(await readRefs(store, source, "account", "2025-03-31"), entries(source === first ? held("S") : held("S", "T")));
+    assert.deepEqual(await readRefs(store, source, "account", "2025-06-30"), entries(held("S", "U")));
   }
 });
 
@@ -331,10 +502,10 @@ test("a left-out folio's cleared record keeps what a linked included folio just 
   await saveImported(store, separate, "account", "2025-03-31", held("T"));
   await importS(store, "2025-04-30", "2025-03-31", [included, renamed, separate], renamed);
   for (const source of [included, renamed, depository]) {
-    assert.deepEqual(await readImported(store, source, "account", "2025-04-30"), entries(held("S", "T")));
+    assert.deepEqual(await readRefs(store, source, "account", "2025-04-30"), entries(held("S", "T")));
   }
   // An unlinked source keeps its own record, without the linked folios' S, and links stay as they were.
-  assert.deepEqual(await readImported(store, separate, "account", "2025-04-30"), entries(held("T")));
+  assert.deepEqual(await readRefs(store, separate, "account", "2025-04-30"), entries(held("T")));
   assert.equal(store.data.size, 4);
 });
 
@@ -348,7 +519,7 @@ test("linked folios imported together keep each other's refs", async () => {
   await saveImported(store, first, "account", "2025-03-31", held("S", "T"));
   await importS(store, "2025-04-30", "2025-03-31", [first, second]);
   for (const source of [first, second, depository]) {
-    assert.deepEqual(await readImported(store, source, "account", "2025-04-30"), entries(held("S", "T")));
+    assert.deepEqual(await readRefs(store, source, "account", "2025-04-30"), entries(held("S", "T")));
   }
 });
 
@@ -361,13 +532,13 @@ test("mixed-issuer folios stay separate from their earlier links when saved toge
     await saveImported(store, other, "account", "2025-06-30", held("U"));
     const records = [{ source: mixed, refs: held("S", "T") }, { source: other, refs: held("S") }];
     await saveImports(store, "account", "2025-04-30", reverse ? records.reverse() : records);
-    assert.deepEqual(await readImported(store, mixed, "account", "2025-04-30"), entries(held("S", "T")));
+    assert.deepEqual(await readRefs(store, mixed, "account", "2025-04-30"), entries(held("S", "T")));
     for (const source of [other, depository]) {
-      assert.deepEqual(await readImported(store, source, "account", "2025-04-30"), entries(held("S")));
+      assert.deepEqual(await readRefs(store, source, "account", "2025-04-30"), entries(held("S")));
     }
     for (const source of [mixed, other, depository]) {
-      assert.deepEqual(await readImported(store, source, "account", "2025-03-31"), entries(held("S")));
-      assert.deepEqual(await readImported(store, source, "account", "2025-06-30"), entries(held("U")));
+      assert.deepEqual(await readRefs(store, source, "account", "2025-03-31"), entries(held("S")));
+      assert.deepEqual(await readRefs(store, source, "account", "2025-06-30"), entries(held("U")));
     }
   }
 });
@@ -378,7 +549,7 @@ const unlistedNote = "An earlier import added it from a folio, demat account or 
   "Check whether it was redeemed, sold or moved, and untick Keep if so.";
 /** What the page does: reads the records, plans the import into "account" and saves it, keeping every default. */
 async function importHoldings(store, investor, date, baseline, sources, choose = () => ({ flipped: new Set(), costs: new Map() })) {
-  const remembered = new Map(await Promise.all(sources.map(async (s) => [s.id, await readImported(store, s, "account", baseline)])));
+  const remembered = new Map(await Promise.all(sources.map(async (s) => [s.id, await readRefs(store, s, "account", baseline)])));
   const unlisted = await readUnlisted(store, "account", investor, sources, baseline);
   const [plan] = planSnapshots({ date, investor, leftOut: [], sources }, {
     account: () => "account",
@@ -494,8 +665,8 @@ test("partial alias writes exclude listed groups and count linked unlisted recor
     assert.deepEqual(unlisted[0].remembered, entries(held("S", "T")));
     await saveUnlisted(store, "2025-04-30", [{ keys: unlisted[0].keys, refs: held("T") }]);
     for (const source of [summary, renamed, depository]) {
-      assert.deepEqual(await readImported(store, source, "account", "2025-04-30"), entries(held("T")));
-      assert.deepEqual(await readImported(store, source, "account", "2025-02-28"), entries(held("S")));
+      assert.deepEqual(await readRefs(store, source, "account", "2025-04-30"), entries(held("T")));
+      assert.deepEqual(await readRefs(store, source, "account", "2025-02-28"), entries(held("S")));
     }
     assert.deepEqual((await readUnlisted(store, "account", "investor", [], "2025-04-30")).map((u) => u.remembered), [entries(held("T"))]);
   }
@@ -539,7 +710,7 @@ test("conflicting device indexes fall back to the existing snapshot rules", asyn
     assert.deepEqual(snapshotOf(plan, { flipped: new Set(), costs: new Map() }).holdings.map((h) => [h.assetId, h.quantity]), [
       ["asset-S", "150"], ["asset-T", "10"],
     ]);
-    assert.deepEqual(await readImported(store, one, "account", "2025-04-30"), entries(held("S")));
+    assert.deepEqual(await readRefs(store, one, "account", "2025-04-30"), entries(held("S")));
     // A listed source's record can still remove it: the lost entry supplies no keep safeguard.
     await saveImported(store, folio(3), "account", "2025-03-31", held("S"));
     const removed = await importHoldings(store, "investor", "2025-04-30", "2025-03-31", [folio(3)]);
@@ -554,7 +725,7 @@ test("an unlisted source's record forgets a holding the import replaces or remov
   // April's statement lists folio 1's S, which replaces the account's units, and the user removes T.
   await importHoldings(store, "investor", "2025-04-30", "2025-03-31", [folio(1, shareOf("S", "150"))],
     (plan) => ({ flipped: new Set([plan.positions.find((p) => p.ref === refOf("T")).key]), costs: new Map() }));
-  assert.deepEqual(await readImported(store, folio(2), "account", "2025-04-30"), new Map());
-  assert.deepEqual(await readImported(store, folio(2), "account", "2025-03-31"), entries(held("S", "T")));
+  assert.deepEqual(await readRefs(store, folio(2), "account", "2025-04-30"), new Map());
+  assert.deepEqual(await readRefs(store, folio(2), "account", "2025-03-31"), entries(held("S", "T")));
   assert.deepEqual(await readUnlisted(store, "account", "investor", [folio(1)], "2025-04-30"), []);
 });

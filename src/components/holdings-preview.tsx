@@ -371,7 +371,10 @@ export interface Unfinished {
 export interface SavedSnapshots {
   saved: { accountId: string; date: string; holdings: number }[];
   failed: { accountId: string; error: string }[];
-  /** The snapshots saved, but the add-on couldn't remember what each folio, demat account or PRAN added. */
+  /**
+   * The snapshots saved, but the add-on couldn't remember what each folio, demat account or PRAN
+   * added, or the ID of an asset the save created or found.
+   */
   unremembered: boolean;
   unfinished: Unfinished[];
 }

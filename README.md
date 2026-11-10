@@ -235,12 +235,15 @@ account's complete snapshot before anything is saved:
   and that the statement no longer lists, defaults to removed. If the printed identifiers can't
   be compared, it stays with a note to check it. You can keep or remove each one, and include or
   leave out each holding.
-- An earlier import's record of a holding can follow its asset after the asset's symbol or exchange
-  changes in Wealthfolio, if the holding's remembered choice is that asset, confirmed while it had
-  the recorded symbol and exchange. The preview then applies the other snapshot rules using the
-  asset's current symbol and exchange. Without such a choice, the preview may treat the asset like
-  a holding no import added, and saving a kept holding can drop its record. Importing the statement's
-  units records the holding under its chosen asset's current symbol and exchange.
+- An earlier import's record of a holding follows its asset after the asset's symbol or exchange
+  changes in Wealthfolio, by the asset ID the import recorded. The preview then applies the other
+  snapshot rules using the asset's current symbol and exchange. Another asset that now has the
+  recorded symbol and exchange doesn't take over the record. Version 2.1.0 and earlier record no
+  asset IDs, also when they save on another synced device: such a record follows the asset only if
+  the holding's remembered choice is that asset, confirmed while it had the recorded symbol and
+  exchange. Without such a choice, the preview may treat the asset like a holding no import added,
+  and saving a kept holding can drop its record. Importing the statement's units records the
+  holding under its chosen asset's current symbol and exchange, with its ID.
 - A folio, demat account or PRAN you leave out keeps what its earlier imports added. When one of
   those holdings would change because the statement's other lines list it too, or no longer list
   it, its row names the left-out one. A listed holding is left out by default, since its lines
@@ -333,7 +336,8 @@ the later snapshot's prices.
   The asset confirmed for a bond is kept under its ISIN, and for an NPS scheme under a hash of its symbol.
   A fund or share priced from statements is kept like any confirmed fund, but detailed imports don't preconfirm this choice.
 - Dated records of which holdings each holdings import added, with both their ISIN and
-  registrar scheme code when available, or an NPS scheme's symbol, keyed by a hash of the folio,
+  registrar scheme code when available, or an NPS scheme's symbol, and the Wealthfolio asset's
+  symbol, exchange and, when the import knew it, ID, keyed by a hash of the folio,
   demat account or PRAN and the Wealthfolio account. Hashed links join summary and depository records when an ISIN establishes
   the same folio number and issuer; learned links remain when a later summary omits the ISIN,
   but stop being used if it names more than one issuer.

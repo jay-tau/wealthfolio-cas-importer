@@ -1312,7 +1312,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // An NSDL statement's holdings go to accounts that track holdings, as snapshots.
     const hosted = (fn, arg) => tab.frames()[1].evaluate(fn, arg);
-    await hosted(() => {
+    const unindexedAside = `holdings-imported:${createHash("sha256")
+      .update("cas-importer holdings imported folio|1040012345|INFZ91T|holdings-2").digest("hex")}`;
+    await hosted((key) => {
       window.host.parseWarnings = ["MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail"];
       window.host.failHistory = false;
       window.host.assetIds.INEZ91A07012 = "bond-created-001";
@@ -1341,7 +1343,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.snapshots["holdings-2"] = {
         "2025-01-31": { holdings: [{ assetId: "asset-gilt", symbol: "GILT", quantity: "-10", averageCost: "100", currency: "INR", name: "Gilt fund" }], cash: { INR: "1500" } },
       };
-    });
+      // An anonymous earlier import left this folio unindexed. Its absent asset's ref is now Gilt's.
+      window.host.storage.set(key, JSON.stringify({ aliases: [key], dates: { "2025-01-31": {
+        savedAt: 1, refs: { "GILT@XBOM": ["INFZ91T01CB6"] }, ids: { "GILT@XBOM": "absent-fund" },
+      } } }));
+    }, unindexedAside);
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 17 holdings.").waitFor({ timeout: 180_000 });
@@ -1754,12 +1760,30 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await pause("snapshot");
     await save.press("Enter");
     await waiting();
+    // A market-priced asset's profile can fail after preview; the other new assets stay readable.
+    await hosted(() => { window.host.failGetProfileIds = ["asset-INEZ90C01021"]; });
     await clickOutside();
     await resume();
     await frame.getByText("Saved 2 snapshots").waitFor();
     await stayedOutside("Save 2 snapshots");
     const snapshot = (id, date) => hosted(([id, date]) => window.host.snapshots[id][date], [id, date]);
     const first = await snapshot("holdings-1", "2025-03-31");
+    for (const isin of ["INEZ90A01017", "INEZ90C01021"]) {
+      assert.equal(first.holdings.find((h) => h.symbol === isin).assetId, undefined);
+      const ref = `${isin}@XBOM`;
+      const records = Object.entries(await storage()).filter(([key]) => key.startsWith("holdings-imported:"))
+        .map(([, value]) => JSON.parse(value).dates["2025-03-31"]).filter((entry) => entry?.refs[ref]);
+      assert.ok(records.length);
+      for (const entry of records) {
+        assert.deepEqual(entry.refs[ref], [isin]);
+        assert.equal(entry.ids?.[ref], isin === "INEZ90C01021" ? undefined : `asset-${isin}`);
+      }
+    }
+    await frame.getByText("Some import history could not be saved", { exact: true }).waitFor();
+    const indexes = Object.entries(await storage()).filter(([key]) => key.startsWith("holdings-sources:"));
+    assert.ok(indexes.some(([, value]) => Object.values(JSON.parse(value)).some((keys) => keys.includes(unindexedAside))));
+    await hosted((key) => { window.host.storage.delete(key); }, unindexedAside);
+    await hosted(() => { window.host.failGetProfileIds = []; });
     assert.deepEqual(first.cash, {});
     assert.deepEqual(
       first.holdings.map((h) => [h.symbol, h.quantity, h.averageCost ?? null]),
@@ -1938,17 +1962,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
 
     // Once that fund is no longer listed, the remembered import still removes it by default, also
-    // after its asset's symbol changed in Wealthfolio: the fund's remembered choice of the asset,
-    // made when it had the recorded symbol, tells the record's asset. Replacing a snapshot on the
-    // same date needs confirming; Wealthfolio's cost carries over, also to a holding whose display
+    // after its asset's symbol changed in Wealthfolio and its choice was forgotten: the record's
+    // asset ID tells its asset. Replacing a snapshot on the same date needs confirming;
+    // Wealthfolio's cost carries over, also to a holding whose display
     // code was changed.
     await hosted(() => {
       window.host.soldIsins = ["INFZ90K01LQ6"];
       window.host.assets["asset-INEZ90A01017"].displayCode = "MY SHARE";
       window.host.assets["asset-INFZ90K01LQ6"].instrumentSymbol = "MY-LIQUID";
-      window.host.storage.set("isin:INFZ90K01LQ6", JSON.stringify({
-        assetId: "asset-INFZ90K01LQ6", symbol: "INFZ90K01LQ6", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "EQUITY", name: "Fund INFZ90K01LQ6",
-      }));
+      window.host.storage.delete("isin:INFZ90K01LQ6");
     });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 16 holdings.").waitFor({ timeout: 180_000 });
@@ -2461,6 +2483,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.failGetProfileIds = ["pension-g-009"]; });
     await frame.getByRole("button", { name: "Save 2 snapshots", exact: true }).click();
     await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Some import history could not be saved", { exact: true }).waitFor();
     await frame.getByText("Wealthfolio didn't save these snapshots", { exact: true }).waitFor();
     await frame.getByText("Demat: Error: Snapshot storage unavailable after writing quotes", { exact: true }).waitFor();
     await frame.getByText(/Fund folios, NPS TRUST- A\/C TEST PENSION FUND LIMITED SCHEME G - TIER I: Wealthfolio may value it at its average cost/).waitFor();

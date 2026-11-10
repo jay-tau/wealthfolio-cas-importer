@@ -21,6 +21,7 @@ import {
   splitSince,
   statementAsset,
   undecided,
+  unidentified,
   unitStatus,
   unlistedRefs,
   validCost,
@@ -593,6 +594,8 @@ const march = () => recordsOf(plan(statementOf("2025-03-31", folioOf("91234567 /
 const entriesOf = (records) => [...records.values()].map((refs) => [...refs]);
 /** The remembered choice: Yahoo's result, confirmed when the asset had its symbol. */
 const CHOSEN = [{ ...yahoo, assetId: "yahoo-asset" }];
+/** A record without asset IDs, as versions before them saved it, reconciled by remembered choices. */
+const byChoices = (remembered, existing, choices) => reconcileRecord({ remembered }, existing, choices).remembered;
 
 test("a kept asset's import record follows it to its current symbol, so a later statement without it removes it by default", () => {
   const records = march();
@@ -601,7 +604,7 @@ test("a kept asset's import record follows it to its current symbol, so a later 
   const current = heldBefore(renamed, "100");
   const inputs = [
     // The page's: the asset's current symbol everywhere, and the remembered choice's own symbol for the record.
-    { existing: current, remembered: (s) => reconcileRecord(records.get(s.id), current, CHOSEN) },
+    { existing: current, remembered: (s) => byChoices(records.get(s.id), current, CHOSEN) },
     // The account's position under the earlier symbol, which the asset ID matches to the statement's row.
     { existing: heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id) },
   ];
@@ -625,7 +628,7 @@ test("a kept asset's import record follows it to its current symbol, so a later 
   // A statement without the holding right after the rename: its remembered choice still tells the asset.
   const sold = heldBefore(renamed, "100");
   const [next] = plan(statementOf("2025-04-30", folioOf("91234567 / 12")), {
-    existing: () => sold, remembered: (s) => reconcileRecord(records.get(s.id), sold, CHOSEN),
+    existing: () => sold, remembered: (s) => byChoices(records.get(s.id), sold, CHOSEN),
   });
   assert.deepEqual(next.positions.map((p) => [p.ref, p.include, p.notes]), [[RENAMED, false, [`Not on the statement any more. An earlier import of ${FOLIO} added it.`]]]);
   assert.deepEqual(entriesOf(recordsOf(next, replacing(next.positions[0].key))), [[[RENAMED, FLEXI]]]);
@@ -638,7 +641,7 @@ test("an import record stays with its own asset when its symbol is unchanged, ha
 
   // Unchanged: the record stays under the asset's symbol.
   const unchanged = heldBefore(yahoo, "100");
-  const same = reconcileRecord(records.get(FOLIO_ID), unchanged, CHOSEN);
+  const same = byChoices(records.get(FOLIO_ID), unchanged, CHOSEN);
   assert.deepEqual([...same], [[OLD, FLEXI]]);
   const [kept] = plan(april, { asset: () => ({ ...yahoo, assetId: "yahoo-asset" }), existing: () => unchanged, remembered: () => same });
   assert.deepEqual(leftOut(kept), [[[OLD, FLEXI]]]);
@@ -646,13 +649,13 @@ test("an import record stays with its own asset when its symbol is unchanged, ha
   // No record: nothing is added for the kept asset.
   const current = heldBefore(renamed, "100");
   const [unrecorded] = plan(april, {
-    asset: () => renamed, existing: () => current, remembered: () => reconcileRecord(new Map(), current, CHOSEN),
+    asset: () => renamed, existing: () => current, remembered: () => byChoices(new Map(), current, CHOSEN),
   });
   assert.deepEqual(leftOut(unrecorded), [[]]);
 
   // Confirmed to AMFI's asset, which the account holds too: neither asset takes Yahoo's record.
   const both = { ...current, positions: [...current.positions, { ...heldBefore(amfi, "5").positions[0], assetId: "amfi-asset" }] };
-  const other = reconcileRecord(records.get(FOLIO_ID), both, [{ ...amfi, assetId: "amfi-asset" }]);
+  const other = byChoices(records.get(FOLIO_ID), both, [{ ...amfi, assetId: "amfi-asset" }]);
   assert.deepEqual([...other], [[OLD, FLEXI]]);
   const [confirmed] = plan(april, { asset: () => ({ ...amfi, assetId: "amfi-asset" }), existing: () => both, remembered: () => other });
   assert.deepEqual(confirmed.positions.map((p) => [p.ref, p.include, p.notes]), [[fundRef(amfi.symbol), true, []], [RENAMED, true, []]]);
@@ -661,20 +664,144 @@ test("an import record stays with its own asset when its symbol is unchanged, ha
 
   // Nor does the earlier symbol move to its asset while the account holds another asset under it.
   const taken = { ...current, positions: [...current.positions, { ...heldBefore(yahoo, "5").positions[0], assetId: "another-asset" }] };
-  assert.deepEqual([...reconcileRecord(records.get(FOLIO_ID), taken, CHOSEN)], [[OLD, FLEXI]]);
+  assert.deepEqual([...byChoices(records.get(FOLIO_ID), taken, CHOSEN)], [[OLD, FLEXI]]);
   // Or when it isn't in the account, or remembered choices give the earlier symbol to two assets.
-  assert.deepEqual([...reconcileRecord(records.get(FOLIO_ID), { ...none, positions: [] }, CHOSEN)], [[OLD, FLEXI]]);
+  assert.deepEqual([...byChoices(records.get(FOLIO_ID), { ...none, positions: [] }, CHOSEN)], [[OLD, FLEXI]]);
   const twice = [...CHOSEN, { ...yahoo, assetId: "amfi-asset" }];
-  assert.deepEqual([...reconcileRecord(records.get(FOLIO_ID), both, twice)], [[OLD, FLEXI]]);
+  assert.deepEqual([...byChoices(records.get(FOLIO_ID), both, twice)], [[OLD, FLEXI]]);
   // A choice without an asset ID tells nothing.
-  assert.deepEqual([...reconcileRecord(records.get(FOLIO_ID), current, [yahoo])], [[OLD, FLEXI]]);
+  assert.deepEqual([...byChoices(records.get(FOLIO_ID), current, [yahoo])], [[OLD, FLEXI]]);
   // A search result's ref can differ from the profile ref the earlier import recorded.
   const search = [{ ...CHOSEN[0], symbol: "SEARCH" }];
-  const unmatched = reconcileRecord(records.get(FOLIO_ID), current, search);
+  const unmatched = byChoices(records.get(FOLIO_ID), current, search);
   assert.deepEqual([...unmatched], [[OLD, FLEXI]]);
   const [unreconciled] = plan(april, { asset: () => renamed, existing: () => current, remembered: () => unmatched });
   assert.deepEqual(savedOf(unreconciled, replacing(unreconciled.positions[0].key)), [["yahoo-asset", "100"]]);
   assert.deepEqual(leftOut(unreconciled), [[]]);
+});
+
+/** Folio 91234567 / 12's import of 2025-03-31, with the ID of the asset its save created for Yahoo's result. */
+const marchWithIds = () => {
+  const [first] = plan(statementOf("2025-03-31", folioOf("91234567 / 12", flexi("100"))), { asset: () => yahoo });
+  const [{ refs, ids }] = importedRefs(first, noChoices, new Map([[OLD, "yahoo-asset"]]));
+  return { remembered: new Map(Object.entries(refs)), ids: new Map(Object.entries(ids)) };
+};
+const NOT_LISTED = `Not on the statement any more. An earlier import of ${FOLIO} added it.`;
+/** A plan of `holdings` from the reconciled record of each source. */
+const planReconciled = (holdings, existing, reconciled, more = {}) => plan(holdings, {
+  existing: () => existing, remembered: (s) => reconciled(s)?.remembered ?? new Map(), recorded: (s) => reconciled(s) ?? {}, ...more,
+});
+const entriesAndIds = (account, choices = noChoices, found) => importedRefs(account, choices, found).map(({ refs, ids }) => [refs, ids]);
+
+test("an import record follows its asset by the asset ID it recorded, whatever the remembered choice is", () => {
+  const record = marchWithIds();
+  assert.deepEqual([[...record.remembered], [...record.ids]], [[[OLD, FLEXI]], [[OLD, "yahoo-asset"]]]);
+  const april = statementOf("2025-04-30", folioOf("91234567 / 12"));
+  const exchange = fundRef(yahoo.symbol, "XNSE");
+  for (const [current, now] of [[heldBefore(renamed, "100"), RENAMED], [heldBefore({ ...yahoo, exchangeMic: "XNSE" }, "100"), exchange]]) {
+    // Confirmed again since the change, left out on the Holdings card, confirmed without an asset ID, from a
+    // search result's symbol, or still the earlier choice.
+    for (const choices of [[{ ...yahoo, symbol: "RENAMED", assetId: "yahoo-asset" }], [], [yahoo], [{ ...CHOSEN[0], symbol: "SEARCH" }], CHOSEN]) {
+      const reconciled = reconcileRecord(record, current, choices);
+      assert.deepEqual([[...reconciled.remembered], [...reconciled.ids], [...reconciled.aside]], [[[now, FLEXI]], [[now, "yahoo-asset"]], []]);
+      const [account] = planReconciled(april, current, () => reconciled);
+      assert.deepEqual(account.positions.map((p) => [p.ref, p.include, p.notes]), [[now, false, [NOT_LISTED]]]);
+      assert.deepEqual(savedOf(account), []);
+      assert.deepEqual(entriesAndIds(account), [[{}, {}]]);
+      // Kept, it stays in the folio's record under its current symbol and exchange, with its ID.
+      const kept = replacing(account.positions[0].key);
+      assert.deepEqual(savedOf(account, kept), [["yahoo-asset", "100"]]);
+      assert.deepEqual(entriesAndIds(account, kept), [[{ [now]: FLEXI }, { [now]: "yahoo-asset" }]]);
+    }
+    // Without its ID, as an older version saves it, a choice confirmed again doesn't match it, as before.
+    const legacy = byChoices(record.remembered, current, [{ ...yahoo, symbol: "RENAMED", assetId: "yahoo-asset" }]);
+    const [unmatched] = plan(april, { existing: () => current, remembered: () => legacy });
+    assert.deepEqual(unmatched.positions.map((p) => [p.include, p.notes]), [[true, []]]);
+  }
+  // Unchanged, it stays under its symbol.
+  const unchanged = reconcileRecord(record, heldBefore(yahoo, "100"), []);
+  assert.deepEqual([[...unchanged.remembered], [...unchanged.ids]], [[[OLD, FLEXI]], [[OLD, "yahoo-asset"]]]);
+});
+
+test("an asset's recorded ID wins over another asset that now has its symbol, or that a choice names", () => {
+  const record = marchWithIds();
+  const april = statementOf("2025-04-30", folioOf("91234567 / 12"));
+  // Another asset now has the earlier symbol and exchange.
+  const other = { ...heldBefore(yahoo, "5").positions[0], assetId: "another-asset" };
+  const current = heldBefore(renamed, "100");
+  const both = { ...current, positions: [...current.positions, other] };
+  // Its own asset still in the account: the record follows it, even if a choice gives the symbol to the other asset.
+  for (const choices of [CHOSEN, [{ ...yahoo, assetId: "another-asset" }]]) {
+    const followed = reconcileRecord(record, both, choices);
+    assert.deepEqual([[...followed.remembered], [...followed.ids], [...followed.aside]], [[[RENAMED, FLEXI]], [[RENAMED, "yahoo-asset"]], []]);
+    const [account] = planReconciled(april, both, () => followed);
+    assert.deepEqual(account.positions.map((p) => [p.ref, p.existing.assetId, p.include, p.notes]), [
+      [RENAMED, "yahoo-asset", false, [NOT_LISTED]], [OLD, "another-asset", true, []],
+    ]);
+  }
+  // Without it, the record's holding is set aside: the other asset is kept with no note, and the folio's record
+  // keeps nothing of it.
+  const alone = { ...current, positions: [other] };
+  const aside = reconcileRecord(record, alone, CHOSEN);
+  assert.deepEqual([[...aside.remembered], [...aside.ids], [...aside.aside]], [[], [[OLD, "yahoo-asset"]], [[OLD, FLEXI]]]);
+  const [account] = planReconciled(april, alone, () => aside);
+  assert.deepEqual(account.positions.map((p) => [p.ref, p.include, p.notes]), [[OLD, true, []]]);
+  assert.deepEqual(entriesAndIds(account), [[{}, {}]]);
+  // Without the ID, it would be the other asset's.
+  const [legacy] = plan(april, { existing: () => alone, remembered: () => byChoices(record.remembered, alone, CHOSEN) });
+  assert.deepEqual(legacy.positions.map((p) => [p.ref, p.include, p.notes]), [[OLD, false, [NOT_LISTED]]]);
+  // A line that may have been misread and may be either asset holds the other asset back, and keeps the record.
+  const misread = statementOf("2025-04-30", { ...folioOf("91234567 / 12"), misread: [flexi("100")] });
+  const [heldBack] = planReconciled(misread, alone, () => aside, { asset: () => yahoo });
+  assert.deepEqual(heldBack.positions.map((p) => [p.ref, p.existing.assetId, p.include]), [[OLD, "another-asset", true]]);
+  assert.deepEqual(entriesAndIds(heldBack), [[{ [OLD]: FLEXI }, { [OLD]: "yahoo-asset" }]]);
+  // An asset that has its own holding under the symbol takes it: a record keeps one holding by symbol.
+  const taken = reconcileRecord({ remembered: new Map([[OLD, FLEXI], [RENAMED, ["INFZ90K01FC9"]]]), ids: new Map([[OLD, "gone-asset"], [RENAMED, "yahoo-asset"]]) },
+    { ...current, positions: [{ ...current.positions[0], symbol: yahoo.symbol, ref: OLD }] }, []);
+  assert.deepEqual([[...taken.remembered], [...taken.ids], [...taken.aside]], [[[OLD, ["INFZ90K01FC9"]]], [[OLD, "yahoo-asset"]], []]);
+});
+
+test("a holding confirmed to another asset doesn't take the record of the asset its earlier import added", () => {
+  const record = marchWithIds();
+  const current = heldBefore(renamed, "100");
+  const reconciled = reconcileRecord(record, current, [amfi]);
+  const [account] = planReconciled(statementOf("2025-04-30", folioOf("91234567 / 12", flexi("110"))), current, () => reconciled, { asset: () => amfi });
+  const [listed, old] = account.positions;
+  assert.deepEqual([listed.ref, listed.include, listed.replaces], [fundRef("119551"), false, [old.key]]);
+  assert.deepEqual([old.ref, old.existing.assetId, old.replacedBy, old.notes], [
+    RENAMED, "yahoo-asset", listed.key, [`An earlier import of ${FOLIO} added it for a holding that this import lists under ${AMFI}. It's kept unless you replace it with ${AMFI}.`],
+  ]);
+  // Kept, the old asset's record keeps its ID; replaced, the new asset's record has the ID its save gave it.
+  assert.deepEqual(entriesAndIds(account), [[{ [RENAMED]: FLEXI }, { [RENAMED]: "yahoo-asset" }]]);
+  assert.deepEqual(unidentified(account, replacing(listed.key)), [fundRef("119551")]);
+  assert.deepEqual(entriesAndIds(account, replacing(listed.key), new Map([[fundRef("119551"), "amfi-asset"]])), [
+    [{ [fundRef("119551")]: FLEXI }, { [fundRef("119551")]: "amfi-asset" }],
+  ]);
+});
+
+test("an import records the IDs of the assets its save created or found, and goes without one it couldn't find", () => {
+  const holdings = statementOf("2025-03-31", folioOf("91234567 / 12", flexi("100")));
+  const [created] = plan(holdings, { asset: () => yahoo });
+  assert.deepEqual(unidentified(created, noChoices), [OLD]);
+  assert.deepEqual(entriesAndIds(created, noChoices, new Map([[OLD, "yahoo-asset"]])), [[{ [OLD]: FLEXI }, { [OLD]: "yahoo-asset" }]]);
+  // A failed lookup: the holding is recorded without an ID, and later imports match it by remembered choices.
+  assert.deepEqual(entriesAndIds(created, noChoices, new Map([["OTHER@XBOM", "other-asset"]])), [[{ [OLD]: FLEXI }, {}]]);
+  // A row left out isn't saved, so it isn't looked up.
+  assert.deepEqual(unidentified(created, replacing(created.positions[0].key)), []);
+  // A resolved choice or the account's asset needs no lookup.
+  const [resolved] = plan(holdings, { asset: () => ({ ...yahoo, assetId: "yahoo-asset" }) });
+  const [held] = plan(holdings, { asset: () => yahoo, existing: () => heldBefore(yahoo, "90") });
+  for (const account of [resolved, held]) {
+    assert.deepEqual(unidentified(account, noChoices), []);
+    assert.deepEqual(entriesAndIds(account), [[{ [OLD]: FLEXI }, { [OLD]: "yahoo-asset" }]]);
+  }
+  // A record an older version saved without IDs gets them for the holdings the next import keeps or imports.
+  const april = statementOf("2025-04-30", folioOf("91234567 / 12", flexi("110")));
+  const legacy = new Map([[OLD, FLEXI]]);
+  const [next] = plan(april, { asset: () => yahoo, existing: () => heldBefore(yahoo, "100"), remembered: () => legacy });
+  for (const choices of [noChoices, replacing(next.positions[0].key)]) {
+    assert.deepEqual(entriesAndIds(next, choices), [[{ [OLD]: FLEXI }, { [OLD]: "yahoo-asset" }]]);
+  }
 });
 
 test("replacement names distinguish the same symbol on different exchanges", () => {
@@ -1276,7 +1403,7 @@ test("a fund that an earlier import of a folio the statement doesn't list added 
   // Unticked, it's removed, and so is it from its folio's record.
   const removed = replacing(row("INFZ90K01BA1").key);
   assert.ok(!snapshotOf(account, removed).holdings.some((h) => h.assetId === "asset-INFZ90K01BA1"));
-  assert.deepEqual(unlistedRefs(account, removed), [{ keys: [`key of ${balancedFolio}`], refs: {} }]);
+  assert.deepEqual(unlistedRefs(account, removed), [{ keys: [`key of ${balancedFolio}`], refs: {}, ids: {} }]);
 
   // Listed again, the folio's record is its own: its fund is the statement's, or gone without it.
   const june = { ...march, date: "2025-06-30", sources: march.sources.slice(0, 2) };
@@ -1306,10 +1433,12 @@ test("a statement row replaces units an unlisted source added, and its record fo
   assert.deepEqual([listed.ref, listed.include, listed.notes], [ref(S), true, []]);
   assert.deepEqual([other.ref, other.include, other.notes], [ref(T), true, [UNLISTED_NOTE]]);
   assert.deepEqual(savedOf(account), [[`asset-${T}`, "10"], [`asset-${S}`, "150"]]);
-  assert.deepEqual(unlistedRefs(account, noChoices), [{ keys: ["key of demat|2|2"], refs: { [ref(T)]: [T] } }]);
+  assert.deepEqual(unlistedRefs(account, noChoices), [{ keys: ["key of demat|2|2"], refs: { [ref(T)]: [T] }, ids: { [ref(T)]: `asset-${T}` } }]);
   // Leaving S out keeps the account's units, and the record.
   assert.deepEqual(unlistedRefs(account, replacing(listed.key)), []);
-  assert.deepEqual(unlistedRefs(account, { flipped: new Set([listed.key, other.key]), costs: new Map() }), [{ keys: ["key of demat|2|2"], refs: { [ref(S)]: [S] } }]);
+  assert.deepEqual(unlistedRefs(account, { flipped: new Set([listed.key, other.key]), costs: new Map() }), [
+    { keys: ["key of demat|2|2"], refs: { [ref(S)]: [S] }, ids: { [ref(S)]: `asset-${S}` } },
+  ]);
 });
 
 test("an unlisted source's record of a renamed asset follows it, as an included source's does", () => {
@@ -1319,13 +1448,13 @@ test("an unlisted source's record of a renamed asset follows it, as an included 
   // The page's: the account holds T under its current symbol, and T's remembered choice names the asset by the recorded one.
   const current = sharesHeld([S, "150"], [T, "10"]);
   current.positions[1] = { ...current.positions[1], symbol: "NEW-T", ref: NEW };
-  const reconciled = () => unlisted().map((u) => ({ ...u, remembered: reconcileRecord(u.remembered, current, [{ ...asset(share(T, "1")), assetId: `asset-${T}` }]) }));
+  const reconciled = () => unlisted().map(({ keys, ...u }) => ({ keys, ...reconcileRecord(u, current, [{ ...asset(share(T, "1")), assetId: `asset-${T}` }]) }));
   const [account] = plan(statementOf("2025-04-30", demat(1, share(S, "150"))), {
     existing: () => current, remembered: () => new Map(), unlisted: reconciled,
   });
   const [listed, other] = account.positions;
   assert.deepEqual([other.ref, other.include, other.notes], [NEW, true, [UNLISTED_NOTE]]);
-  assert.deepEqual(unlistedRefs(account, noChoices), [{ keys: ["key of demat|2|2"], refs: { [NEW]: [T] } }]);
+  assert.deepEqual(unlistedRefs(account, noChoices), [{ keys: ["key of demat|2|2"], refs: { [NEW]: [T] }, ids: { [NEW]: `asset-${T}` } }]);
   assert.deepEqual(unlistedRefs(account, replacing(listed.key)), []);
   // Without the choice, the record doesn't match: T is kept with no note.
   const [unmatched] = plan(statementOf("2025-04-30", demat(1, share(S, "150"))), { existing: () => current, remembered: () => new Map(), unlisted });
@@ -1339,7 +1468,50 @@ test("an unlisted source's record of a renamed asset follows it, as an included 
   });
   const [, row] = direct.positions;
   assert.deepEqual([row.ref, row.existing.ref], [NEW, ref(T)]);
-  assert.deepEqual(unlistedRefs(direct, replacing(row.key)), [{ keys: ["key of demat|2|2"], refs: { [NEW]: [T] } }]);
+  assert.deepEqual(unlistedRefs(direct, replacing(row.key)), [{ keys: ["key of demat|2|2"], refs: { [NEW]: [T] }, ids: { [NEW]: `asset-${T}` } }]);
+});
+
+test("left-out and unlisted sources' records keep their asset IDs, follow renamed assets by them, and never another asset under their symbol", () => {
+  const U = "INEZ90U01013";
+  const NEW = fundRef("NEW-T", "XBOM");
+  // Demat account 2's import added S, T and U. Since then, T's asset has a new symbol, and another asset has U's.
+  const record = { remembered: recorded(S, T, U), ids: new Map([S, T, U].map((isin) => [ref(isin), `asset-${isin}`])) };
+  const current = sharesHeld([S, "150"], [T, "10"], [U, "7"]);
+  current.positions[1] = { ...current.positions[1], symbol: "NEW-T", ref: NEW };
+  current.positions[2] = { ...current.positions[2], assetId: "another-asset" };
+  const reconciled = reconcileRecord(record, current, []);
+  assert.deepEqual([[...reconciled.remembered], [...reconciled.ids], [...reconciled.aside]], [
+    [[ref(S), [S]], [NEW, [T]]], [[ref(S), `asset-${S}`], [NEW, `asset-${T}`], [ref(U), `asset-${U}`]], [[ref(U), [U]]],
+  ]);
+  const second = (s) => (s.id === "demat|2|2" ? reconciled : undefined);
+  const notes = (account) => account.positions.map((p) => [p.ref, p.include, p.notes.map((note) => note.slice(0, 70))]);
+  const leftOut = "An earlier import of Demat account 2, which this import leaves out, re";
+
+  // Left out (#145): Demat account 1's S row replaces units Demat account 2 added, but its U row doesn't.
+  const both = statementOf("2025-04-30", demat(1, share(S, "150"), share(U, "7")), demat(2));
+  const [account] = planReconciled(both, current, second, { account: withoutDemat2 });
+  assert.deepEqual(notes(account), [[ref(S), false, [leftOut]], [ref(U), true, []], [NEW, true, []]]);
+  // Kept, the left-out record stays as it is; S imported, it's saved without S, with the other IDs.
+  assert.deepEqual(importedRefs(account, noChoices).map((r) => r.source.id), ["demat|1|1"]);
+  const cleared = importedRefs(account, replacing(account.positions[0].key));
+  assert.deepEqual(cleared.map(({ source, refs, ids }) => [source.id, refs, ids]), [
+    ["demat|1|1", { [ref(S)]: [S], [ref(U)]: [U] }, { [ref(S)]: `asset-${S}`, [ref(U)]: "another-asset" }],
+    ["demat|2|2", { [NEW]: [T], [ref(U)]: [U] }, { [NEW]: `asset-${T}`, [ref(U)]: `asset-${U}` }],
+  ]);
+  // Without IDs, U's row would be left out too, as if Demat account 2 had added the other asset.
+  const [legacy] = plan(both, { account: withoutDemat2, existing: () => current, remembered: (s) => byChoices(second(s) ? record.remembered : new Map(), current, []) });
+  assert.deepEqual(notes(legacy).slice(0, 2), [[ref(S), false, [leftOut]], [ref(U), false, [leftOut]]]);
+
+  // Unlisted (#154): T has the note under its new symbol; the other asset under U's has none.
+  const unlisted = () => [{ keys: ["key of demat|2|2"], ...reconciled }];
+  const [listing] = planReconciled(statementOf("2025-04-30", demat(1, share(S, "150"))), current, () => undefined, { unlisted });
+  assert.deepEqual(listing.positions.map((p) => [p.ref, p.include, p.notes]), [[ref(S), true, []], [NEW, true, [UNLISTED_NOTE]], [ref(U), true, []]]);
+  assert.deepEqual(unlistedRefs(listing, noChoices), [
+    { keys: ["key of demat|2|2"], refs: { [NEW]: [T], [ref(U)]: [U] }, ids: { [NEW]: `asset-${T}`, [ref(U)]: `asset-${U}` } },
+  ]);
+  // Removing the other asset leaves the record's U, which isn't its own; removing T takes it from the record.
+  const removed = { flipped: new Set(listing.positions.slice(1).map((p) => p.key)), costs: new Map() };
+  assert.deepEqual(unlistedRefs(listing, removed), [{ keys: ["key of demat|2|2"], refs: { [ref(U)]: [U] }, ids: { [ref(U)]: `asset-${U}` } }]);
 });
 
 test("a holding a listed source no longer lists is kept when an unlisted source added it too", () => {
@@ -1372,7 +1544,7 @@ test("a holding a listed source no longer lists is kept when an unlisted source 
   ]);
   assert.deepEqual(savedOf(account), [[`asset-${U}`, "30"], [`asset-${S}`, "100"]]);
   // Removing it clears it from every record that has it.
-  assert.deepEqual(unlistedRefs(account, replacing(row.key)), [{ keys: ["key of demat|2|2"], refs: {} }]);
+  assert.deepEqual(unlistedRefs(account, replacing(row.key)), [{ keys: ["key of demat|2|2"], refs: {}, ids: {} }]);
   assert.deepEqual(recordedRefs(account, replacing(row.key)), [["demat|1|1", [ref(S)]]]);
   // A left-out source's record as well as an unlisted one's, and no listed source's.
   const both = plan(statementOf("2025-04-30", demat(1, share(S, "100")), demat(3, share(S, "1"))), {

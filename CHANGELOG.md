@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Follow a holdings import's record of a folio, demat account or PRAN to its asset after the asset's symbol or exchange changes in Wealthfolio, whatever the holding's remembered choice: confirmed again since the change, left out on the Holdings card, without an asset ID, or confirmed from a search result that gave another symbol or exchange than the asset's profile. Imports now record each holding's Wealthfolio asset ID. A statement of that folio, demat account or PRAN that no longer lists the holding then removes it by default, with the note "Not on the statement any more". Another asset that now has the recorded symbol and exchange doesn't take over the record, even when the recorded asset is no longer in the account. For an asset the import's save creates or finds, the add-on reads its ID from the saved snapshot; if it can't, it records the holding without one and says some import history could not be saved. A record that version 2.1.0 or earlier saved has no asset IDs until an import keeps or imports its holdings, and one that such a version saves on another synced device can lose them: it follows the asset only if the holding's remembered choice is that asset, confirmed while it had the recorded symbol and exchange. Before, without such a choice, the preview could treat the asset like a holding no import added, keeping it by default without the note, and saving a kept holding dropped its record
 
 ### Security
 
