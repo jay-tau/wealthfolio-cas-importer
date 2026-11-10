@@ -114,6 +114,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         assert.fail(`${what}: the focus is on ${active}`);
       }
     };
+    // A click outside the add-on while the page is locked, such as on Wealthfolio's own menu, keeps
+    // the focus there once the page is unlocked, as it would on Wealthfolio's own pages.
+    const clickOutside = async () => {
+      const frameBox = await tab.locator("iframe").boundingBox();
+      await tab.mouse.click(frameBox.x + frameBox.width + 20, frameBox.y + 20);
+      assert.equal(await tab.frames()[1].evaluate(() => document.hasFocus()), false);
+    };
+    const stayedOutside = async (what) => {
+      assert.equal(await tab.evaluate(() => document.activeElement.tagName), "BODY", what);
+      assert.equal(await tab.frames()[1].evaluate(() => document.hasFocus()), false, what);
+    };
     // A slow secret load cannot override an editable Remember opt-out.
     await waiting();
     assert.equal(await remember.getAttribute("aria-checked"), "false");
@@ -684,8 +695,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^38 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     assert.equal(await importFlexi.evaluate((box) => box === document.activeElement), false);
-    await importFlexi.dispatchEvent("click");
+    await pause("check");
+    await importFlexi.press("Space");
+    await waiting();
+    await clickOutside();
+    await resume();
     await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    await stayedOutside("Import this fund anyway");
     await frame.getByRole("button", { name: "Import 23 activities" }).click();
     await frame.getByText("Imported 23 of 23 activities").waitFor();
     const afterGap = await tab.frames()[1].evaluate(() => window.host.activities);
@@ -698,8 +714,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.frames()[1].evaluate(() => { window.host.activities = []; });
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await pause("import");
-    await frame.getByRole("button", { name: "Import 23 activities" }).click();
+    await frame.getByRole("button", { name: "Import 23 activities" }).press("Enter");
     await waiting();
+    await clickOutside();
     await tab.frames()[1].evaluate(() => {
       window.host.rejectLine = 1;
       window.host.failHistory = true;
@@ -709,6 +726,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("Wealthfolio rejected rows", { exact: true }).waitFor();
     await frame.getByText(/The fund could not be created/).waitFor();
     await frame.getByText(/The import finished, but the closing units couldn't be checked/).waitFor();
+    await stayedOutside("Import 23 activities");
     assert.equal(await frame.getByText(/The import failed/).count(), 0);
 
     // Reads the selected statement again; storage reads wait until the previous one has gone.
@@ -1733,8 +1751,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await folios.getByText("Cash carried over from the snapshot of 2025-01-31: INR 1500.").waitFor();
     await folios.getByText("Starts from the account's snapshot of 2025-01-31", { exact: false }).waitFor();
     assert.equal(await frame.getByText("Wealthfolio has later snapshots of this account", { exact: true }).count(), 0);
-    await save.click();
+    await pause("snapshot");
+    await save.press("Enter");
+    await waiting();
+    await clickOutside();
+    await resume();
     await frame.getByText("Saved 2 snapshots").waitFor();
+    await stayedOutside("Save 2 snapshots");
     const snapshot = (id, date) => hosted(([id, date]) => window.host.snapshots[id][date], [id, date]);
     const first = await snapshot("holdings-1", "2025-03-31");
     assert.deepEqual(first.cash, {});
@@ -2742,17 +2765,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await waiting();
     await checkStatus.getByText("Checking the units…", { exact: true }).waitFor();
     assert.equal(await checkStatus.textContent(), "Checking the units…");
-    // A click outside the add-on while the page is locked keeps the focus there, as it would on
-    // Wealthfolio's own pages.
-    const outside = await tab.locator("iframe").boundingBox();
-    await tab.mouse.click(outside.x + outside.width + 20, outside.y + 20);
-    assert.equal(await hosted(() => document.hasFocus()), false);
+    await clickOutside();
     await resume();
     const checkRow = (name) => frame.getByRole("row").filter({ hasText: name });
     await checkRow(flexiName).getByText("Needs review", { exact: true }).waitFor();
     assert.equal(await checkStatus.textContent(), "Compared the units of 2 of 6 holdings.");
-    assert.equal(await tab.evaluate(() => document.activeElement.tagName), "BODY");
-    assert.equal(await hosted(() => document.hasFocus()), false);
+    await stayedOutside("Check units");
     await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
     assert.deepEqual(await checkRow(flexiName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "2892.104", "2892.104"]);
     // Each holding's Same holdings names it.
