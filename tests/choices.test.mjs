@@ -432,7 +432,8 @@ test("the index keeps the sources a later import doesn't list, and other investo
   const failing = { get: async (key) => { if (key === index[0]) throw new Error("storage unavailable"); return store.get(key); }, set: store.set };
   await assert.rejects(indexSources(failing, "account", "ananya@example.com", [three]), /storage unavailable/);
   assert.equal(store.data.get(index[0]), before);
-  assert.deepEqual(await readUnlisted(failing, "account", "ananya@example.com", [], "2025-03-31"), []);
+  // A failed read stops the preview rather than dropping the records.
+  await assert.rejects(readUnlisted(failing, "account", "ananya@example.com", [], "2025-03-31"), /storage unavailable/);
   const [ananya, pan] = Object.keys(JSON.parse(before));
   store.data.set(index[0], JSON.stringify({ [ananya]: JSON.parse(before)[ananya], [pan]: ["folio|3|amc:Made-up Fund", 3], "holdings-investor:x": [] }));
   assert.deepEqual(await unlisted("ABCDE1234F", []), []);
@@ -471,7 +472,7 @@ test("partial alias writes exclude listed groups and count linked unlisted recor
   }
 });
 
-test("unlisted histories respect severed links and failed reads never overwrite them", async () => {
+test("unlisted histories respect severed links, and a failed read throws without overwriting them", async () => {
   const store = storage();
   await saveImported(store, summary, "account", "2025-03-31", held("S"));
   const mixed = { ...summary, aliases: [] };
@@ -487,7 +488,7 @@ test("unlisted histories respect severed links and failed reads never overwrite 
     if (key === unlisted[0].keys[0]) throw new Error("storage unavailable");
     return store.get(key);
   }, set: store.set };
-  assert.deepEqual(await readUnlisted(failing, "account", "investor", [mixed], "2025-04-30"), []);
+  await assert.rejects(readUnlisted(failing, "account", "investor", [mixed], "2025-04-30"), /storage unavailable/);
   await assert.rejects(saveUnlisted(failing, "2025-05-31", [{ keys: unlisted[0].keys, refs: {} }]), /storage unavailable/);
   assert.deepEqual([...store.data], before);
 });

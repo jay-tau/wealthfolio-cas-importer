@@ -214,32 +214,29 @@ export async function indexSources(storage: Storage, accountId: string, investor
  */
 export async function readUnlisted(storage: Storage, accountId: string, investor: string, listed: Source[], baseDate: string | null): Promise<Unlisted[]> {
   if (baseDate === null || !investor) return [];
-  try {
-    const known = new Set(listed.flatMap((source) => keysOf(source, accountId)));
-    const indexed = ((await readIndex(storage, accountId))[investorKey(investor)] ?? []).filter((key) => !known.has(key));
-    if (!indexed.length) return [];
-    for (const source of listed) for (const key of (await sourceHistory(storage, source, accountId)).keys) known.add(key);
-    const groups: { keys: string[]; history: History }[] = [];
-    for (const key of indexed) {
-      const group = { keys: [key], history: await importedHistory(storage, [key], true, true) };
-      for (let i = 0; i < groups.length;) {
-        const other = groups[i];
-        if (![...other.history.keys].some((key) => group.history.keys.has(key))) { i++; continue; }
-        group.keys.push(...other.keys);
-        group.history = await importedHistory(storage, [...new Set([...group.history.keys, ...other.history.keys])], true);
-        groups.splice(i, 1);
-        i = 0;
-      }
-      groups.push(group);
+  // A failed read throws: without these records, a holding they keep could be removed by default.
+  const known = new Set(listed.flatMap((source) => keysOf(source, accountId)));
+  const indexed = ((await readIndex(storage, accountId))[investorKey(investor)] ?? []).filter((key) => !known.has(key));
+  if (!indexed.length) return [];
+  for (const source of listed) for (const key of (await sourceHistory(storage, source, accountId)).keys) known.add(key);
+  const groups: { keys: string[]; history: History }[] = [];
+  for (const key of indexed) {
+    const group = { keys: [key], history: await importedHistory(storage, [key], true, true) };
+    for (let i = 0; i < groups.length;) {
+      const other = groups[i];
+      if (![...other.history.keys].some((key) => group.history.keys.has(key))) { i++; continue; }
+      group.keys.push(...other.keys);
+      group.history = await importedHistory(storage, [...new Set([...group.history.keys, ...other.history.keys])], true);
+      groups.splice(i, 1);
+      i = 0;
     }
-    return groups.flatMap(({ keys, history }) => {
-      if ([...history.keys].some((key) => known.has(key))) return [];
-      const remembered = refsAt(history, baseDate);
-      return remembered.size ? [{ keys, remembered }] : [];
-    });
-  } catch {
-    return [];
+    groups.push(group);
   }
+  return groups.flatMap(({ keys, history }) => {
+    if ([...history.keys].some((key) => known.has(key))) return [];
+    const remembered = refsAt(history, baseDate);
+    return remembered.size ? [{ keys, remembered }] : [];
+  });
 }
 
 /** Saves an import's records of folios, demat accounts and PRANs it doesn't list, by their indexed keys. */
