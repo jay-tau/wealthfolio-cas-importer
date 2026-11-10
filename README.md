@@ -242,6 +242,20 @@ account's complete snapshot before anything is saved:
   only if the left-out one no longer holds any. Once you do, the left-out one's import record no
   longer lists it, so later imports don't ask again. A folio that shares one record with an
   included folio, linked through the issuer's folio number, still lists what that one imported.
+- A holding that an earlier import added from a folio, demat account or PRAN that the statement
+  doesn't list is kept, with a note to check whether it was redeemed, sold or moved, and to untick
+  Keep if so: a statement can leave out a folio for other reasons, such as one requested for some
+  fund houses only. When the statement's own folios, demat accounts or PRANs no longer list it, it's
+  kept the same way instead of removed. An old asset such an import added isn't offered for
+  replacement, and a fund left out for overlap doesn't offer to remove the account's units. Once an
+  import replaces or removes the holding, that folio's record no longer lists it. The add-on finds
+  these records through a hashed index, kept for each account, of the folios, demat accounts and
+  PRANs each investor's imports put there. So only a statement of the same investor (the same PAN,
+  or a summary statement's email or name) gets the note, and a folio last imported by version
+  2.0.1 or earlier gets it only once a statement lists it again. Concurrent imports on different
+  devices can overwrite each other's index additions: storage can't merge them. A lost entry gives
+  no note or protection from removal until a later import lists its source again; the other snapshot
+  rules apply.
 - A holding the statement still lists, but that you now confirm to another asset than the one an
   earlier import of the same folio, demat account or PRAN added (AMFI's result instead of Yahoo's,
   say, or a summary statement's fund that now prints its ISIN), isn't counted twice: the old asset

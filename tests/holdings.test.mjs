@@ -21,6 +21,7 @@ import {
   statementAsset,
   undecided,
   unitStatus,
+  unlistedRefs,
   validCost,
 } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
@@ -1138,6 +1139,150 @@ test("replacing an old asset, or removing a fund left out for overlap, clears on
   assert.deepEqual(row.removable?.map((s) => s.label), ["Fictiva Mutual Fund, folio 1"]);
   assert.deepEqual(savedOf(overlap, keeping(row.key, false)), [[`asset-${T}`, "10"]]);
   assert.deepEqual(recordedRefs(overlap, keeping(row.key, false)), [["folio|1|amc:Fictiva Mutual Fund", []]]);
+});
+
+const UNLISTED_NOTE = "An earlier import added it from a folio, demat account or PRAN that this statement doesn't list. " +
+  "Check whether it was redeemed, sold or moved, and untick Keep if so.";
+const UNLISTED_TOO = "An earlier import of a folio, demat account or PRAN that this statement doesn't list added it too.";
+/** The account's snapshot after `account`'s import, as a later import reads it. */
+const heldAfter = (account, date, choices = noChoices) => ({
+  date, later: [], cash: {},
+  positions: snapshotOf(account, choices).holdings.map((h) => ({
+    assetId: h.assetId ?? `asset-${h.symbol}`, symbol: h.symbol, ref: ref(h.symbol), name: `Asset ${h.symbol}`, units: h.quantity, cost: null, currency: "INR",
+  })),
+});
+/** The records of the sources with `ids`, as `readUnlisted` finds them for a statement that doesn't list them. */
+const unlistedOf = (records, ...ids) => () => ids.map((id) => ({ keys: [`key of ${id}`], remembered: records.get(id) }));
+
+test("a fund that an earlier import of a folio the statement doesn't list added is kept, with a note, until the folio is listed again", async () => {
+  const march = readHoldings(await fixture("made-up-summary-cams"));
+  const [first] = plan(march);
+  const records = recordsOf(first);
+  const [liquidFolio, balancedFolio, otherFolio] = march.sources.map((s) => s.id);
+  // April's statement lists only folio 91234567 / 12.
+  const april = { ...march, date: "2025-04-30", sources: march.sources.slice(0, 1) };
+  const omitted = unlistedOf(records, balancedFolio, otherFolio);
+  const [account] = plan(april, { existing: () => heldAfter(first, "2025-03-31"), remembered: (s) => records.get(s.id), unlisted: omitted });
+  assert.deepEqual(account.unlisted.flatMap((u) => u.keys), [`key of ${balancedFolio}`, `key of ${otherFolio}`]);
+  const row = (isin) => account.positions.find((p) => p.ref === ref(isin));
+  // The folio's own funds come from the statement, without a note.
+  for (const isin of ["INFZ90K01FC8", "INFZ90K01LQ6"]) assert.deepEqual([row(isin).lines.length, row(isin).include, row(isin).notes], [1, true, []]);
+  for (const isin of ["INFZ90K01BA1", "INFZ91T01CB6", "INFZ91T01GL6", "INFZ91T01FT1"]) {
+    assert.deepEqual([row(isin).lines.length, row(isin).include, row(isin).notes], [0, true, [UNLISTED_NOTE]]);
+  }
+  assert.ok(snapshotOf(account, noChoices).holdings.some((h) => h.assetId === "asset-INFZ90K01BA1" && h.quantity === "3443.91"));
+  // Kept, the records stay as they are; so the next import says the same.
+  assert.deepEqual(unlistedRefs(account, noChoices), []);
+  const [may] = plan({ ...april, date: "2025-05-31" }, {
+    existing: () => heldAfter(account, "2025-04-30"), remembered: (s) => records.get(s.id), unlisted: omitted,
+  });
+  assert.deepEqual(may.positions.find((p) => p.ref === ref("INFZ90K01BA1")).notes, [UNLISTED_NOTE]);
+  // Unticked, it's removed, and so is it from its folio's record.
+  const removed = replacing(row("INFZ90K01BA1").key);
+  assert.ok(!snapshotOf(account, removed).holdings.some((h) => h.assetId === "asset-INFZ90K01BA1"));
+  assert.deepEqual(unlistedRefs(account, removed), [{ keys: [`key of ${balancedFolio}`], refs: {} }]);
+
+  // Listed again, the folio's record is its own: its fund is the statement's, or gone without it.
+  const june = { ...march, date: "2025-06-30", sources: march.sources.slice(0, 2) };
+  const [back] = plan(june, {
+    existing: () => heldAfter(account, "2025-04-30"), remembered: (s) => records.get(s.id), unlisted: unlistedOf(records, otherFolio),
+  });
+  const balanced = back.positions.find((p) => p.ref === ref("INFZ90K01BA1"));
+  assert.deepEqual([balanced.lines.length, balanced.include, balanced.notes], [1, true, []]);
+  const sold = { ...june, sources: [march.sources[0], { ...march.sources[1], holdings: [] }] };
+  const [gone] = plan(sold, {
+    existing: () => heldAfter(account, "2025-04-30"), remembered: (s) => records.get(s.id), unlisted: unlistedOf(records, otherFolio),
+  });
+  const without = gone.positions.find((p) => p.ref === ref("INFZ90K01BA1"));
+  assert.deepEqual([without.include, without.notes], [false, ["Not on the statement any more. An earlier import of Fictiva Mutual Fund, folio 91234570/0 added it."]]);
+
+  // Without a record of the folio, such as an unindexed one, its fund is kept with no note, as before.
+  const [unindexed] = plan(april, { existing: () => heldAfter(first, "2025-03-31"), remembered: (s) => records.get(s.id) });
+  assert.deepEqual(unindexed.positions.find((p) => p.ref === ref("INFZ90K01BA1")).notes, []);
+});
+
+test("a statement row replaces units an unlisted source added, and its record forgets them", () => {
+  const records = new Map([["demat|1|1", recorded(S)], ["demat|2|2", recorded(S, T)]]);
+  const [account] = plan(statementOf("2025-04-30", demat(1, share(S, "150"))), {
+    existing: () => sharesHeld([S, "150"], [T, "10"]), remembered: (s) => records.get(s.id), unlisted: unlistedOf(records, "demat|2|2"),
+  });
+  const [listed, other] = account.positions;
+  assert.deepEqual([listed.ref, listed.include, listed.notes], [ref(S), true, []]);
+  assert.deepEqual([other.ref, other.include, other.notes], [ref(T), true, [UNLISTED_NOTE]]);
+  assert.deepEqual(savedOf(account), [[`asset-${T}`, "10"], [`asset-${S}`, "150"]]);
+  assert.deepEqual(unlistedRefs(account, noChoices), [{ keys: ["key of demat|2|2"], refs: { [ref(T)]: [T] } }]);
+  // Leaving S out keeps the account's units, and the record.
+  assert.deepEqual(unlistedRefs(account, replacing(listed.key)), []);
+  assert.deepEqual(unlistedRefs(account, { flipped: new Set([listed.key, other.key]), costs: new Map() }), [{ keys: ["key of demat|2|2"], refs: { [ref(S)]: [S] } }]);
+});
+
+test("a holding a listed source no longer lists is kept when an unlisted source added it too", () => {
+  const U = "INEZ90U01013";
+  const records = new Map([["demat|1|1", recorded(S, U)], ["demat|2|2", recorded(U)], ["demat|3|3", recorded(U)]]);
+  const preview = (unlisted, account = () => "holdings-1") => plan(statementOf("2025-04-30", demat(1, share(S, "100")), demat(3, share(U, "5"))), {
+    account, existing: () => sharesHeld([S, "100"], [U, "30"]), remembered: (s) => records.get(s.id), unlisted,
+  })[0].positions.find((p) => p.ref === ref(U));
+  // Demat account 3 lists U, so the statement's units replace the account's.
+  const listed = preview(unlistedOf(records, "demat|2|2"));
+  assert.deepEqual([listed.lines.length, listed.include, listed.notes], [1, true, []]);
+  const kept = preview(unlistedOf(records, "demat|2|2"), (s) => (s.id === "demat|3|3" ? undefined : "holdings-1"));
+  assert.equal(kept.include, true);
+  assert.deepEqual(kept.notes, [
+    "An earlier import of Demat account 1 added it, and Demat account 1 no longer lists it. " +
+    "An earlier import of Demat account 3, which this import leaves out, added it too, so it's kept. " +
+    "Remove it only if Demat account 3 no longer holds any. If you keep it, correct its units in Wealthfolio: they may include some that came from Demat account 1.",
+    UNLISTED_TOO,
+  ]);
+  const [account] = plan(statementOf("2025-04-30", demat(1, share(S, "100"))), {
+    existing: () => sharesHeld([S, "100"], [U, "30"]), remembered: (s) => records.get(s.id), unlisted: unlistedOf(records, "demat|2|2"),
+  });
+  const row = account.positions.find((p) => p.ref === ref(U));
+  assert.equal(row.include, true);
+  assert.deepEqual(row.notes, [
+    "An earlier import of Demat account 1 added it, and Demat account 1 no longer lists it. " +
+    "An earlier import of a folio, demat account or PRAN that this statement doesn't list added it too, so it's kept. " +
+    "Check whether it was redeemed, sold or moved from there too, and untick Keep if so. " +
+    "If you keep it, correct its units in Wealthfolio: they may include some that came from Demat account 1.",
+  ]);
+  assert.deepEqual(savedOf(account), [[`asset-${U}`, "30"], [`asset-${S}`, "100"]]);
+  // Removing it clears it from every record that has it.
+  assert.deepEqual(unlistedRefs(account, replacing(row.key)), [{ keys: ["key of demat|2|2"], refs: {} }]);
+  assert.deepEqual(recordedRefs(account, replacing(row.key)), [["demat|1|1", [ref(S)]]]);
+  // A left-out source's record as well as an unlisted one's, and no listed source's.
+  const both = plan(statementOf("2025-04-30", demat(1, share(S, "100")), demat(3, share(S, "1"))), {
+    account: (s) => (s.id === "demat|3|3" ? undefined : "holdings-1"),
+    existing: () => sharesHeld([S, "100"], [U, "30"]), remembered: (s) => (s.id === "demat|1|1" ? recorded(S) : records.get(s.id)),
+    unlisted: unlistedOf(records, "demat|2|2"),
+  })[0].positions.find((p) => p.ref === ref(U));
+  assert.deepEqual([both.include, both.notes], [true, [
+    UNLISTED_NOTE,
+    "An earlier import of Demat account 3, which this import leaves out, added it too: untick Keep only if Demat account 3 no longer holds any.",
+  ]]);
+});
+
+test("an asset that an unlisted source's earlier import added isn't offered for replacement or removal", () => {
+  const records = recordsOf(plan(statementOf("2025-03-31", folioOf("1", flexi("60")), folioOf("2", flexi("40"))), { asset: () => yahoo })[0]);
+  const later = statementOf("2025-04-30", folioOf("1", flexi("66")));
+  const folio2 = unlistedOf(records, "folio|2|amc:Fictiva Mutual Fund");
+  const [moved] = plan(later, { asset: () => amfi, existing: () => heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id), unlisted: folio2 });
+  const [listed, old] = moved.positions;
+  assert.deepEqual([listed.include, listed.replaces, old.include, old.replacedBy], [false, undefined, true, undefined]);
+  assert.deepEqual(old.notes.at(-1), UNLISTED_TOO);
+  assert.deepEqual(savedOf(moved), [["yahoo-asset", "100"]]);
+  // Without it, the old asset is offered for replacement, as before.
+  const [alone] = plan(later, { asset: () => amfi, existing: () => heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id) });
+  assert.deepEqual([alone.positions[0].replaces, alone.positions[1].replacedBy], [[alone.positions[1].key], alone.positions[0].key]);
+
+  // Left out for overlap: its units may include the unlisted folio's, so they aren't removable.
+  const amfiRecords = recordsOf(plan(statementOf("2025-03-31", folioOf("1", flexi("60")), folioOf("2", flexi("40"))), { asset: () => amfi })[0]);
+  const overlap = (unlisted) => plan(later, {
+    asset: () => amfi, existing: () => flexiAsset("100"), remembered: (s) => amfiRecords.get(s.id), heldElsewhere: tracking, unlisted,
+  })[0].positions[0];
+  assert.deepEqual(overlap().removable?.map((s) => s.label), ["Fictiva Mutual Fund, folio 1"]);
+  const row = overlap(unlistedOf(amfiRecords, "folio|2|amc:Fictiva Mutual Fund"));
+  assert.deepEqual([row.include, row.removable, undecided(row, noChoices)], [false, undefined, false]);
+  assert.equal(row.notes.at(-1), "Leaving this row out keeps this account's 100 units of it, so Mutual funds may count them too. " +
+    "An earlier import of Fictiva Mutual Fund, folio 1 recorded adding this holding, but its units may also include others. Check them in Wealthfolio.");
 });
 
 test("already separate parsed folios distinguish issuers, link formats, and survive missing ISINs and zero balances", async () => {

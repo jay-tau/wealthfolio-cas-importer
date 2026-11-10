@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { importedRefs, planSnapshots, readHoldings, snapshotOf } from "../src/cas/holdings.ts";
+import { importedRefs, planSnapshots, readHoldings, snapshotOf, unlistedRefs } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
-import { fundKey, holdingKey, readFund, readImported, saveFund, saveImported, saveImports } from "../src/lib/choices.ts";
+import {
+  fundKey, holdingKey, indexSources, investorKey, readFund, readImported, readUnlisted, saveFund, saveImported, saveImports, saveUnlisted,
+} from "../src/lib/choices.ts";
 
 const summary = { id: "folio|90123456789/45|amc:Made-up Fund", aliases: ["folio|90123456789/45|INFTEST"] };
 const depository = { id: summary.aliases[0] };
@@ -339,4 +341,190 @@ test("mixed-issuer folios stay separate from their earlier links when saved toge
       assert.deepEqual(await readImported(store, source, "account", "2025-06-30"), entries(held("U")));
     }
   }
+});
+
+// An investor's folios 1 and 2 went to one account in March; April's statement lists only folio 1.
+const folio = (n, ...holdings) => ({ id: `folio|${n}|amc:Made-up Fund`, kind: "folio", label: `Made-up Fund, folio ${n}`, holdings });
+const unlistedNote = "An earlier import added it from a folio, demat account or PRAN that this statement doesn't list. " +
+  "Check whether it was redeemed, sold or moved, and untick Keep if so.";
+/** What the page does: reads the records, plans the import into "account" and saves it, keeping every default. */
+async function importHoldings(store, investor, date, baseline, sources, choose = () => ({ flipped: new Set(), costs: new Map() })) {
+  const remembered = new Map(await Promise.all(sources.map(async (s) => [s.id, await readImported(store, s, "account", baseline)])));
+  const unlisted = await readUnlisted(store, "account", investor, sources, baseline);
+  const [plan] = planSnapshots({ date, investor, leftOut: [], sources }, {
+    account: () => "account",
+    asset: (h) => ({ symbol: h.isin, exchangeMic: "XBOM", quoteCcy: "INR", name: h.name }),
+    existing: () => (baseline ? sharesBefore(baseline) : { date: null, positions: [], cash: {}, later: [] }),
+    remembered: (s) => remembered.get(s.id),
+    heldElsewhere: () => [],
+    unlisted: () => unlisted,
+  });
+  const choices = choose(plan);
+  await saveImports(store, "account", date, importedRefs(plan, choices));
+  await saveUnlisted(store, date, unlistedRefs(plan, choices));
+  await indexSources(store, "account", investor, plan.sources);
+  return plan;
+}
+const notesOf = (plan, isin) => plan.positions.find((p) => p.ref === refOf(isin)).notes;
+
+test("a folio missing from later statements keeps its note on each import, until it's listed again", async () => {
+  const store = storage();
+  await importHoldings(store, "investor", "2025-03-31", null, [folio(1, shareOf("S", "150")), folio(2, shareOf("T", "10"))]);
+  const april = await importHoldings(store, "investor", "2025-04-30", "2025-03-31", [folio(1, shareOf("S", "150"))]);
+  assert.deepEqual(notesOf(april, "S"), []);
+  assert.deepEqual(notesOf(april, "T"), [unlistedNote]);
+  // Kept, so May's import says the same.
+  const may = await importHoldings(store, "investor", "2025-05-31", "2025-04-30", [folio(1, shareOf("S", "150"))]);
+  assert.deepEqual(notesOf(may, "T"), [unlistedNote]);
+  // Listed again, folio 2's record is its own: with T gone from it, T is removed by default.
+  const june = await importHoldings(store, "investor", "2025-06-30", "2025-05-31", [folio(1, shareOf("S", "150")), folio(2)]);
+  assert.deepEqual(june.unlisted, []);
+  assert.deepEqual(notesOf(june, "T"), ["Not on the statement any more. An earlier import of Made-up Fund, folio 2 added it."]);
+});
+
+test("unlisted records are only those the same investor's imports indexed for the account", async () => {
+  const store = storage();
+  const first = folio(1, shareOf("S", "150"));
+  // A record saved before the index, and one indexed for another investor or account, give no note.
+  await saveImported(store, folio(3), "account", "2025-03-31", held("T"));
+  await importHoldings(store, "investor", "2025-03-31", null, [first, folio(2, shareOf("T", "10"))]);
+  await indexSources(store, "other-account", "investor", [folio(4)]);
+  const other = await importHoldings(store, "someone else", "2025-04-30", "2025-03-31", [first]);
+  assert.deepEqual([other.unlisted, notesOf(other, "T")], [[], []]);
+  assert.deepEqual((await readUnlisted(store, "account", "investor", [first], "2025-04-30")).map((u) => [...u.remembered.keys()]), [[refOf("T")]]);
+  // A statement that names no investor neither indexes nor finds any.
+  await indexSources(store, "account", "", [folio(5)]);
+  assert.deepEqual(await readUnlisted(store, "account", "", [], "2025-04-30"), []);
+  assert.equal([...store.data.values()].filter((value) => value.includes(JSON.stringify(investorKey("")))).length, 0);
+  // Nothing at or before the baseline, or no baseline, is nothing to note.
+  assert.deepEqual(await readUnlisted(store, "account", "investor", [first], "2025-02-28"), []);
+  assert.deepEqual(await readUnlisted(store, "account", "investor", [first], null), []);
+  // Nor is a folio linked to a listed one through the issuer's folio number.
+  const linked = { ...summary, kind: "folio", label: "Made-up Fund, folio 90123456789/45", holdings: [] };
+  const renamed = { id: "folio|90123456789/45|amc:Made-up Fund (earlier name)", aliases: summary.aliases };
+  await saveImported(store, renamed, "account", "2025-03-31", held("U"));
+  await indexSources(store, "account", "investor", [renamed]);
+  assert.deepEqual((await readUnlisted(store, "account", "investor", [first], "2025-04-30")).length, 2);
+  assert.deepEqual((await readUnlisted(store, "account", "investor", [first, linked], "2025-04-30")).map((u) => [...u.remembered.keys()]), [[refOf("T")]]);
+});
+
+test("the index keeps the sources a later import doesn't list, and other investors', all hashed", async () => {
+  const store = storage();
+  const [one, two, three] = [folio(1), folio(2), folio(3)];
+  for (const [source, isin] of [[one, "S"], [two, "T"], [three, "U"]]) await saveImported(store, source, "account", "2025-03-31", held(isin));
+  await indexSources(store, "account", "ananya@example.com", [one, two]);
+  await indexSources(store, "account", "ABCDE1234F", [three]);
+  await indexSources(store, "account", "ananya@example.com", [one]);
+  const unlisted = async (investor, listed) => (await readUnlisted(store, "account", investor, listed, "2025-03-31")).map((u) => [...u.remembered.keys()]);
+  assert.deepEqual(await unlisted("ananya@example.com", [one]), [[refOf("T")]]);
+  assert.deepEqual(await unlisted("ananya@example.com", []), [[refOf("S")], [refOf("T")]]);
+  assert.deepEqual(await unlisted("ABCDE1234F", []), [[refOf("U")]]);
+  const stored = JSON.stringify([...store.data]);
+  for (const plain of ["ananya", "ABCDE1234F", "folio|", "Made-up Fund"]) assert.ok(!stored.includes(plain), plain);
+  const [index] = [...store.data].filter(([key]) => key.startsWith("holdings-sources:"));
+  assert.match(index[0], /^holdings-sources:[a-f0-9]{64}$/);
+  for (const [investor, keys] of Object.entries(JSON.parse(index[1]))) {
+    assert.match(investor, /^holdings-investor:[a-f0-9]{64}$/);
+    for (const key of keys) assert.match(key, /^holdings-imported:[a-f0-9]{64}$/);
+  }
+  // Nothing new isn't written again; a failed read never overwrites the index, and invalid entries are dropped.
+  const before = index[1];
+  const failing = { get: async (key) => { if (key === index[0]) throw new Error("storage unavailable"); return store.get(key); }, set: store.set };
+  await assert.rejects(indexSources(failing, "account", "ananya@example.com", [three]), /storage unavailable/);
+  assert.equal(store.data.get(index[0]), before);
+  assert.deepEqual(await readUnlisted(failing, "account", "ananya@example.com", [], "2025-03-31"), []);
+  const [ananya, pan] = Object.keys(JSON.parse(before));
+  store.data.set(index[0], JSON.stringify({ [ananya]: JSON.parse(before)[ananya], [pan]: ["folio|3|amc:Made-up Fund", 3], "holdings-investor:x": [] }));
+  assert.deepEqual(await unlisted("ABCDE1234F", []), []);
+  assert.deepEqual(await unlisted("ananya@example.com", []), [[refOf("S")], [refOf("T")]]);
+  store.data.set(index[0], "{");
+  assert.deepEqual(await unlisted("ananya@example.com", []), []);
+  await indexSources(store, "account", "ananya@example.com", [one]);
+  assert.deepEqual(await unlisted("ananya@example.com", []), [[refOf("S")]]);
+});
+
+test("partial alias writes exclude listed groups and count linked unlisted records once, in either index order", async () => {
+  const renamed = { ...summary, id: "folio|90123456789/45|amc:Made-up Fund (earlier name)" };
+  for (const reverse of [false, true]) {
+    const store = storage();
+    await saveImported(store, { id: renamed.id }, "account", "2025-01-31", held("T"));
+    await saveImported(store, summary, "account", "2025-02-28", held("S"));
+    await indexSources(store, "account", "investor", reverse ? [renamed, summary] : [summary, renamed]);
+    let writes = 0;
+    const failing = { get: store.get, set: async (key, value) => {
+      if (++writes === 2) throw new Error("storage failed");
+      await store.set(key, value);
+    } };
+    await assert.rejects(saveImported(failing, renamed, "account", "2025-03-31", held("S", "T")), /storage failed/);
+    for (const listed of [summary, depository, noIsin]) {
+      assert.deepEqual(await readUnlisted(store, "account", "investor", [listed], "2025-03-31"), []);
+    }
+    const unlisted = await readUnlisted(store, "account", "investor", [], "2025-03-31");
+    assert.equal(unlisted.length, 1);
+    assert.deepEqual(unlisted[0].remembered, entries(held("S", "T")));
+    await saveUnlisted(store, "2025-04-30", [{ keys: unlisted[0].keys, refs: held("T") }]);
+    for (const source of [summary, renamed, depository]) {
+      assert.deepEqual(await readImported(store, source, "account", "2025-04-30"), entries(held("T")));
+      assert.deepEqual(await readImported(store, source, "account", "2025-02-28"), entries(held("S")));
+    }
+    assert.deepEqual((await readUnlisted(store, "account", "investor", [], "2025-04-30")).map((u) => u.remembered), [entries(held("T"))]);
+  }
+});
+
+test("unlisted histories respect severed links and failed reads never overwrite them", async () => {
+  const store = storage();
+  await saveImported(store, summary, "account", "2025-03-31", held("S"));
+  const mixed = { ...summary, aliases: [] };
+  await saveImported(store, mixed, "account", "2025-04-30", held("T"));
+  await indexSources(store, "account", "investor", [summary, depository]);
+  for (const [listed, expected] of [[mixed, held("S")], [depository, held("T")]]) {
+    const unlisted = await readUnlisted(store, "account", "investor", [listed], "2025-04-30");
+    assert.deepEqual(unlisted.map((u) => u.remembered), [entries(expected)]);
+  }
+  const unlisted = await readUnlisted(store, "account", "investor", [mixed], "2025-04-30");
+  const before = [...store.data];
+  const failing = { get: async (key) => {
+    if (key === unlisted[0].keys[0]) throw new Error("storage unavailable");
+    return store.get(key);
+  }, set: store.set };
+  assert.deepEqual(await readUnlisted(failing, "account", "investor", [mixed], "2025-04-30"), []);
+  await assert.rejects(saveUnlisted(failing, "2025-05-31", [{ keys: unlisted[0].keys, refs: {} }]), /storage unavailable/);
+  assert.deepEqual([...store.data], before);
+});
+
+test("conflicting device indexes fall back to the existing snapshot rules", async () => {
+  for (const otherInvestor of ["investor", "someone else"]) {
+    const store = storage();
+    const [one, two] = [folio(1), folio(2)];
+    await saveImported(store, one, "account", "2025-03-31", held("S"));
+    await saveImported(store, two, "account", "2025-03-31", held("T"));
+    // Both devices read the old index before either writes; the last write wins.
+    await Promise.all([
+      indexSources(store, "account", "investor", [one]),
+      indexSources(store, "account", otherInvestor, [two]),
+    ]);
+    const plan = await importHoldings(store, "investor", "2025-04-30", "2025-03-31", [folio(3)]);
+    assert.deepEqual(notesOf(plan, "S"), []);
+    assert.deepEqual(notesOf(plan, "T"), otherInvestor === "investor" ? [unlistedNote] : []);
+    assert.deepEqual(snapshotOf(plan, { flipped: new Set(), costs: new Map() }).holdings.map((h) => [h.assetId, h.quantity]), [
+      ["asset-S", "150"], ["asset-T", "10"],
+    ]);
+    assert.deepEqual(await readImported(store, one, "account", "2025-04-30"), entries(held("S")));
+    // A listed source's record can still remove it: the lost entry supplies no keep safeguard.
+    await saveImported(store, folio(3), "account", "2025-03-31", held("S"));
+    const removed = await importHoldings(store, "investor", "2025-04-30", "2025-03-31", [folio(3)]);
+    assert.equal(removed.positions.find((p) => p.ref === refOf("S")).include, false);
+    assert.deepEqual(notesOf(removed, "S"), ["Not on the statement any more. An earlier import of Made-up Fund, folio 3 added it."]);
+  }
+});
+
+test("an unlisted source's record forgets a holding the import replaces or removes, at the statement's date", async () => {
+  const store = storage();
+  await importHoldings(store, "investor", "2025-03-31", null, [folio(1, shareOf("S", "100")), folio(2, shareOf("S", "50"), shareOf("T", "10"))]);
+  // April's statement lists folio 1's S, which replaces the account's units, and the user removes T.
+  await importHoldings(store, "investor", "2025-04-30", "2025-03-31", [folio(1, shareOf("S", "150"))],
+    (plan) => ({ flipped: new Set([plan.positions.find((p) => p.ref === refOf("T")).key]), costs: new Map() }));
+  assert.deepEqual(await readImported(store, folio(2), "account", "2025-04-30"), new Map());
+  assert.deepEqual(await readImported(store, folio(2), "account", "2025-03-31"), entries(held("S", "T")));
+  assert.deepEqual(await readUnlisted(store, "account", "investor", [folio(1)], "2025-04-30"), []);
 });

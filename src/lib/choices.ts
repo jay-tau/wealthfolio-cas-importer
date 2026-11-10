@@ -1,5 +1,5 @@
 import type { AddonContext } from "@wealthfolio/addon-sdk";
-import type { Source, StatementHolding } from "../cas/holdings";
+import type { Source, StatementHolding, Unlisted } from "../cas/holdings";
 import type { FundAsset } from "../cas/mapping";
 import type { CasFolio, CasScheme } from "../cas/types";
 import { sha256 } from "./sha256.ts";
@@ -43,14 +43,21 @@ const importedKey = (id: string, accountId: string) =>
 
 type ImportedRefs = Record<string, string[]>;
 type ImportEntry = { savedAt: number; refs: ImportedRefs };
+type History = { keys: Set<string>; dates: Record<string, ImportEntry> };
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const validDate = (date: string) =>
   /^\d{4}-\d{2}-\d{2}$/.test(date) && new Date(date).toJSON()?.slice(0, 10) === date;
+const IMPORTED = /^holdings-imported:[a-f0-9]{64}$/;
 
-async function importedHistory(storage: Storage, source: Source, accountId: string) {
-  const keys = new Set([source.id, ...(source.aliases ?? [])].map((id) => importedKey(id, accountId)));
+/** A source's own keys: its ID's and its issuer-scoped aliases'. */
+const keysOf = (source: Source, accountId: string) => [source.id, ...(source.aliases ?? [])].map((id) => importedKey(id, accountId));
+
+/** The history shared by `start` and the keys their records link, followed unless `follow` is false. */
+async function importedHistory(storage: Storage, start: string[], follow: boolean, indexed = false): Promise<History> {
+  const keys = new Set(start);
   const initial = new Set(keys);
+  const siblings = new Set(keys);
   const dates: Record<string, ImportEntry> = {};
   for (const key of keys) {
     const raw = await storage.get(key);
@@ -61,14 +68,19 @@ async function importedHistory(storage: Storage, source: Source, accountId: stri
       continue;
     }
     if (!record(stored)) continue;
+    if (indexed && initial.has(key) && Array.isArray(stored.aliases)) {
+      for (const alias of stored.aliases) if (typeof alias === "string" && IMPORTED.test(alias)) siblings.add(alias);
+    }
     // A mixed-issuer summary can sever a link while its old counterpart still remembers it.
-    if (!initial.has(key) && (!Array.isArray(stored.aliases) || !stored.aliases.some((alias) => initial.has(alias)))) {
+    // A failed alias write can leave older copies linked only to each other; a severed one links only itself.
+    if (!initial.has(key) && (!Array.isArray(stored.aliases) || !stored.aliases.some((alias) =>
+      initial.has(alias) || (indexed && alias !== key && siblings.has(alias))))) {
       keys.delete(key);
       continue;
     }
-    if (source.aliases?.length !== 0 && Array.isArray(stored.aliases)) {
+    if (follow && Array.isArray(stored.aliases)) {
       for (const alias of stored.aliases) {
-        if (typeof alias === "string" && /^holdings-imported:[a-f0-9]{64}$/.test(alias)) keys.add(alias);
+        if (typeof alias === "string" && IMPORTED.test(alias)) keys.add(alias);
       }
     }
     if (!record(stored.dates)) continue;
@@ -96,23 +108,33 @@ async function importedHistory(storage: Storage, source: Source, accountId: stri
   return { keys, dates };
 }
 
+const sourceHistory = (storage: Storage, source: Source, accountId: string) =>
+  importedHistory(storage, keysOf(source, accountId), source.aliases?.length !== 0);
+
+/** The refs of the latest date on or before `baseDate`. */
+const refsAt = ({ dates }: History, baseDate: string) => {
+  const date = Object.keys(dates).filter((date) => date <= baseDate).sort().at(-1);
+  return new Map(Object.entries(date ? dates[date].refs : {}));
+};
+
 export async function readImported(storage: Storage, source: Source, accountId: string, baseDate: string | null): Promise<Map<string, string[]>> {
   if (baseDate === null) return new Map();
   try {
-    const { dates } = await importedHistory(storage, source, accountId);
-    const date = Object.keys(dates).filter((date) => date <= baseDate).sort().at(-1);
-    return new Map(Object.entries(date ? dates[date].refs : {}));
+    return refsAt(await sourceHistory(storage, source, accountId), baseDate);
   } catch {
     return new Map();
   }
 }
 
-export async function saveImported(storage: Storage, source: Source, accountId: string, date: string, refs: ImportedRefs) {
-  const { keys, dates } = await importedHistory(storage, source, accountId);
+async function saveHistory(storage: Storage, { keys, dates }: History, date: string, refs: ImportedRefs) {
   const savedAt = Math.max(Date.now(), ...Object.values(dates).map((entry) => entry.savedAt + 1));
   dates[date] = { savedAt, refs };
   const value = JSON.stringify({ aliases: [...keys], dates });
   for (const key of keys) await storage.set(key, value);
+}
+
+export async function saveImported(storage: Storage, source: Source, accountId: string, date: string, refs: ImportedRefs) {
+  await saveHistory(storage, await sourceHistory(storage, source, accountId), date, refs);
 }
 
 /**
@@ -122,7 +144,7 @@ export async function saveImported(storage: Storage, source: Source, accountId: 
 export async function saveImports(storage: Storage, accountId: string, date: string, records: { source: Source; refs: ImportedRefs }[]) {
   // Sever mixed-issuer links before another source can follow their stale copies.
   records = [...records].sort((a, b) => Number(b.source.aliases?.length === 0) - Number(a.source.aliases?.length === 0));
-  const keys = await Promise.all(records.map(async ({ source }) => (await importedHistory(storage, source, accountId)).keys));
+  const keys = await Promise.all(records.map(async ({ source }) => (await sourceHistory(storage, source, accountId)).keys));
   for (const [i, { source }] of records.entries()) {
     if (source.aliases?.length === 0) {
       for (const [j, other] of keys.entries()) if (i !== j) other.delete(importedKey(source.id, accountId));
@@ -143,6 +165,87 @@ export async function saveImports(storage: Storage, accountId: string, date: str
       for (const [ref, ids] of Object.entries(records[j].refs)) refs[ref] = [...new Set([...(refs[ref] ?? []), ...ids])];
     }
     await saveImported(storage, source, accountId, date, refs);
+  }
+}
+
+// Storage can't list its keys, so each account keeps an index of the import records it has, to find
+// those of folios, demat accounts and PRANs a later statement doesn't list.
+
+/** The account's import records by investor: `investorKey` → `importedKey`s. */
+const indexKey = (accountId: string) => `holdings-sources:${sha256(`cas-importer holdings sources ${accountId}`)}`;
+
+async function readIndex(storage: Storage, accountId: string): Promise<Record<string, string[]>> {
+  // A failed read throws, so the index isn't overwritten without what it can't read.
+  const raw = await storage.get(indexKey(accountId));
+  let stored: unknown;
+  try {
+    stored = JSON.parse(raw ?? "null");
+  } catch {
+    return {};
+  }
+  if (!record(stored)) return {};
+  return Object.fromEntries(Object.entries(stored).flatMap(([investor, keys]) =>
+    /^holdings-investor:[a-f0-9]{64}$/.test(investor) && Array.isArray(keys)
+      ? [[investor, keys.filter((key): key is string => typeof key === "string" && IMPORTED.test(key))]]
+      : []));
+}
+
+/**
+ * After an import into the account: adds the investor's `sources` to its index, keeping every other
+ * entry. A statement that names no investor can't tell whose they are, so it adds none.
+ */
+export async function indexSources(storage: Storage, accountId: string, investor: string, sources: Source[]) {
+  if (!investor) return;
+  // shortcut: concurrent device writes can lose index entries, merge them when storage offers atomic updates.
+  const index = await readIndex(storage, accountId);
+  const group = investorKey(investor);
+  const keys = new Set(index[group]);
+  const size = keys.size;
+  for (const source of sources) keys.add(importedKey(source.id, accountId));
+  if (keys.size === size) return;
+  index[group] = [...keys];
+  await storage.set(indexKey(accountId), JSON.stringify(index));
+}
+
+/**
+ * What earlier imports of the investor's statements into the account recorded, on or before
+ * `baseDate`, for the indexed folios, demat accounts and PRANs that `listed` neither includes nor
+ * links to. Linked records count once; empty ones not at all.
+ */
+export async function readUnlisted(storage: Storage, accountId: string, investor: string, listed: Source[], baseDate: string | null): Promise<Unlisted[]> {
+  if (baseDate === null || !investor) return [];
+  try {
+    const known = new Set(listed.flatMap((source) => keysOf(source, accountId)));
+    const indexed = ((await readIndex(storage, accountId))[investorKey(investor)] ?? []).filter((key) => !known.has(key));
+    if (!indexed.length) return [];
+    for (const source of listed) for (const key of (await sourceHistory(storage, source, accountId)).keys) known.add(key);
+    const groups: { keys: string[]; history: History }[] = [];
+    for (const key of indexed) {
+      const group = { keys: [key], history: await importedHistory(storage, [key], true, true) };
+      for (let i = 0; i < groups.length;) {
+        const other = groups[i];
+        if (![...other.history.keys].some((key) => group.history.keys.has(key))) { i++; continue; }
+        group.keys.push(...other.keys);
+        group.history = await importedHistory(storage, [...new Set([...group.history.keys, ...other.history.keys])], true);
+        groups.splice(i, 1);
+        i = 0;
+      }
+      groups.push(group);
+    }
+    return groups.flatMap(({ keys, history }) => {
+      if ([...history.keys].some((key) => known.has(key))) return [];
+      const remembered = refsAt(history, baseDate);
+      return remembered.size ? [{ keys, remembered }] : [];
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** Saves an import's records of folios, demat accounts and PRANs it doesn't list, by their indexed keys. */
+export async function saveUnlisted(storage: Storage, date: string, records: { keys: string[]; refs: ImportedRefs }[]) {
+  for (const { keys, refs } of records) {
+    for (const key of keys) await saveHistory(storage, await importedHistory(storage, [key], true, true), date, refs);
   }
 }
 
