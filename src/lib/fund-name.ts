@@ -35,10 +35,12 @@ const PLANS = new Map<string, Plan>([
   ["rg", "Regular"],
 ]);
 // IDCW was called Dividend before April 2021, and older names still say so. Yahoo shortens
-// "IDCW-P" to "IDCWP" in a long name, and spells one fund's IDCW "ICDW".
+// "IDCW-P" to "IDCWP" in a long name, and spells one fund's IDCW "ICDW". ICICI Prudential calls
+// some funds' Growth option Cumulative.
 const OPTIONS = new Map<string, FundOption>([
   ["growth", "Growth"],
   ["gr", "Growth"],
+  ["cumulative", "Growth"],
   ["idcw", "IDCW"],
   ["idcwp", "IDCW"],
   ["idcwr", "IDCW"],
@@ -48,23 +50,31 @@ const OPTIONS = new Map<string, FundOption>([
   ["div", "IDCW"],
 ]);
 // Words that go with a plan or option without telling which one, like "IDCW-P", "Daily IDCW
-// Reinvestment" or Yahoo's "Dir Mn IDCW-R".
+// Reinvestment", "Discontinued Flexi IDCW" or Yahoo's "Dir Mn IDCW-R".
 const FILLERS = new Set([
   "plan", "plan a", "plan b", "option", "opt", "of", "payout", "payment", "py", "reinvestment", "re investment", "reinvest",
   "transfer", "t", "sweep", "p", "r", "ri", "bonus", "bns", "principal units", "princ", "others", "oths",
-  "lock in", "loc in", "no lock in", "no loc in",
+  "lock in", "loc in", "no lock in", "no loc in", "discontinued", "defunct", "adhoc", "donation",
   "daily", "dl", "weekly", "wk", "wkly", "wly", "fortnightly", "fn", "fr", "ft", "fortn",
   "monthly", "mn", "mly", "mth", "mthly", "bi monthly", "bi m", "periodic", "pd", "prd", "prdic", "prdc", "quarterly", "qt", "qtly",
-  "half yearly", "hy", "hf yr", "hf yrly", "annual", "annually", "ann", "an", "yearly", "yr",
+  "half yearly", "semi annual", "hy", "hf yr", "hf yrly", "annual", "annually", "ann", "an", "yearly", "yr",
   "normal", "nrm", "nor", "flexi", "fl", "standard", "std", "discretionary", "discr", "disc",
 ]);
+// Fillers read by pattern: an option that pays out and reinvests, as in "IDCW - Payout &
+// Re-investment" or "Reinvestment and Payout", and a donation option's share, as in "50% IDCW
+// Donation Option". "and" and "&" are read nowhere else, since a fund's own name can have them.
+const REINVEST = String.raw`re[\s–—-]*invest(?:ment)?`;
+const AND = String.raw`(?:[\s–—-]+and[\s–—-]+|[\s–—-]*&[\s–—-]*)`;
+const OTHER_FILLERS = String.raw`payout${AND}${REINVEST}|${REINVEST}${AND}payout|\d+%`;
+const OTHER_FILLER = new RegExp(String.raw`^(?:${OTHER_FILLERS})$`, "i");
 
 const SEPARATORS = String.raw`[\s\-–—_/,:.]`;
 // The name's last word, or a phrase from the lists above.
 const PHRASES = [...PLANS.keys(), ...OPTIONS.keys(), ...FILLERS].filter((words) => words.includes(" "));
-const WORDS = new Set([...PLANS.keys(), ...OPTIONS.keys(), ...FILLERS].flatMap((words) => words.split(" ")));
+// Keep pattern-only words whole too, without reading them as standalone fillers.
+const WORDS = new Set([...PLANS.keys(), ...OPTIONS.keys(), ...FILLERS, "and", "invest"].flatMap((words) => words.split(" ")));
 const LAST = new RegExp(
-  String.raw`(?:^|${SEPARATORS}+)(${PHRASES.map((words) => words.replace(/ /g, String.raw`[\s–—-]+`)).join("|")}|[a-z]+)${SEPARATORS}*$`,
+  String.raw`(?:^|${SEPARATORS}+)(${OTHER_FILLERS}|${PHRASES.map((words) => words.replace(/ /g, String.raw`[\s–—-]+`)).join("|")}|[a-z]+)${SEPARATORS}*$`,
   "i",
 );
 // Some of Yahoo's names join words, mostly ones 40 characters long, as in "Reg MthIDCW-P",
@@ -101,7 +111,7 @@ function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string 
     else if (OPTIONS.has(word)) found.option ??= OPTIONS.get(word);
     // "(G)" is Growth in compact depository names; a bare Plan G can name an FMP.
     else if (inGroup && word === "g") found.option ??= "Growth";
-    else if (!FILLERS.has(word)) break;
+    else if (!FILLERS.has(word) && !OTHER_FILLER.test(word)) break;
     rest = rest.slice(0, last.index);
   }
   return { ...found, rest };
