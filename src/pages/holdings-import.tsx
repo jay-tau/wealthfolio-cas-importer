@@ -465,12 +465,10 @@ export function HoldingsImport({
       for (const snapshot of existing.values()) {
         for (const position of snapshot.positions) position.price = prices.get(position.assetId);
       }
+      // Each folio, demat account and PRAN's earlier import into each account: a left-out one's units
+      // stay, and those of one that now goes to another account may be counted there again.
       const records = await Promise.all(
-        [
-          ...bySource,
-          // A left-out folio, demat account or PRAN's earlier import into each account: its units stay.
-          ...holdings.sources.filter((source) => !accountOf(source)).flatMap((source) => ids.map((accountId) => ({ source, accountId }))),
-        ].map(async ({ source, accountId }) => {
+        holdings.sources.flatMap((source) => ids.map((accountId) => ({ source, accountId }))).map(async ({ source, accountId }) => {
           const snapshot = existing.get(accountId)!;
           return { key: `${source.id}|${accountId}`, snapshot, record: await readImported(api.storage, source, accountId, snapshot.date) };
         }),
@@ -510,6 +508,7 @@ export function HoldingsImport({
         remembered: (source, accountId) => remembered.get(`${source.id}|${accountId}`)?.remembered ?? new Map(),
         recorded: (source, accountId) => remembered.get(`${source.id}|${accountId}`) ?? {},
         heldElsewhere: (ref, accountId) => (held.get(ref) ?? []).filter((o) => o.id !== accountId),
+        accountName: (accountId) => allAccounts.find((a) => a.id === accountId)?.name ?? accountId,
         unlisted: (accountId) => unlisted.get(accountId) ?? [],
       });
       setPreview({ plans, quotes: new Map([...prices].flatMap(([id, p]) => p?.onDate ? [[id, p.onDate] as const] : [])) });
@@ -558,7 +557,7 @@ export function HoldingsImport({
           // that doesn't list it finds what it added.
           await indexSources(api.storage, plan.accountId, holdings.investor, [
             ...plan.sources,
-            ...plan.unread.filter((u) => u.remembered.size > 0 || u.aside?.size).map((u) => u.source),
+            ...[...plan.unread, ...plan.reassigned].filter((u) => u.remembered.size > 0 || u.aside?.size).map((u) => u.source),
           ]);
         } catch {
           saved.unremembered = true;

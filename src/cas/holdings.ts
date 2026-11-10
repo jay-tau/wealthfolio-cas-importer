@@ -393,13 +393,15 @@ export interface PlanInput {
   existing(accountId: string): ExistingSnapshot;
   /**
    * What an earlier import put into the baseline snapshot: `fundRef` → security identities. Asked
-   * for the folios, demat accounts and PRANs this import leaves out too.
+   * for the folios, demat accounts and PRANs this import leaves out or puts in another account too.
    */
   remembered(source: Source, accountId: string): ReadonlyMap<string, string[]>;
   /** The asset IDs and set-aside holdings of `remembered`'s record, as `reconcileRecord` gives them, to save with it. */
   recorded?(source: Source, accountId: string): Recorded;
   /** Other accounts that hold this asset now. */
   heldElsewhere(ref: string, accountId: string): OtherAccount[];
+  /** The account's name, for notes about a folio, demat account or PRAN that goes there. */
+  accountName(accountId: string): string;
   /**
    * What earlier imports of the investor's statements put into the account's baseline snapshot from
    * folios, demat accounts and PRANs this statement doesn't list, as far as the add-on indexed them.
@@ -477,9 +479,10 @@ export interface PlannedPosition {
   heldBy?: OtherAccount[];
   /**
    * The folios, demat accounts or PRANs whose earlier import added the account's units of it, set
-   * when keeping those units counts them twice: the holding they were added for is left out because
-   * an account that tracks transactions holds it. Saving needs the user's choice to keep them, or
-   * to remove them once all of them came from these sources.
+   * when keeping those units may count them twice: the holding they were added for is left out
+   * because an account that tracks transactions holds it, or one of them now goes to another account.
+   * Saving needs the user's choice to keep them, or to remove them once all of them came from these
+   * sources.
    */
   removable?: Source[];
   notes: string[];
@@ -498,6 +501,11 @@ export interface AccountPlan {
   recorded: Map<string, Recorded>;
   /** The statement's folios, demat accounts and PRANs this import leaves out, with what their earlier imports into this account recorded. */
   unread: ({ source: Source } & ImportRecord)[];
+  /**
+   * The statement's folios, demat accounts and PRANs that go to another account (`to`), with what
+   * their earlier imports into this account recorded.
+   */
+  reassigned: ({ source: Source; to: string } & ImportRecord)[];
   /** The records of folios, demat accounts and PRANs the statement doesn't list. */
   unlisted: Unlisted[];
   positions: PlannedPosition[];
@@ -527,7 +535,7 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
         ]),
       );
       plan = {
-        accountId, date: holdings.date, existing, sources: [], remembered: new Map(), recorded: new Map(), unread: [],
+        accountId, date: holdings.date, existing, sources: [], remembered: new Map(), recorded: new Map(), unread: [], reassigned: [],
         unlisted: input.unlisted?.(accountId) ?? [], positions: [], byRef, misread: [],
       };
       plans.set(accountId, plan);
@@ -564,13 +572,21 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     }
     const positions = [...byRef.values()];
     holdBack(positions, misread, plan.remembered, input);
+    // The folios, demat accounts and PRANs that go to another account: what they added here may be counted there again.
+    const reassigned = holdings.sources.flatMap((source) => {
+      const to = input.account(source);
+      return to && to !== plan.accountId
+        ? [{ source, to, remembered: input.remembered(source, plan.accountId), ...input.recorded?.(source, plan.accountId) }]
+        : [];
+    });
     const elsewhere = (position: PlannedPosition): Elsewhere => ({
       unread: unreadOf(position, unread, plan.accountId, input),
       unlisted: inRecords(position, plan.unlisted.map((u) => u.remembered)),
+      reassigned: reassignedOf(position, reassigned, input),
     });
     for (const position of positions) {
       if (position.misread) settleHeldBack(position);
-      else if (position.lines.length) settleStatement(position, plan.accountId, input, elsewhere(position).unread);
+      else if (position.lines.length) settleStatement(position, plan.accountId, input, unreadOf(position, unread, plan.accountId, input));
     }
     for (const position of positions) {
       if (position.heldBy && position.existing) settleOverlap(position, positions, plan.sources, plan.accountId, input, elsewhere);
@@ -580,7 +596,7 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     // The statement's holdings in its order, then the account's others in theirs.
     positions.sort((a, b) => a.order - b.order);
     const records = unread.map((source) => ({ source, remembered: input.remembered(source, plan.accountId), ...input.recorded?.(source, plan.accountId) }));
-    return { ...plan, unread: records, positions };
+    return { ...plan, unread: records, reassigned, positions };
   });
 }
 
@@ -692,12 +708,34 @@ const inRecords = (position: PlannedPosition, records: ReadonlyMap<string, strin
 const unreadOf = (position: PlannedPosition, unread: Source[], accountId: string, input: PlanInput) =>
   unread.filter((s) => inRecords(position, [input.remembered(s, accountId)]));
 
+/**
+ * A folio, demat account or PRAN that the import puts in another account, whose earlier import into
+ * this one recorded adding the account's units of a holding: those units may be counted there again.
+ */
+interface Reassigned {
+  source: Source;
+  /** The name of the account it goes to. */
+  account: string;
+  /** Whether it still lists the holding; undefined when a holding it lists can't be compared with its record. */
+  lists: boolean | undefined;
+}
+
+const reassignedOf = (position: PlannedPosition, records: AccountPlan["reassigned"], input: PlanInput): Reassigned[] =>
+  records.flatMap(({ source, to, remembered }) => {
+    const earlier = remembered.get(position.ref) ?? (position.existing && remembered.get(position.existing.ref));
+    if (!position.existing || !earlier) return [];
+    const lists = listedIn(source).some((h) => security(h).some((id) => earlier.includes(id))) || (incomparable(source, earlier) ? undefined : false);
+    return [{ source, account: input.accountName(to), lists }];
+  });
+
 /** Imports that may have added some of the account's units of a position that its lines don't count. */
 interface Elsewhere {
   /** The folios, demat accounts or PRANs this import leaves out, as `unreadOf` finds them. */
   unread: Source[];
   /** Whether a folio, demat account or PRAN the statement doesn't list recorded adding it. */
   unlisted: boolean;
+  /** The folios, demat accounts or PRANs this import puts in another account, as `reassignedOf` finds them. */
+  reassigned: Reassigned[];
 }
 
 /** Whether `labels` names more than one. */
@@ -706,6 +744,40 @@ const holds = (sources: Source[]) => `${labels(sources)} ${several(sources) ? "h
 const leavesOut = (sources: Source[]) => `An earlier import of ${labels(sources)}, which this import leaves out,`;
 const onlyIfNoneIn = (sources: Source[]) => `only if ${labels(sources)} no longer ${several(sources) ? "hold" : "holds"} any`;
 const UNLISTED = "a folio, demat account or PRAN that this statement doesn't list";
+/** `one` for a single folio, demat account or PRAN, else `many`. */
+const verb = (sources: Iterable<Source>, one: string, many: string) => (several(sources) ? many : one);
+
+/**
+ * Who recorded adding the account's units of a holding: `recorded`, of which `from` no longer list it,
+ * and `reassigned`, with the account each goes to now and whether it still lists the holding.
+ */
+function reassignedNote(reassigned: Reassigned[], recorded: Source[] = [], from: Source[] = []) {
+  const groups = new Map<string, Reassigned[]>();
+  for (const r of reassigned) groups.set(`${r.lists}|${r.account}`, [...(groups.get(`${r.lists}|${r.account}`) ?? []), r]);
+  return [
+    `An earlier import of ${labels([...recorded, ...reassigned.map((r) => r.source)])} recorded adding this holding here.`,
+    ...(from.length ? [`${labels(from)} no longer ${verb(from, "lists", "list")} it.`] : []),
+    ...[...groups.values()].map((group) => {
+      const sources = group.map((r) => r.source);
+      const { account, lists } = group[0];
+      const goes = `${labels(sources)} now ${verb(sources, "goes", "go")} to ${account}`;
+      return lists === undefined
+        ? `${goes}, but a holding ${verb(sources, "it lists", "they list")} lacks a comparable identifier, so ${verb(sources, "it", "they")} may still list this one.`
+        : `${goes} and ${lists ? "still" : "no longer"} ${verb(sources, "lists", "list")} it.`;
+    }),
+  ].join(" ");
+}
+
+/** The accounts that reassigned folios, demat accounts or PRANs go to, each once. */
+const accountsOf = (reassigned: Reassigned[]) => [...new Set(reassigned.map((r) => r.account))].join(" and ");
+
+/** Why to correct kept units that a reassigned folio, demat account or PRAN's earlier import may have added. */
+const correctUnits = (reassigned: Reassigned[]) => {
+  const listing = reassigned.filter((r) => r.lists !== false);
+  return listing.length
+    ? `those that came from ${labels(listing.map((r) => r.source))} may be counted in ${accountsOf(listing)} too`
+    : `they may include some that came from ${labels(reassigned.map((r) => r.source))}`;
+};
 
 /**
  * A statement row whose lines would replace units that a left-out source's earlier import added: it's
@@ -751,9 +823,9 @@ function settleOverlap(
   const own = new Set(position.lines.map((l) => l.source));
   const listed = new Set(sources.flatMap((s) => listedIn(s).flatMap(security)));
   const from: Source[] = [];
-  // A left-out or unlisted source's earlier import may have added some of them too.
-  const { unread, unlisted } = elsewhere(position);
-  let mixed = unread.length > 0 || unlisted;
+  // A left-out, unlisted or reassigned source's earlier import may have added some of them too.
+  const { unread, unlisted, reassigned } = elsewhere(position);
+  let mixed = unread.length > 0 || unlisted || reassigned.length > 0;
   for (const s of sources) {
     const record = input.remembered(s, accountId);
     const earlier = record.get(position.ref) ?? record.get(existing.ref);
@@ -776,6 +848,7 @@ function settleOverlap(
     ? `An earlier import of ${labels(from)} recorded adding this holding, but its units may also include others.`
     : `No earlier import of ${labels(own)} recorded adding this holding.`;
   position.notes.push(`Leaving this row out keeps this account's ${units} units of it, so ${names(position.heldBy!)} may count them too. ${why} Check them in Wealthfolio.`);
+  if (reassigned.length) position.notes.push(reassignedNote(reassigned));
 }
 
 /** A position's name, with its symbol and exchange to tell apart two assets of one holding. */
@@ -857,7 +930,7 @@ function settleOther(
   sources: Source[],
   accountId: string,
   input: PlanInput,
-  { unread, unlisted }: Elsewhere,
+  { unread, unlisted, reassigned }: Elsewhere,
 ) {
   // A holding the statement still lists, but that this import leaves out, wasn't sold.
   const listed = new Set(sources.flatMap((s) => listedIn(s).flatMap(security)));
@@ -890,18 +963,24 @@ function settleOther(
     uncertain ||= unsure;
     return !unsure;
   });
-  if (!moved.length && position.misread) return;
+  if (!moved.length && position.misread) {
+    // Held back as it is, so the units a reassigned source added stay too.
+    if (reassigned.length) position.notes.push(`${reassignedNote(reassigned)} Correct its units in Wealthfolio after saving: ${correctUnits(reassigned)}.`);
+    return;
+  }
   let replaced: (Moved & { targets: PlannedPosition[]; whole: boolean }) | undefined;
   if (moved.length) {
     const targets = [...new Set(moved.map((m) => m.to))];
-    const whole = !mixed && targets.length === 1 && importable.has(targets[0]);
+    // Units that a reassigned source added may be in it too.
+    const shared = mixed || reassigned.length > 0;
+    const whole = !shared && targets.length === 1 && importable.has(targets[0]);
     replaced = { old: position, sources: moved.map((m) => m.source), recorded, targets, whole };
     const them = moved.length > 1;
     const added = `An earlier import of ${labels(replaced.sources)} added it for ${them ? "holdings" : "a holding"} that this import lists under ${assetNames(targets)}.`;
     if (whole) {
       position.replacedBy = targets[0].key;
       position.notes.push(`${added} It's kept unless you replace it with ${assetName(targets[0])}.`);
-    } else if (!mixed && targets.length === 1 && targets[0].heldBy) {
+    } else if (!shared && targets.length === 1 && targets[0].heldBy) {
       // Left out because an account that tracks transactions holds it: keeping this one counts its units twice.
       position.removable = recorded;
       position.notes.push(
@@ -922,6 +1001,29 @@ function settleOther(
     }
     if (unread.length) position.notes.push(`${leavesOut(unread)} added it too.`);
     if (unlisted) position.notes.push(`An earlier import of ${UNLISTED} added it too.`);
+    if (reassigned.length) position.notes.push(reassignedNote(reassigned));
+  } else if (reassigned.length) {
+    // Never removed by default: the source that now goes to another account may still list it there.
+    const units = position.existing!.units;
+    if (!mixed && reassigned.every((r) => r.lists !== undefined)) {
+      // Every source that recorded it no longer lists it, or now goes to another account.
+      const removable = [...from, ...reassigned.map((r) => r.source)];
+      const listing = reassigned.filter((r) => r.lists);
+      position.removable = removable;
+      position.notes.push(
+        `${reassignedNote(reassigned, recorded, from)} ` +
+        `${listing.length ? `Keeping this account's ${units} units may count them here and in ${accountsOf(listing)}. Keep them` : `Keep this account's ${units} units`}, ` +
+        `or remove them only if all of them came from ${labels(removable)}: ${IMPORTS_DONT_RECORD}.`,
+      );
+    } else {
+      position.notes.push([
+        reassignedNote(reassigned, recorded, from),
+        ...(unread.length ? [`${leavesOut(unread)} added it too.`] : []),
+        ...(unlisted ? [`An earlier import of ${UNLISTED} added it too.`] : []),
+        `${mixed ? "Its units may also include others, so" : "So"} it's kept. If you keep it, correct its units in Wealthfolio: ${correctUnits(reassigned)}.`,
+      ].join(" "));
+      if (uncertain) position.notes.push("A listed holding lacks a comparable identifier. Check whether to keep this earlier imported holding.");
+    }
   } else if (from.length && unread.length) {
     // Removing it would take the left-out source's units too.
     position.notes.push(
@@ -1144,9 +1246,10 @@ export const unidentified = (plan: AccountPlan, choices: Choices) =>
 
 /**
  * What each source put into the account (`fundRef` → `security`, and → asset ID where it's known), to
- * remember after the import. `found` has the IDs of `unidentified` rows' assets (`fundRef` → ID). A
- * left-out source's record comes too when the import replaces or removes the account's units of a
- * holding it recorded: without that holding, since none of those units are its own any more.
+ * remember after the import. `found` has the IDs of `unidentified` rows' assets (`fundRef` → ID). The
+ * record of a source the import leaves out, or puts in another account, comes too when the import
+ * replaces or removes the account's units of a holding it recorded: without that holding, since none
+ * of those units are its own any more.
  */
 export function importedRefs(plan: AccountPlan, choices: Choices, found: ReadonlyMap<string, string> = new Map()) {
   const kept = keptRefs(plan, choices);
@@ -1171,7 +1274,7 @@ export function importedRefs(plan: AccountPlan, choices: Choices, found: Readonl
   }
   for (const [id, saved] of refs) withAside(saved, plan.recorded.get(id) ?? {}, misread);
   const replaced = replacedRefs(plan, choices);
-  const cleared = plan.unread.flatMap(({ source, ...record }) => {
+  const cleared = [...plan.unread, ...plan.reassigned].flatMap(({ source, ...record }) => {
     const left = without(record, replaced, kept);
     return left ? [{ source, ...left }] : [];
   });

@@ -252,6 +252,22 @@ account's complete snapshot before anything is saved:
   only if the left-out one no longer holds any. Once you do, the left-out one's import record no
   longer lists it, so later imports don't ask again. A folio that shares one record with an
   included folio, linked through the issuer's folio number, still lists what that one imported.
+- A folio, demat account or PRAN that now goes to another account takes its holdings there. In the
+  account an earlier import of it put them in, a holding that it recorded adding, and that the
+  statement doesn't list there, gets a note that says where it goes now and whether it still lists
+  the holding. Saving waits until you keep or remove that holding's units.
+  Remove them only if all of them came from it, since imports don't record how many units each folio,
+  demat account or PRAN added. The choice also names the account's own folios, demat accounts or PRANs
+  that recorded the holding too and no longer list it. If another folio, demat account or PRAN, left
+  out or not listed, may have added some of the units, or the identifiers can't be compared, the
+  holding is kept with a note to correct its units in Wealthfolio. An old asset it added isn't offered
+  for replacement, and a fund left out for overlap doesn't offer to remove the account's units. A
+  statement row of the folios that stay replaces the account's units with theirs, which leaves out the
+  moved one's share. Once an import replaces or removes a holding, the moved one's record in that
+  account no longer lists it, so later imports don't ask again. A folio that shares one record with a
+  folio that stays, linked through the issuer's folio number, still lists what that one imported.
+  An account that no folio, demat account or PRAN on the statement goes to isn't saved, so its units
+  stay; the other account's row only says it holds them too.
 - A holding that an earlier import added from a folio, demat account or PRAN that the statement
   doesn't list is kept, with a note to check whether it was redeemed, sold or moved, and to untick
   Keep if so: a statement can leave out a folio for other reasons, such as one requested for some
