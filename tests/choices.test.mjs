@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { importedRefs, planSnapshots, readHoldings, reconcileRecord, security, snapshotOf, unlistedRefs } from "../src/cas/holdings.ts";
+import { importedRefs, planSnapshots, readHoldings, reconcileRecord, security, snapshotOf, undecided, unlistedRefs } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
 import {
   fundKey, holdingKey, indexSources, investorKey, readFund, readImported, readRecordChoices, readUnlisted, saveFund, saveImported, saveImports,
@@ -728,4 +728,189 @@ test("an unlisted source's record forgets a holding the import replaces or remov
   assert.deepEqual(await readRefs(store, folio(2), "account", "2025-04-30"), new Map());
   assert.deepEqual(await readRefs(store, folio(2), "account", "2025-03-31"), entries(held("S", "T")));
   assert.deepEqual(await readUnlisted(store, "account", "investor", [folio(1)], "2025-04-30"), []);
+});
+
+// Folios 1 and 2 went to account A in March; later statements put folio 2 in account B.
+const choosing = (keep = new Map()) => () => ({ flipped: new Set(), costs: new Map(), keep });
+/** Keeps (true) or removes (false) the account's units of `isin` where saving asks. */
+const keepingUnits = (isin, keep) => (plan) =>
+  choosing(new Map(plan.positions.filter((p) => p.ref === refOf(isin) && p.removable).map((p) => [p.key, keep])))();
+const folio2ToB = (s) => (s.id === folio(2).id ? "B" : "A");
+
+/** Accounts that track holdings, imported into as the page does: their snapshots, by account ID. */
+function holdingsAccounts() {
+  const snapshots = new Map();
+  const existing = (id) => snapshots.get(id) ?? { date: null, positions: [], cash: {}, later: [] };
+  return {
+    snapshots,
+    /** The account's holdings after the last import, as [ISIN, units]. */
+    held: (id) => existing(id).positions.map((p) => [p.symbol, p.units]),
+    /** Reads every source's record in every account the import saves to, and plans it. */
+    async plan(store, date, sources, accountOf) {
+      const ids = [...new Set(sources.map(accountOf).filter(Boolean))];
+      const read = new Map();
+      for (const source of sources) {
+        for (const id of ids) read.set(`${source.id}|${id}`, reconcileRecord(await readImported(store, source, id, existing(id).date), existing(id), []));
+      }
+      const unlisted = new Map();
+      for (const id of ids) {
+        const records = await readUnlisted(store, id, "investor", sources, existing(id).date);
+        unlisted.set(id, records.map(({ keys, ...record }) => ({ keys, ...reconcileRecord(record, existing(id), []) })));
+      }
+      return planSnapshots({ date, investor: "investor", leftOut: [], sources }, {
+        account: accountOf,
+        asset: (h) => ({ symbol: h.isin, exchangeMic: "XBOM", quoteCcy: "INR", name: h.name }),
+        existing,
+        remembered: (s, id) => read.get(`${s.id}|${id}`).remembered,
+        recorded: (s, id) => read.get(`${s.id}|${id}`),
+        heldElsewhere: (ref, id) => [...snapshots].filter(([other, s]) => other !== id && s.positions.some((p) => p.ref === ref))
+          .map(([name]) => ({ name, tracksTransactions: false })),
+        accountName: (id) => id,
+        unlisted: (id) => unlisted.get(id),
+      });
+    },
+    /** Saves each plan's snapshot, records and index, with `choose`'s choices. */
+    async save(store, plans, choose = choosing()) {
+      for (const plan of plans) {
+        const choices = choose(plan);
+        const before = existing(plan.accountId).positions;
+        const positions = snapshotOf(plan, choices).holdings.map((h) => {
+          const assetId = h.assetId ?? `asset-${h.symbol}`;
+          const ref = before.find((p) => p.assetId === assetId)?.ref ?? refOf(h.symbol);
+          return { assetId, symbol: h.symbol, ref, name: `Share ${h.symbol}`, units: h.quantity, cost: null, currency: "INR" };
+        });
+        snapshots.set(plan.accountId, { date: plan.date, positions, cash: {}, later: [] });
+        // The IDs of the assets the save created, from the saved snapshot.
+        await saveImports(store, plan.accountId, plan.date, importedRefs(plan, choices, new Map(positions.map((p) => [p.ref, p.assetId]))));
+        await saveUnlisted(store, plan.date, unlistedRefs(plan, choices));
+        await indexSources(store, plan.accountId, "investor", [
+          ...plan.sources, ...[...plan.unread, ...plan.reassigned].filter((u) => u.remembered.size > 0 || u.aside?.size).map((u) => u.source),
+        ]);
+      }
+    },
+  };
+}
+
+/** March's import: Made-up Fund, folio 1 (150 S) and folio 2 (10 T) both go to account A. */
+async function march() {
+  const store = storage();
+  const accounts = holdingsAccounts();
+  await accounts.save(store, await accounts.plan(store, "2025-03-31", [folio(1, shareOf("S", "150")), folio(2, shareOf("T", "10"))], () => "A"));
+  return { store, accounts };
+}
+const MOVED_T = "An earlier import of Made-up Fund, folio 2 recorded adding this holding here. Made-up Fund, folio 2 now goes to B and still lists it. " +
+  "Keeping this account's 10 units may count them here and in B. Keep them, or remove them only if all of them came from Made-up Fund, folio 2: " +
+  "imports don't record how many units each folio, demat account or PRAN added.";
+const NO_LONGER_LISTS_T = "An earlier import of Made-up Fund, folio 2 recorded adding this holding here. Made-up Fund, folio 2 now goes to B and no longer lists it. " +
+  "Keep this account's 10 units, or remove them only if all of them came from Made-up Fund, folio 2: " +
+  "imports don't record how many units each folio, demat account or PRAN added.";
+const rowOf = (plan, isin) => plan.positions.find((p) => p.ref === refOf(isin));
+
+test("a holding that an earlier import of a folio now going to another account added waits for a choice to keep or remove it", async () => {
+  const april = [folio(1, shareOf("S", "150")), folio(2, shareOf("T", "10"))];
+  const may = [folio(1, shareOf("S", "150")), folio(2)];
+  {
+    const { store, accounts } = await march();
+    const [a, b] = await accounts.plan(store, "2025-04-30", april, folio2ToB);
+    assert.deepEqual([a.accountId, b.accountId], ["A", "B"]);
+    assert.deepEqual(a.reassigned.map((r) => [r.source.id, r.to, [...r.remembered.keys()]]), [[folio(2).id, "B", [refOf("T")]]]);
+    const t = rowOf(a, "T");
+    assert.deepEqual([t.lines.length, t.removable.map((s) => s.label), t.notes], [0, ["Made-up Fund, folio 2"], [MOVED_T]]);
+    assert.deepEqual([undecided(t, choosing()()), undecided(t, keepingUnits("T", false)(a))], [true, false]);
+    // The statement's rows stay as they are: folio 1's S in A, and folio 2's T in B.
+    assert.deepEqual([rowOf(a, "S").include, rowOf(a, "S").notes], [true, []]);
+    assert.deepEqual([rowOf(b, "T").include, rowOf(b, "T").notes], [true, ["A also holds it."]]);
+    // Removed: A keeps only S, B gets T, and folio 2's record in A no longer lists T.
+    await accounts.save(store, [a, b], keepingUnits("T", false));
+    assert.deepEqual([accounts.held("A"), accounts.held("B")], [[["S", "150"]], [["T", "10"]]]);
+    assert.deepEqual(await readRefs(store, folio(2), "A", "2025-04-30"), new Map());
+    assert.deepEqual(await readRefs(store, folio(2), "A", "2025-03-31"), entries(held("T")));
+    assert.deepEqual(await readRefs(store, folio(2), "B", "2025-04-30"), entries(held("T")));
+    // In May, folio 2 no longer holds T: A has nothing to ask about it, and B removes it by default.
+    const [nextA, nextB] = await accounts.plan(store, "2025-05-31", may, folio2ToB);
+    assert.equal(rowOf(nextA, "T"), undefined);
+    assert.deepEqual([rowOf(nextB, "T").include, rowOf(nextB, "T").notes], [false, ["Not on the statement any more. An earlier import of Made-up Fund, folio 2 added it."]]);
+  }
+  {
+    // Kept: A keeps its units, and folio 2's record in A stays as it was.
+    const { store, accounts } = await march();
+    const plans = await accounts.plan(store, "2025-04-30", april, folio2ToB);
+    await accounts.save(store, plans, keepingUnits("T", true));
+    assert.deepEqual([accounts.held("A"), accounts.held("B")], [[["T", "10"], ["S", "150"]], [["T", "10"]]]);
+    assert.deepEqual(await readRefs(store, folio(2), "A", "2025-04-30"), entries(held("T")));
+    // So May asks again, and says folio 2 no longer lists it.
+    const [nextA] = await accounts.plan(store, "2025-05-31", may, folio2ToB);
+    const t = rowOf(nextA, "T");
+    assert.deepEqual([t.removable.map((s) => s.label), t.notes], [["Made-up Fund, folio 2"], [NO_LONGER_LISTS_T]]);
+  }
+});
+
+test("a statement row a staying folio shares with a moved one takes the staying folio's units, and the moved one's record forgets it", async () => {
+  const store = storage();
+  const accounts = holdingsAccounts();
+  await accounts.save(store, await accounts.plan(store, "2025-03-31", [folio(1, shareOf("S", "100")), folio(2, shareOf("S", "50"))], () => "A"));
+  assert.deepEqual(accounts.held("A"), [["S", "150"]]);
+  const [a, b] = await accounts.plan(store, "2025-04-30", [folio(1, shareOf("S", "100")), folio(2, shareOf("S", "50"))], folio2ToB);
+  assert.deepEqual([rowOf(a, "S").units, rowOf(a, "S").include, rowOf(a, "S").notes], ["100", true, []]);
+  assert.deepEqual([rowOf(b, "S").units, rowOf(b, "S").include, rowOf(b, "S").notes], ["50", true, ["A also holds it."]]);
+  await accounts.save(store, [a, b]);
+  assert.deepEqual([accounts.held("A"), accounts.held("B")], [[["S", "100"]], [["S", "50"]]]);
+  assert.deepEqual(await readRefs(store, folio(2), "A", "2025-04-30"), new Map());
+  assert.deepEqual(await readRefs(store, folio(1), "A", "2025-04-30"), entries(held("S")));
+  // Left out instead, A keeps its 150, and folio 2's record there stays.
+  const fresh = storage();
+  const again = holdingsAccounts();
+  await again.save(fresh, await again.plan(fresh, "2025-03-31", [folio(1, shareOf("S", "100")), folio(2, shareOf("S", "50"))], () => "A"));
+  const plans = await again.plan(fresh, "2025-04-30", [folio(1, shareOf("S", "100")), folio(2, shareOf("S", "50"))], folio2ToB);
+  await again.save(fresh, plans, (plan) => ({ flipped: new Set(plan.accountId === "A" ? [rowOf(plan, "S").key] : []), costs: new Map() }));
+  assert.deepEqual(again.held("A"), [["S", "150"]]);
+  assert.deepEqual(await readRefs(fresh, folio(2), "A", "2025-04-30"), entries(held("S")));
+});
+
+test("a moved folio's record follows its renamed asset by the asset ID it recorded", async () => {
+  const { store, accounts } = await march();
+  // T's asset gets another symbol in Wealthfolio; another asset takes T's.
+  const a = accounts.snapshots.get("A");
+  a.positions = [...a.positions.map((p) => (p.assetId === "asset-T" ? { ...p, symbol: "T2", ref: refOf("T2") } : p)),
+    { assetId: "other-T", symbol: "T", ref: refOf("T"), name: "Another T", units: "3", cost: null, currency: "INR" }];
+  const [planA, planB] = await accounts.plan(store, "2025-04-30", [folio(1, shareOf("S", "150")), folio(2, shareOf("T", "10"))], folio2ToB);
+  assert.deepEqual(planA.reassigned.map((r) => [...r.remembered.keys()]), [[refOf("T2")]]);
+  const renamed = rowOf(planA, "T2");
+  assert.deepEqual([renamed.existing.assetId, renamed.removable.map((s) => s.label), renamed.notes], ["asset-T", ["Made-up Fund, folio 2"], [MOVED_T]]);
+  // The asset that now has T's symbol is no import's.
+  assert.deepEqual([rowOf(planA, "T").removable, rowOf(planA, "T").include, rowOf(planA, "T").notes], [undefined, true, []]);
+  await accounts.save(store, [planA, planB], keepingUnits("T2", false));
+  assert.deepEqual(accounts.held("A"), [["T", "3"], ["S", "150"]]);
+  assert.deepEqual(await readRefs(store, folio(2), "A", "2025-04-30"), new Map());
+  // Kept, the record goes on naming the asset by its ID.
+  const kept = await march();
+  const snapshot = kept.accounts.snapshots.get("A");
+  snapshot.positions = snapshot.positions.map((p) => (p.assetId === "asset-T" ? { ...p, symbol: "T2", ref: refOf("T2") } : p));
+  await kept.accounts.save(kept.store, await kept.accounts.plan(kept.store, "2025-04-30", [folio(1, shareOf("S", "150")), folio(2, shareOf("T", "10"))], folio2ToB),
+    keepingUnits("T2", true));
+  assert.deepEqual(await readImported(kept.store, folio(2), "A", "2025-04-30"), { remembered: entries(held("T")), ids: new Map([[refOf("T"), "asset-T"]]) });
+});
+
+test("a folio moved back takes its units in its old account from the statement, and the other account asks about them", async () => {
+  for (const keep of [false, true]) {
+    const { store, accounts } = await march();
+    await accounts.save(store, await accounts.plan(store, "2025-04-30", [folio(1, shareOf("S", "150")), folio(2, shareOf("T", "10"))], folio2ToB), keepingUnits("T", keep));
+    // June: folio 2 goes back to A, and folio 3 to B.
+    const june = [folio(1, shareOf("S", "150")), folio(2, shareOf("T", "10")), folio(3, shareOf("U", "5"))];
+    const [a, b] = await accounts.plan(store, "2025-06-30", june, (s) => (s.id === folio(3).id ? "B" : "A"));
+    const t = rowOf(a, "T");
+    // Folio 2 is A's again: its line replaces A's units, or is new there.
+    assert.deepEqual([t.lines.length, t.include, t.removable, t.existing?.units, t.notes], [1, true, undefined, keep ? "10" : undefined, ["B also holds it."]]);
+    assert.deepEqual(a.reassigned.map((r) => r.source.id), [folio(3).id]);
+    const inB = rowOf(b, "T");
+    assert.deepEqual([inB.removable.map((s) => s.label), inB.notes], [["Made-up Fund, folio 2"], [
+      "An earlier import of Made-up Fund, folio 2 recorded adding this holding here. Made-up Fund, folio 2 now goes to A and still lists it. " +
+      "Keeping this account's 10 units may count them here and in A. Keep them, or remove them only if all of them came from Made-up Fund, folio 2: " +
+      "imports don't record how many units each folio, demat account or PRAN added.",
+    ]]);
+    await accounts.save(store, [a, b], keepingUnits("T", false));
+    assert.deepEqual([accounts.held("A"), accounts.held("B")], [[["S", "150"], ["T", "10"]], [["U", "5"]]]);
+    assert.deepEqual(await readRefs(store, folio(2), "A", "2025-06-30"), entries(held("T")));
+    assert.deepEqual(await readRefs(store, folio(2), "B", "2025-06-30"), new Map());
+  }
 });
