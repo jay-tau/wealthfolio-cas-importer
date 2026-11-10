@@ -10,6 +10,7 @@ import {
   importedRefs,
   included,
   keepsDetails,
+  labels,
   npsSymbol,
   planSnapshots,
   pricesToSave,
@@ -206,6 +207,86 @@ test("reads a CDSL statement and its NPS schemes, and leaves out holdings withou
     holdings.sources[2].holdings.map((h) => h.cost),
     ["100000", null],
   );
+});
+
+test("tells apart two fund houses' depository folios with the same number, or without one, by their first fund", async () => {
+  const data = await fixture("made-up-cdsl");
+  const folios = data.accounts.find((a) => a.type === "Mutual Fund Folios");
+  const before = readHoldings(data).sources.filter((s) => s.kind === "folio");
+  // Folios that read differently keep their labels.
+  assert.deepEqual(before.map((s) => s.label), ["Folio 91234567/12", "Folio 1040012345"]);
+
+  // The second fund house's folio gets the first one's number, and each fund house a fund without a folio number.
+  for (const f of folios.mutual_funds) if (f.folio === "1040012345") f.folio = "91234567/12";
+  const [flexi, bond] = folios.mutual_funds;
+  folios.mutual_funds.push(
+    { ...flexi, name: "FLRDG - Fictiva Liquid Fund - Direct Plan - Growth", isin: "INFZ90K01LQ6", folio: null },
+    { ...bond, name: "TSTRG - Testbridge Short Term Fund - Regular Plan - Growth", isin: "INFZ91T01ST2", folio: null },
+    { ...bond, name: "TONDG - Testbridge Overnight Fund - Direct Plan - Growth", isin: "INFZ91T01ON4", folio: null, balance: "0", value: "0" },
+  );
+  const holdings = readHoldings(data);
+  const sources = holdings.sources.filter((s) => s.kind === "folio");
+  assert.deepEqual(sources.map((s) => [s.id, s.label, s.holdings.length]), [
+    ["folio|91234567/12|INFZ90K", "Folio 91234567/12 (Fictiva Flexi Cap Fund - Direct Plan - Growth and 1 other fund)", 2],
+    ["folio|91234567/12|INFZ91T", "Folio 91234567/12 (Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout and 1 other fund)", 2],
+    ["folio||INFZ90K", "Mutual fund folios (Fictiva Liquid Fund - Direct Plan - Growth)", 1],
+    ["folio||INFZ91T", "Mutual fund folios (Testbridge Short Term Fund - Regular Plan - Growth and 1 other fund)", 1],
+  ]);
+  // The left-out line names the folio the same way, and notes name each folio.
+  assert.deepEqual(holdings.leftOut.filter((l) => l.source.startsWith("Mutual")), [{
+    source: "Mutual fund folios (Testbridge Short Term Fund - Regular Plan - Growth and 1 other fund)",
+    name: "Testbridge Overnight Fund - Direct Plan - Growth",
+    reason: "No units on the statement.",
+  }]);
+  assert.equal(labels(sources.slice(0, 2)), `${sources[0].label} and ${sources[1].label}`);
+
+  // Folios whose first funds have the same name also get its ISIN.
+  for (const f of folios.mutual_funds) if (f.folio === null) f.name = "Liquid Fund";
+  assert.deepEqual(readHoldings(data).sources.filter((s) => s.id.startsWith("folio||")).map((s) => s.label), [
+    "Mutual fund folios (Liquid Fund, INFZ90K01LQ6)",
+    "Mutual fund folios (Liquid Fund, INFZ91T01ST2 and 1 other fund)",
+  ]);
+
+  // The browser collapses spaces, so different spacing doesn't tell two names apart.
+  for (const f of folios.mutual_funds) if (f.folio === null && f.isin.startsWith("INFZ90K")) f.name = "  Liquid  Fund\n";
+  assert.deepEqual(readHoldings(data).sources.filter((s) => s.id.startsWith("folio||")).map((s) => s.label), [
+    "Mutual fund folios (Liquid Fund, INFZ90K01LQ6)",
+    "Mutual fund folios (Liquid Fund, INFZ91T01ST2 and 1 other fund)",
+  ]);
+
+  for (const name of ["", null]) {
+    for (const f of folios.mutual_funds) if (f.folio === null) f.name = name;
+    assert.deepEqual(readHoldings(data).sources.filter((s) => s.id.startsWith("folio||")).map((s) => s.label), [
+      "Mutual fund folios (INFZ90K01LQ6)",
+      "Mutual fund folios (INFZ91T01ST2 and 1 other fund)",
+    ]);
+  }
+});
+
+test("tells apart depository folios whose fund names and counts give the same label", async () => {
+  for (const fileType of ["NSDL", "CDSL"]) {
+    const data = await fixture("made-up-cdsl");
+    data.file_type = fileType;
+    const folios = data.accounts.find((a) => a.type === "Mutual Fund Folios");
+    const [flexi, bond] = folios.mutual_funds;
+    folios.mutual_funds = [
+      { ...flexi, folio: "123", name: "Liquid Fund and 1 other fund" },
+      { ...bond, folio: "123", name: "Liquid Fund" },
+      { ...bond, folio: "123", name: "Overnight Fund", isin: "INFZ91T01ON4", balance: "0", value: "0" },
+      { ...flexi, folio: "123", name: "Liquid Fund and 1 other fund, INFZ90K01FC8", isin: "INFZ92A01LQ6" },
+    ];
+    const holdings = readHoldings(data);
+    const sources = holdings.sources.filter((s) => s.kind === "folio");
+    assert.deepEqual(sources.map((s) => [s.label, s.holdings.length]), [
+      ["Folio 123 (Liquid Fund and 1 other fund), INFZ90K01FC8", 1],
+      ["Folio 123 (Liquid Fund and 1 other fund), INFZ91T01CB6", 1],
+      ["Folio 123 (Liquid Fund and 1 other fund, INFZ90K01FC8)", 1],
+    ]);
+    assert.equal(labels(sources), sources.map((s) => s.label).join(" and "));
+    assert.deepEqual(holdings.leftOut.filter((l) => l.source.startsWith("Folio")), [{
+      source: sources[1].label, name: "Overnight Fund", reason: "No units on the statement.",
+    }]);
+  }
 });
 
 test("takes the cost from the average cost when the total isn't printed", () => {

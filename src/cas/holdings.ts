@@ -168,6 +168,33 @@ export const folioNumber = (folio: string) => folio.replace(/\s+/g, "");
 // Indian mutual-fund ISINs identify the issuer in their first seven characters.
 const issuerOf = (isin: string | null) => isin?.startsWith("INF") ? isin.slice(0, 7) : undefined;
 
+/**
+ * casparser keeps no fund house for a depository statement's folios, so two fund houses' folios
+ * with the same number, or both without one, would read the same. Each of those gets the first
+ * fund printed under it and how many others it has: "Folio 91234567/12 (Fictiva Flexi Cap Fund -
+ * Direct Plan - Growth and 1 other fund)". Their first funds' ISINs differ, so the ISIN tells them
+ * apart when the names, or the completed labels, don't.
+ */
+function tellApart(folios: { source: Source; funds: StatementHolding[] }[]) {
+  const byLabel = new Map<string, typeof folios>();
+  for (const folio of folios) byLabel.set(folio.source.label, [...(byLabel.get(folio.source.label) ?? []), folio]);
+  for (const same of byLabel.values()) {
+    if (same.length < 2) continue;
+    const named = same.map(({ funds: [first] }) => first.name.replace(/\s+/g, " ").trim());
+    same.forEach(({ source, funds }, i) => {
+      const [first] = funds;
+      const fund = named[i] && named.indexOf(named[i]) === named.lastIndexOf(named[i]) ? named[i] : [named[i], first.isin].filter(Boolean).join(", ");
+      const others = new Set(funds.map((h) => h.isin)).size - 1;
+      source.label += ` (${fund}${others ? ` and ${others} other ${others === 1 ? "fund" : "funds"}` : ""})`;
+    });
+    const labels = same.map(({ source }) => source.label);
+    same.forEach(({ source, funds: [first] }, i) => {
+      // Outside the parentheses, the ISIN can't match another fund's name and count.
+      if (labels.indexOf(labels[i]) !== labels.lastIndexOf(labels[i])) source.label += `, ${first.isin}`;
+    });
+  }
+}
+
 export function readHoldings(statement: Statement): Holdings {
   return isDepository(statement) ? readDepository(statement) : readSummary(statement);
 }
@@ -232,19 +259,22 @@ function readDepository(data: DepositoryData): Holdings {
 
   for (const account of data.accounts) {
     if (account.type === "Mutual Fund Folios") {
-      const folios = new Map<string, Source>();
+      const folios = new Map<string, { source: Source; funds: StatementHolding[] }>();
+      const lines: [Source, StatementHolding][] = [];
       for (const f of account.mutual_funds) {
         const number = folioNumber(f.folio ?? "");
-        const label = number ? `Folio ${number}` : "Mutual fund folios";
         const holding = fund(f);
         // The search and a new asset go by the scheme name; the printed details keep the code.
         if (data.file_type === "CDSL" && f.name) holding.name = withoutSchemeCode(f.name);
         const id = `folio|${number}|${issuerOf(f.isin) ?? `isin:${f.isin}`}`;
-        const source = folios.get(id) ?? { id, kind: "folio", label, holdings: [] };
-        if (withUnits(leftOut, label, source, holding)) source.holdings.push(holding);
-        folios.set(id, source);
+        const folio = folios.get(id) ?? { source: { id, kind: "folio", label: number ? `Folio ${number}` : "Mutual fund folios", holdings: [] }, funds: [] };
+        folio.funds.push(holding);
+        folios.set(id, folio);
+        lines.push([folio.source, holding]);
       }
-      sources.push(...folios.values());
+      tellApart([...folios.values()]);
+      for (const [source, holding] of lines) if (withUnits(leftOut, source.label, source, holding)) source.holdings.push(holding);
+      sources.push(...[...folios.values()].map((f) => f.source));
       continue;
     }
     const label = `${account.type} ${++dematNumber}, ${account.name}`.replace(/\s+/g, " ");
