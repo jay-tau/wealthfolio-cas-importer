@@ -63,9 +63,10 @@ const map = (data, overrides) => {
 };
 
 /** What Wealthfolio's import would keep, and that each pair nets to zero. */
-function checkRows({ activity, cash, bank, arriving, receiving }) {
+function checkRows({ activity, cash, bank, arriving, receiving, standIns }) {
   if (arriving) return checkConversion(activity, arriving.activity, cash, bank);
   if (activity.activityType.startsWith("TRANSFER_")) return checkGift(activity, receiving?.activity, cash, bank);
+  if (standIns) return checkSegregation(activity, cash, bank, standIns);
   for (const row of [activity, cash, bank].filter(Boolean)) {
     for (const key of ["activityType", "currency", "date", "symbol", "isDraft", "isValid"]) assert.ok(key in row, key);
     assert.equal(row.currency, "INR");
@@ -156,6 +157,25 @@ function checkGift(activity, receiving, cash, bank) {
   assert.notEqual(receiving.accountId, activity.accountId);
   for (const key of ["date", "symbol", "exchangeMic", "quantity", "unitPrice"]) assert.equal(receiving[key], activity[key], key);
   for (const row of [activity, receiving]) assert.equal(row.isExternal, undefined, "Wealthfolio marks a linked pair internal");
+}
+
+/**
+ * A segregated portfolio's units: a purchase with a zero total, no unit price, which Wealthfolio would
+ * save as a manual fund's NAV, and no cash. The ₹0 stands in for their cost.
+ */
+function checkSegregation(activity, cash, bank, standIns) {
+  assert.equal(cash, undefined);
+  assert.equal(bank, undefined);
+  assert.deepEqual(standIns, ["amount"]);
+  assert.equal(activity.activityType, "BUY");
+  assert.equal(activity.amount, "0");
+  assert.equal(activity.currency, "INR");
+  assert.match(activity.date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.equal(activity.isDraft, false);
+  assert.equal(activity.isValid, true);
+  assert.ok(activity.symbol && activity.quoteCcy && activity.instrumentType);
+  assert.ok(cmp(dec(activity.quantity), dec("0")) > 0, "positive units");
+  for (const key of ["unitPrice", "fee", "tax", "comment", "assetId", "subtype", "isExternal", "sourceGroupId"]) assert.equal(activity[key], undefined, key);
 }
 
 const summary = ({ transactions, warnings }) => ({
@@ -1007,13 +1027,156 @@ describe("gifts", () => {
   });
 });
 
+describe("segregated portfolios", () => {
+  // As casparser 1.4.1 reads a CAMS statement's segregated portfolio (codereverser/casparser#46).
+  const credit = (units = "100.000", extra = {}) =>
+    tx("2024-02-16", "SEGREGATION", null, units, null, { description: "Creation of units - Segregated Portfolio", ...extra });
+  const MAIN = "Made-up Credit Risk Fund - Direct Plan - Growth";
+  const SEGREGATED = "Made-up Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth";
+  const pair = (main, segregated) =>
+    statement(scheme("M", main, { scheme: MAIN }), scheme("S", segregated, { scheme: SEGREGATED }));
+  const bought = tx("2023-05-08", "PURCHASE", "1000.00", "100.000", "10.0000");
+  const NOTE =
+    "Units credited in a segregated portfolio, imported at a stand-in cost of ₹0 with no cash. For tax, they cost the main portfolio units' cost × the segregated assets' NAV ÷ the whole portfolio's NAV just before segregation, and the main portfolio units' cost goes down by as much, but the statement doesn't give these NAVs. Wealthfolio can't move part of a holding's cost to another fund, so the main fund keeps its whole cost there: unless that share is zero, each fund's cost and later gains in Wealthfolio differ from those for tax. Wealthfolio also counts these units' holding period from this day; for tax, they're held from when the main portfolio's units were bought.";
+  const PAYOUT =
+    "A payout from a segregated portfolio: Wealthfolio counts its gain against the cost it has for these units, a stand-in ₹0 if the add-on imported them. For tax, they cost a share of the main portfolio units' cost and are held from when those were bought.";
+  const payout = tx("2024-09-20", "REDEMPTION", "-30.00", "-50.000", "0.6000", { description: "Payment - Units Extinguished" });
+  const messages = (mapping) => mapping.warnings.map((w) => [w.scheme, w.rows.map((row) => row.type), w.leftOut, w.message]);
+
+  test("units credited are a purchase of the segregated portfolio's own fund with a zero total and no cash", () => {
+    const mapping = map(pair([bought], [credit()]));
+    assert.deepEqual(
+      mapping.transactions.map(({ scheme: name, activity: a, standIns }) => [name, a.activityType, a.date, a.symbol, a.quantity, a.amount, standIns ?? null]),
+      [
+        [MAIN, "BUY", "2023-05-08", "INF-M", "100.000", "1000", null],
+        [SEGREGATED, "BUY", "2024-02-16", "INF-S", "100.000", "0", ["amount"]],
+      ],
+    );
+    assert.deepEqual(messages(mapping), [[SEGREGATED, ["SEGREGATION"], false, NOTE]]);
+  });
+
+  test("each row of a day is its own purchase, equal ones too, and a printed NAV changes nothing", () => {
+    const mapping = map(pair([bought], [credit("99.987"), credit("0.013", { nav: "0.5000" })]));
+    assert.deepEqual(mapping.transactions.slice(1).map(({ activity: a }) => [a.quantity, a.unitPrice, a.amount]), [
+      ["99.987", undefined, "0"],
+      ["0.013", undefined, "0"],
+    ]);
+    assert.equal(mapping.warnings.length, 2);
+    // The import's duplicate check, not the mapping, decides about equal rows (#11).
+    const equal = map(pair([bought], [credit("50.000"), credit("50.000")]));
+    assert.deepEqual(equal.transactions.slice(1).map(({ activity: a }) => [a.quantity, a.lineNumber]), [["50.000", 3], ["50.000", 4]]);
+  });
+
+  test("a row with an amount, or without positive units, is left out", () => {
+    for (const [row, message] of [
+      [credit("100.000", { amount: "50.00" }), "This segregated portfolio row lists ₹50, which units credited without a payment don't have, so it isn't imported. Check it against the PDF."],
+      [credit(null), "This row has no units, or units with the wrong sign."],
+      [credit("0.000"), "This row has no units, or units with the wrong sign."],
+      [credit("-100.000"), "This row has no units, or units with the wrong sign."],
+    ]) {
+      const mapping = map(pair([bought], [row]));
+      assert.deepEqual(messages(mapping), [[SEGREGATED, ["SEGREGATION"], true, message]], message);
+      assert.equal(mapping.transactions.length, 1);
+    }
+    // A zero amount is no amount.
+    assert.equal(map(pair([bought], [credit("100.000", { amount: "0.00" })])).transactions.length, 2);
+  });
+
+  test("a charge that is or may be the credit's keeps it out, and other funds' charges stay theirs", () => {
+    for (const type of ["STAMP_DUTY_TAX", "STT_TAX", "TDS_TAX"]) {
+      const mapping = map(pair([bought], [credit(), charge("2024-02-16", type, "0.05")]));
+      assert.equal(mapping.transactions.length, 1, type);
+      const name = { STAMP_DUTY_TAX: "stamp duty", STT_TAX: "STT", TDS_TAX: "TDS" }[type];
+      assert.deepEqual(messages(mapping), [
+        [SEGREGATED, ["SEGREGATION", type], true, `This segregated portfolio credit has ${name} on its day, which a purchase at ₹0 can't carry without a cash movement the statement doesn't show, so it isn't imported.`],
+      ]);
+    }
+    // STT on a day with a credit and a payout could be either's.
+    const both = map(pair([bought], [credit(), { ...payout, date: "2024-02-16" }, charge("2024-02-16", "STT_TAX", "0.01")]));
+    assert.equal(both.transactions.length, 1);
+    assert.deepEqual(messages(both).map(([, rows, leftOut, message]) => [rows, leftOut, message]), [
+      [["SEGREGATION", "STT_TAX"], true, "Can't tell which of the 2 transactions on this day the ₹0.01 STT belongs to."],
+      [["REDEMPTION", "STT_TAX"], true, "Can't tell which of the 2 transactions on this day the ₹0.01 STT belongs to."],
+    ]);
+    // The main fund's purchase that day keeps its stamp duty, and the credit goes in.
+    const main = map(pair([{ ...bought, date: "2024-02-16" }, charge("2024-02-16", "STAMP_DUTY_TAX", "0.05")], [credit()]));
+    assert.deepEqual(summary(main).rows.map((row) => row.slice(0, 5)), [["BUY", "", "100.000", "1000.05", "0.05"], ["BUY", "", "100.000", "0", ""]]);
+  });
+
+  test("its payouts are sales at its NAV, with a caveat on their gain, on a later statement too", () => {
+    const sameStatement = map(pair([bought], [credit(), payout]));
+    assert.deepEqual(messages(sameStatement), [[SEGREGATED, ["SEGREGATION"], false, NOTE], [SEGREGATED, ["REDEMPTION"], false, PAYOUT]]);
+    // A statement that starts after the credit, by the scheme's name.
+    const covered = map(statement(scheme("M", [bought], { scheme: MAIN }), scheme("S", [payout], { scheme: SEGREGATED, open: "100.000" })));
+    assert.deepEqual(summary(covered).rows.at(-1), ["SELL", "", "50.000", "30", "", "WITHDRAWAL"]);
+    assert.deepEqual(messages(covered), [[SEGREGATED, ["REDEMPTION"], false, PAYOUT]]);
+    const uncovered = map(statement(scheme("M", [bought], { scheme: MAIN }), scheme("S", [payout], { scheme: SEGREGATED, open: "100.000" })), {
+      target: (folio, s) => ({ ...input().target(folio, s), openingCovered: s.scheme !== SEGREGATED }),
+    });
+    assert.deepEqual(messages(uncovered), [[SEGREGATED, [], true, "The statement starts with 100.000 units bought before 01-Apr-2023. Import that earlier history, or add the units with their original costs and dates, before this scheme's transactions."]]);
+  });
+
+  test("a KFintech payout put back is left out with its reversal, as for any redemption", () => {
+    const putBack = tx("2024-09-25", "PURCHASE", "30.00", "50.000", "0.6000", { description: "Payment - Units Extinguished-Reversed" });
+    const mapping = map(pair([bought], [credit(), payout, putBack]));
+    assert.deepEqual(summary(mapping).rows.map((row) => row.slice(0, 4)), [["BUY", "", "100.000", "1000"], ["BUY", "", "100.000", "0"]]);
+    assert.deepEqual(messages(mapping).map(([, rows, leftOut]) => [rows, leftOut]), [[["SEGREGATION"], false], [["REDEMPTION", "PURCHASE"], true]]);
+    assert.match(messages(mapping)[1][3], /^A later row has the opposite units and amount to this redemption/);
+  });
+
+  test("a segregated portfolio confirmed as its main fund is left out, with the payouts it would sell", () => {
+    const sameAsset = (data) => map(data, {
+      target: (folio, s) => ({ ...input().target(folio, s), asset: { ...input().target(folio, s).asset, symbol: "INF-M" } }),
+    });
+    const left = "This segregated portfolio is confirmed as the same Wealthfolio asset as Made-up Credit Risk Fund - Direct Plan - Growth, so its transactions are left out. Under Funds, confirm the segregated portfolio's own fund: search its ISIN or AMFI scheme code.";
+    const mapping = sameAsset(pair([bought], [credit(), payout]));
+    assert.deepEqual(mapping.transactions.map((t) => t.scheme), [MAIN]);
+    assert.deepEqual(messages(mapping), [[SEGREGATED, [], true, left]]);
+    // A credit identifies the scheme even when its name doesn't say segregated portfolio.
+    const rowOnly = pair([bought], [credit(), payout]);
+    rowOnly.folios[0].schemes[1].scheme = "Made-up Credit Risk Fund - Series 2";
+    const guarded = sameAsset(rowOnly);
+    assert.deepEqual(guarded.transactions.map((t) => t.scheme), [MAIN]);
+    assert.deepEqual(messages(guarded), [["Made-up Credit Risk Fund - Series 2", [], true, left]]);
+    assert.deepEqual(messages(map(rowOnly)).map(([, rows, leftOut, message]) => [rows, leftOut, message]), [
+      [["SEGREGATION"], false, NOTE], [["REDEMPTION"], false, PAYOUT],
+    ]);
+    // A scheme named as a segregated portfolio counts too, even if the statement starts after the credit.
+    const later = sameAsset(pair([bought], [payout]));
+    assert.deepEqual(messages(later), [[SEGREGATED, [], true, left]]);
+    // The same segregated portfolio in two folios is one asset.
+    const twice = map({ ...pair([bought], [credit()]), folios: [
+      ...pair([bought], [credit()]).folios,
+      { ...statement().folios[0], folio: "F2", schemes: [scheme("S", [credit()], { scheme: SEGREGATED })] },
+    ] });
+    assert.deepEqual(twice.transactions.map((t) => t.activity.quantity), ["100.000", "100.000", "100.000"]);
+  });
+
+  test("the made-up statement's segregated portfolio ends at its closing balance, with its payout sold at its NAV", async () => {
+    const data = JSON.parse(await readFile("tests/fixtures/made-up-cas-segregated.json", "utf8"));
+    const mapping = map(data);
+    assert.deepEqual(summary(mapping).rows, [
+      ["BUY", "", "2069.176", "49999.999688", "2.5", "DEPOSIT"],
+      ["BUY", "", "998.305", "25000.005166", "1.25", "DEPOSIT"],
+      ["SELL", "", "500.000", "13466.35", "", "WITHDRAWAL"],
+      ["BUY", "", "3067.468", "0", "", ""],
+      ["BUY", "", "0.013", "0", "", ""],
+      ["SELL", "", "1533.741", "920.2446", "", "WITHDRAWAL"],
+    ]);
+    assert.deepEqual(summary(mapping).warnings, [NOTE, NOTE, PAYOUT]);
+    for (const s of data.folios[0].schemes) {
+      const held = mapping.transactions.filter((t) => t.scheme === s.scheme).reduce((sum, t) => add(sum, units(t.activity)), dec(s.open));
+      assert.equal(cmp(held, dec(s.close)), 0, s.scheme);
+    }
+  });
+});
+
 test("rows #1 leaves for later are warnings; event-only rows are skipped", () => {
   const mapping = map(
     statement(
       scheme("A", [
         tx("2024-01-10", "GIFT_IN", "1000.00", "100.000", "10.0000"),
         charge("2024-01-10", "STAMP_DUTY_TAX", "0.15"),
-        tx("2024-02-10", "SEGREGATION", null, "100.000"),
         tx("2024-03-10", "UNKNOWN", "0.00", "0.000"),
         tx("2024-04-10", "MISC", "50.00"),
         tx("2024-05-10", "MISC", null),
@@ -1024,7 +1187,6 @@ test("rows #1 leaves for later are warnings; event-only rows are skipped", () =>
     mapping.warnings.map((w) => [w.rows.map((row) => row.type), w.message]),
     [
       [["GIFT_IN", "STAMP_DUTY_TAX"], "This gift has stamp duty on its day, which a transfer can't carry without a cash movement the statement doesn't show, so it isn't imported."],
-      [["SEGREGATION"], "Segregated portfolios aren't imported yet."],
       [["UNKNOWN"], "casparser couldn't tell what this row is, so it isn't imported."],
       [["MISC"], "casparser couldn't tell what this row is, so it isn't imported."],
     ],

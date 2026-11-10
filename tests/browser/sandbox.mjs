@@ -1217,6 +1217,81 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await restoreChoices(storageBeforeGifts);
     await undecided(flexi);
 
+    // A segregated portfolio's units are a purchase at a stand-in ₹0, marked as such, with no cash.
+    const beforeSegregated = await tab.frames()[1].evaluate(() =>
+      ({ activities: window.host.activities, failHistory: window.host.failHistory, rejectLine: window.host.rejectLine }));
+    const storageBeforeSegregated = await storage();
+    await tab.frames()[1].evaluate(() => {
+      window.host.activities = [];
+      window.host.failHistory = false;
+      window.host.rejectLine = undefined;
+      window.host.segregated = true;
+    });
+    await readAgain();
+    for (const isin of ["INFZ90K01CR3", "INFZ90K01S17"]) {
+      const section = frame.locator("section").filter({ hasText: `ISIN ${isin}` });
+      await section.getByRole("radio").first().waitFor({ state: "attached" });
+      await section.getByRole("radio").first().dispatchEvent("click");
+      await section.getByRole("button", { name: "Use this fund" }).click();
+      await section.getByText("Confirmed", { exact: true }).waitFor();
+    }
+    const leaveOutOthers = async () => {
+      for (const section of await frame.locator("section").all()) {
+        if (await section.getByText(/^(Confirmed|Left out)$/).count()) continue;
+        await section.getByRole("button", { name: "Leave this fund out" }).click();
+        await section.getByText("Left out", { exact: true }).waitFor();
+      }
+    };
+    await leaveOutOthers();
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    const segregatedRows = frame.getByRole("row").filter({ hasText: "Fictiva Credit Risk Fund - Segregated Portfolio 1" });
+    await segregatedRows.first().waitFor({ timeout: 30_000 });
+    const credits = segregatedRows.filter({ has: frame.locator("td:nth-child(3)", { hasText: /^purchase$/ }) });
+    const payouts = segregatedRows.filter({ has: frame.locator("td:nth-child(3)", { hasText: /^sale$/ }) });
+    assert.equal(await credits.count(), 2);
+    for (const [i, quantity] of ["3067.468", "0.013"].entries()) {
+      const creditCells = (await credits.nth(i).locator("td").allTextContents()).map((text) => text.trim());
+      assert.deepEqual(creditCells.slice(0, 8), [
+        "2024-02-16", "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth", "purchase", quantity, "", "", "0stand-in", "",
+      ]);
+      assert.match(creditCells[8], /^NewUnits credited in a segregated portfolio, imported at a stand-in cost of ₹0 with no cash\./);
+    }
+    // The payout is an ordinary redemption, at the segregated portfolio's NAV, with its cash.
+    const payout = (await payouts.locator("td").allTextContents()).map((text) => text.trim());
+    assert.deepEqual(payout.slice(0, 7), ["2024-09-20", "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth", "sale", "1533.741", "0.6000", "", "920.2446"]);
+    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
+    await frame.getByText(/^Imported \d+ of \d+ activities$/).waitFor();
+    const segregatedSent = await tab.frames()[1].evaluate(() =>
+      window.host.activities.filter((a) => a.assetSymbol === "INFZ90K01S17" && a.activityType === "BUY")
+        .map((a) => [a.quantity, a.unitPrice ?? null, a.amount]),
+    );
+    assert.deepEqual(segregatedSent, [["3067.468", null, "0"], ["0.013", null, "0"]]);
+    const segregatedUnits = frame.locator("table").last().locator("tbody tr");
+    assert.equal(await segregatedUnits.filter({ hasText: "Segregated Portfolio 1" }).filter({ hasText: "Match" }).count(), 1);
+    // Read again, the credits are in Wealthfolio.
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await credits.first().getByText("Already in Wealthfolio", { exact: true }).waitFor({ timeout: 30_000 });
+    assert.equal(await credits.getByText("Already in Wealthfolio", { exact: true }).count(), 2);
+    // A later statement lists only the payout: with the units in Wealthfolio before it starts, the
+    // payout is a sale, with the caveat on its gain.
+    await tab.frames()[1].evaluate(() => {
+      window.host.segregated = "later";
+      const all = window.host.activities;
+      const sold = all.filter((a) => a.assetSymbol === "INFZ90K01S17" && a.activityType === "SELL");
+      const cash = all.filter((a) => !a.assetSymbol && sold.some((s) => s.date === a.date && s.amount === a.amount));
+      window.host.activities = all.filter((a) => !sold.includes(a) && !cash.includes(a)).map((a) =>
+        (a.assetSymbol === "INFZ90K01S17" ? { ...a, date: "2023-03-01T00:00:00+00:00" } : a));
+    });
+    await readAgain();
+    await leaveOutOthers();
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await payouts.getByText("New", { exact: true }).waitFor({ timeout: 30_000 });
+    assert.equal(await credits.count(), 0);
+    assert.match((await payouts.locator("td").last().textContent()).trim(), /^NewA payout from a segregated portfolio: Wealthfolio counts its gain against the cost it has for these units/);
+    await tab.frames()[1].evaluate((before) => Object.assign(window.host, before, { segregated: false }), beforeSegregated);
+    await restoreChoices(storageBeforeSegregated);
+    await undecided(flexi);
+
     // With AMFI added, a fund's ISIN finds Yahoo's result and then AMFI's, which
     // is preselected but still needs confirming. Funds confirmed before keep their choice, unsearched.
     const beforeAmfi = await tab.frames()[1].evaluate(() => ({

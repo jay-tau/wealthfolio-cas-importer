@@ -82,8 +82,8 @@ If Wealthfolio also tracks the bank account a PAN's purchases are paid from, cho
 **Bank account** (a folio can have a different one, or none). Each purchase then comes with a transfer
 from that account to the funds' account, and each redemption or IDCW payout with a transfer back,
 which Wealthfolio links, instead of a deposit or withdrawal. Switches keep their deposit and
-withdrawal, since their money stays with the fund house; mergers, gifts and reinvested dividends have
-no cash row.
+withdrawal, since their money stays with the fund house; mergers, gifts, segregated portfolios' units
+and reinvested dividends have no cash row.
 
 If the bank account already has the debit or credit, from a bank statement import for example, the
 preview offers to use it: a withdrawal or deposit (or a transfer not yet linked) within 7 days, for
@@ -150,6 +150,35 @@ can't carry, and one with no NAV. If Wealthfolio has a transfer, purchase or sal
 in the same account and fund on that day at another price or with a comment, such as one entered by
 hand, the preview leaves the gift out and names it. For both sides in one account it says when
 Wealthfolio has such a row, which changed the units' cost and purchase dates.
+
+### Segregated portfolios
+
+After a credit event, such as a bond downgraded below investment grade, a debt fund can move the
+affected securities into a segregated portfolio and credit each investor one of its units for each
+unit held. The statement lists the segregated portfolio as a fund of its own, and casparser marks the
+rows crediting its units as `SEGREGATION`. They print units but no amount or NAV. Confirm the
+segregated portfolio's own fund under **Funds**, by its ISIN or AMFI scheme code. When its ISIN finds
+nothing, or none is printed, the add-on searches its name with "Segregated Portfolio" and its number,
+not the main fund's name. A segregated portfolio confirmed as the same Wealthfolio asset as a fund
+that isn't one is left out, with its payouts.
+
+The add-on imports each credit as a purchase of its units with an amount of ₹0 and no cash, and the
+preview marks the ₹0 as a stand-in. It sends no unit price, which Wealthfolio would save as that day's
+NAV of a fund priced by hand. For tax, the units cost the main portfolio units' cost × the segregated
+assets' NAV ÷ the whole portfolio's NAV just before segregation, and the main portfolio units' cost
+goes down by as much (section 49(2AG) and (2AH) of the Income-tax Act, 1961; section 73(1) of the
+Income-tax Act, 2025). The statement doesn't give these NAVs, and Wealthfolio can't move part of a
+holding's cost to another fund, so the main fund keeps its whole cost there. Unless the segregated
+assets' share is zero, each fund's cost and later gains in Wealthfolio differ from those for tax.
+Wealthfolio also counts the units' holding period from the day they were credited; for tax, they're
+held from when the main portfolio's units were bought. Later payouts of the segregated portfolio, such
+as "Payment - Units Extinguished", are redemptions, and the preview notes that Wealthfolio counts
+their gain against the units' cost there, on later statements too.
+
+The preview leaves out a credit with a nonzero amount, whose meaning isn't known, and one with stamp duty,
+STT or TDS on its day, which may be its own. It also leaves out the day's new credits when Wealthfolio
+has a purchase or transfer in of the fund in that account on that day that an earlier import doesn't
+account for, such as one entered by hand, perhaps for several credits at once, and names it.
 
 ## Summary and depository statements
 

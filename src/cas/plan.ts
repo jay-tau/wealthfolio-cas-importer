@@ -267,9 +267,10 @@ export function planImport(
       const keys = activity === transaction.cash ? cashIdentities(activity) : [{ key: rowIdentity(activity), type: undefined }];
       const deferCash = activity === transaction.cash && !tradeFound;
       const match = settled || deferCash ? undefined : keys.find(({ key }) => available.get(key)?.length);
-      // Keep untouched imported dates; form entries and edited gifts must also match their engine day.
+      // Keep untouched imported dates; gifts and segregated credits entered or edited in the form must match their engine day.
       const ids = match && available.get(match.key)!;
-      const at = ids?.findIndex((id) => !activity.activityType.startsWith("TRANSFER_") || !activity.symbol?.trim() ||
+      const at = ids?.findIndex((id) => !activity.symbol?.trim() ||
+        (!activity.activityType.startsWith("TRANSFER_") && transaction.rows[0]?.type !== "SEGREGATION") ||
         giftDay(byId.get(id)!, timeZone) === day(activity.date)) ?? -1;
       const unchecked = newAmfiFund(activity, result);
       const row: PlannedRow = {
@@ -387,13 +388,17 @@ export function planImport(
     }
   }
   for (const t of planned) {
-    // A gift entered by hand has the same units on the same day, as a transfer or a trade.
+    // A gift entered by hand has the same units on the same day, as a transfer or a trade. A
+    // segregated portfolio's credits of a day may have been entered as one, so any units count, once
+    // earlier imports have matched theirs.
+    const segregation = t.transaction.rows[0]?.type === "SEGREGATION";
     for (const r of t.rows) {
-      if (!r.activity.activityType.startsWith("TRANSFER_") || !r.activity.symbol?.trim()) continue;
-      // A UTC match reserved on another day must not hide this day's hand-entered gift.
-      const found = likely(r.activity).filter((a) =>
+      if ((!segregation && !r.activity.activityType.startsWith("TRANSFER_")) || !r.activity.symbol?.trim()) continue;
+      if (segregation && r.existingId) continue;
+      // A UTC match reserved on another day must not hide this day's hand-entered row.
+      const found = likely(r.activity, segregation).filter((a) =>
         available.get(activityIdentity(a, funds)!)?.includes(a.id) || day(a.date) !== day(r.activity.date));
-      if (found.length) t.problem ??= handEntered(found);
+      if (found.length) t.problem ??= handEntered(found, segregation);
     }
   }
   for (const t of planned) {
@@ -420,13 +425,17 @@ const PART_OF_GIFT =
   "Wealthfolio has one side of this gift from an earlier import but not the other, so neither is imported: Wealthfolio links the two only when they're imported together. To import the gift, delete that side in Wealthfolio and read the statement again.";
 const UNLINKED_GIFT =
   "Wealthfolio has both sides of this gift, but they aren't linked to each other, so the receiving account doesn't have the giver's costs and purchase dates. Link the two transfers in Wealthfolio, or delete both and read the statement again.";
-const handEntered = (found: ActivityDetails[]) => {
+const handEntered = (found: ActivityDetails[], segregation: boolean) => {
   const names = found.map((a) => {
     const type = { BUY: "purchase", SELL: "sale", TRANSFER_IN: "transfer in", TRANSFER_OUT: "transfer out" }[a.activityType as string];
+    const units = segregation && a.quantity ? ` of ${amount(a.quantity)} units` : "";
     const price = a.unitPrice ? ` at ${amount(a.unitPrice)}` : "";
-    return `a ${type}${price}${a.comment?.trim() ? ` ("${a.comment.trim()}")` : ""}`;
-  });
-  return `Wealthfolio has ${names.join(" and ")} of these units on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`;
+    return `a ${type}${units}${price}${a.comment?.trim() ? ` ("${a.comment.trim()}")` : ""}`;
+  }).join(" and ");
+  const fix = "keep it, or delete it and any cash that came with it and read the statement again to import the statement's.";
+  return segregation
+    ? `Wealthfolio has ${names} of this fund on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's this credit, or the day's credits entered as one, ${fix}`
+    : `Wealthfolio has ${names} of these units on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, ${fix}`;
 };
 
 /** Form edits preserve CSV origin but can change its date; untouched imports keep their UTC day. */
@@ -435,18 +444,20 @@ const giftDay = (a: ActivityDetails, timeZone: string) =>
 
 /**
  * Activities that may be a gift's row entered another way: in its account and fund, on its day,
- * with its units, as a transfer or a trade in the same direction. CSV imports use their UTC day;
+ * with its units (any units with `anyUnits`, for a segregated portfolio's credits, which may have
+ * been entered as one), as a transfer or a trade in the same direction. CSV imports use their UTC day;
  * edited ones may also use their engine day, since the edit needn't have changed the date. Other
  * entries use their day in `timeZone`, from `engineTimeZone`. Exact import keys stay UTC.
  */
 export function giftEntries(existing: ActivityDetails[], funds: FundRefs, timeZone: string) {
-  return (row: ActivityImport) => {
-    const types = row.activityType === "TRANSFER_IN" ? ["TRANSFER_IN", "BUY"] : ["TRANSFER_OUT", "SELL"];
+  return (row: ActivityImport, anyUnits = false) => {
+    const types = row.activityType === "TRANSFER_IN" || row.activityType === "BUY" ? ["TRANSFER_IN", "BUY"] : ["TRANSFER_OUT", "SELL"];
     const fund = fundRef(row.symbol!, row.exchangeMic);
     const on = day(row.date);
     return existing.filter((a) =>
       a.accountId === row.accountId && types.includes(a.activityType) && !!a.assetId && funds.get(a.assetId) === fund &&
-      (giftDay(a, timeZone) === on || (a.sourceSystem === "CSV" && day(a.date) === on)) && amount(a.quantity) === amount(row.quantity));
+      (giftDay(a, timeZone) === on || (a.sourceSystem === "CSV" && day(a.date) === on)) &&
+      (anyUnits || amount(a.quantity) === amount(row.quantity)));
   };
 }
 

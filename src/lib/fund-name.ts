@@ -1,10 +1,20 @@
+const SEGREGATED = /\bsegregated\s+portfolio(?:[\s-]*(?:\d+|[IVX]+\b))?/i;
+
 /**
  * The fund's name without its plan and option, for a search when the printed ISIN finds nothing:
  * the scheme name up to the first " - ", without anything in parentheses.
- * "Fictiva Flexi Cap Fund - Direct Plan - Growth" → "Fictiva Flexi Cap Fund".
+ * "Fictiva Flexi Cap Fund - Direct Plan - Growth" → "Fictiva Flexi Cap Fund". A segregated
+ * portfolio keeps "Segregated Portfolio" and its number, or the search finds its main fund.
  */
-export const fundName = (scheme: string) =>
-  scheme.replace(/\([^()]*\)/g, " ").split(" - ")[0].replace(/\s+/g, " ").trim();
+export function fundName(scheme: string) {
+  const name = scheme.replace(/\([^()]*\)/g, " ");
+  const first = name.split(" - ")[0];
+  const segregated = SEGREGATED.exec(scheme)?.[0];
+  const search = segregated && SEGREGATED.test(first)
+    ? first.replace(SEGREGATED, segregated)
+    : [first, segregated].filter(Boolean).join(" ");
+  return search.replace(/\s+/g, " ").trim();
+}
 
 export type Plan = "Direct" | "Regular";
 export type FundOption = "Growth" | "IDCW";

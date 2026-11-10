@@ -22,7 +22,9 @@ import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { CasError, CasParser } from "../../src/cas/parser";
 import { ImportPage } from "../../src/pages/import-page";
-import type { CasScheme, DematAccount } from "../../src/cas/types";
+import type { CasData, CasScheme, DematAccount } from "../../src/cas/types";
+// The sandbox can't fetch, so the bundle carries it.
+import segregatedStatement from "../fixtures/made-up-cas-segregated.json";
 
 interface HostAsset {
   symbol: string;
@@ -79,6 +81,9 @@ const host = {
   merger: false,
   // Invented gifts: one received in the first folio, and one between two new folios of the same fund house.
   gifts: false,
+  // The made-up statement's segregated portfolio and its main fund, in a folio of their own; "later"
+  // as a statement starting after the credit would list them.
+  segregated: false as boolean | "later",
   // Holdings dropped from a depository statement as if they had been sold.
   soldIsins: [] as string[],
   parseWarnings: [] as string[],
@@ -276,6 +281,15 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
       { ...first, folio: "92345678", schemes: [given] },
       { ...first, folio: "93456789", schemes: [taken] },
     ];
+  }
+  if (host.segregated) {
+    const [folio] = structuredClone(segregatedStatement as CasData).folios;
+    if (host.segregated === "later") {
+      const segregated = folio.schemes[1];
+      segregated.transactions = segregated.transactions.filter((row) => row.type !== "SEGREGATION");
+      segregated.open = "3067.481";
+    }
+    data.folios = [...data.folios, folio];
   }
   const [folio] = data.folios;
   const scheme = folio.schemes.find((s) => s.isin === host.sharedIsin);
