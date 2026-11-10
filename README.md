@@ -18,11 +18,11 @@ Wealthfolio fund for each scheme; the
 add-on searches by the ISIN printed on the statement, and by the fund's name if the ISIN finds
 nothing or none is printed. Name-search results can be other funds: pick one with the statement's
 fund name, plan and option, or leave the fund out. Badges beside the statement's name, each result
-and the confirmed fund show the plan (Direct or Regular) and option (Growth or IDCW, which older
-names call Dividend) that each name ends with, in spellings such as "Direct Plan - Growth",
-"Dir Gr" or Yahoo's "Reg Wk IDCW-R". A result's or confirmed fund's badge is a warning when the
-statement's name gives a different one. A name that doesn't give its plan or option has no badge
-for it, and no warning: the
+and the confirmed fund show the plan (Direct or Regular) and option (Growth, which some names call
+Cumulative, or IDCW, which older names call Dividend) that each name ends with, in spellings such
+as "Direct Plan - Growth", "Dir Gr" or Yahoo's "Reg Wk IDCW-R". A result's or confirmed fund's
+badge is a warning when the statement's name gives a different one. A name that doesn't give its
+plan or option has no badge for it, and no warning: the
 add-on doesn't guess it. Closed schemes, with no units at either end and
 nothing to import, are skipped. The preview lists every activity with its
 cash deposit or withdrawal (or [bank transfer](#bank-account)), the rows left out and why, and anything Wealthfolio already has. After

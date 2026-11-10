@@ -201,6 +201,40 @@ test("reads Yahoo's abbreviations between or after the plan and option", () => {
   }
 });
 
+test("reads the plan past AMFI's other option words, and Cumulative as Growth", () => {
+  const both = (plan, option) => ({ plan, option });
+  for (const [name, expected] of [
+    ["Fictiva Short Term Fund - Direct Plan - Discontinued Flexi IDCW", both("Direct", "IDCW")],
+    ["Fictiva Short Term Fund - Regular Plan - Discontinued Growth", both("Regular", "Growth")],
+    ["Fictiva Short Term Fund - Regular Plan - Discontinued Quarterly Dividend Plan", both("Regular", "IDCW")],
+    ["Fictiva Short Term Fund (the scheme has 2 segregated portfolios) - Regular Plan - Defunct Growth", both("Regular", "Growth")],
+    ["Fictiva Short Term Fund - Direct Plan - Defunct Weekly IDCW Reinvestment", both("Direct", "IDCW")],
+    ["Fictiva Corporate Bond Fund - Direct Plan - Semi Annual IDCW", both("Direct", "IDCW")],
+    ["Fictiva Corporate Bond Fund - Regular Plan - Semi-Annual IDCW", both("Regular", "IDCW")],
+    ["FICTIVA ARBITRAGE FUND - Direct Plan - Adhoc IDCW Option", both("Direct", "IDCW")],
+    ["Fictiva Charity Fund - Regular Plan - 50% IDCW Donation Option", both("Regular", "IDCW")],
+    ["Fictiva Charity Fund - Direct Plan - 75% IDCW Donation Option", both("Direct", "IDCW")],
+    // Some funds call their Growth option Cumulative.
+    ["Fictiva Nifty 50 Index Fund - Direct Plan - Cumulative", both("Direct", "Growth")],
+    ["Fictiva Equity Savings Fund - Regular Plan - Cumulative Option", both("Regular", "Growth")],
+    // An option that pays out or reinvests.
+    ["Fictiva Energy Fund - Direct Plan - IDCW-Payout & Reinvestment", both("Direct", "IDCW")],
+    ["Fictiva Energy Fund - Regular Plan - IDCW-PAYOUT & REINVESTMENT", both("Regular", "IDCW")],
+    ["Fictiva Energy Fund - Direct Plan - IDCW PAYOUT AND REINVESTMENT", both("Direct", "IDCW")],
+    ["Fictiva Energy Fund - Regular Plan - IDCW payout and reinvestment", both("Regular", "IDCW")],
+    ["Fictiva Energy Fund - Direct Plan - IDCW Payout aNd Reinvestment", both("Direct", "IDCW")],
+    ["Fictiva Energy Fund - Direct Plan - IDCW Payout and Re-InVeSt", both("Direct", "IDCW")],
+    ["Fictiva Liquid Fund (Regular Plan - IDCW Reinvestment aNd Payout)", both("Regular", "IDCW")],
+    ["FICTIVA ENERGY FUND - DIRECT PLAN - IDCW - PAYOUT-AND-REINVESTMENT", both("Direct", "IDCW")],
+    ["Fictiva Energy Fund - Direct Plan - IDCW - Dividend Payout & Reinvestment", both("Direct", "IDCW")],
+    ["Fictiva Arbitrage Fund - Regular Plan - IDCW - Payout & Re-investment of Income Distribution cum capital withdrawal option", both("Regular", "IDCW")],
+    ["Fictiva Gilt Fund - Direct Plan - Quarterly IDCW Payout and Re-Investment", both("Direct", "IDCW")],
+    ["Fictiva Liquid Fund - Regular Plan - Weekly - Reinvestment & Payout of Income Distribution cum Capital Withdrawal Option", both("Regular", "IDCW")],
+  ]) assert.deepEqual(planAndOption(name), expected, name);
+  // Neither Payout nor Reinvest names the option.
+  assert.deepEqual(planAndOption("Fictiva Small Cap Fund - Direct Plan - Payout and Reinvest"), { plan: "Direct" });
+});
+
 test("reads a Yahoo name whose words lost their spaces", () => {
   const both = (plan, option) => ({ plan, option });
   for (const [name, expected] of [
@@ -260,6 +294,17 @@ test("doesn't read the plan or option from the fund's own name", () => {
     ["Fictiva Fixed Maturity Plan A - Growth", { option: "Growth" }],
     ["Fictiva Fixed Maturity Plan G", {}],
     ["Fictiva Fund Constructor", {}],
+    ["Fictiva Cumulative Growth Fund - Regular Plan - IDCW", { plan: "Regular", option: "IDCW" }],
+    ["Fictiva Semi Annual Income Fund - Growth", { option: "Growth" }],
+    ["Fictiva Donation Fund", {}],
+    ["Fictiva Life Discontinued Pension Fund", {}],
+    // Nor past "and" or "&" outside an option that pays out and reinvests.
+    ["Fictiva Banking and PSU Debt Fund - Growth", { option: "Growth" }],
+    ["Fictiva Banking & PSU Debt Fund - Direct Plan - IDCW Payout & Reinvestment", { plan: "Direct", option: "IDCW" }],
+    ["Fictiva Payout and Reinvestment Fund - Growth", { option: "Growth" }],
+    ["Fictiva Savings Regular and Growth", { option: "Growth" }],
+    ["Fictiva Savings Direct & Payout", {}],
+    ["Fictiva Savings Direct & Payout & Reinvestment", {}],
     // Nor from a word that only looks like one of Yahoo's abbreviations, or a capital inside a word.
     ["Fictiva Regular Savings Mn IDCW-P", { option: "IDCW" }],
     ["Fictiva Annual Interval Instl Gr", { option: "Growth" }],
