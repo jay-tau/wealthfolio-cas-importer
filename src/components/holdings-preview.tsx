@@ -36,6 +36,7 @@ import {
   undecided,
   validCost,
 } from "../cas/holdings";
+import { focusDropped } from "../lib/focus";
 import { nameNumber } from "../lib/name-number";
 import { otherCurrency } from "./fund-choices";
 
@@ -378,9 +379,12 @@ export interface SavedSnapshots {
 export function HoldingsResult({ result, accounts }: { result: SavedSnapshots; accounts: Account[] }) {
   const name = (id: string) => accounts.find((a) => a.id === id)?.name ?? id;
   // Shown in place of the preview and its Save button, which had the focus: the first message takes
-  // it, or the title if the import stopped before saving or failing any snapshot.
+  // it, or the title if the import stopped before saving or failing any snapshot, unless the user
+  // moved it while the snapshots were saved.
   const first = useRef<HTMLDivElement>(null);
-  useEffect(() => first.current?.focus(), []);
+  useEffect(() => {
+    if (focusDropped()) first.current?.focus();
+  }, []);
   const lead = result.saved.length ? "saved" : result.failed.length ? "failed" : "title";
   const takesFocus = (part: typeof lead) => (part === lead ? { ref: first, tabIndex: -1 } : {});
   return (

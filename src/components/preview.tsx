@@ -31,6 +31,7 @@ import {
   sameUnits,
   type Status,
 } from "../cas/plan";
+import { focusDropped } from "../lib/focus";
 import { plural } from "../lib/plural";
 import { otherCurrency } from "./fund-choices";
 
@@ -347,9 +348,12 @@ export function ImportResult({
   closing: FundUnits[];
   links: BankLink[];
 }) {
-  // Shown in place of the preview and its Import button, which had the focus: the summary takes it.
+  // Shown in place of the preview and its Import button, which had the focus: the summary takes it,
+  // unless the user moved it while the import ran.
   const summaryRef = useRef<HTMLDivElement>(null);
-  useEffect(() => summaryRef.current?.focus(), []);
+  useEffect(() => {
+    if (focusDropped()) summaryRef.current?.focus();
+  }, []);
   const failedLinks = links.filter((l) => l.error);
   const { summary } = result;
   const failed = result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0);

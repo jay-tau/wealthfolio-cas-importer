@@ -1,10 +1,22 @@
 import { type RefCallback, type RefObject, useLayoutEffect, useRef } from "react";
 
 /**
+ * Whether the focus is still where the control the user pressed left it as it went away or was
+ * disabled: on the page's <body>, with this frame focused. Move the focus only then. A focus the
+ * user moved meanwhile stays where it is, in this frame or outside it: focusing an element in the
+ * add-on's frame would take the focus back from Wealthfolio's own pages, in all three engines.
+ */
+export function focusDropped() {
+  const active = document.activeElement;
+  return (!active || active === document.body) && document.hasFocus();
+}
+
+/**
  * Moves the focus to the control that takes the place of the one the user pressed, which is gone
  * after the change. Call `expect(key)` before the change, and give each control that can take its
- * place `ref={target(key)}`: the first of them shown after that gets the focus. `expect(null)`
- * drops a change that showed none, such as a failed preview.
+ * place `ref={target(key)}`: the first of them shown after that gets the focus, unless the user
+ * moved it meanwhile (see `focusDropped`). `expect(null)` drops a change that showed none, such as
+ * a failed preview.
  */
 export function useFocusMove() {
   const next = useRef<string | null>(null);
@@ -15,7 +27,7 @@ export function useFocusMove() {
     target: (key: string): RefCallback<HTMLElement> => (element) => {
       if (element && next.current === key) {
         next.current = null;
-        element.focus();
+        if (focusDropped()) element.focus();
       }
     },
   };
@@ -36,8 +48,7 @@ export function useFocusReturn(busy: boolean) {
     const hold = held.current;
     if (busy || !hold) return;
     held.current = null;
-    const active = document.activeElement;
-    if ((active && active !== document.body) || !document.hasFocus()) return;
+    if (!focusDropped()) return;
     (hold.origin.isConnected ? hold.origin : hold.fallback?.current)?.focus();
   }, [busy]);
   return {
