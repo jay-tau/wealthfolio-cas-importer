@@ -23,6 +23,7 @@ import {
   splitSince,
   statementAsset,
   type StatementHolding,
+  unlistedRefs,
 } from "../cas/holdings";
 import { engineTimeZone, fundRef } from "../cas/plan";
 import type { Statement } from "../cas/types";
@@ -31,7 +32,7 @@ import { type FundChoice, FundChoicesCard, type FundItem } from "../components/f
 import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } from "../components/holdings-accounts";
 import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
 import { type Checked, UnitsCheckCard } from "../components/units-check";
-import { holdingKey, LEFT_OUT, readImported, saveImports, sourceKey } from "../lib/choices";
+import { holdingKey, indexSources, LEFT_OUT, readImported, readUnlisted, saveImports, saveUnlisted, sourceKey } from "../lib/choices";
 import { useFocusReturn } from "../lib/focus";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
@@ -461,6 +462,9 @@ export function HoldingsImport({
           await readImported(api.storage, source, accountId, existing.get(accountId)!.date),
         ] as const),
       ));
+      // Earlier imports of the investor's folios, demat accounts and PRANs this statement doesn't list.
+      const unlisted = new Map(await Promise.all(ids.map(async (accountId) =>
+        [accountId, await readUnlisted(api.storage, accountId, holdings.investor, holdings.sources, existing.get(accountId)!.date)] as const)));
       const plans = planSnapshots(holdings, {
         account: accountOf,
         asset: (holding) => {
@@ -474,6 +478,7 @@ export function HoldingsImport({
         existing: (id) => existing.get(id)!,
         remembered: (source, accountId) => remembered.get(`${source.id}|${accountId}`) ?? new Map(),
         heldElsewhere: (ref, accountId) => (held.get(ref) ?? []).filter((o) => o.id !== accountId),
+        unlisted: (accountId) => unlisted.get(accountId) ?? [],
       });
       setPreview({ plans, quotes: new Map([...prices].flatMap(([id, p]) => p?.onDate ? [[id, p.onDate] as const] : [])) });
       setChoices(new Map(plans.map((p) => [p.accountId, noChoices()])));
@@ -509,6 +514,13 @@ export function HoldingsImport({
         saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, preview.quotes)));
         try {
           await saveImports(api.storage, plan.accountId, plan.date, importedRefs(plan, chosen));
+          await saveUnlisted(api.storage, plan.date, unlistedRefs(plan, chosen));
+          // Each folio, demat account and PRAN with a record in the account, so a later statement
+          // that doesn't list it finds what it added.
+          await indexSources(api.storage, plan.accountId, holdings.investor, [
+            ...plan.sources,
+            ...plan.unread.filter((u) => u.remembered.size > 0).map((u) => u.source),
+          ]);
         } catch {
           saved.unremembered = true;
         }
