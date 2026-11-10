@@ -24,6 +24,7 @@ import {
   splitSince,
   statementAsset,
   type StatementHolding,
+  unidentified,
   unlistedRefs,
 } from "../cas/holdings";
 import { engineTimeZone, fundRef } from "../cas/plan";
@@ -176,34 +177,45 @@ const manualQuote = (assetId: string, date: string, price: string, currency: str
 };
 
 /**
+ * The assets of the account's snapshot on the date, as saved: `fundRef` → ID, for those the save
+ * created or found. One whose profile can't be read is missing, as all are when the snapshot can't be
+ * read; the caller reports each one it misses.
+ */
+async function savedAssets(api: Api, accountId: string, date: string) {
+  const ids = new Map<string, string>();
+  try {
+    const profileOf = profiles(api);
+    await Promise.all((await api.snapshots.getByDate(accountId, date)).map(async (h) => {
+      try {
+        for (const [id, ref] of await refsOf(profileOf, [h])) ids.set(ref, id);
+      } catch {
+        // Keep readable assets' IDs.
+      }
+    }));
+  } catch {
+    // None found.
+  }
+  return ids;
+}
+
+/**
  * After the account's snapshot is saved: each manual-priced holding gets the statement's price, or
  * the price it had, on the snapshot's date, over the average cost the save wrote there
  * (wealthfolio/wealthfolio#2331); each bond's and NPS scheme's asset, and each asset of a fund or
- * share priced from statements, gets the statement's details.
+ * share priced from statements, gets the statement's details. `saved` gives `savedAssets`.
  * Returns what didn't work.
  */
-async function afterSave(api: Api, plan: AccountPlan, chosen: Choices, listed: ReadonlyMap<string, string>, quotes: ReadonlyMap<string, Quote>, snapshotSaved = true): Promise<Unfinished[]> {
+async function afterSave(
+  api: Api, plan: AccountPlan, chosen: Choices, listed: ReadonlyMap<string, string>, quotes: ReadonlyMap<string, Quote>,
+  saved: () => Promise<ReadonlyMap<string, string>>, snapshotSaved = true,
+): Promise<Unfinished[]> {
   const unfinished: Unfinished[] = [];
   const prices = pricesToSave(plan, chosen, listed);
   const described = snapshotSaved ? plan.positions.filter((p) => p.lines.length && included(p, chosen) && keepsDetails(p)) : [];
   if (!prices.length && !described.length) return unfinished;
   const idOf = (p: PlannedPosition) => p.existing?.assetId ?? p.asset?.assetId;
   // An asset the save created or found: `fundRef` → ID.
-  const ids = new Map<string, string>();
-  if (prices.some((p) => !p.assetId) || described.some((p) => !idOf(p))) {
-    try {
-      const profileOf = profiles(api);
-      await Promise.all((await api.snapshots.getByDate(plan.accountId, plan.date)).map(async (h) => {
-        try {
-          for (const [id, ref] of await refsOf(profileOf, [h])) ids.set(ref, id);
-        } catch {
-          // Keep readable assets' IDs; each unresolved holding below is reported.
-        }
-      }));
-    } catch {
-      // Each holding below is reported.
-    }
-  }
+  const ids = prices.some((p) => !p.assetId) || described.some((p) => !idOf(p)) ? await saved() : new Map<string, string>();
   for (const p of prices) {
     const assetId = p.assetId ?? ids.get(p.ref);
     // A failed save left no snapshot to find a new asset in, and the failure is already reported.
@@ -468,12 +480,13 @@ export function HoldingsImport({
         const snapshot = existing.get(accountId)!;
         return { accountId, snapshot, records: await readUnlisted(api.storage, accountId, holdings.investor, holdings.sources, snapshot.date) };
       }));
-      // The remembered choices of holdings recorded under a `fundRef` the account doesn't hold, which
-      // may be their asset's earlier one; the statement's holdings' as they are on the Holdings card.
-      const read = [...records, ...unlistedRecords.flatMap(({ snapshot, records }) => records.map((u) => ({ snapshot, record: u.remembered })))];
+      // The remembered choices of holdings recorded without an asset ID under a `fundRef` the account
+      // doesn't hold, which may be their asset's earlier one; the statement's holdings' as they are on
+      // the Holdings card.
+      const read = [...records, ...unlistedRecords.flatMap(({ snapshot, records }) => records.map((record) => ({ snapshot, record })))];
       const keys = new Set(read.flatMap(({ snapshot, record }) => {
         const held = new Set(snapshot.positions.map((p) => p.ref));
-        return [...record].flatMap(([ref, security]) => (held.has(ref) ? [] : security.map(securityKey)));
+        return [...record.remembered].flatMap(([ref, security]) => (held.has(ref) || record.ids?.has(ref) ? [] : security.map(securityKey)));
       }));
       const current = new Map(items.map(({ key }) => {
         const choice = fundChoices[key];
@@ -482,7 +495,7 @@ export function HoldingsImport({
       const confirmed = await readRecordChoices(api.storage, keys, current);
       const remembered = new Map(records.map(({ key, snapshot, record }) => [key, reconcileRecord(record, snapshot, confirmed)]));
       const unlisted = new Map(unlistedRecords.map(({ accountId, snapshot, records }) =>
-        [accountId, records.map((u) => ({ ...u, remembered: reconcileRecord(u.remembered, snapshot, confirmed) }))]));
+        [accountId, records.map(({ keys, ...record }) => ({ keys, ...reconcileRecord(record, snapshot, confirmed) }))]));
       const plans = planSnapshots(holdings, {
         account: accountOf,
         asset: (holding) => {
@@ -494,7 +507,8 @@ export function HoldingsImport({
           return { ...asset, assetId: undefined, ...resolved.get(ref), manual: modes.get(ref) ?? asset.manual ?? asset.statementPrices };
         },
         existing: (id) => existing.get(id)!,
-        remembered: (source, accountId) => remembered.get(`${source.id}|${accountId}`) ?? new Map(),
+        remembered: (source, accountId) => remembered.get(`${source.id}|${accountId}`)?.remembered ?? new Map(),
+        recorded: (source, accountId) => remembered.get(`${source.id}|${accountId}`) ?? {},
         heldElsewhere: (ref, accountId) => (held.get(ref) ?? []).filter((o) => o.id !== accountId),
         unlisted: (accountId) => unlisted.get(accountId) ?? [],
       });
@@ -526,18 +540,25 @@ export function HoldingsImport({
         } catch (e) {
           saved.failed.push({ accountId: plan.accountId, error: String(e) });
           // A failed host save can already have written average-cost quotes.
-          saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, preview.quotes, false)));
+          saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, preview.quotes, () => savedAssets(api, plan.accountId, plan.date), false)));
           continue;
         }
-        saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, preview.quotes)));
+        let assets: Promise<Map<string, string>> | undefined;
+        const savedIds = () => (assets ??= savedAssets(api, plan.accountId, plan.date));
+        saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, preview.quotes, savedIds)));
         try {
-          await saveImports(api.storage, plan.accountId, plan.date, importedRefs(plan, chosen));
+          // The IDs of the assets the save created or found, so that a later import can follow them
+          // after their symbol or exchange changes. A record without one goes by remembered choices.
+          const unknown = unidentified(plan, chosen);
+          const found = unknown.length ? await savedIds() : new Map<string, string>();
+          if (unknown.some((ref) => !found.has(ref))) saved.unremembered = true;
+          await saveImports(api.storage, plan.accountId, plan.date, importedRefs(plan, chosen, found));
           await saveUnlisted(api.storage, plan.date, unlistedRefs(plan, chosen));
           // Each folio, demat account and PRAN with a record in the account, so a later statement
           // that doesn't list it finds what it added.
           await indexSources(api.storage, plan.accountId, holdings.investor, [
             ...plan.sources,
-            ...plan.unread.filter((u) => u.remembered.size > 0).map((u) => u.source),
+            ...plan.unread.filter((u) => u.remembered.size > 0 || u.aside?.size).map((u) => u.source),
           ]);
         } catch {
           saved.unremembered = true;

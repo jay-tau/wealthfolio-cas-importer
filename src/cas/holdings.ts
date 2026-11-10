@@ -396,6 +396,8 @@ export interface PlanInput {
    * for the folios, demat accounts and PRANs this import leaves out too.
    */
   remembered(source: Source, accountId: string): ReadonlyMap<string, string[]>;
+  /** The asset IDs and set-aside holdings of `remembered`'s record, as `reconcileRecord` gives them, to save with it. */
+  recorded?(source: Source, accountId: string): Recorded;
   /** Other accounts that hold this asset now. */
   heldElsewhere(ref: string, accountId: string): OtherAccount[];
   /**
@@ -405,14 +407,31 @@ export interface PlanInput {
   unlisted?(accountId: string): Unlisted[];
 }
 
+/** An earlier import's record of the holdings a folio, demat account or PRAN added to an account. */
+export interface ImportRecord extends Recorded {
+  /** `fundRef` → security identities. */
+  remembered: ReadonlyMap<string, string[]>;
+}
+
+/** What an import record has besides its holdings by `fundRef`. */
+export interface Recorded {
+  /** `fundRef` → asset ID, for the holdings of `remembered` and `aside` whose asset an import knew. */
+  ids?: ReadonlyMap<string, string>;
+  /**
+   * Holdings of assets the account's snapshot doesn't hold, recorded under a `fundRef` that another
+   * asset now has: never matched to that asset. Left-out and unlisted records keep them on cleanup
+   * saves; an included source keeps only those sharing a held-back misread line's identifiers.
+   * An entry for the current asset under that `fundRef` takes their place.
+   */
+  aside?: ReadonlyMap<string, string[]>;
+}
+
 /**
  * An earlier import's record of a folio, demat account or PRAN that the statement doesn't list:
  * only hashed storage keys identify the linked records.
  */
-export interface Unlisted {
+export interface Unlisted extends ImportRecord {
   keys: string[];
-  /** `fundRef` → security identities, as `remembered` gives them. */
-  remembered: ReadonlyMap<string, string[]>;
 }
 
 /** A holding as a folio, demat account or PRAN lists it. */
@@ -475,8 +494,10 @@ export interface AccountPlan {
   /** The statement's folios and demat accounts that go to this account. */
   sources: Source[];
   remembered: Map<string, ReadonlyMap<string, string[]>>;
+  /** What `recorded` gives for each of `sources`, by source ID. */
+  recorded: Map<string, Recorded>;
   /** The statement's folios, demat accounts and PRANs this import leaves out, with what their earlier imports into this account recorded. */
-  unread: { source: Source; remembered: ReadonlyMap<string, string[]> }[];
+  unread: ({ source: Source } & ImportRecord)[];
   /** The records of folios, demat accounts and PRANs the statement doesn't list. */
   unlisted: Unlisted[];
   positions: PlannedPosition[];
@@ -506,13 +527,14 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
         ]),
       );
       plan = {
-        accountId, date: holdings.date, existing, sources: [], remembered: new Map(), unread: [],
+        accountId, date: holdings.date, existing, sources: [], remembered: new Map(), recorded: new Map(), unread: [],
         unlisted: input.unlisted?.(accountId) ?? [], positions: [], byRef, misread: [],
       };
       plans.set(accountId, plan);
     }
     plan.sources.push(source);
     plan.remembered.set(source.id, input.remembered(source, accountId));
+    plan.recorded.set(source.id, input.recorded?.(source, accountId) ?? {});
     plan.misread.push(...(source.misread ?? []).map((holding) => ({ source, holding })));
     for (const holding of source.holdings) {
       const chosen = input.asset(holding);
@@ -557,7 +579,8 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     settleOthers(positions, plan.sources, plan.accountId, input, elsewhere);
     // The statement's holdings in its order, then the account's others in theirs.
     positions.sort((a, b) => a.order - b.order);
-    return { ...plan, unread: unread.map((source) => ({ source, remembered: input.remembered(source, plan.accountId) })), positions };
+    const records = unread.map((source) => ({ source, remembered: input.remembered(source, plan.accountId), ...input.recorded?.(source, plan.accountId) }));
+    return { ...plan, unread: records, positions };
   });
 }
 
@@ -1059,17 +1082,20 @@ function existingHolding(p: ExistingPosition): SnapshotHoldingInput {
 
 /**
  * A source's import record, with each holding recorded under an earlier `fundRef` of an asset in the
- * account's snapshot moved to the asset's current one, which later imports read it by. A remembered
- * choice gives an asset ID and its own symbol and exchange; only one whose `fundRef` matches the
- * recorded key tells which asset it was. A `fundRef` the snapshot holds stays with its own asset,
- * and one that choices give to two assets stays as it is: a record never moves to an asset only
- * because a holding is now confirmed to it.
+ * account's snapshot moved to the asset's current one, which later imports read it by.
+ *
+ * A holding's recorded asset ID tells its asset. One whose asset the snapshot doesn't hold stays under
+ * its `fundRef`, or is set aside when another asset now has it. A holding recorded without one goes by
+ * the remembered choices: a choice gives an asset ID and its own symbol and exchange, and only one
+ * whose `fundRef` matches the recorded key tells which asset it was. Such a holding under a `fundRef`
+ * the snapshot holds stays with that asset, and one under a `fundRef` that choices give to two assets
+ * stays as it is: a record never moves to an asset only because a holding is now confirmed to it.
  */
 export function reconcileRecord(
-  record: ReadonlyMap<string, string[]>,
+  { remembered, ids = new Map() }: ImportRecord,
   existing: ExistingSnapshot,
   choices: Iterable<Pick<ChosenAsset, "symbol" | "exchangeMic" | "assetId">>,
-) {
+): Required<ImportRecord> {
   const named = new Map<string, string | null>();
   for (const { symbol, exchangeMic, assetId } of choices) {
     if (!assetId) continue;
@@ -1077,72 +1103,136 @@ export function reconcileRecord(
     named.set(ref, named.has(ref) && named.get(ref) !== assetId ? null : assetId);
   }
   const current = new Map(existing.positions.map((p) => [p.assetId, p.ref]));
-  const held = new Set(current.values());
+  const holder = new Map(existing.positions.map((p) => [p.ref, p.assetId]));
   const reconciled = new Map<string, string[]>();
-  for (const [ref, security] of record) {
-    const assetId = named.get(ref);
-    const to = (!held.has(ref) && assetId && current.get(assetId)) || ref;
+  const known = new Map<string, string>();
+  const aside = new Map<string, string[]>();
+  for (const [ref, security] of remembered) {
+    const id = ids.get(ref);
+    let to = ref;
+    if (id !== undefined) {
+      if (current.has(id)) to = current.get(id)!;
+      else if (holder.has(ref)) {
+        aside.set(ref, security);
+        continue;
+      }
+    } else {
+      const assetId = named.get(ref);
+      to = (!holder.has(ref) && assetId && current.get(assetId)) || ref;
+    }
     reconciled.set(to, [...new Set([...(reconciled.get(to) ?? []), ...security])]);
+    const asset = holder.get(to) ?? id;
+    if (asset !== undefined) known.set(to, asset);
   }
-  return reconciled;
+  // A record keeps one holding by `fundRef`: one of the asset that has it now.
+  for (const ref of aside.keys()) {
+    if (reconciled.has(ref)) aside.delete(ref);
+    else known.set(ref, ids.get(ref)!);
+  }
+  return { remembered: reconciled, ids: known, aside };
 }
 
+/** The asset a statement row's units go in under: the account's, or the resolved choice's. */
+const assetIdOf = (position: PlannedPosition) => position.existing?.assetId ?? position.asset?.assetId;
+
 /**
- * What each source put into the account (`fundRef` → `security`), to remember after the import. A
+ * The `fundRef`s of the statement rows the snapshot imports without a known asset: saving it creates
+ * or finds their assets by symbol and exchange, so `importedRefs` gets their IDs from the saved snapshot.
+ */
+export const unidentified = (plan: AccountPlan, choices: Choices) =>
+  [...new Set(plan.positions.filter((p) => p.lines.length && included(p, choices) && !assetIdOf(p)).map((p) => p.ref))];
+
+/**
+ * What each source put into the account (`fundRef` → `security`, and → asset ID where it's known), to
+ * remember after the import. `found` has the IDs of `unidentified` rows' assets (`fundRef` → ID). A
  * left-out source's record comes too when the import replaces or removes the account's units of a
  * holding it recorded: without that holding, since none of those units are its own any more.
  */
-export function importedRefs(plan: AccountPlan, choices: Choices) {
+export function importedRefs(plan: AccountPlan, choices: Choices, found: ReadonlyMap<string, string> = new Map()) {
   const kept = keptRefs(plan, choices);
   const heldBack = plan.positions.filter((p) => p.misread && p.existing);
   const ids = new Set(heldBack.flatMap((p) => [...p.lines, ...p.misread!].flatMap((l) => security(l.holding))));
-  const refs = new Map(plan.sources.map((source) => [source.id, {
-    // Held-back positions keep their recorded identifiers even under an earlier symbol.
-    source, refs: underRows([...(plan.remembered.get(source.id) ?? [])].filter(([ref, security]) => kept.has(ref) || security.some((id) => ids.has(id))), kept),
-  }]));
+  // Held-back positions keep their recorded identifiers even under an earlier symbol.
+  const misread = ([, security]: [string, string[]]) => security.some((id) => ids.has(id));
+  const refs = new Map(plan.sources.map((source) => {
+    const record = { remembered: plan.remembered.get(source.id) ?? new Map(), ...plan.recorded.get(source.id) };
+    const saved = underRows([...record.remembered].filter((entry) => kept.has(entry[0]) || misread(entry)), kept, record.ids);
+    return [source.id, { source, ...saved }];
+  }));
   for (const position of plan.positions) {
     if (!position.lines.length || !included(position, choices)) continue;
+    const assetId = assetIdOf(position) ?? found.get(position.ref);
     for (const { source, holding } of position.lines) {
-      const saved = refs.get(source.id)!.refs;
-      saved[position.ref] = [...new Set([...(saved[position.ref] ?? []), ...security(holding)])];
+      const saved = refs.get(source.id)!;
+      saved.refs[position.ref] = [...new Set([...(saved.refs[position.ref] ?? []), ...security(holding)])];
+      if (assetId) saved.ids[position.ref] = assetId;
+      else delete saved.ids[position.ref];
     }
   }
+  for (const [id, saved] of refs) withAside(saved, plan.recorded.get(id) ?? {}, misread);
   const replaced = replacedRefs(plan, choices);
-  const cleared = plan.unread.flatMap(({ source, remembered }) => {
-    const left = without(remembered, replaced, kept);
-    return left ? [{ source, refs: left }] : [];
+  const cleared = plan.unread.flatMap(({ source, ...record }) => {
+    const left = without(record, replaced, kept);
+    return left ? [{ source, ...left }] : [];
   });
   return [...refs.values(), ...cleared];
 }
 
 /**
- * Each kept asset's recorded `fundRef` → its row's, which later imports read it by: an asset ID can
- * match a row to the snapshot's asset under an earlier one. Held-back assets are kept too.
+ * Each kept asset's recorded `fundRef` → its row's, which later imports read it by, and its ID: an
+ * asset ID can match a row to the snapshot's asset under an earlier one. Held-back assets are kept too.
  */
 function keptRefs(plan: AccountPlan, choices: Choices) {
   const updated = new Set(plan.positions.filter((p) => p.lines.length && included(p, choices)).map((p) => p.ref));
-  const kept = new Map<string, string>();
+  const kept = new Map<string, { ref: string; assetId: string }>();
   for (const p of plan.positions) {
     const keeps = p.existing && !updated.has(p.ref) && !removed(p, choices) && (p.lines.length || included(p, choices));
-    if (keeps || (p.misread && p.existing)) for (const ref of [p.existing!.ref, p.ref]) kept.set(ref, p.ref);
+    if (keeps || (p.misread && p.existing)) for (const ref of [p.existing!.ref, p.ref]) kept.set(ref, { ref: p.ref, assetId: p.existing!.assetId });
   }
   return kept;
 }
 
-/** Recorded holdings, a kept asset's under its row's `fundRef`. */
-function underRows(entries: [string, string[]][], kept: ReadonlyMap<string, string>) {
-  const record: Record<string, string[]> = {};
-  for (const [ref, security] of entries) {
-    const to = kept.get(ref) ?? ref;
-    record[to] = [...new Set([...(record[to] ?? []), ...security])];
-  }
-  return record;
+/** A record to save: `fundRef` → security identities, and → asset ID where it's known. */
+interface SavedRecord {
+  refs: Record<string, string[]>;
+  ids: Record<string, string>;
+  /** Set-aside refs, so a linked source's entry for the current asset can take their place on saving. */
+  aside?: Set<string>;
 }
 
-/** A record without the replaced `fundRef`s, a kept asset's under its row's, or undefined when it has none of them. */
-function without(remembered: ReadonlyMap<string, string[]>, replaced: ReadonlySet<string>, kept: ReadonlyMap<string, string>) {
-  const left = [...remembered].filter(([ref]) => !replaced.has(ref));
-  return left.length < remembered.size ? underRows(left, kept) : undefined;
+/** Recorded holdings, a kept asset's under its row's `fundRef` with its ID, others with their recorded ID. */
+function underRows(entries: [string, string[]][], kept: ReturnType<typeof keptRefs>, recorded: ReadonlyMap<string, string> = new Map()): SavedRecord {
+  const saved: SavedRecord = { refs: {}, ids: {} };
+  for (const [ref, security] of entries) {
+    const to = kept.get(ref);
+    const at = to?.ref ?? ref;
+    saved.refs[at] = [...new Set([...(saved.refs[at] ?? []), ...security])];
+    const id = to?.assetId ?? recorded.get(ref);
+    if (id) saved.ids[at] = id;
+  }
+  return saved;
+}
+
+/** `saved` with the record's set-aside holdings that `keep` accepts, under a `fundRef` it doesn't use. */
+function withAside(saved: SavedRecord, { ids, aside = new Map() }: Recorded, keep: (entry: [string, string[]]) => boolean = () => true) {
+  for (const entry of aside) {
+    const [ref, security] = entry;
+    if (Object.keys(saved.refs).includes(ref) || !keep(entry)) continue;
+    saved.refs[ref] = security;
+    (saved.aside ??= new Set()).add(ref);
+    const id = ids?.get(ref);
+    if (id) saved.ids[ref] = id;
+  }
+  return saved;
+}
+
+/**
+ * A record without the replaced `fundRef`s, a kept asset's under its row's, or undefined when it has
+ * none of them. Its set-aside holdings stay.
+ */
+function without(record: ImportRecord, replaced: ReadonlySet<string>, kept: ReturnType<typeof keptRefs>) {
+  const left = [...record.remembered].filter(([ref]) => !replaced.has(ref));
+  return left.length < record.remembered.size ? withAside(underRows(left, kept, record.ids), record) : undefined;
 }
 
 /**
@@ -1153,9 +1243,9 @@ function without(remembered: ReadonlyMap<string, string[]>, replaced: ReadonlySe
 export function unlistedRefs(plan: AccountPlan, choices: Choices) {
   const replaced = replacedRefs(plan, choices);
   const kept = keptRefs(plan, choices);
-  return plan.unlisted.flatMap(({ keys, remembered }) => {
-    const refs = without(remembered, replaced, kept);
-    return refs ? [{ keys, refs }] : [];
+  return plan.unlisted.flatMap(({ keys, ...record }) => {
+    const left = without(record, replaced, kept);
+    return left ? [{ keys, refs: left.refs, ids: left.ids }] : [];
   });
 }
 
