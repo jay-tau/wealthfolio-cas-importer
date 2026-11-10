@@ -67,6 +67,8 @@ export interface MappedTransaction {
    * links the two, as they have the same day, fund, units and price.
    */
   receiving?: { folio: string; scheme: string; rows: CasTransaction[]; activity: ActivityImport };
+  /** Fields of `activity` whose values stand in for ones the statement doesn't give. */
+  standIns?: (keyof ActivityImport)[];
 }
 
 export interface MappingWarning {
@@ -93,7 +95,7 @@ const ZERO = dec("0");
 /** casparser's tolerance when it checks the rows against the printed unit balances. */
 const UNIT_TOLERANCE = dec("0.005");
 
-type Kind = "buy" | "sell" | "payout" | "reinvest" | "gift";
+type Kind = "buy" | "sell" | "payout" | "reinvest" | "gift" | "segregation";
 
 const KINDS: Partial<Record<TransactionType, Kind>> = {
   PURCHASE: "buy",
@@ -107,16 +109,17 @@ const KINDS: Partial<Record<TransactionType, Kind>> = {
   DIVIDEND_REINVEST: "reinvest",
   GIFT_IN: "gift",
   GIFT_OUT: "gift",
+  SEGREGATION: "segregation",
 };
 
 /**
- * Charge rows, and the transactions each kind can belong to. A charge on a gift's day may be the
- * gift's, which a transfer can't carry, so it keeps the gift out.
+ * Charge rows, and the transactions each kind can belong to. A charge on a gift's or a segregated
+ * portfolio's credit's day may be theirs, which their rows can't carry, so it keeps them out.
  */
 const CHARGES: Partial<Record<TransactionType, { name: string; kinds: Kind[] }>> = {
-  STAMP_DUTY_TAX: { name: "stamp duty", kinds: ["buy", "reinvest", "gift"] },
-  STT_TAX: { name: "STT", kinds: ["sell", "gift"] },
-  TDS_TAX: { name: "TDS", kinds: ["sell", "payout", "reinvest", "gift"] },
+  STAMP_DUTY_TAX: { name: "stamp duty", kinds: ["buy", "reinvest", "gift", "segregation"] },
+  STT_TAX: { name: "STT", kinds: ["sell", "gift", "segregation"] },
+  TDS_TAX: { name: "TDS", kinds: ["sell", "payout", "reinvest", "gift", "segregation"] },
 };
 
 /** Rows whose money comes from or goes to the investor's bank account. */
@@ -124,7 +127,6 @@ const BANKED = new Set<TransactionType>(["PURCHASE", "PURCHASE_SIP", "REDEMPTION
 
 /** Rows #1 leaves for later. */
 const UNSUPPORTED: Partial<Record<TransactionType, string>> = {
-  SEGREGATION: "Segregated portfolios aren't imported yet.",
   UNKNOWN: "casparser couldn't tell what this row is, so it isn't imported.",
   MISC: "casparser couldn't tell what this row is, so it isn't imported.",
 };
@@ -168,6 +170,7 @@ interface Entry {
     note?: string;
     /** A merger's rows as v1.2.0 and earlier imported them. */
     earlier?: ActivityImport[];
+    standIns?: (keyof ActivityImport)[];
   };
 }
 
@@ -177,6 +180,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   );
   for (const folio of data.folios) matchMergers(schemes.filter((s) => s.folio === folio));
   matchGifts(schemes);
+  checkSegregated(schemes);
   for (const entry of schemes.flatMap((s) => s.entries)) {
     const target = entry.scheme.target;
     if (!entry.kind || entry.problem || entry.scheme.problem || !target) continue;
@@ -184,9 +188,14 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
       ? conversionRows(entry, target)
       : entry.kind === "gift"
         ? giftRows(entry, target)
-        : buildRows(entry, target);
+        : entry.kind === "segregation"
+          ? segregationRows(entry, target)
+          : buildRows(entry, target);
     if (typeof rows === "string") entry.problem = rows;
-    else entry.rows = rows;
+    else {
+      entry.rows = rows;
+      if (entry.kind === "sell" && segregated(entry.scheme)) rows.note = [rows.note, SEGREGATED_PAYOUT].filter(Boolean).join(" ");
+    }
   }
   const fails = (entry: Entry) => !!(entry.problem || entry.scheme.problem || heldBack(entry.scheme));
   for (const scheme of schemes) {
@@ -258,13 +267,14 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
         });
         if (entry.rows.note) warn(rows, entry.rows.note, false);
       } else if (entry.rows) {
-        const { activity, cash, bank, note } = entry.rows;
+        const { activity, cash, bank, note, standIns } = entry.rows;
         mapping.transactions.push({
           ...names,
           rows,
           activity: number(activity),
           cash: cash && number(cash),
           bank: bank && number(bank),
+          ...(standIns && { standIns }),
         });
         if (note) warn(rows, note, false);
       }
@@ -555,6 +565,52 @@ function pairGifts(schemes: Scheme[], fails: (entry: Entry) => boolean, input: M
     }
     rows.note = notes.filter(Boolean).join(" ") || undefined;
   }
+}
+
+/** A segregated portfolio: casparser credits its units in `SEGREGATION` rows, or its name says so. */
+const segregated = ({ scheme }: Scheme) =>
+  scheme.transactions.some((row) => row.type === "SEGREGATION") || /\bsegregated\s+portfolio\b/i.test(scheme.scheme);
+
+/**
+ * #1: a segregated portfolio confirmed as the same Wealthfolio asset as a fund that isn't one, such as
+ * its main fund found by name, would add its units to that fund and sell them at its own NAV.
+ */
+function checkSegregated(schemes: Scheme[]) {
+  for (const state of schemes.filter((s) => s.target && !s.problem && segregated(s))) {
+    const other = schemes.find((s) => s.target && !segregated(s) && confirmedFund(s) === confirmedFund(state));
+    if (other) {
+      state.problem = `This segregated portfolio is confirmed as the same Wealthfolio asset as ${other.scheme.scheme}, so its transactions are left out. Under Funds, confirm the segregated portfolio's own fund: search its ISIN or AMFI scheme code.`;
+    }
+  }
+}
+
+const SEGREGATION_NOTE =
+  "Units credited in a segregated portfolio, imported at a stand-in cost of ₹0 with no cash. For tax, they cost the main portfolio units' cost × the segregated assets' NAV ÷ the whole portfolio's NAV just before segregation, and the main portfolio units' cost goes down by as much, but the statement doesn't give these NAVs. Wealthfolio can't move part of a holding's cost to another fund, so the main fund keeps its whole cost there: unless that share is zero, each fund's cost and later gains in Wealthfolio differ from those for tax. Wealthfolio also counts these units' holding period from this day; for tax, they're held from when the main portfolio's units were bought.";
+
+/** On a later statement too, where the credit is in Wealthfolio already. */
+const SEGREGATED_PAYOUT =
+  "A payout from a segregated portfolio: Wealthfolio counts its gain against the cost it has for these units, a stand-in ₹0 if the add-on imported them. For tax, they cost a share of the main portfolio units' cost and are held from when those were bought.";
+
+/**
+ * #1: units a segregated portfolio credits, as a purchase with a zero total: no cash moves, and
+ * the units cost ₹0 until the user corrects it. No unit price, which Wealthfolio would save as the
+ * day's NAV of a fund priced by hand.
+ */
+function segregationRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"]> | string {
+  const { row } = entry;
+  if (entry.charges.length) {
+    const names = [...new Set(entry.charges.map((charge) => CHARGES[charge.type]!.name))].join(" and ");
+    return `This segregated portfolio credit has ${names} on its day, which a purchase at ₹0 can't carry without a cash movement the statement doesn't show, so it isn't imported.`;
+  }
+  if (row.units === null || dec(row.units).n <= 0n) return "This row has no units, or units with the wrong sign.";
+  if (row.amount !== null && !isZero(dec(row.amount))) {
+    return `This segregated portfolio row lists ₹${format(abs(dec(row.amount)))}, which units credited without a payment don't have, so it isn't imported. Check it against the PDF.`;
+  }
+  return {
+    activity: { ...baseRow(entry, target), ...assetOf(entry, target), activityType: "BUY", quantity: row.units, amount: "0" },
+    note: SEGREGATION_NOTE,
+    standIns: ["amount"],
+  };
 }
 
 function reversalMessage(original: Entry, input: MappingInput) {

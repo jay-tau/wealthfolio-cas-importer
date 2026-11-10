@@ -1,6 +1,6 @@
 """Write a MADE-UP CAMS detailed Consolidated Account Statement PDF.
 
-Usage: python make_cas.py out.pdf [--mismatch] [--no-price] [--no-password]
+Usage: python make_cas.py out.pdf [--mismatch | --segregated] [--no-price] [--no-password]
 
 Everything in the statement is invented: investor, PAN (ABCDE1234F, the
 PDF's user password), address, email, phone, folios, AMCs ("Fictiva Mutual
@@ -27,6 +27,13 @@ consistent. --mismatch drops one SIP purchase row so casparser reports one
 unit-balance discontinuity in parse_warnings. --no-price leaves out the Price
 column, header and cells, as casparser says some older CAMS and KFintech
 layouts do; casparser then gives each trade amount / units as its NAV.
+--segregated writes another statement instead: a made-up credit risk fund
+that moves a downgraded bond into a segregated portfolio, laid out like a
+real CAMS statement's segregated portfolio (casparser issue #46): the
+segregated portfolio is its own scheme with its own ISIN, its "Creation of
+units" rows print only units and the unit balance, a second such row on the
+same day adds a few more units, and a note under its closing line says how
+the cost of acquisition is split.
 
 Output is AES-256 (R6) encrypted with user password "ABCDE1234F", or with
 --no-password not encrypted, like a statement saved again without its password.
@@ -146,6 +153,7 @@ class Scheme:
     balance: Decimal = D(0)
     lots: List[List[Decimal]] = field(default_factory=list)  # FIFO [units, cost]
     header_lines: Optional[List[str]] = None  # override scheme line wrapping
+    note: Optional[str] = None  # a line printed under the scheme's closing line
 
     def __post_init__(self):
         self.balance = self.open_units
@@ -201,6 +209,12 @@ class Scheme:
     def idcw_reinvest(self, dt, rate, ex_nav):
         gross = q(self.balance * rate, 2)
         self.buy(dt, f"IDCW Reinvestment @ Rs.{rate} per unit", gross, ex_nav)
+
+    def segregate(self, dt, desc, units):
+        """Units credited in a segregated portfolio: no amount and no price."""
+        self.balance += units
+        self.rows.append(Row(dt, desc, units=units, balance=self.balance))
+        self._add_lot(units, D(0))
 
     def misc(self, dt, desc):
         self.rows.append(Row(dt, desc))
@@ -355,6 +369,41 @@ def build_portfolio() -> List[Folio]:
     ]
 
 
+def build_segregated_portfolio() -> List[Folio]:
+    """A credit event: a bond the fund holds is downgraded, and the fund moves it
+    into a segregated portfolio, crediting one of its units for each unit held."""
+    credit = Scheme(
+        code="FCRDG",
+        name="Fictiva Credit Risk Fund - Direct Plan - Growth",
+        isin=isin("INFZ90K01CR"),
+        advisor="DIRECT",
+        rta="CAMS",
+        nominee="RAVI TESTWALA",
+        close_nav=D("27.8104"),
+    )
+    segregated = Scheme(
+        code="FCRS1",
+        name="Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth",
+        isin=isin("INFZ90K01S1"),
+        advisor="DIRECT",
+        rta="CAMS",
+        nominee="RAVI TESTWALA",
+        close_nav=D("0.2500"),
+        note="The cost of acquisition of units allotted in the segregated portfolio is proportionate to the net assets of the scheme prior to segregation.",
+    )
+    credit.buy(date(2023, 5, 8), "Purchase - Online", D(50000), D("24.1630"))
+    credit.buy(date(2023, 10, 9), "Purchase - Online", D(25000), D("25.0412"))
+    # The bond is segregated on 16-Feb-2024; the main portfolio prints no row that day.
+    held = credit.balance
+    day = date(2024, 2, 16)
+    segregated.segregate(day, "Creation of units - Segregated Portfolio", held - D("0.013"))
+    segregated.segregate(day, "Creation of units - Segregated Portfolio", D("0.013"))
+    # A partial recovery is paid out by extinguishing units at the segregated NAV.
+    segregated.sell(date(2024, 9, 20), "Payment - Units Extinguished", q(held / 2, 3), D("0.6000"), stt=False)
+    credit.sell(date(2024, 11, 4), "Redemption - Online", D("500.000"), D("26.9327"), stt=False)
+    return [Folio("Fictiva Mutual Fund", "91234568 / 31", INVESTOR["name"], [credit, segregated])]
+
+
 # ----------------------------------------------------------------- layout
 
 PAGE_W, PAGE_H = A4
@@ -473,7 +522,7 @@ def lay_out(folios: List[Folio], drop_tag: Optional[str], price: bool) -> Layout
                     L.advance(CONT_STEP)
                     L.text(X_DESC, L.y, r.cont)
                 L.advance(ROW_STEP)
-            L.need(12)
+            L.need(12 + (10 if s.note else 0))
             L.advance(2)
             to = dstr(PERIOD_TO)
             parts = [
@@ -488,6 +537,11 @@ def lay_out(folios: List[Folio], drop_tag: Optional[str], price: bool) -> Layout
                 x += stringWidth(p, BOLD, 7) + 14
             if x - 14 > X_BAL + 5:
                 raise SystemExit(f"footer line too wide ({x:.0f}pt)")
+            if s.note:
+                L.advance(10)
+                if stringWidth(s.note, FONT, 7) > X_BAL - X_DATE:
+                    raise SystemExit(f"scheme note too wide: {s.note!r}")
+                L.text(X_DATE, L.y, s.note, FONT, 7)
             L.advance(18)
     return L
 
@@ -575,9 +629,9 @@ def page_one_banner(c, folios: List[Folio]):
 def main(argv: List[str]) -> None:
     args = [a for a in argv if not a.startswith("--")]
     flags = {a for a in argv if a.startswith("--")}
-    if len(args) != 1 or flags - {"--mismatch", "--no-price", "--no-password"}:
-        raise SystemExit("usage: python make_cas.py out.pdf [--mismatch] [--no-price] [--no-password]")
-    folios = build_portfolio()
+    if len(args) != 1 or flags - {"--mismatch", "--segregated", "--no-price", "--no-password"} or {"--mismatch", "--segregated"} <= flags:
+        raise SystemExit("usage: python make_cas.py out.pdf [--mismatch | --segregated] [--no-price] [--no-password]")
+    folios = build_segregated_portfolio() if "--segregated" in flags else build_portfolio()
     drop = "sip6" if "--mismatch" in flags else None
     plain = render(folios, lay_out(folios, drop, "--no-price" not in flags))
     encryption = (

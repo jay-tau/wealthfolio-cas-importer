@@ -198,7 +198,8 @@ export function Preview({
           first, then adds and links its cash. A fund house's merger is a fund conversion: the new fund's units keep
           the old fund's cost and purchase dates, nothing is sold and no cash moves. A gift is a transfer of its units
           at that day's NAV, with no cash; when both sides are in two of your accounts, Wealthfolio links them and the
-          receiving account keeps the giver's costs and purchase dates.
+          receiving account keeps the giver's costs and purchase dates. Units a segregated portfolio credits are a
+          purchase at a stand-in cost of ₹0, with no cash: Wealthfolio can't move part of the main fund's cost to them.
         </p>
       </CardHeader>
       <CardContent className="space-y-6">
@@ -251,7 +252,7 @@ export function Preview({
                 ...currencyNotes(t),
               ].filter((note) => note !== undefined);
               const match = matches.get(t);
-              const cells = (scheme: string, row: ActivityImport) => (
+              const cells = (scheme: string, row: ActivityImport, standIns: (keyof ActivityImport)[] = []) => (
                 <>
                   <TableCell className="px-1.5 whitespace-nowrap">{String(row.date)}</TableCell>
                   <TableCell className="px-1.5">{scheme}</TableCell>
@@ -259,12 +260,15 @@ export function Preview({
                   <TableCell className="px-1.5 text-end tabular-nums">{row.quantity ?? ""}</TableCell>
                   <TableCell className="px-1.5 text-end tabular-nums">{row.unitPrice ?? ""}</TableCell>
                   <TableCell className="px-1.5 text-end tabular-nums">{row.tax ?? ""}</TableCell>
-                  <TableCell className="px-1.5 text-end tabular-nums">{row.amount ?? ""}</TableCell>
+                  <TableCell className="px-1.5 text-end tabular-nums">
+                    {row.amount ?? ""}
+                    {standIns.includes("amount") && <span className="text-muted-foreground block text-xs">stand-in</span>}
+                  </TableCell>
                 </>
               );
               return [
                 <TableRow key={i}>
-                  {cells(t.transaction.scheme, activity)}
+                  {cells(t.transaction.scheme, activity, t.transaction.standIns)}
                   <TableCell className="px-1.5">
                     {cash && (
                       <>

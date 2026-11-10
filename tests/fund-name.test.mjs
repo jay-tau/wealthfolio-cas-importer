@@ -40,6 +40,19 @@ test("keeps a name with no plan, and dashes inside words", () => {
   assert.equal(fundName("Fictiva Multi-Asset Fund - Direct Plan-Growth"), "Fictiva Multi-Asset Fund");
 });
 
+test("keeps a segregated portfolio's name and number, so the search doesn't find its main fund", async () => {
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cas-segregated.json", "utf8"));
+  assert.deepEqual(data.folios[0].schemes.map((s) => fundName(s.scheme)), [
+    "Fictiva Credit Risk Fund", "Fictiva Credit Risk Fund Segregated Portfolio 1",
+  ]);
+  // codereverser/casparser#46's CAMS name, and other places the words can go.
+  assert.equal(fundName("Fictiva Credit Risk Fund- Segregated Portfolio 1 (7.35% Madeup Ltd-18AUG29-Growth Plan)"), "Fictiva Credit Risk Fund- Segregated Portfolio 1");
+  assert.equal(fundName("Fictiva Credit Risk Fund - Direct Plan - Growth - Segregated Portfolio II"), "Fictiva Credit Risk Fund Segregated Portfolio II");
+  assert.equal(fundName("Fictiva Credit Risk Fund - Direct Plan - Growth (Segregated Portfolio 1)"), "Fictiva Credit Risk Fund Segregated Portfolio 1");
+  assert.equal(fundName("Fictiva Credit Risk Fund- Segregated Portfolio - 1 - Direct Plan - Growth"), "Fictiva Credit Risk Fund- Segregated Portfolio - 1");
+  assert.equal(fundName("Fictiva Credit Risk Fund - Segregated Portfolio (9.10% Madeup Ltd) - Direct Plan - Growth"), "Fictiva Credit Risk Fund Segregated Portfolio");
+});
+
 test("gives nothing to search when only a plan is left", () => {
   assert.equal(fundName("(Direct Plan)"), "");
   assert.equal(fundName(" - Direct Plan - Growth"), "");
@@ -47,7 +60,7 @@ test("gives nothing to search when only a plan is left", () => {
 
 test("reads the plan and option of every made-up statement's funds", async () => {
   const names = [];
-  for (const file of ["made-up-cas", "made-up-cas-mismatch", "made-up-cas-no-price", "made-up-summary-cams", "made-up-summary-kfintech"]) {
+  for (const file of ["made-up-cas", "made-up-cas-mismatch", "made-up-cas-no-price", "made-up-cas-segregated", "made-up-summary-cams", "made-up-summary-kfintech"]) {
     const data = JSON.parse(await readFile(`tests/fixtures/${file}.json`, "utf8"));
     names.push(...data.folios.flatMap((f) => f.schemes.map((s) => s.scheme)));
   }
@@ -65,6 +78,8 @@ test("reads the plan and option of every made-up statement's funds", async () =>
     "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout": { plan: "Regular", option: "IDCW" },
     "Testbridge Overnight Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
     "Testbridge Gilt Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
+    "Fictiva Credit Risk Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
+    "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
     "Testbridge Fixed Term Plan - Series 12 - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
     "FFCDG - Fictiva Flexi Cap Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
     "FMCDG - Fictiva Midcap Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },

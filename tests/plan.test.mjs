@@ -806,6 +806,105 @@ describe("gifts", () => {
   });
 });
 
+describe("segregated portfolios", () => {
+  const credit = (units) => tx("2024-02-16", "SEGREGATION", null, units, null, { description: "Creation of units - Segregated Portfolio" });
+  const credited = (...units) => statement(
+    scheme("M", [tx("2023-05-08", "PURCHASE", "1000.00", "100.000", "10.0000")]),
+    scheme("S", units.map(credit), { scheme: "Made-up Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth" }),
+  );
+  const segregation = (rows) => rows.filter((r) => r.symbol === "s");
+  const handEntered = (found) =>
+    `Wealthfolio has ${found} of this fund on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's this credit, or the day's credits entered as one, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`;
+
+  test("each credit goes in alone, and a second read finds them, all or some", () => {
+    const data = credited("99.987", "0.013");
+    const planned = plan(data);
+    assert.deepEqual(statuses(planned), ["new", "new", "new"]);
+    const sent = importRows(planned, () => false);
+    assert.deepEqual(segregation(sent).map((r) => [r.activityType, r.quantity, r.unitPrice, r.amount]), [["BUY", "99.987", undefined, "0"], ["BUY", "0.013", undefined, "0"]]);
+    assert.deepEqual(statuses(plan(data, sent.map(stored))), ["existing", "existing", "existing"]);
+    // An overlapping statement with one credit in Wealthfolio sends the other.
+    const main = sent.filter((r) => r.symbol !== "s").map(stored);
+    const [first, second] = segregation(sent);
+    const partly = plan(data, [...main, stored(first)]);
+    assert.deepEqual(statuses(partly), ["existing", "existing", "new"]);
+    assert.deepEqual(segregation(importRows(partly, () => false)).map((r) => r.quantity), [second.quantity]);
+  });
+
+  test("equal credits of a day are possible duplicates of each other, and import anyway sends each once", () => {
+    const data = credited("50.000", "50.000");
+    const planned = plan(data);
+    assert.deepEqual(statuses(planned), ["new", "new", "duplicate"]);
+    const sent = importRows(planned, (t) => t === planned[2]);
+    assert.deepEqual(segregation(sent).map((r) => [r.quantity, r.forceImport ?? false]), [["50.000", false], ["50.000", true]]);
+    // Wealthfolio stores both; a second read finds one for each.
+    assert.deepEqual(statuses(plan(data, sent.map(stored))), ["existing", "existing", "existing"]);
+    // With only one in Wealthfolio, the other is still a possible duplicate, of this statement's first.
+    const main = sent.filter((r) => r.symbol !== "s").map(stored);
+    const one = plan(data, [...main, stored(segregation(sent)[0])]);
+    assert.deepEqual(statuses(one), ["existing", "existing", "duplicate"]);
+  });
+
+  test("credits use gifts' date handling for manual entries, imports and edited imports", () => {
+    for (const [timeZone, date, otherDay] of [
+      ["Asia/Kolkata", "2024-02-16T20:30:00+00:00", "2024-02-17"],
+      ["America/Toronto", "2024-02-16T01:00:00+00:00", "2024-02-15"],
+    ]) {
+      const data = credited("100.000");
+      const transactions = data.folios[0].schemes[1].transactions;
+      transactions.push({ ...transactions[0], date: otherDay });
+      const [row] = segregation(importRows(plan(data), () => false));
+      for (const [source, expected] of [
+        [{ sourceSystem: "MANUAL" }, ["new", "new", "invalid"]],
+        [{ sourceSystem: "CSV" }, ["new", "existing", "new"]],
+        [{ sourceSystem: "CSV", isUserModified: true }, ["new", "invalid", "invalid"]],
+      ]) {
+        const existing = [{ ...stored(row), date, ...source }];
+        const mapping = map(data, existing);
+        inLocalTimeZones(() => {
+          const planned = planImport(mapping, existing, check(rowsOf(mapping)), fundsOf(data), timeZone);
+          assert.deepEqual(statuses(planned), expected, JSON.stringify({ timeZone, source }));
+          assert.deepEqual(segregation(importRows(planned, (t) => t.status !== "existing")).map((r) => r.date),
+            source.sourceSystem === "MANUAL" ? ["2024-02-16"] : source.isUserModified ? [] : [otherDay]);
+        });
+      }
+    }
+  });
+
+  test("a purchase or transfer in of this fund entered by hand that day keeps the day's new credits out", () => {
+    const data = credited("99.987", "0.013");
+    const [row] = segregation(importRows(plan(data), () => false));
+    for (const [change, found] of [
+      // Entered one by one, at another price or with a comment.
+      [{ unitPrice: "10", amount: "999.8700" }, "a purchase of 99.987 units at 10"],
+      [{ comment: "Segregated" }, 'a purchase of 99.987 units ("Segregated")'],
+      [{ activityType: "TRANSFER_IN", unitPrice: "10", amount: null }, "a transfer in of 99.987 units at 10"],
+      // Both credits entered as one.
+      [{ quantity: "100.000" }, "a purchase of 100 units"],
+    ]) {
+      const planned = plan(data, [{ ...stored(row), ...change }]);
+      assert.deepEqual(statuses(planned), ["new", "invalid", "invalid"], JSON.stringify(change));
+      assert.deepEqual(planned.slice(1).map((t) => t.problem), [handEntered(found), handEntered(found)]);
+      assert.deepEqual(segregation(importRows(planned, () => true)), []);
+    }
+    // One credit imported before, and the rest entered by hand: the imported one stays found.
+    const credits = credited("99.000", "0.987", "0.013");
+    const sent = segregation(importRows(plan(credits), () => false));
+    const partly = plan(credits, [stored(sent[0]), { ...stored(sent[1]), quantity: "1.000" }]);
+    assert.deepEqual(statuses(partly), ["new", "existing", "invalid", "invalid"]);
+    assert.equal(partly[2].problem, handEntered("a purchase of 1 units"));
+    // Another day, account, fund or direction isn't a credit of this day.
+    for (const change of [
+      { date: "2024-02-17T00:00:00+00:00" },
+      { accountId: "elsewhere" },
+      otherFund(stored(row)),
+      { activityType: "SELL" },
+    ]) {
+      assert.deepEqual(statuses(plan(data, [{ ...stored(row), unitPrice: "10", ...change }])), ["new", "new", "new"], JSON.stringify(change));
+    }
+  });
+});
+
 describe("bank account", () => {
   const BANK = "bank-1";
   const banked = (data, existing = [], errors = {}) => plan(data, existing, errors, BANK);

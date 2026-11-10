@@ -1,0 +1,161 @@
+{
+  "statement_period": {
+    "from": "01-Apr-2023",
+    "to": "31-Mar-2025"
+  },
+  "folios": [
+    {
+      "folio": "91234568 / 31",
+      "amc": "Fictiva Mutual Fund",
+      "name": "ANANYA R TESTWALA",
+      "PAN": "ABCDE1234F",
+      "KYC": "OK",
+      "PANKYC": "OK",
+      "schemes": [
+        {
+          "scheme": "Fictiva Credit Risk Fund - Direct Plan - Growth",
+          "advisor": "DIRECT",
+          "rta_code": "FCRDG",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01CR3",
+          "amfi": null,
+          "nominees": [
+            "RAVI TESTWALA"
+          ],
+          "open": "0",
+          "close": "2567.481",
+          "close_calculated": "2567.481",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "27.8104",
+            "cost": "62914.75",
+            "value": "71402.67"
+          },
+          "transactions": [
+            {
+              "date": "2023-05-08",
+              "description": "Purchase - Online",
+              "amount": "49997.50",
+              "units": "2069.176",
+              "nav": "24.1630",
+              "balance": "2069.176",
+              "type": "PURCHASE",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-05-08",
+              "description": "*** Stamp Duty ***",
+              "amount": "2.50",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-10-09",
+              "description": "Purchase - Online",
+              "amount": "24998.75",
+              "units": "998.305",
+              "nav": "25.0412",
+              "balance": "3067.481",
+              "type": "PURCHASE",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2023-10-09",
+              "description": "*** Stamp Duty ***",
+              "amount": "1.25",
+              "units": null,
+              "nav": null,
+              "balance": null,
+              "type": "STAMP_DUTY_TAX",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-11-04",
+              "description": "Redemption - Online",
+              "amount": "-13466.35",
+              "units": "-500.000",
+              "nav": "26.9327",
+              "balance": "2567.481",
+              "type": "REDEMPTION",
+              "dividend_rate": null,
+              "gift_folio": null
+            }
+          ]
+        },
+        {
+          "scheme": "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth",
+          "advisor": "DIRECT",
+          "rta_code": "FCRS1",
+          "rta": "CAMS",
+          "type": "N/A",
+          "isin": "INFZ90K01S17",
+          "amfi": null,
+          "nominees": [
+            "RAVI TESTWALA"
+          ],
+          "open": "0",
+          "close": "1533.740",
+          "close_calculated": "1533.740",
+          "valuation": {
+            "date": "2025-03-31",
+            "nav": "0.2500",
+            "cost": "0.00",
+            "value": "383.44"
+          },
+          "transactions": [
+            {
+              "date": "2024-02-16",
+              "description": "Creation of units - Segregated Portfolio",
+              "amount": null,
+              "units": "3067.468",
+              "nav": null,
+              "balance": "3067.468",
+              "type": "SEGREGATION",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-02-16",
+              "description": "Creation of units - Segregated Portfolio",
+              "amount": null,
+              "units": "0.013",
+              "nav": null,
+              "balance": "3067.481",
+              "type": "SEGREGATION",
+              "dividend_rate": null,
+              "gift_folio": null
+            },
+            {
+              "date": "2024-09-20",
+              "description": "Payment - Units Extinguished",
+              "amount": "-920.24",
+              "units": "-1533.741",
+              "nav": "0.6000",
+              "balance": "1533.740",
+              "type": "REDEMPTION",
+              "dividend_rate": null,
+              "gift_folio": null
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "investor_info": {
+    "name": "ANANYA R TESTWALA",
+    "email": "ananya.testwala@example.com",
+    "address": "Flat 7B, Placeholder Residency\n12 Sample Street, Demo Nagar\nFakeville 999999\nMaharashtra, India",
+    "mobile": "+910000000000"
+  },
+  "cas_type": "DETAILED",
+  "file_type": "CAMS",
+  "parse_warnings": []
+}

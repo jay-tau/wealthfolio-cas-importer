@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Import segregated portfolio credits as purchases of their own fund at a stand-in cost of ₹0, with no unit price or cash. The preview marks the stand-in and explains the limits on tax costs and holding periods, including on later payouts. See the README's Segregated portfolios section for the fund-selection and duplicate guards
 
 ### Changed
 
