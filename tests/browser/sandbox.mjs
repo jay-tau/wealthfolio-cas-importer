@@ -1358,8 +1358,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await confirmed(), 5);
     const amfiSearches = await tab.frames()[1].evaluate(() => window.host.searches);
     assert.ok(!amfiSearches.some((query) => /INFZ90K01BA1|INFZ91T01CB6/.test(query)), amfiSearches.join(" "));
-    // Wealthfolio 3.12.0's checkImport asks for an exchange for a new fund chosen from AMFI, but its
-    // import creates the fund priced from AMFI, so the add-on offers its rows as new.
+    // Wealthfolio's checkImport accepts a new fund chosen from AMFI without an exchange, and its
+    // import creates the fund priced from AMFI.
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^\d+ new transactions, 0 already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
     await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();

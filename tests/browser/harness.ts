@@ -528,10 +528,10 @@ const api = {
     },
     checkImport: async (rows: ActivityImport[]) => {
       await wait("check");
-      // Like Wealthfolio, a trade in a new fund with no exchange needs pricing by hand: so is one
-      // from AMFI, whose import creates the fund.
+      // Like Wealthfolio, a trade in a new fund with no exchange needs pricing by hand, unless it's
+      // chosen from AMFI, which finds the fund by its scheme code (since Wealthfolio 3.13.0).
       const known = (symbol: string) => [...knownAssets().values()].some((a) => a.symbol === symbol.toUpperCase() && a.exchangeMic === null);
-      return rows.map((row) => row.symbol && !row.exchangeMic && row.quoteMode !== "MANUAL" && !known(row.symbol)
+      return rows.map((row) => row.symbol && !row.exchangeMic && row.quoteMode !== "MANUAL" && row.providerId !== "AMFI" && !known(row.symbol)
         ? { ...row, isValid: false, errors: { symbol: [`Could not find '${row.symbol}' in market data. Please search for the correct ticker symbol.`] } }
         : { ...row, isValid: true });
     },

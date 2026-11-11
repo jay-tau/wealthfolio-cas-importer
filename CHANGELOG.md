@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Require Wealthfolio 3.13.0 or newer, which keeps the statement's name of a fund the import adds when the fund's Yahoo listing has no name ([wealthfolio/wealthfolio#2265](https://github.com/wealthfolio/wealthfolio/issues/2265)). Before, once Wealthfolio fetched the fund's profile after the import, it renamed the fund to its Yahoo ticker. A fund whose profile has a name still takes that name. Older versions refuse to install this version; Wealthfolio 3.12.0's desktop app does so without a message
+- Count Wealthfolio's import check of a trade in a new fund chosen from AMFI like any other row's: an error keeps the transaction out, and the preview shows it. Wealthfolio 3.13.0's check accepts such a fund without an exchange ([wealthfolio/wealthfolio#2461](https://github.com/wealthfolio/wealthfolio/issues/2461)). Before, the add-on ignored a symbol error for such a trade, the one Wealthfolio 3.12.0's check gave each of them, and offered the transaction as new
 
 ### Deprecated
 
