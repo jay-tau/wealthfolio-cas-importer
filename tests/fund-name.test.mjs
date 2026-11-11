@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { fundName, planAndOption } from "../src/lib/fund-name.ts";
+import { fundName, mayBeCut, planAndOption } from "../src/lib/fund-name.ts";
 
 test("detailed CAMS and KFintech schemes keep their search names", async () => {
   const data = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
@@ -87,6 +87,8 @@ test("reads the plan and option of every made-up statement's funds", async () =>
     "TGLDG - Testbridge Gilt Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
     "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH": { plan: "Direct", option: "Growth" },
     "TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH": { plan: "Direct", option: "Growth" },
+    // Cut short, as CDSL prints a long name: read as cut only in a CDSL demat account (`mayBeCut`).
+    "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW": {},
     // Depository statements list ETFs among mutual funds.
     "FICTIVA NIFTY 50 ETF": {},
     "TESTBRIDGE GOLD ETF": {},
@@ -364,4 +366,126 @@ test("still reads a bare plan word as the plan without a named plan before it", 
     ["Fictiva Regular Plan (Growth Dir IDCW)", both("Direct", "IDCW")],
     ["Fictiva Regular Plan (G - Direct) - IDCW", both("Direct", "IDCW")],
   ]) assert.deepEqual(planAndOption(name), expected, name);
+});
+
+// A made-up CDSL demat fund's name `length` characters long that ends in `end`: the fund house's
+// company name, "#" and the scheme name, which is cut to fit.
+const printed = (length, end) => {
+  const scheme = "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES OPPORTUNITIES MULTI ASSET ALLOCATION";
+  const name = `${scheme.slice(0, length - end.length).replace(/ $/, "S")}${end}`;
+  assert.equal(name.length, length, name);
+  return name;
+};
+const both = (plan, option) => ({ plan, option });
+
+test("takes a name of 100 to 105 characters as one CDSL may have cut short", () => {
+  for (const [length, cut] of [[99, false], [100, true], [101, true], [105, true], [106, false]]) {
+    assert.equal(mayBeCut(printed(length, " FUND - DIRECT GROW")), cut, String(length));
+  }
+  // Counted with each run of spaces as one, as casparser joins a name's lines.
+  assert.equal(mayBeCut(` ${printed(99, " FUND -  DIRECT GROW")}\n`), false);
+  assert.equal(mayBeCut(printed(101, " FUND -  DIRECT GROW")), true);
+});
+
+test("reads a plan or option word cut short at the end of a name CDSL may have cut", () => {
+  for (const length of [100, 101]) {
+    for (const [end, expected] of [
+      // The real statement's ending, cut from "- DIRECT GROWTH".
+      [" FUND - DIRECT GROW", both("Direct", "Growth")],
+      // Cut within each plan word,
+      [" FUND - GROWTH - DIREC", both("Direct", "Growth")],
+      [" FUND - GROWTH - DIRE", both("Direct", "Growth")],
+      [" FUND - IDCW - REGULA", both("Regular", "IDCW")],
+      [" FUND - IDCW - REGU", both("Regular", "IDCW")],
+      // each option word,
+      [" FUND - DIRECT PLAN - GROWT", both("Direct", "Growth")],
+      [" FUND - DIRECT PLAN - GRO", both("Direct", "Growth")],
+      [" FUND - DIRECT PLAN - CUMULATIV", both("Direct", "Growth")],
+      [" FUND - DIRECT PLAN - CU", both("Direct", "Growth")],
+      [" FUND - REGULAR PLAN - IDC", both("Regular", "IDCW")],
+      [" FUND - REGULAR PLAN - ID", both("Regular", "IDCW")],
+      [" FUND - REGULAR PLAN - DIVIDEN", both("Regular", "IDCW")],
+      [" FUND - REGULAR PLAN - DIVI", both("Regular", "IDCW")],
+      [" FUND - DIRECT PLAN - INCOME DISTRIBUTION CUM CAPITAL WITHDRAWA", both("Direct", "IDCW")],
+      [" FUND - DIRECT PLAN - INCOME DISTRIBUTION CUM CAP", both("Direct", "IDCW")],
+      // where a phrase's word outruns a word of its own: not Cumulative,
+      [" FUND - DIRECT PLAN - INCOME DISTRIBUTION CUM", both("Direct", "IDCW")],
+      [" FUND - DIRECT PLAN - INCOME D", both("Direct", "IDCW")],
+      // and words read past, like Option, Plan, Monthly or "Payout & Reinvestment".
+      [" FUND - DIRECT PLAN - GROWTH OPTI", both("Direct", "Growth")],
+      [" FUND - GROWTH - DIRECT PL", both("Direct", "Growth")],
+      [" FUND - REGULAR PLAN - IDCW - MONTH", both("Regular", "IDCW")],
+      [" FUND - DIRECT PLAN - IDCW PAYOUT & REINV", both("Direct", "IDCW")],
+      [" FUND (DIRECT PLAN) GRO", both("Direct", "Growth")],
+      [" FUND (DIRECT PLAN GRO", both("Direct", "Growth")],
+      [" FUND (DIRECT GRO", both("Direct", "Growth")],
+      [" FUND (DIRECT PLAN) (GRO", both("Direct", "Growth")],
+      [" FUND - DIRECT PLAN - (INCOME D", both("Direct", "IDCW")],
+      [" FUND (GROWTH DIREC", both("Direct", "Growth")],
+      [" FUND (REGULAR PLAN IDC", both("Regular", "IDCW")],
+      // A dash before it is enough on its own.
+      [" FUND - GROW", { option: "Growth" }],
+      [" FUND - DIREC", { plan: "Direct" }],
+    ]) {
+      const name = printed(length, end);
+      assert.equal(mayBeCut(name), true, name);
+      assert.deepEqual(planAndOption(name, true), expected, name);
+    }
+  }
+});
+
+test("reads a cut name's last word as before when it's whole, or when it could be words that read differently", () => {
+  for (const length of [100, 101]) {
+    for (const [end, expected] of [
+      // Whole words and abbreviations,
+      [" FUND - DIRECT GROWTH", both("Direct", "Growth")],
+      [" FUND DIR GR", both("Direct", "Growth")],
+      [" FUND RG IDCW-P", both("Regular", "IDCW")],
+      [" FUND - DIRECT PLAN - R", { plan: "Direct" }],
+      [" FUND - DIRECT PLAN - IDCW - PAYOUT & REINVESTMENT", both("Direct", "IDCW")],
+      [" FUND (DIRECT PLAN) (GROWTH)", both("Direct", "Growth")],
+      // Direct, Dividend or Daily, Discontinued...,
+      [" FUND - DIRECT PLAN - D", {}],
+      [" FUND - DIRECT PLAN - DI", {}],
+      [" FUND - GROWTH - DI", {}],
+      // Regular or Reinvestment,
+      [" FUND - DIRECT PLAN - IDCW - RE", {}],
+      [" FUND - GROWTH - RE", {}],
+      // a single letter, which starts too many words of a fund's own name (Gilt, Institutional, Class),
+      [" FUND - DIRECT G", {}],
+      [" FUND - DIRECT PLAN - I", {}],
+      [" FUND - DIRECT PLAN - C", {}],
+      // and Income, which a fund's own name has too, without the next word of the IDCW phrase.
+      [" FUND - DIRECT PLAN - INCOME", {}],
+      [" FUND - DIRECT PLAN - INCO", {}],
+    ]) {
+      const name = printed(length, end);
+      assert.deepEqual(planAndOption(name, true), expected, name);
+      assert.deepEqual(planAndOption(name), expected, name);
+    }
+  }
+});
+
+test("doesn't read a cut word in the fund's own name", () => {
+  // Cut from "Fictiva Regular Savings Fund", "Fictiva Growth Opportunities Fund" or "Fictiva Direct
+  // Equity Fund": no dash before it, and nothing before it is a plan, option or filler word.
+  for (const end of [
+    " FICTIVA REGU", " FICTIVA GROW", " FICTIVA DIREC", " JUN 2036 IDC",
+    " FICTIVA (INDIA) REGU", " FICTIVA (INDIA) GROW", " FICTIVA (INDIA) DIREC", " FICTIVA (JUN 2036) IDC",
+    " FICTIVA (INDIA GROW",
+  ]) for (const length of [100, 101]) {
+    const name = printed(length, end);
+    assert.deepEqual(planAndOption(name, true), {}, name);
+  }
+});
+
+test("reads a shorter or longer name's last word, or one not marked as cut, as before", () => {
+  for (const end of [" FUND - DIRECT GROW", " FUND - REGULAR PLAN - IDC", " FUND - GROWTH - DIRE", " FUND - IDCW - REGU"]) {
+    for (const length of [99, 106]) {
+      const name = printed(length, end);
+      assert.deepEqual(planAndOption(name, mayBeCut(name)), {}, name);
+    }
+    // Only a fund in a CDSL statement's CDSL demat account is marked as cut.
+    assert.deepEqual(planAndOption(printed(100, end)), {}, end);
+  }
 });

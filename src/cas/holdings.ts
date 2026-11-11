@@ -1,4 +1,5 @@
 import type { ActivityDetails, SnapshotHoldingInput } from "@wealthfolio/addon-sdk";
+import { mayBeCut } from "../lib/fund-name.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
 import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
@@ -26,6 +27,11 @@ export interface StatementHolding {
   /** An NPS scheme's symbol (`npsSymbol`), its identity without an ISIN. */
   code?: string;
   name: string;
+  /**
+   * A CDSL statement's fund in its CDSL demat account, printed about as long as a long name that CDSL
+   * cuts short (`mayBeCut`), so its name can end partway through a word.
+   */
+  cut?: boolean;
   units: string;
   /** The price of one unit, share or bond. */
   price: string;
@@ -286,7 +292,8 @@ function readDepository(data: DepositoryData): Holdings {
     }
     const label = `${account.type} ${++dematNumber}, ${account.name}`.replace(/\s+/g, " ");
     const source: Source = { id: `demat|${account.dp_id ?? ""}|${account.client_id ?? ""}`, kind: "demat", label, holdings: [] };
-    // Only a CDSL statement's own demat accounts are known to print the fund house first.
+    // Only a CDSL statement's own demat accounts are known to print the fund house first, and to cut
+    // a long name short.
     const cdsl = data.file_type === "CDSL" && account.type === "CDSL Demat Account";
     source.holdings = [
       ...account.equities.map(
@@ -307,6 +314,8 @@ function readDepository(data: DepositoryData): Holdings {
         const holding = fund(f);
         // The search and a new asset go by the scheme name; the printed details keep the fund house.
         if (cdsl && f.name) holding.name = withoutFundHouse(f.name);
+        // Whether it may be cut short goes by the printed name's length, fund house included.
+        if (cdsl && f.name && mayBeCut(f.name)) holding.cut = true;
         return holding;
       }),
       ...account.bonds.map(

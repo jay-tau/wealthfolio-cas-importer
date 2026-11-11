@@ -2795,6 +2795,39 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual([["INEZ94A01017", "share-priced-016"], ["INFZ92P01SC5", "fund-priced-017"]].map(([symbol, id]) =>
       [pretend.modes[symbol], pretend.assets[id].instrumentType, pretend.assets[id].quoteCcy]), [["MANUAL", "EQUITY", "INR"], ["MANUAL", "EQUITY", "INR"]]);
 
+    // A CDSL statement's CDSL demat fund whose name is cut short partway through its option, in
+    // "- DIRECT GROW", gets Direct and Growth badges beside its name without the fund house, and a
+    // result or choice on another plan and option warns.
+    const pretendStatement = await hosted(() => {
+      const kept = { accounts: window.host.depositoryAccounts, date: window.host.statementDate };
+      window.host.depositoryAccounts = undefined;
+      window.host.statementDate = "";
+      return kept;
+    });
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cdsl.pdf");
+    await frame.locator("#cas-password").fill("ABCDE1234F");
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await frame.getByText("CDSL statement for ANANYA R TESTWALA, as on 31-Mar-2026: 2 demat accounts, 2 folios, 1 NPS account, 14 holdings.").waitFor({ timeout: 180_000 });
+    const cutSection = frame.locator("section").filter({ hasText: "ISIN INFZ90K01GS2" });
+    assert.equal(
+      await cutSection.locator("h3").textContent(),
+      "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW",
+    );
+    assert.deepEqual(await nameBadges(cutSection), ["Direct secondary", "Growth secondary"]);
+    await cutSection.getByRole("textbox", { name: /^Search for / }).fill("Fictiva Testbridge Global");
+    await cutSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
+    await cutSection.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    assert.deepEqual(await resultBadges(cutSection), [["Direct secondary", "Growth secondary"], ["Regular warning-subtle", "IDCW warning-subtle"]]);
+    await cutSection.getByRole("radio").nth(1).dispatchEvent("click");
+    await cutSection.getByRole("button", { name: "Use this fund" }).click();
+    await cutSection.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(cutSection), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW warning-subtle"]);
+    assert.deepEqual(await nameBadges(cutSection), ["Direct secondary", "Growth secondary"]);
+    await hosted((kept) => {
+      window.host.depositoryAccounts = kept.accounts;
+      window.host.statementDate = kept.date;
+    }, pretendStatement);
+
     // A detailed statement searches for that fund again instead of using the asset priced from statements.
     // This copy has no password, so it reads with the box empty, and Remember the password keeps the saved one.
     assert.equal(await remember.getAttribute("aria-checked"), "true");

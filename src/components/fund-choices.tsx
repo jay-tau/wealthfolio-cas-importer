@@ -83,7 +83,7 @@ function CurrencyBadge({ fund }: { fund: ChosenFund }) {
 }
 
 /** The plan and option of a fund's name on the statement. Shares, bonds and NPS schemes have none. */
-const statementPlan = (item: FundItem) => (item.noun === "fund" ? planAndOption(item.name) : undefined);
+const statementPlan = (item: FundItem) => (item.noun === "fund" ? planAndOption(item.name, item.cut) : undefined);
 
 /**
  * Badges for the plan and option a name gives, with a space before each. Beside a search result or
@@ -120,6 +120,8 @@ export interface FundItem {
   isin: string | null;
   /** As printed, except a CDSL folio's leading scheme code and a CDSL demat fund's fund house. */
   name: string;
+  /** The name can end partway through a word, as a CDSL demat account cuts a long one short. */
+  cut?: boolean;
   noun: "fund" | "share" | "bond" | "NPS scheme";
   /** Where else the statement lists it, e.g. "in 2 folios". */
   where?: string;

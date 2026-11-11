@@ -89,7 +89,7 @@ export function holdingItems(holdings: Holdings): FundItem[] {
   ])) {
     const key = holdingKey(h);
     const item = items.get(key) ??
-      { key, isin: h.isin, name: h.name, noun: NOUNS[h.kind], statementAsset: statementAsset(h), count: 0, units: false, misread: false };
+      { key, isin: h.isin, name: h.name, cut: h.cut, noun: NOUNS[h.kind], statementAsset: statementAsset(h), count: 0, units: false, misread: false };
     item.count++;
     item.units ||= line === "units";
     item.misread ||= line === "misread";

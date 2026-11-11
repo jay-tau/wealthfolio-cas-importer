@@ -214,6 +214,11 @@ const planResults = new Map([
     "Fictiva Flexi Cap Fund Gr",
   ]],
   ["Pretend Small Cap", ["Pretend Small Cap Fund Dir Gr", "Pretend Small Cap Fund - Regular Plan - IDCW Payout"]],
+  // Beside the CDSL demat fund whose name is cut short in "- DIRECT GROW": a match, and a mismatch in both.
+  ["Fictiva Testbridge Global", [
+    "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT PLAN - GROWTH",
+    "Fictiva Testbridge Global Placeholders Samples Fd Reg IDCW-P",
+  ]],
 ]);
 
 // AMFI's scheme for a fund's ISIN or scheme code, the way Wealthfolio 3.12.0 lists it: no exchange,
