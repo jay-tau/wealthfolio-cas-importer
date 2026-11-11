@@ -9,8 +9,9 @@ parsed on the device. A detailed statement from CAMS or KFintech is imported as 
 summary statement from CAMS or KFintech, or a statement from NSDL or CDSL, the depositories, is
 imported as holdings (see [Summary and depository statements](#summary-and-depository-statements)).
 
-Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0 and 3.12.0) and
-Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on macOS.
+Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0, 3.12.0 and
+3.13.0) and Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on
+macOS.
 
 To import, pick the PDF and enter its password, if it has one, choose a Wealthfolio account that tracks
 transactions for each PAN (and, if you like, a different one for a folio), and confirm the
@@ -29,7 +30,9 @@ cash deposit or withdrawal (or [bank transfer](#bank-account)), the rows left ou
 the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
 A fund whose rows don't add up to its closing balance is left out unless you tick "Import this
 fund anyway"; then check its rows against the PDF and add or correct the missing ones in
-Wealthfolio after importing.
+Wealthfolio after importing. A fund the import adds to Wealthfolio gets the statement's name. When
+Wealthfolio then fetches the fund's profile, a name in it, such as a Yahoo listing's, replaces the
+statement's; a Yahoo listing without a name keeps it.
 
 A purchase costs the statement's units × NAV plus stamp duty; a redemption pays units × NAV less
 STT and TDS. casparser says some older CAMS and KFintech layouts print no NAV column. casparser
@@ -71,10 +74,6 @@ doesn't preselect AMFI's result for it, since picking that adds a second asset f
 price the asset Wealthfolio has from AMFI, edit it in Wealthfolio: under **Market data**, turn on
 **Automatic updates** if it's priced by hand, then choose AMFI as the preferred provider and map
 AMFI to the fund's ISIN or scheme code.
-
-Wealthfolio 3.12.0's import check asks for an exchange for a fund chosen from AMFI that Wealthfolio
-doesn't have yet, which AMFI's funds don't have, while its import creates the fund priced from AMFI.
-The add-on leaves that one error out and offers the fund's rows as new.
 
 ### Bank account
 
@@ -405,11 +404,11 @@ PDF, its password and your PAN never leave Wealthfolio.
 
 Download `wealthfolio-cas-importer-<version>.zip` from
 [Releases](https://github.com/jay-tau/wealthfolio-cas-importer/releases). In Wealthfolio's desktop
-app or its web app, 3.12.0 or newer, open **Settings** → **Add-ons**, choose **Install from file**,
+app or its web app, 3.13.0 or newer, open **Settings** → **Add-ons**, choose **Install from file**,
 pick the zip and allow the permissions it asks for.
 
-The web app needs 3.12.0: older servers turn away add-on zips over about 1.5 MiB, and this one is
-about 11 MB ([wealthfolio/wealthfolio#2306](https://github.com/wealthfolio/wealthfolio/issues/2306)).
+Older versions refuse to install it. Wealthfolio 3.12.0's desktop app shows no message: after
+**Approve & install**, the dialog closes and the add-on isn't installed.
 
 Each release also carries the zip's SHA-256 (`sha256sum -c wealthfolio-cas-importer-<version>.zip.sha256`).
 Releases that GitHub Actions built, v2.0.1 and earlier, also carry a build provenance attestation:
