@@ -28,7 +28,7 @@ import {
   validCost,
 } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
-import { fundName, mayBeCut, planAndOption } from "../src/lib/fund-name.ts";
+import { fundQuery, mayBeCut, planAndOption } from "../src/lib/fund-name.ts";
 
 const fixture = async (name) => JSON.parse(await readFile(`tests/fixtures/${name}.json`, "utf8"));
 
@@ -1952,11 +1952,11 @@ test("a CDSL statement's folio funds are searched and named without the printed 
   const folios = cdsl.sources.filter((s) => s.kind === "folio");
   const funds = folios.flatMap((s) => s.holdings);
   // The searched name, and the printed name kept in the details.
-  assert.deepEqual(funds.map((h) => [h.name, fundName(h.name), h.details.name]), [
-    ["Fictiva Flexi Cap Fund - Direct Plan - Growth", "Fictiva Flexi Cap Fund", "FFCDG - Fictiva Flexi Cap Fund - Direct Plan - Growth"],
-    ["Fictiva Midcap Fund - Direct Plan - Growth", "Fictiva Midcap Fund", "FMCDG - Fictiva Midcap Fund - Direct Plan - Growth"],
-    ["Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout", "Testbridge Corporate Bond Fund", "TCBRP - Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout"],
-    ["Testbridge Gilt Fund - Direct Plan - Growth", "Testbridge Gilt Fund", "TGLDG - Testbridge Gilt Fund - Direct Plan - Growth"],
+  assert.deepEqual(funds.map((h) => [h.name, fundQuery(h.name), h.details.name]), [
+    ["Fictiva Flexi Cap Fund - Direct Plan - Growth", "Fictiva Flexi Cap", "FFCDG - Fictiva Flexi Cap Fund - Direct Plan - Growth"],
+    ["Fictiva Midcap Fund - Direct Plan - Growth", "Fictiva Midcap", "FMCDG - Fictiva Midcap Fund - Direct Plan - Growth"],
+    ["Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout", "Testbridge Corporate Bond", "TCBRP - Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout"],
+    ["Testbridge Gilt Fund - Direct Plan - Growth", "Testbridge Gilt", "TGLDG - Testbridge Gilt Fund - Direct Plan - Growth"],
   ]);
   // A new asset uses the scheme name, even with a choice remembered before this fix.
   const remembered = (h) => ({ ...statementAsset(h), name: h.details.name });
@@ -2002,6 +2002,8 @@ test("marks a CDSL statement's CDSL demat fund printed as long as a cut name, wh
   assert.deepEqual([printed.length, mayBeCut(printed), shown.length, mayBeCut(shown)], [100, true, 65, false]);
   assert.deepEqual(planAndOption(cut[0].name, cut[0].cut), { plan: "Direct", option: "Growth" });
   assert.deepEqual(planAndOption(cut[0].name), {});
+  // Its search leaves out "Fund" and everything from the first " - ", cut word included.
+  assert.equal(fundQuery(cut[0].name), "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES");
 
   // The same name keeps its reading elsewhere: in the CDSL statement's NSDL demat account and folios,
   // and in an NSDL statement's CDSL demat account.
@@ -2048,8 +2050,8 @@ test("a CDSL statement's own demat funds are shown, searched and named without t
   const printed = "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH";
   const fund = demat.holdings.find((h) => h.isin === "INFZ90K01BG8");
   // The name shown and searched, and the printed name kept in the details.
-  assert.deepEqual([fund.kind, fund.name, fundName(fund.name), fund.details.name], [
-    "fund", "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH", "FICTIVA BALANCED ADVANTAGE FUND", printed,
+  assert.deepEqual([fund.kind, fund.name, fundQuery(fund.name), fund.details.name], [
+    "fund", "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH", "FICTIVA BALANCED ADVANTAGE", printed,
   ]);
   assert.equal(assetDetails(fund, {}, "EQUITY").casStatement.name, printed);
   // Names without " # " stay as printed.

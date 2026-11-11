@@ -1,19 +1,41 @@
 const SEGREGATED = /\bsegregated\s+portfolio(?:[\s-]*(?:\d+|[IVX]+\b))?/i;
 
 /**
- * The fund's name without its plan and option, for a search when the printed ISIN finds nothing:
- * the scheme name up to the first " - ", without anything in parentheses.
+ * The scheme name up to the first " - ", without anything in parentheses, whether the name goes on
+ * past a " - ", and its segregated portfolio's marker, wherever it is.
+ */
+function schemeParts(scheme: string) {
+  const [first, ...more] = scheme.replace(/\([^()]*\)/g, " ").split(" - ");
+  return { first, dashed: more.length > 0, segregated: SEGREGATED.exec(scheme)?.[0] };
+}
+
+/**
+ * The name without its plan and option, searched for a share, bond or NPS scheme when the printed
+ * ISIN finds nothing: the scheme name up to the first " - ", without anything in parentheses.
  * "Fictiva Flexi Cap Fund - Direct Plan - Growth" → "Fictiva Flexi Cap Fund". A segregated
  * portfolio keeps "Segregated Portfolio" and its number, or the search finds its main fund.
  */
 export function fundName(scheme: string) {
-  const name = scheme.replace(/\([^()]*\)/g, " ");
-  const first = name.split(" - ")[0];
-  const segregated = SEGREGATED.exec(scheme)?.[0];
+  const { first, segregated } = schemeParts(scheme);
   const search = segregated && SEGREGATED.test(first)
     ? first.replace(SEGREGATED, segregated)
     : [first, segregated].filter(Boolean).join(" ");
   return search.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The name searched for a fund when the printed ISIN finds nothing or none is printed: its name as
+ * `fundName` gives it, without a final "Fund", and for a name with no " - ", without the plan, option
+ * and their filler words at its end. Yahoo finds some funds only by such a shorter name.
+ * "Fictiva Flexi Cap Fund - Direct Plan - Growth" → "Fictiva Flexi Cap", "FICTIVA FLEXI CAP FUND
+ * DIRECT PLAN GROWTH" → "FICTIVA FLEXI CAP". A segregated portfolio keeps "Segregated Portfolio" and
+ * its number, after the rest of its name.
+ */
+export function fundQuery(scheme: string) {
+  const { first, dashed, segregated } = schemeParts(scheme);
+  const own = first.replace(SEGREGATED, " ").replace(/\s+/g, " ").trim();
+  const base = (dashed ? own : withoutPlanAndOption(own)).replace(/[\s\-–—]+$/, "").replace(/(?<=\S)\s+fund$/i, "");
+  return [base, segregated].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 
 export type Plan = "Direct" | "Regular";
@@ -84,19 +106,27 @@ const WORD_START = /(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]|IDCW)/g;
 // The name's last part in parentheses.
 const LAST_GROUP = new RegExp(String.raw`\(([^()]*)\)${SEPARATORS}*$`);
 
-/** Reads the plan and option from the end of `text`, what's left, and how many known entries it read. */
-function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string; count: number } {
+/**
+ * Reads the plan and option from the end of `text`, what's left before them, how many known entries
+ * it read, and `end`: what's left before the words read as the plan, the option or their filler words.
+ */
+function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string; end: string; count: number } {
   const found: PlanAndOption = {};
   let rest = text;
+  let end = text;
   let count = 0;
+  // Fillers before a plan, or "Plan A" before an option, can belong to the fund's own name.
+  // Keep them unless an earlier field confirms they're part of the suffix.
+  let keepFillers = false;
   // The plan found is a bare word before the option, so it can belong to the option.
   let beforeOption = false;
   // The word after the one read, in the name's order.
   let next = "";
+  let afterFields = false;
   // The fund's own name can have these words in it ("Growth Fund", "Regular Savings Fund"), so outside
-  // parentheses stop at the first unknown word, or once both fields are found and the plan can't
-  // belong to the option.
-  while (inGroup || !(found.plan && found.option) || beforeOption) {
+  // parentheses stop at the first unknown word. A bare plan word before IDCW can extend the
+  // query's suffix past both fields only if an explicit "Fund" separates it from the base name.
+  while (true) {
     const group = LAST_GROUP.exec(rest);
     if (group) {
       // A part in parentheses counts when it holds nothing else, like "(Direct Plan)"; another, like
@@ -112,7 +142,12 @@ function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string;
     const last = LAST.exec(rest);
     if (!last) break;
     const word = last[1].toLowerCase().replace(/[\s–—-]+/g, " ");
+    let field = false;
     if (PLANS.has(word)) {
+      if (!inGroup && found.plan && found.option && !beforeOption) {
+        if (found.option !== "IDCW" || keepFillers || afterFields) break;
+        afterFields = true;
+      }
       // Read from the end, the last plan given wins, except that a bare plan word before the option
       // can be part of the option's name, like Axis's "Regular" in "Direct Plan - Regular IDCW Option":
       // a plan followed by "Plan" before it wins.
@@ -120,18 +155,47 @@ function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string;
       if (!found.plan || (beforeOption && named)) {
         found.plan = PLANS.get(word);
         beforeOption = !named && !!found.option;
+        field = true;
       }
     } else if (OPTIONS.has(word) || (inGroup && word === "g")) {
       // An earlier option ends the look past a bare plan word: don't reach into "Regular Plan Growth
       // Dir IDCW".
       if (!inGroup && found.plan && found.option) break;
       found.option ??= OPTIONS.get(word) ?? "Growth";
+      field = true;
     } else if (!FILLERS.has(word) && !OTHER_FILLER.test(word)) break;
     count++;
     next = word;
     rest = rest.slice(0, last.index);
+    if (!afterFields) {
+      if (/^plan\b/.test(word)) keepFillers = true;
+      if (field || !keepFillers) end = rest;
+      if (field) keepFillers = PLANS.has(word);
+    }
   }
-  return { ...found, rest, count };
+  // An explicit "Fund" separates the base name even from fillers kept for names like "Income Plan".
+  if (/\bfund$/i.test(rest)) end = rest;
+  return { ...found, rest, end, count };
+}
+
+/**
+ * Splits words joined as in "MthIDCW-P" with `space`, leaving recognized words whole in any case,
+ * including a phrase's words ("PLan A").
+ */
+const splitWords = (name: string, space = " ") =>
+  name.replace(/[a-z]+/gi, (word) => (WORDS.has(word.toLowerCase()) ? word : word.replace(WORD_START, space)));
+
+/**
+ * The name without the plan, option and their filler words read at its end, as `planAndOption` reads
+ * them. A name that gives neither stays whole, like "Fictiva Fixed Maturity Plan", and so does one
+ * read with a part in parentheses, which `fundQuery` takes out first.
+ */
+function withoutPlanAndOption(name: string) {
+  // Mark the spaces put between joined words, to take them out again of the words kept.
+  const marked = splitWords(name, "\0");
+  const spaced = marked.replace(/\0/g, " ");
+  const { plan, option, end } = readEnd(spaced);
+  return (plan || option) && spaced.startsWith(end) ? marked.slice(0, end.length).replace(/\0/g, "") : name;
 }
 
 /**
@@ -200,8 +264,7 @@ const TRAILING_SEPARATORS = new RegExp(`${SEPARATORS}+$`);
  * through, as in "- DIRECT GROW", when it can only be one plan, option or filler word or phrase.
  */
 export function planAndOption(name: string, cut = false): PlanAndOption {
-  // Keep recognized words case-insensitive, including the words of a phrase ("PLan A").
-  const spaced = name.replace(/[a-z]+/gi, (word) => WORDS.has(word.toLowerCase()) ? word : word.replace(WORD_START, " "));
+  const spaced = splitWords(name);
   const completed = cut ? completeCut(spaced) : undefined;
   let read = readEnd(completed?.text ?? spaced);
   if (completed) {

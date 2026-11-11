@@ -623,9 +623,9 @@ const api = {
     // Like Yahoo with some funds, the Corporate Bond fund is listed under neither its ISIN nor its
     // full scheme name.
     if (query === "INFZ91T01CB6" || query.includes(" - ")) return amfi;
-    if (query === "Testbridge Corporate Bond Fund") return [fund("0P0000TBCB")];
+    if (query === "Testbridge Corporate Bond") return [fund("0P0000TBCB")];
     // The Overnight fund has no ISIN on the statement.
-    if (query === "Testbridge Overnight Fund") return [fund("0P0000TONF")];
+    if (query === "Testbridge Overnight") return [fund("0P0000TONF")];
     return query === "MULTI" ? [fund("A"), fund("B")] : [fund(query), ...amfi];
   } },
   storage: {

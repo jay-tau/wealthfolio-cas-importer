@@ -1,9 +1,9 @@
-// The name searched when a fund's printed ISIN finds nothing, and the plan and option a fund's
-// name gives.
+// The name searched when a fund's, share's, bond's or NPS scheme's printed ISIN finds nothing, and
+// the plan and option a fund's name gives.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { fundName, mayBeCut, planAndOption } from "../src/lib/fund-name.ts";
+import { fundName, fundQuery, mayBeCut, planAndOption } from "../src/lib/fund-name.ts";
 
 test("detailed CAMS and KFintech schemes keep their search names", async () => {
   const data = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
@@ -12,6 +12,11 @@ test("detailed CAMS and KFintech schemes keep their search names", async () => {
   assert.deepEqual(schemes.map((s) => fundName(s.scheme)), [
     "Fictiva Flexi Cap Fund", "Fictiva Liquid Fund", "Fictiva Balanced Advantage Fund", "Fictiva Midcap Fund",
     "Testbridge Corporate Bond Fund", "Testbridge Overnight Fund", "Testbridge Gilt Fund",
+  ]);
+  // Funds are searched without "Fund".
+  assert.deepEqual(schemes.map((s) => fundQuery(s.scheme)), [
+    "Fictiva Flexi Cap", "Fictiva Liquid", "Fictiva Balanced Advantage", "Fictiva Midcap",
+    "Testbridge Corporate Bond", "Testbridge Overnight", "Testbridge Gilt",
   ]);
 });
 
@@ -24,7 +29,7 @@ test("keeps the name before the plan and option", () => {
   );
 });
 
-test("searches the whole name when no dash separates the plan and option, as before the badges", () => {
+test("keeps the whole name when no dash separates the plan and option, for other securities' searches", () => {
   assert.equal(fundName("FICTIVA FLEXI CAP FUND DIRECT PLAN GROWTH"), "FICTIVA FLEXI CAP FUND DIRECT PLAN GROWTH");
   assert.equal(fundName("Fictiva Flexi Cap Fund Dir Gr"), "Fictiva Flexi Cap Fund Dir Gr");
 });
@@ -56,6 +61,128 @@ test("keeps a segregated portfolio's name and number, so the search doesn't find
 test("gives nothing to search when only a plan is left", () => {
   assert.equal(fundName("(Direct Plan)"), "");
   assert.equal(fundName(" - Direct Plan - Growth"), "");
+  for (const name of ["(Direct Plan)", " - Direct Plan - Growth", "DIRECT PLAN GROWTH"]) assert.equal(fundQuery(name), "", name);
+});
+
+test("searches a fund without a final \"Fund\", in any case", () => {
+  for (const [name, query] of [
+    ["Fictiva Flexi Cap Fund - Direct Plan - Growth", "Fictiva Flexi Cap"],
+    ["FICTIVA FLEXI CAP FUND - DIRECT PLAN - GROWTH", "FICTIVA FLEXI CAP"],
+    ["Fictiva Flexi Cap fund - Direct Plan - Growth", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap fUnD - Direct Plan - Growth", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund (FoF) - Direct Plan - Growth", "Fictiva Flexi Cap"],
+    ["Fictiva Nifty 50 Index Fund (Direct Plan) (Growth)", "Fictiva Nifty 50 Index"],
+    ["Fictiva Multi-Asset Fund - Direct Plan-Growth", "Fictiva Multi-Asset"],
+    ["Fictiva Flexi Cap Fund", "Fictiva Flexi Cap"],
+    // Only a final, standalone "Fund", and the words of the fund's own name before it.
+    ["Fictiva Growth Fund - Direct Plan - IDCW", "Fictiva Growth"],
+    ["Fictiva Regular Savings Fund - Growth", "Fictiva Regular Savings"],
+    ["Fictiva Fund of Funds - Direct Plan - Growth", "Fictiva Fund of Funds"],
+    ["Fictiva Fund Constructor - Regular Plan - Growth", "Fictiva Fund Constructor"],
+    ["Fictiva Mutualfund - Direct Plan - Growth", "Fictiva Mutualfund"],
+    ["Fund", "Fund"],
+    // Names without "Fund".
+    ["Fictiva Flexi Cap - Direct Plan - Growth", "Fictiva Flexi Cap"],
+    ["Fictiva Nifty 50 ETF", "Fictiva Nifty 50 ETF"],
+    ["Testbridge Fixed Term Plan - Series 12 - Direct Plan - Growth", "Testbridge Fixed Term Plan"],
+  ]) assert.equal(fundQuery(name), query, name);
+});
+
+test("searches a fund named without a dash without the plan and option at its end", () => {
+  for (const [name, query] of [
+    ["FICTIVA FLEXI CAP FUND DIRECT PLAN GROWTH", "FICTIVA FLEXI CAP"],
+    ["Fictiva Flexi Cap Fund Direct Plan Growth", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Dir Gr", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Reg IDCW-P", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Growth Option", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Plan Growth", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Plan A IDCW Direct Plan", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Plan B Growth", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Annual Plan Growth Direct Plan", "Fictiva Flexi Cap"],
+    ["FICTIVA FLEXI CAP DIRECT PLAN GROWTH", "FICTIVA FLEXI CAP"],
+    ["Fictiva Liquid Fund Regular Plan Daily IDCW Reinvestment", "Fictiva Liquid"],
+    ["Fictiva Energy Fund Direct Plan IDCW Payout & Reinvestment", "Fictiva Energy"],
+    ["Fictiva Gilt Fund Direct Plan Regular IDCW Option", "Fictiva Gilt"],
+    ["Fictiva Gilt Fund Regular Plan B Half Yearly IDCW", "Fictiva Gilt"],
+    // Joined words, kept as printed in the name before them.
+    ["Fictiva Flexi Cap Fund DirGr", "Fictiva Flexi Cap"],
+    ["Fictiva DirectEdge Fund RegMnIDCW-P", "Fictiva DirectEdge"],
+    // The fund's own words stay, even ones that read like a plan, option or filler word.
+    ["FICTIVA GROWTH FUND DIRECT PLAN IDCW", "FICTIVA GROWTH"],
+    ["Fictiva Dividend Yield Fund Regular Plan Growth", "Fictiva Dividend Yield"],
+    ["Fictiva Regular Savings Fund Direct IDCW", "Fictiva Regular Savings"],
+    ["Fictiva Fixed Maturity Plan Dir Gr", "Fictiva Fixed Maturity Plan"],
+    ["Fictiva Short Term Income Plan Direct Plan", "Fictiva Short Term Income Plan"],
+    ["Fictiva Flexi Cap Fund Growth Option Direct Plan", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Daily IDCW Direct Plan", "Fictiva Flexi Cap"],
+    ["Fictiva Flexi Cap Fund Payout of IDCW Direct Plan", "Fictiva Flexi Cap"],
+    ["Fictiva Regular Plan Growth Dir IDCW", "Fictiva Regular Plan Growth"],
+    ["Fictiva Banking and PSU Debt Fund Growth", "Fictiva Banking and PSU Debt"],
+    // A name with no plan or option, or with words after them, stays whole but for "Fund".
+    ["Fictiva Fixed Maturity Plan", "Fictiva Fixed Maturity Plan"],
+    ["Fictiva Payout Fund", "Fictiva Payout"],
+    ["FICTIVA NIFTY 50 ETF", "FICTIVA NIFTY 50 ETF"],
+    ["Fictiva Flexi Cap Fund Direct Plan Growth Non Demat", "Fictiva Flexi Cap Fund Direct Plan Growth Non Demat"],
+    ["Fictiva Gilt Fund Direct Plan Bonus", "Fictiva Gilt"],
+  ]) assert.equal(fundQuery(name), query, name);
+});
+
+test("keeps the fund's own plan phrase before an option without a dash", () => {
+  for (const [name, query] of [
+    ["Fictiva Fixed Maturity Plan Growth", "Fictiva Fixed Maturity Plan"],
+    ["Fictiva Fixed Maturity Plan A Growth Option", "Fictiva Fixed Maturity Plan A"],
+    ["Fictiva Fixed Maturity Plan B IDCW Reinvestment", "Fictiva Fixed Maturity Plan B"],
+    ["Fictiva Monthly Income Plan Daily IDCW", "Fictiva Monthly Income Plan"],
+    ["Fictiva Monthly Income Plan Daily IDCW Direct Plan", "Fictiva Monthly Income Plan"],
+    ["Fictiva FixedMaturityPlanA Growth", "Fictiva FixedMaturityPlanA"],
+  ]) assert.equal(fundQuery(name), query, name);
+});
+
+test("removes an option's plan word before a trailing plan without changing the badges", () => {
+  for (const [suffix, plan] of [
+    ["Regular IDCW Direct Plan", "Direct"],
+    ["Direct IDCW Regular Plan", "Regular"],
+    ["Annual Regular IDCW Direct Plan", "Direct"],
+    ["Regular IDCW Direct", "Direct"],
+    ["RegMnIDCWDirectPlan", "Direct"],
+  ]) {
+    const name = `Fictiva Flexi Cap Fund ${suffix}`;
+    assert.equal(fundQuery(name), "Fictiva Flexi Cap", name);
+    assert.deepEqual(planAndOption(name), { plan, option: "IDCW" }, name);
+  }
+  // Without "Fund", the earlier word can belong to the fund's own name.
+  assert.equal(fundQuery("Fictiva Regular IDCW Direct Plan"), "Fictiva Regular");
+  assert.equal(fundQuery("Fictiva Growth Direct Plan IDCW"), "Fictiva Growth");
+  assert.equal(fundQuery("Fictiva Fund Growth Direct Plan IDCW"), "Fictiva Fund Growth");
+  assert.equal(fundQuery("Fictiva Fund Direct Direct Plan Growth"), "Fictiva Fund Direct");
+  assert.equal(fundQuery("Fictiva Fund Direct Growth Direct Plan"), "Fictiva Fund Direct");
+  assert.equal(fundQuery("Fictiva Fund Regular Regular Plan Growth"), "Fictiva Fund Regular");
+  assert.equal(fundQuery("Fictiva Fund Regular Growth Regular Plan"), "Fictiva Fund Regular");
+});
+
+test("searches a segregated portfolio with its marker and number after the shorter name", async () => {
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cas-segregated.json", "utf8"));
+  assert.deepEqual(data.folios[0].schemes.map((s) => fundQuery(s.scheme)), [
+    "Fictiva Credit Risk", "Fictiva Credit Risk Segregated Portfolio 1",
+  ]);
+  for (const [name, query] of [
+    ["Fictiva Credit Risk Fund- Segregated Portfolio 1 (7.35% Madeup Ltd-18AUG29-Growth Plan)", "Fictiva Credit Risk Segregated Portfolio 1"],
+    ["Fictiva Credit Risk Fund - Direct Plan - Growth - Segregated Portfolio II", "Fictiva Credit Risk Segregated Portfolio II"],
+    ["Fictiva Credit Risk Fund - Direct Plan - Growth (Segregated Portfolio 1)", "Fictiva Credit Risk Segregated Portfolio 1"],
+    ["Fictiva Credit Risk Fund- Segregated Portfolio - 1 - Direct Plan - Growth", "Fictiva Credit Risk Segregated Portfolio - 1"],
+    ["Fictiva Credit Risk Fund - Segregated Portfolio (9.10% Madeup Ltd) - Direct Plan - Growth", "Fictiva Credit Risk Segregated Portfolio"],
+    ["FICTIVA CREDIT RISK FUND SEGREGATED PORTFOLIO 1 DIRECT PLAN GROWTH", "FICTIVA CREDIT RISK SEGREGATED PORTFOLIO 1"],
+    ["FICTIVA CREDIT RISK FUND DIRECT PLAN GROWTH SEGREGATED PORTFOLIO 2", "FICTIVA CREDIT RISK SEGREGATED PORTFOLIO 2"],
+  ]) assert.equal(fundQuery(name), query, name);
+});
+
+test("keeps other securities' searches whole", () => {
+  for (const name of ["Fictiva Growth", "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31", "Fictiva Fund", "Fictiva Direct Plan Growth"]) {
+    assert.equal(fundName(name), name);
+  }
+  // A fund of that name is searched shorter.
+  assert.equal(fundQuery("Fictiva Growth"), "Fictiva");
+  assert.equal(fundQuery("Fictiva Fund"), "Fictiva");
 });
 
 test("reads the plan and option of every made-up statement's funds", async () => {
