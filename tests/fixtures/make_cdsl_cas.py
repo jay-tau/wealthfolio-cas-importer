@@ -59,7 +59,9 @@ Every line here is its own text-show op; lines meant as separate blocks are
         Security (may wrap) | Current Bal | Frozen Bal | Pledge Bal | Pledge
         Setup Bal | Free Bal | Market Price | Value. num_shares is the first
         number after the name (Current Bal), price/value the last two cells.
-        Zero balances print "--". INF ISINs (the ETF) go to mutual_funds.
+        Zero balances print "--". INF ISINs (the ETF and the fund) go to
+        mutual_funds. The fund's Security cell prints "<fund house's company
+        name> # <scheme name>"; casparser joins its lines with spaces.
   * "MUTUAL FUND UNITS HELD AS ON ...": rows go to the Mutual Fund Folios
     account. Row: "<CODE> - <scheme>" (wraps) | ISIN | Folio | ARN code or
     DIRECT | Units | NAV | Invested | Valuation | TER % | Commission |
@@ -273,6 +275,13 @@ CDSL_ACCOUNT = Account(
             D("6.29"),
         ),
         Holding(isin("INFZ90K01NF"), ["FICTIVA NIFTY 50 ETF"], D("300.000"), D("268.41")),
+        # A fund printed after its fund house's company name and "#", over several lines.
+        Holding(
+            isin("INFZ90K01BG"),
+            ["FICTIVA ASSET MANAGEMENT PVT LTD #", "FICTIVA BALANCED ADVANTAGE", "FUND - DIRECT PLAN GROWTH"],
+            D("1520.384"),
+            D("38.42"),
+        ),
     ],
     txns=[
         (
