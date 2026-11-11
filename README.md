@@ -41,6 +41,11 @@ uses them as printed. The price can differ from the fund's NAV for that day; for
 hand, it also becomes the fund's price for that day. The add-on can't tell whether the amount used
 to derive a NAV includes that day's charges, and treats it as before them.
 
+An activity also keeps each of its charges as a tax line labelled "Stamp duty", "STT" or "TDS". The
+lines add up to its tax, and the activity's details list them under it; they change no figure.
+Activities that add-on version 2.2.0 or earlier imported have only the total, and importing the
+statement again doesn't add the lines, since Wealthfolio already has those activities.
+
 Importing the same statement again, or an overlapping one, adds only what's new: the add-on compares
 each row with the account's activities. Wealthfolio's own duplicate check can't count copies of a row
 once a duplicate was imported with "Import anyway". Before Wealthfolio 3.12.0 it also missed the
