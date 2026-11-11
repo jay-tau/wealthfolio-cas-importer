@@ -173,10 +173,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Closed schemes get no fund section, so no search either.
     assert.equal(await frame.locator("section").count(), 5);
     assert.equal(await frame.getByText(/Midcap|Gilt/).count(), 0);
-    // The Overnight fund has no ISIN, so its name is searched without the plan and option when it's first shown.
+    // The Overnight fund has no ISIN, so its name is searched without "Fund", the plan and option when it's first shown.
     const noIsin = frame.locator("section").filter({ hasText: "No ISIN printed" });
-    await noIsin.getByText(`No ISIN on the statement; showing results for "Testbridge Overnight Fund". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`).waitFor();
-    assert.equal(await noIsin.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Overnight Fund");
+    await noIsin.getByText(`No ISIN on the statement; showing results for "Testbridge Overnight". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`).waitFor();
+    assert.equal(await noIsin.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Overnight");
     assert.equal(await noIsin.getByRole("radio").count(), 1);
     assert.equal(await noIsin.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
     // Each section has a live region for its search's progress, count and notes. The searches every
@@ -184,7 +184,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const outcome = (section) => section.locator("[aria-live]");
     assert.equal(await outcome(noIsin).getAttribute("aria-live"), "off");
     assert.equal(await outcome(noIsin).getAttribute("aria-atomic"), "true");
-    assert.match(await outcome(noIsin).textContent(), /^1 result\.No ISIN on the statement; showing results for "Testbridge Overnight Fund"\./);
+    assert.match(await outcome(noIsin).textContent(), /^1 result\.No ISIN on the statement; showing results for "Testbridge Overnight"\./);
     // Each section repeats the same controls, so their names say which fund, share, bond or NPS scheme
     // they're for: each name is in its section, and only once on the page.
     const namedFor = async (section, controls) => {
@@ -297,15 +297,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await outcome(firstFund).textContent(), "Nothing found. Try the fund's name.");
     await search.fill(expected.folios[0].schemes[0].isin);
     await search.press("Enter");
-    // The Corporate Bond fund's ISIN finds nothing, so its name is searched without the plan and option.
+    // The Corporate Bond fund's ISIN finds nothing, so its name is searched without "Fund", the plan and option.
     const byName = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
-    await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund".').waitFor();
-    assert.equal(await byName.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Corporate Bond Fund");
+    await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond".').waitFor();
+    assert.equal(await byName.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Corporate Bond");
     await byName.getByRole("radio").first().waitFor({ state: "attached" });
     assert.equal(await byName.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
     // A late name fallback cannot replace a newer typed search or restore its message.
     const nameSearch = byName.getByRole("textbox", { name: /^Search for / });
-    await pause("Testbridge Corporate Bond Fund");
+    await pause("Testbridge Corporate Bond");
     await nameSearch.fill("INFZ91T01CB6");
     await nameSearch.press("Enter");
     await waiting();
@@ -320,9 +320,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await byName.getByRole("button", { name: "Use this fund" }).isDisabled(), false);
     await nameSearch.fill("INFZ91T01CB6");
     await nameSearch.press("Enter");
-    await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund".').waitFor();
+    await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond".').waitFor();
     assert.equal(await outcome(byName).getAttribute("aria-live"), "polite");
-    assert.match(await outcome(byName).textContent(), /^1 result\.Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund"\./);
+    assert.match(await outcome(byName).textContent(), /^1 result\.Nothing found for the ISIN; showing results for "Testbridge Corporate Bond"\./);
     await byName.getByRole("radio").first().dispatchEvent("click");
     await noIsin.getByRole("radio").first().dispatchEvent("click");
     for (const section of await frame.locator("section").all()) {
@@ -337,8 +337,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await noAmfiNote();
     const searches = await tab.frames()[1].evaluate(() => window.host.searches);
     assert.ok(!searches.some((query) => /INFZ90K01MC|INFZ91T01GL/.test(query)), searches.join(" "));
-    assert.ok(searches.includes("INFZ91T01CB6") && searches.includes("Testbridge Corporate Bond Fund"), searches.join(" "));
-    assert.ok(searches.includes("Testbridge Overnight Fund"), searches.join(" "));
+    assert.ok(searches.includes("INFZ91T01CB6") && searches.includes("Testbridge Corporate Bond"), searches.join(" "));
+    assert.ok(searches.includes("Testbridge Overnight"), searches.join(" "));
     assert.ok(!searches.some((query) => query.includes(" - ")), "full scheme names are never searched");
     // Remembered: the PAN's account and the five funds, with no PAN or folio number in a key.
     const saved = (await host()).storage;
@@ -528,7 +528,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
     await byName.getByRole("button", { name: /^Change the / }).click();
-    await byName.getByRole("textbox", { name: /^Search for / }).fill("Testbridge Corporate Bond Fund");
+    await byName.getByRole("textbox", { name: /^Search for / }).fill("Testbridge Corporate Bond");
     await byName.getByRole("textbox", { name: /^Search for / }).press("Enter");
     await byName.getByRole("radio").first().dispatchEvent("click");
     await byName.getByRole("button", { name: "Use this fund" }).click();
@@ -1344,7 +1344,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await resume();
     await noIsin.getByRole("radio").nth(1).waitFor({ state: "attached" });
     await noAmfiNote();
-    await overnightSearch.fill("Testbridge Overnight Fund");
+    await overnightSearch.fill("Testbridge Overnight");
     await overnightSearch.press("Enter");
     await amfiNoteShown();
     await noIsin.getByRole("button", { name: "Leave this fund out" }).click();
@@ -2610,7 +2610,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.snapshots = {};
       window.host.held = {};
       window.host.summaryWithoutIsin = ["INFZ91T01GL6"];
-      window.host.emptySearchQueries = ["Testbridge Gilt Fund"];
+      window.host.emptySearchQueries = ["Testbridge Gilt"];
       window.host.storage.delete("isin:INFZ91T01CB6");
       Object.assign(window.host.assetIds, { INFZ91T01CB6: "fund-priced-014", "MF-KFINTECH-TGLDG": "fund-priced-015" });
       window.host.failQuoteIds = ["fund-priced-015"];
@@ -2618,13 +2618,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     await readHoldingsAgain();
     const corporateSection = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
-    await corporateSection.getByText(`Nothing found for the ISIN; showing results for "Testbridge Corporate Bond Fund". These results can be other funds. Pick one with the statement's fund name, plan and option, use the statement's prices, or leave this fund out.`, { exact: true }).waitFor();
+    await corporateSection.getByText(`Nothing found for the ISIN; showing results for "Testbridge Corporate Bond". These results can be other funds. Pick one with the statement's fund name, plan and option, use the statement's prices, or leave this fund out.`, { exact: true }).waitFor();
     await corporateSection.getByRole("radio").first().waitFor({ state: "attached" });
     await corporateSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
     const giltSection = frame.locator("section").filter({ hasText: gilt });
     await giltSection.getByText("No ISIN printed", { exact: true }).waitFor();
-    await giltSection.getByText(`No ISIN on the statement, and nothing found for "Testbridge Gilt Fund". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
+    await giltSection.getByText(`No ISIN on the statement, and nothing found for "Testbridge Gilt". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
     await giltSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await giltSection.getByText("MF-KFINTECH-TGLDG · MUTUALFUND · INR · priced from statements").waitFor();
     for (const section of await frame.locator("section").all()) {
@@ -2708,7 +2708,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const smallCap = "PRETEND SMALL CAP FUND - DIRECT PLAN";
     await hosted(([textiles, smallCap]) => {
       window.host.statementDate = "30-Apr-2025";
-      window.host.emptySearchQueries = ["INFZ92P01SC5", "PRETEND SMALL CAP FUND"];
+      window.host.emptySearchQueries = ["INFZ92P01SC5", "PRETEND SMALL CAP"];
       Object.assign(window.host.assetIds, { INEZ94A01017: "share-priced-016", INFZ92P01SC5: "fund-priced-017" });
       window.host.depositoryAccounts = [{
         name: "PRETEND BROKING LIMITED", type: "CDSL Demat Account", dp_id: "12099900", client_id: "00000004", folios: 0, balance: "8045", owners: [],
@@ -2757,7 +2757,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await textilesSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await textilesSection.getByText("INEZ94A01017 · EQUITY · INR · priced from statements").waitFor();
     const smallCapSection = frame.locator("section").filter({ hasText: smallCap });
-    await smallCapSection.getByText(`Nothing found for the ISIN or for "PRETEND SMALL CAP FUND". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
+    await smallCapSection.getByText(`Nothing found for the ISIN or for "PRETEND SMALL CAP". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
     // With no option on the statement, a result's option is no warning; another plan is.
     assert.deepEqual(await nameBadges(smallCapSection), ["Direct secondary"]);
     await smallCapSection.getByRole("textbox", { name: /^Search for / }).fill("Pretend Small Cap");

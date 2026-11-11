@@ -17,7 +17,7 @@ import type { CasData, CasScheme } from "../cas/types";
 import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
 import { useFocusMove } from "../lib/focus";
-import { fundName, type PlanAndOption, planAndOption } from "../lib/fund-name";
+import { fundName, fundQuery, type PlanAndOption, planAndOption } from "../lib/fund-name";
 import { nameNumber } from "../lib/name-number";
 import { plural } from "../lib/plural";
 
@@ -156,10 +156,11 @@ function FundSearch({
   /** Called with true while the fund's own search finds no AMFI result, and with false after. */
   onNoAmfi: (noAmfi: boolean) => void;
 }) {
-  // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing or isn't
-  // printed, or what the user types is sent to market-data providers.
-  const name = fundName(item.name);
   const { isin, noun, statementAsset } = item;
+  // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing or isn't
+  // printed, or what the user types is sent to market-data providers. A fund's name is searched
+  // shorter, without a final "Fund" or the plan and option.
+  const name = noun === "fund" ? fundQuery(item.name) : fundName(item.name);
   // Every section repeats these controls, so hidden text after each one's visible text tells screen
   // readers which fund it's for. Browsers read a space before hidden text, so it starts with a word.
   const forItem = <span className="sr-only"> for {label}</span>;
