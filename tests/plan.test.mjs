@@ -221,9 +221,9 @@ describe("duplicates", () => {
     assert.equal(importRows(planned, () => true).length, 4);
   });
 
-  test("a new fund chosen from AMFI goes in, although checkImport asks for its exchange", () => {
-    // Wealthfolio 3.12.0's checkImport for a fund chosen from AMFI that it doesn't have yet: the
-    // trade's only error, while its import creates the fund.
+  test("checkImport's answer for a new fund chosen from AMFI counts like any other row's", () => {
+    // Since Wealthfolio 3.13.0, checkImport accepts a trade in a fund chosen from AMFI that it
+    // doesn't have yet, as its import does, although AMFI's funds have no exchange.
     const amfi = { symbol: "122639", quoteCcy: "INR", instrumentType: "MUTUALFUND", providerId: "AMFI", providerSymbol: "122639" };
     const assetOf = (folio, s) => (s.rta_code === "A" ? amfi : target(folio, s).asset);
     const mapping = mapStatement(data, {
@@ -231,20 +231,17 @@ describe("duplicates", () => {
       alreadyImported: () => false,
     });
     const funds = fundRefs(data.folios[0].schemes.map((s) => assetOf(data.folios[0], s)), profiles);
-    const noExchange = { symbol: ["Could not find '122639' in market data. Please search for the correct ticker symbol."] };
-    const checked = (errors) => rowsOf(mapping).map((r) => (r.symbol === "122639" ? { ...r, isValid: false, errors } : { ...r }));
-    const planned = planImport(mapping, [], checked(noExchange), funds);
+    const planned = planImport(mapping, [], rowsOf(mapping), funds);
     assert.deepEqual(statuses(planned), ["new", "new", "new"]);
-    assert.deepEqual(planned[0].rows[0].errors, []);
     assert.equal(importRows(planned, () => false).length, 6);
-    // Another error, or none given, still keeps the transaction out.
-    for (const errors of [{ ...noExchange, amount: ["Amount is wrong."] }, {}]) {
-      assert.deepEqual(statuses(planImport(mapping, [], checked(errors), funds)), ["invalid", "invalid", "new"]);
-    }
-    // So does that error for a fund from another source.
-    const yahoo = map(data);
-    const rejected = rowsOf(yahoo).map((r) => (r.symbol ? { ...r, isValid: false, errors: noExchange } : { ...r }));
-    assert.deepEqual(statuses(planImport(yahoo, [], rejected, fundsOf(data))), ["invalid", "invalid", "invalid"]);
+    // An error for its trade, even the symbol error Wealthfolio 3.12.0 gave every such trade, keeps
+    // the transaction out and is shown.
+    const noExchange = ["Could not find '122639' in market data. Please search for the correct ticker symbol."];
+    const rejected = rowsOf(mapping).map((r) => (r.symbol === "122639" ? { ...r, isValid: false, errors: { symbol: noExchange } } : { ...r }));
+    const refused = planImport(mapping, [], rejected, funds);
+    assert.deepEqual(statuses(refused), ["invalid", "invalid", "new"]);
+    assert.deepEqual(refused[0].rows[0].errors, noExchange);
+    assert.equal(importRows(refused, () => false).length, 2);
   });
 
   test("a duplicate only Wealthfolio reports still needs a decision", () => {
