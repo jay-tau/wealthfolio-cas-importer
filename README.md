@@ -9,8 +9,9 @@ parsed on the device. A detailed statement from CAMS or KFintech is imported as 
 summary statement from CAMS or KFintech, or a statement from NSDL or CDSL, the depositories, is
 imported as holdings (see [Summary and depository statements](#summary-and-depository-statements)).
 
-Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0 and 3.12.0) and
-Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on macOS.
+Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0, 3.12.0 and
+3.13.0) and Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on
+macOS.
 
 To import, pick the PDF and enter its password, if it has one, choose a Wealthfolio account that tracks
 transactions for each PAN (and, if you like, a different one for a folio), and confirm the

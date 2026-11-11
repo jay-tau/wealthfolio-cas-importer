@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Checked v2.2.0 with Wealthfolio 3.13.0's Linux desktop app, both updated from 3.12.0 and new. The README says so
 
 ### Deprecated
 
