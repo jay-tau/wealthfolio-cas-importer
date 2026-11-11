@@ -85,6 +85,7 @@ test("reads the plan and option of every made-up statement's funds", async () =>
     "FMCDG - Fictiva Midcap Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
     "TCBRP - Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout": { plan: "Regular", option: "IDCW" },
     "TGLDG - Testbridge Gilt Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
+    "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH": { plan: "Direct", option: "Growth" },
     "TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH": { plan: "Direct", option: "Growth" },
     // Depository statements list ETFs among mutual funds.
     "FICTIVA NIFTY 50 ETF": {},

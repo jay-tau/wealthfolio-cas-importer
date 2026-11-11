@@ -177,7 +177,7 @@ test("reads a CDSL statement and its NPS schemes, and leaves out holdings withou
   assert.deepEqual(
     holdings.sources.map((s) => [s.id, s.holdings.length]),
     [
-      ["demat|19999901|00012345", 3],
+      ["demat|19999901|00012345", 4],
       ["folio|91234567/12|INFZ90K", 2],
       ["folio|1040012345|INFZ91T", 2],
       ["demat|IN999901|10012345", 2],
@@ -494,7 +494,7 @@ test("each source goes to its own account, or is left out", async () => {
   assert.deepEqual(
     plans.map((p) => [p.accountId, p.sources.map((s) => s.id), p.positions.length, replacesSnapshot(p)]),
     [
-      ["brokerage", ["demat|19999901|00012345", "demat|IN999901|10012345"], 5, false],
+      ["brokerage", ["demat|19999901|00012345", "demat|IN999901|10012345"], 6, false],
       ["funds", ["folio|91234567/12|INFZ90K"], 2, true],
       ["pension", ["nps|XXXXXXXX9001"], 3, false],
     ],
@@ -1976,7 +1976,8 @@ test("a CDSL statement's folio funds are searched and named without the printed 
   });
   assert.deepEqual(snapshotOf(again, noChoices).holdings.map((h) => [h.assetId, h.name]), funds.map((h) => [h.isin, undefined]));
 
-  // Other statements, and CDSL demat accounts, keep their names as printed, even ones that look coded.
+  // Other statements, and CDSL demat accounts, keep their names as printed, even ones that look
+  // coded. A CDSL demat fund printed after its fund house drops that, code and all (tested below).
   const coded = (name) => `ABC12 - ${name}`;
   for (const f of data.accounts.flatMap((a) => a.mutual_funds)) f.name = coded(f.name);
   const nsdl = await fixture("made-up-nsdl");
@@ -1984,7 +1985,8 @@ test("a CDSL statement's folio funds are searched and named without the printed 
   const summaries = await Promise.all(["made-up-summary-cams", "made-up-summary-kfintech"].map(fixture));
   for (const s of summaries.flatMap((d) => d.folios.flatMap((f) => f.schemes))) s.scheme = coded(s.scheme);
   const kept = (statement, keep = () => true) => readHoldings(statement).sources.filter(keep).flatMap((s) => s.holdings).filter((h) => h.kind === "fund");
-  const unchanged = [...kept(data, (s) => s.kind === "demat"), ...kept(nsdl), ...summaries.flatMap((d) => kept(d))];
+  const unchanged = [...kept(data, (s) => s.kind === "demat"), ...kept(nsdl), ...summaries.flatMap((d) => kept(d))]
+    .filter((h) => !h.details.name.includes(" # "));
   assert.equal(unchanged.length, 20);
   for (const h of unchanged) assert.equal(h.name, h.details.name);
   for (const h of unchanged) assert.match(h.name, /^ABC12 - /);
@@ -2005,6 +2007,104 @@ test("CDSL folio scheme codes can contain digits and leave the rest of the name 
   ]) {
     fund.name = printed;
     const holding = readHoldings(data).sources[0].holdings[0];
+    assert.equal(holding.name, expected);
+    assert.equal(holding.details.name, printed ?? undefined);
+  }
+});
+
+test("a CDSL statement's own demat funds are shown, searched and named without their fund house", async () => {
+  const data = await fixture("made-up-cdsl");
+  const holdings = readHoldings(data);
+  const demat = holdings.sources.find((s) => s.id === "demat|19999901|00012345");
+  const printed = "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH";
+  const fund = demat.holdings.find((h) => h.isin === "INFZ90K01BG8");
+  // The name shown and searched, and the printed name kept in the details.
+  assert.deepEqual([fund.kind, fund.name, fundName(fund.name), fund.details.name], [
+    "fund", "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH", "FICTIVA BALANCED ADVANTAGE FUND", printed,
+  ]);
+  assert.equal(assetDetails(fund, {}, "EQUITY").casStatement.name, printed);
+  // Names without " # " stay as printed.
+  assert.deepEqual(demat.holdings.map((h) => [h.kind, h.name, h.name === h.details.name]), [
+    ["share", "FICTIVA INDUSTRIES LIMITED", true],
+    ["share", "TESTBRIDGE POWER AND INFRASTRUCTURE LIMITED", true],
+    ["fund", "FICTIVA NIFTY 50 ETF", true],
+    ["fund", fund.name, false],
+  ]);
+
+  // A new asset uses the scheme name, even with a choice remembered before this fix.
+  assert.equal(statementAsset(fund).name, fund.name);
+  const remembered = (h) => ({ ...statementAsset(h), name: h.details.name });
+  for (const asset of [statementAsset, remembered]) {
+    const [account] = plan({ ...holdings, sources: [demat] }, { asset });
+    assert.equal(account.positions.find((p) => p.ref === fundRef(fund.isin)).name, fund.name);
+    assert.equal(snapshotOf(account, noChoices).holdings.find((h) => h.symbol === fund.isin).name, fund.name);
+  }
+  // Check units names it the same way.
+  const checks = checkUnits({ ...holdings, sources: [demat] }, {
+    asset: (h) => (h === fund ? statementAsset(h) : undefined), accounts: [], activities: [], timeZone: "UTC",
+  });
+  assert.deepEqual(checks.map((c) => c.name), [fund.name]);
+  // So does the Left out alert, for a fund without units.
+  Object.assign(data.accounts[0].mutual_funds.find((f) => f.name === printed), { balance: "0", value: "0" });
+  const zero = readHoldings(data);
+  assert.deepEqual(zero.leftOut.map((l) => l.name), ["TESTBRIDGE POWER AND INFRASTRUCTURE LTD - RE", fund.name]);
+  assert.deepEqual(zero.sources[0].zero.map((h) => [h.name, h.details.name]), [
+    ["TESTBRIDGE POWER AND INFRASTRUCTURE LTD - RE", "TESTBRIDGE POWER AND INFRASTRUCTURE LTD - RE"], [fund.name, printed],
+  ]);
+});
+
+test("only a CDSL statement's own demat accounts drop the fund house before a fund's name", async () => {
+  const printed = "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH";
+  const names = (statement, keep) => readHoldings(statement).sources.filter(keep).flatMap((s) => s.holdings).map((h) => h.name);
+  const data = await fixture("made-up-cdsl");
+  const [cdsl, folios, nsdl] = data.accounts;
+  assert.deepEqual([cdsl.type, folios.type, nsdl.type], ["CDSL Demat Account", "Mutual Fund Folios", "NSDL Demat Account"]);
+  const fund = cdsl.mutual_funds.find((f) => f.name === printed);
+  // An NSDL demat account inside a CDSL statement, and the shares of its CDSL ones, keep their names.
+  nsdl.mutual_funds.push({ ...fund });
+  for (const e of cdsl.equities) e.name = `FICTIVA HOLDINGS LTD # ${e.name}`;
+  assert.deepEqual(names(data, (s) => s.id === "demat|IN999901|10012345"), ["SAMPLEWORKS TECHNOLOGIES LIMITED", "DEMOCORP FINANCE LIMITED", printed]);
+  assert.deepEqual(names(data, (s) => s.id === "demat|19999901|00012345"), [
+    "FICTIVA HOLDINGS LTD # FICTIVA INDUSTRIES LIMITED",
+    "FICTIVA HOLDINGS LTD # TESTBRIDGE POWER AND INFRASTRUCTURE LIMITED",
+    "FICTIVA NIFTY 50 ETF",
+    "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH",
+  ]);
+  // A CDSL statement's folios drop only the scheme code.
+  folios.mutual_funds[0].name = `FFCDG - FICTIVA ASSET MANAGEMENT PVT LTD # ${folios.mutual_funds[0].name.slice("FFCDG - ".length)}`;
+  assert.equal(names(data, (s) => s.kind === "folio")[0], "FICTIVA ASSET MANAGEMENT PVT LTD # Fictiva Flexi Cap Fund - Direct Plan - Growth");
+  // So do NPS schemes and an NSDL statement's CDSL demat accounts.
+  data.nps.schemes[0].scheme = `FICTIVA PENSION # ${data.nps.schemes[0].scheme}`;
+  assert.match(names(data, (s) => s.kind === "nps")[0], /^FICTIVA PENSION # NPS TRUST/);
+  const other = await fixture("made-up-nsdl");
+  const account = other.accounts.find((a) => a.type === "CDSL Demat Account");
+  for (const f of account.mutual_funds) f.name = `TESTBRIDGE ASSET MANAGEMENT LTD # ${f.name}`;
+  const kept = readHoldings(other).sources.flatMap((s) => s.holdings).filter((h) => h.details?.name?.includes(" # "));
+  assert.equal(kept.length, account.mutual_funds.length);
+  for (const h of kept) assert.equal(h.name, h.details.name);
+  // Summary statements too.
+  const summary = await fixture("made-up-summary-cams");
+  summary.folios[0].schemes[0].scheme = `FICTIVA ASSET MANAGEMENT PVT LTD # ${summary.folios[0].schemes[0].scheme}`;
+  assert.match(readHoldings(summary).sources[0].holdings[0].name, /^FICTIVA ASSET MANAGEMENT PVT LTD # /);
+});
+
+test("a CDSL demat fund drops everything up to its first \" # \", and keeps a name with nothing after one", async () => {
+  const data = await fixture("made-up-cdsl");
+  const [cdsl] = data.accounts;
+  const fund = cdsl.mutual_funds.find((f) => f.isin === "INFZ90K01BG8");
+  data.accounts = [cdsl];
+  cdsl.equities = [];
+  cdsl.mutual_funds = [fund];
+  for (const [printed, expected] of [
+    ["FICTIVA AMC # FICTIVA FUND # SERIES 2 - DIRECT PLAN GROWTH", "FICTIVA FUND # SERIES 2 - DIRECT PLAN GROWTH"],
+    ["FICTIVA AMC\t#  FICTIVA FUND", "FICTIVA FUND"],
+    ["FICTIVA AMC#FICTIVA FUND", "FICTIVA AMC#FICTIVA FUND"],
+    ["# FICTIVA FUND", "# FICTIVA FUND"],
+    ["FICTIVA AMC # ", "FICTIVA AMC # "],
+    [null, fund.isin],
+  ]) {
+    fund.name = printed;
+    const [holding] = readHoldings(data).sources[0].holdings;
     assert.equal(holding.name, expected);
     assert.equal(holding.details.name, printed ?? undefined);
   }

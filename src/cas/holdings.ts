@@ -162,6 +162,13 @@ const printed = (details: Record<string, string | null | undefined>) =>
  */
 const withoutSchemeCode = (name: string) => name.replace(/^\s*[A-Z0-9]+\s*-\s*/, "") || name;
 
+/**
+ * A CDSL statement prints a fund in one of its own demat accounts as "<fund house's company name>
+ * # <scheme name>". "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT
+ * PLAN GROWTH" → "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH".
+ */
+const withoutFundHouse = (name: string) => name.replace(/^.*?\s#\s+/s, "") || name;
+
 /** The same folio prints as `91234567 / 12` on CAMS statements and `91234567/12` on NSDL ones. */
 export const folioNumber = (folio: string) => folio.replace(/\s+/g, "");
 
@@ -279,6 +286,8 @@ function readDepository(data: DepositoryData): Holdings {
     }
     const label = `${account.type} ${++dematNumber}, ${account.name}`.replace(/\s+/g, " ");
     const source: Source = { id: `demat|${account.dp_id ?? ""}|${account.client_id ?? ""}`, kind: "demat", label, holdings: [] };
+    // Only a CDSL statement's own demat accounts are known to print the fund house first.
+    const cdsl = data.file_type === "CDSL" && account.type === "CDSL Demat Account";
     source.holdings = [
       ...account.equities.map(
         (e): StatementHolding => ({
@@ -294,7 +303,12 @@ function readDepository(data: DepositoryData): Holdings {
           details: printed({ name: e.name, isin: e.isin }),
         }),
       ),
-      ...account.mutual_funds.map(fund),
+      ...account.mutual_funds.map((f) => {
+        const holding = fund(f);
+        // The search and a new asset go by the scheme name; the printed details keep the fund house.
+        if (cdsl && f.name) holding.name = withoutFundHouse(f.name);
+        return holding;
+      }),
       ...account.bonds.map(
         (b): StatementHolding => ({
           kind: "bond",

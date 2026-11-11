@@ -5,8 +5,8 @@
       "type": "CDSL Demat Account",
       "dp_id": "19999901",
       "client_id": "00012345",
-      "folios": 4,
-      "balance": "399075.00",
+      "folios": 5,
+      "balance": "457488.15",
       "owners": [
         {
           "name": "ANANYA R TESTWALA",
@@ -51,6 +51,21 @@
           "balance": "300.000",
           "nav": "268.41",
           "value": "80523.00",
+          "avg_cost": null,
+          "total_cost": null,
+          "ucc": null,
+          "folio": null,
+          "pnl": null,
+          "return": null
+        },
+        {
+          "name": "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH",
+          "isin": "INFZ90K01BG8",
+          "amfi": null,
+          "type": null,
+          "balance": "1520.384",
+          "nav": "38.42",
+          "value": "58413.15",
           "avg_cost": null,
           "total_cost": null,
           "ucc": null,

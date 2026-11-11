@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Show, search for and name a fund in a CDSL statement's CDSL demat account by its scheme name, without the fund house's company name and "#" that the statement prints before it: "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH" now reads "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH" on the Holdings card, in the Left out alert and in Check units. When its ISIN finds nothing, the search now looks for "FICTIVA BALANCED ADVANTAGE FUND"; before, it kept the company name and "#", which can leave Yahoo's search with no results. "Use the statement's prices" names a new asset, and its row in the preview, the same way. The asset's printed details keep the name as printed, and an asset an earlier import created keeps its name. Funds in an NSDL demat account within a CDSL statement, and in other statements, keep their names as printed
 
 ### Security
 

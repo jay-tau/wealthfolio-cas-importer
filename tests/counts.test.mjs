@@ -1,7 +1,8 @@
 // Counts of one read in the singular, and other counts in the plural, in the detailed import's
-// preview and result and in both statement lines. Renders the components with Vite's SSR loader
-// and made-up data.
+// preview and result and in both statement lines, and the names the Holdings card shows. Renders
+// the components with Vite's SSR loader and made-up data.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -188,4 +189,14 @@ test("the holdings statement line counts demat accounts, folios, NPS accounts an
     `${start} 2 demat accounts, 2 folios, 2 NPS accounts, 2 holdings.`,
   );
   assert.equal(line(source("folio", 0)), `${start} 1 folio, 0 holdings.`);
+});
+
+test("the Holdings card names a CDSL demat fund without its fund house", async () => {
+  const holdings = components.readHoldings(JSON.parse(await readFile("tests/fixtures/made-up-cdsl.json", "utf8")));
+  const item = components.holdingItems(holdings).find((i) => i.isin === "INFZ90K01BG8");
+  assert.equal(item.name, "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH");
+  assert.equal(item.statementAsset.name, item.name);
+  const card = text("FundChoicesCard", { ctx: {}, items: [item], choices: {} });
+  assert.ok(card.includes(` ${item.name} `));
+  assert.ok(!card.includes("ASSET MANAGEMENT"));
 });
