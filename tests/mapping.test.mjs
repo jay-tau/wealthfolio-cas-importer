@@ -512,11 +512,107 @@ test("equal purchases of two funds on one day keep both purchases and both depos
   const mapping = map(statement(scheme("A", purchase()), scheme("B", purchase())));
   const [a, b] = mapping.transactions;
   assert.notEqual(a.activity.symbol, b.activity.symbol);
-  // Wealthfolio's duplicate check will match these; #11 lets the user import both.
-  const { lineNumber: first, ...deposit } = a.cash;
-  const { lineNumber: second, ...otherDeposit } = b.cash;
+  // Equal but for their IDs, which Wealthfolio 3.13.0 tells apart. Older versions' duplicate check
+  // matches them; #11 lets the user import both.
+  const { lineNumber: first, sourceRecordId: firstId, ...deposit } = a.cash;
+  const { lineNumber: second, sourceRecordId: secondId, ...otherDeposit } = b.cash;
   assert.deepEqual(deposit, otherDeposit);
   assert.notEqual(first, second);
+  assert.notEqual(firstId, secondId);
+});
+
+describe("row IDs", () => {
+  const purchase = (extra = {}) => tx("2024-01-10", "PURCHASE", "1000.00", "100.000", "10.0000", extra);
+  const later = tx("2024-02-10", "PURCHASE", "500.00", "50.000", "10.0000");
+  const folio = (number, ...schemes) => ({ folio: number, amc: "Made-up Mutual Fund", name: null, PAN: "ABCDE1234F", KYC: null, PANKYC: null, schemes });
+  const folios = (...list) => ({ ...statement(), folios: list });
+  const banked = (f, s) => ({ ...input().target(f, s), bankAccountId: "bank-1" });
+  const idsOf = (mapping) => mapping.transactions.map((t) => t.activity.sourceRecordId);
+
+  test("each activity carries its row's ID and what the statement says about the row", () => {
+    const row = purchase({ description: "Purchase - via Internet" });
+    const mapping = map(statement(scheme("A", [row, charge("2024-01-10", "STAMP_DUTY_TAX", "0.05")])), { target: banked });
+    const [{ activity, cash, bank }] = mapping.transactions;
+    assert.match(activity.sourceRecordId, /^[0-9a-f]{64}$/);
+    // The fund account's cash shares the trade's account; Wealthfolio matches IDs per account.
+    assert.deepEqual([cash.sourceRecordId, bank.sourceRecordId], [`${activity.sourceRecordId}:cash`, `${activity.sourceRecordId}:bank`]);
+    for (const r of [activity, cash, bank]) {
+      assert.deepEqual(r.metadata, { folio: "F1", registrar: "CAMS", casparserType: "PURCHASE", description: "Purchase - via Internet" });
+    }
+    // The trade keeps its charge lines beside them.
+    assert.deepEqual(activity.charges, [{ category: "tax", label: "Stamp duty", amount: "0.05" }]);
+  });
+
+  test("a row keeps its ID on an overlapping statement, in another order, and whatever casparser calls it", () => {
+    const other = tx("2024-01-10", "PURCHASE", "1000.00", "50.000", "20.0000");
+    const first = folios(folio("12345678 / 90", scheme("A", [purchase(), later]), scheme("B", [other])));
+    const [a, aLater, b] = idsOf(map(first));
+    assert.equal(new Set([a, aLater, b]).size, 3);
+    // A later statement from another day lists the funds the other way round, the folio without
+    // spaces, an earlier row, the purchase as a SIP, and the decimals with other trailing zeros.
+    const second = folios(folio("12345678/90",
+      scheme("B", [other]),
+      scheme("A", [tx("2023-12-10", "PURCHASE", "100.00", "10.000", "10.0000"), purchase({ type: "PURCHASE_SIP", description: "SIP Purchase", units: "100.0000", amount: "1000" }), later]),
+    ));
+    second.statement_period = { from: "01-Dec-2023", to: "31-Mar-2024" };
+    const ids = idsOf(map(second));
+    assert.deepEqual([ids[0], ...ids.slice(2)], [b, a, aLater]);
+    assert.ok(![a, aLater, b].includes(ids[1]));
+    // One that starts after the first purchase lists the later one first.
+    const third = folios(folio("12345678 / 90", scheme("A", [later])));
+    third.statement_period = { from: "01-Feb-2024", to: "31-Mar-2025" };
+    assert.deepEqual(idsOf(map(third)), [aLater]);
+  });
+
+  test("equal rows have different IDs, the same on every statement that lists them", () => {
+    const twice = (...before) => statement(scheme("A", [...before, purchase(), purchase({ description: "Purchase - via Distributor" })]));
+    const ids = idsOf(map(twice()));
+    assert.notEqual(ids[0], ids[1]);
+    assert.deepEqual(idsOf(map(twice(tx("2023-12-10", "PURCHASE", "1000.00", "100.000", "10.0000")))).slice(1), ids);
+    // Another folio's equal row has its own ID. So has another fund's in the same folio, which only
+    // the same units and amount on one day make equal: the count tells them apart.
+    const others = idsOf(map(folios(
+      folio("F1", scheme("A", [purchase()])),
+      folio("F2", scheme("A", [purchase()])),
+      folio("F1", scheme("B", [purchase()])),
+    )));
+    assert.equal(new Set(others).size, 3);
+    assert.equal(others[0], ids[0]);
+    assert.equal(others[2], ids[1]);
+    // Each folio's own, even for one scheme listed in both.
+    const shared = scheme("A", [purchase()]);
+    assert.deepEqual(idsOf(map(folios(folio("F1", shared), folio("F2", shared)))), others.slice(0, 2));
+  });
+
+  test("each ID field distinguishes a row on its own statement, and the fund isn't one", () => {
+    const id = (row = {}, fund = {}, number = "F1") =>
+      idsOf(map(folios(folio(number, scheme("A", [purchase(row)], fund)))))[0];
+    const first = id();
+    for (const changed of [id({ date: "2024-01-11" }), id({ units: "101" }), id({ amount: "1001" }), id({}, {}, "F2")]) {
+      assert.notEqual(changed, first);
+    }
+    for (const fund of [{ isin: "INF-B" }, { isin: null }, { isin: null, rta: "KFINTECH" }, { isin: null, rta_code: "B" }]) {
+      assert.equal(id({}, fund), first, JSON.stringify(fund));
+    }
+  });
+
+  test("a row keeps its ID on a statement that omits its fund's ISIN or prints another registrar code", () => {
+    // Confirmed as the same Wealthfolio fund either way.
+    const target = (f, s) => ({ ...input().target(f, s), asset: { symbol: "INF-A", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "EQUITY" } });
+    const read = (extra = {}) => map(folios(folio("F1", scheme("A", [purchase(), later], extra))), { target }).transactions
+      .flatMap((t) => [t.activity.sourceRecordId, t.cash.sourceRecordId]);
+    const withIsin = read();
+    for (const extra of [{ isin: null }, { isin: null, rta: "KFINTECH", rta_code: "OTHER" }]) {
+      assert.deepEqual(read(extra), withIsin, JSON.stringify(extra));
+    }
+  });
+
+  test("metadata leaves out PANs", () => {
+    const mapping = map(folios(folio("F1", scheme("A", [purchase({ description: "Purchase ABCDE1234F/pqrst6789z ABCDE12345" })]))));
+    assert.equal(mapping.transactions[0].activity.metadata.description, "Purchase [PAN]/[PAN] ABCDE12345");
+    const [{ activity, cash }] = mapping.transactions;
+    assert.doesNotMatch(JSON.stringify([activity, cash]), /ABCDE1234F/i);
+  });
 });
 
 describe("reversals", () => {
@@ -780,6 +876,15 @@ describe("mergers", () => {
       );
       assert.ok(mapping.warnings.some((w) => w.message === message), message);
     }
+  });
+
+  test("each half of a conversion has its own row's ID; the rows earlier versions imported have none", () => {
+    const [{ activity, arriving, earlier }] = map(statement(scheme("A", [out]), scheme("B", [into]))).transactions;
+    assert.match(activity.sourceRecordId, /^[0-9a-f]{64}$/);
+    assert.match(arriving.activity.sourceRecordId, /^[0-9a-f]{64}$/);
+    assert.notEqual(activity.sourceRecordId, arriving.activity.sourceRecordId);
+    assert.deepEqual([activity, arriving.activity].map((r) => r.metadata.casparserType), ["SWITCH_OUT_MERGER", "SWITCH_IN_MERGER"]);
+    assert.ok(earlier.every((r) => r.sourceRecordId === undefined && r.metadata === undefined));
   });
 });
 
@@ -1076,6 +1181,15 @@ describe("gifts", () => {
       assert.deepEqual(mapping.transactions.map((t) => t.activity.activityType), ["BUY"]);
       assert.deepEqual(messages(mapping), [[GIVER, true, message], [RECEIVER, true, message]]);
     }
+  });
+
+  test("each side of a gift has its own row's ID and folio", () => {
+    const [{ activity, receiving }] = map(twoFolios([giftOut()], [giftIn()])).transactions;
+    assert.notEqual(activity.sourceRecordId, receiving.activity.sourceRecordId);
+    assert.deepEqual(
+      [activity, receiving.activity].map((r) => [r.metadata.folio, r.metadata.casparserType, r.metadata.description]),
+      [[GIVER, "GIFT_OUT", "Gifting of units-TO Folio No: 33333333"], [RECEIVER, "GIFT_IN", "Gifting of units - From Folio No.11111111"]],
+    );
   });
 });
 

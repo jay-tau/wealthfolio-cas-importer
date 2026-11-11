@@ -46,10 +46,21 @@ lines add up to its tax, and the activity's details list them under it; they cha
 Activities that add-on version 2.2.0 or earlier imported have only the total, and importing the
 statement again doesn't add the lines, since Wealthfolio already has those activities.
 
-Importing the same statement again, or an overlapping one, adds only what's new: the add-on compares
-each row with the account's activities. Wealthfolio's own duplicate check can't count copies of a row
-once a duplicate was imported with "Import anyway". Before Wealthfolio 3.12.0 it also missed the
-trades of a fund that an earlier import created. A fund whose statement starts with units needs
+Importing the same statement again, or an overlapping one, adds only what's new. Each activity
+carries an ID made from its statement row: a hash of the folio number, the date, the units and the
+amount, numbered when equal transaction rows repeat. Charge and unsupported rows don't advance
+that count. The fund isn't part of it, since one statement can omit a fund's ISIN or print another
+registrar code than another, and neither is the fund house, whose name changes when it's renamed.
+Two funds' equal rows in one folio, or two fund houses' folios with the same number and equal rows,
+are told apart by their order alone; another order can swap which equal activity each matches.
+The trade, its cash and the bank account's side each have their own. Wealthfolio and the add-on
+match a row with the activity imported with its ID into the same account, even after
+you edit that activity, so equal transactions, such as the same purchase on one day in two folios,
+each go in once. Activities without these IDs, imported by version 2.2.0 or earlier or entered by
+hand, are compared with each row by their values, each with one row at most. Wealthfolio's own check
+can still report an equal row as a duplicate of such an activity; "Import anyway" imports it. Before
+Wealthfolio 3.12.0, Wealthfolio's check also missed the trades of a fund that an earlier import
+created. A fund whose statement starts with units needs
 those units in Wealthfolio first, from an earlier statement or entered by hand.
 The units check counts posted account history, each activity on its day in Wealthfolio's timezone
 setting (UTC if none is set); splits or option expiry in that history need review.
@@ -397,9 +408,13 @@ the later snapshot's prices.
 - On the two activities of each merger's conversion, the group ID that pairs them: a SHA-256 hash of
   the Wealthfolio account, the folio number, the merger's date and the confirmed funds' symbols and
   exchanges. It stays the same when another statement omits an ISIN or prints different scheme codes.
+- On each activity a detailed statement imports, its row's ID, a SHA-256 hash of the folio number
+  and the row (see above), and in its metadata the folio number, the registrar, casparser's type for
+  the row and the statement's description of it, with anything shaped like a PAN replaced by
+  `[PAN]`.
 
 These hashes keep PANs and folio numbers out of casual view; they don't make them secret.
-PANs are few enough to brute-force.
+PANs are few enough to brute-force. The activities' metadata has the folio numbers as printed.
 
 Searches send the printed ISIN, the name from the statement when the ISIN finds
 nothing or none is printed, or what you type, to Wealthfolio's market-data providers. The

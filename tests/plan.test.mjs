@@ -1,7 +1,7 @@
 // Which mapped transactions the import sends, checked against activities as Wealthfolio's
-// `activities.getAll` returns them. Wealthfolio's own checks are faked: the real ones run in
-// the throwaway-server test described in the pull request.
+// `activities.getAll` returns them. Wealthfolio's own checks are faked here.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 import { format } from "../src/cas/decimal.ts";
 import { mapStatement } from "../src/cas/mapping.ts";
@@ -19,6 +19,7 @@ import {
   localDay,
   openingUnits,
   planImport,
+  RECORD_PREFIX,
   rowsOf,
   sameUnits,
   statementDay,
@@ -86,6 +87,8 @@ const check = (rows, errors = {}) =>
   rows.map((row) =>
     errors[row.lineNumber] ? { ...row, isValid: false, errors: { amount: [errors[row.lineNumber]] } } : { ...row },
   );
+/** The same before Wealthfolio 3.13.0, which drops the rows' IDs and metadata. */
+const checkWithoutIds = (rows, errors = {}) => check(rows, errors).map(({ sourceRecordId, metadata, ...row }) => row);
 
 /** Runs `run` on a device far east of UTC, then on one far west. */
 const inLocalTimeZones = (run) => {
@@ -104,7 +107,10 @@ const inLocalTimeZones = (run) => {
 let id = 0;
 /** A decimal with trailing zeros, as Wealthfolio returns it. */
 const padded = (value) => `${value}${value.includes(".") ? "" : "."}`;
-/** How Wealthfolio stores and returns an imported row (Wealthfolio 3.12.0's web API). */
+/**
+ * How Wealthfolio stores and returns an imported row (Wealthfolio 3.12.0's web API): without its ID,
+ * as version 2.2.0 and earlier imported it, or as one entered by hand.
+ */
 const stored = (row) => {
   if (row.symbol) profiles.set(`uuid-${row.symbol}`, fundRef(row.symbol, row.exchangeMic));
   return {
@@ -126,8 +132,12 @@ const stored = (row) => {
     assetSymbol: row.symbol ? row.symbol.toUpperCase() : "",
     exchangeMic: row.exchangeMic ?? null,
     sourceGroupId: row.sourceGroupId ?? null,
+    sourceRecordId: null,
   };
 };
+
+/** The same in Wealthfolio 3.13.0, which keeps the row's ID behind the add-on's prefix. */
+const storedWithId = (row) => ({ ...stored(row), sourceRecordId: `${RECORD_PREFIX}${row.sourceRecordId}` });
 
 /** `activity` moved to another asset, with its own profile. */
 const otherFund = (activity, symbol = "OTHER") => {
@@ -135,10 +145,13 @@ const otherFund = (activity, symbol = "OTHER") => {
   return { ...activity, assetId: `uuid-${symbol}`, assetSymbol: symbol };
 };
 
-const plan = (data, existing = [], errors = {}, bankAccountId = undefined, funds = fundsOf(data)) => {
+const plan = (data, existing = [], errors = {}, bankAccountId = undefined, funds = fundsOf(data), checker = check) => {
   const mapping = map(data, existing, bankAccountId, funds);
-  return planImport(mapping, existing, check(rowsOf(mapping), errors), funds);
+  return planImport(mapping, existing, checker(rowsOf(mapping), errors), funds);
 };
+/** `plan` with Wealthfolio before 3.13.0. */
+const planWithoutIds = (data, existing = [], errors = {}, bankAccountId = undefined, funds = fundsOf(data)) =>
+  plan(data, existing, errors, bankAccountId, funds, checkWithoutIds);
 
 const statuses = (planned) => planned.map((t) => t.status);
 
@@ -177,9 +190,21 @@ describe("duplicates", () => {
     );
   });
 
-  test("two equal purchases of different funds on one day keep both deposits once confirmed", () => {
+  test("two equal purchases of different funds on one day keep both deposits, which their IDs tell apart", () => {
     const twins = statement(scheme("A", sip("2023-04-10")), scheme("B", sip("2023-04-10")));
     const planned = plan(twins);
+    assert.deepEqual(statuses(planned), ["new", "new"]);
+    assert.equal(planned[1].rows[1].repeatsLine, undefined);
+    const sent = importRows(planned, () => false);
+    assert.equal(sent.length, 4);
+    assert.ok(sent.every((r) => !r.forceImport));
+    const again = plan(twins, sent.map(storedWithId));
+    assert.deepEqual(statuses(again), ["existing", "existing"]);
+  });
+
+  test("before Wealthfolio 3.13.0, two equal purchases of different funds on one day keep both deposits once confirmed", () => {
+    const twins = statement(scheme("A", sip("2023-04-10")), scheme("B", sip("2023-04-10")));
+    const planned = planWithoutIds(twins);
     assert.deepEqual(statuses(planned), ["new", "duplicate"]);
     const [, second] = planned;
     assert.equal(second.rows[0].repeatsLine, undefined, "the purchases are of different funds");
@@ -192,7 +217,7 @@ describe("duplicates", () => {
       ["BUY ", "DEPOSIT ", "BUY forced", "DEPOSIT forced"],
     );
     // Wealthfolio stores a forced row without its duplicate key; the add-on still recognises it.
-    const again = plan(twins, sent.map(stored));
+    const again = planWithoutIds(twins, sent.map(stored));
     assert.deepEqual(statuses(again), ["existing", "existing"]);
   });
 
@@ -209,9 +234,16 @@ describe("duplicates", () => {
     const purchase = tx("2023-04-10", "PURCHASE", "5000.00", "103.093", "48.5000");
     const twice = statement(scheme("A", [purchase, purchase]));
     const [buy, deposit] = importRows(plan(twice), () => false);
-    const planned = plan(twice, [stored(buy), stored(deposit)]);
+    const existing = [stored(buy), stored(deposit)];
+    const before = planWithoutIds(twice, existing);
+    assert.deepEqual(statuses(before), ["existing", "duplicate"]);
+    assert.equal(before[1].rows[0].repeatsLine, 1);
+    // Wealthfolio 3.13.0 reports the second as a duplicate of the same activity, by its values.
+    const mapping = map(twice, existing);
+    const checked = check(rowsOf(mapping)).map((r) => (r.lineNumber > 2 ? { ...r, duplicateOfId: existing[r.lineNumber - 3].id } : r));
+    const planned = planImport(mapping, existing, checked, fundsOf(twice));
     assert.deepEqual(statuses(planned), ["existing", "duplicate"]);
-    assert.equal(planned[1].rows[0].repeatsLine, 1);
+    assert.deepEqual(planned[1].rows.map((r) => [r.existingId, r.repeatsLine, r.flagged]), [[undefined, undefined, true], [undefined, undefined, true]]);
   });
 
   test("a row checkImport rejects keeps its whole transaction out", () => {
@@ -290,6 +322,106 @@ describe("duplicates", () => {
   });
 });
 
+describe("row IDs", () => {
+  const data = statement(scheme("A", [...sip("2023-04-10"), ...sip("2023-05-10")]));
+  const sent = () => importRows(plan(data), () => false);
+
+  test("Wealthfolio keeps the IDs behind the manifest's id", async () => {
+    const manifest = JSON.parse(await readFile(new URL("../manifest.json", import.meta.url), "utf8"));
+    assert.equal(RECORD_PREFIX, `addon:${manifest.id}:`);
+  });
+
+  test("a row matches the activity imported with its ID, whatever was changed in Wealthfolio since", () => {
+    const existing = sent().map(storedWithId).map((a) => ({ ...a, amount: "1.00", comment: "Edited", date: "2023-04-11T00:00:00+00:00" }));
+    const planned = plan(data, existing);
+    assert.deepEqual(statuses(planned), ["existing", "existing"]);
+    assert.deepEqual(planned.flatMap((t) => t.rows.map((r) => r.existingId)), existing.map((a) => a.id));
+    assert.deepEqual(importRows(planned, () => false), []);
+  });
+
+  test("rows imported before the IDs are found by their values, each once", () => {
+    const planned = plan(data, sent().map(stored));
+    assert.deepEqual(statuses(planned), ["existing", "existing"]);
+    assert.deepEqual(importRows(planned, () => false), []);
+  });
+
+  test("an activity imported with another row's ID isn't this row, whatever its values", () => {
+    // Another folio's equal purchase, from another statement, in the same account.
+    const other = statement(scheme("A", sip("2023-04-10")));
+    other.folios[0].folio = "F2";
+    const existing = importRows(plan(other), () => false).map(storedWithId);
+    const mine = statement(scheme("A", sip("2023-04-10")));
+    assert.deepEqual(statuses(plan(mine, existing)), ["new"]);
+    // Imported before the IDs, it's taken for this row by its values.
+    assert.deepEqual(statuses(plan(mine, existing.map((a) => ({ ...a, sourceRecordId: null })))), ["existing"]);
+  });
+
+  test("IDs match in their own account, and only the add-on's", () => {
+    const moved = sent().map(storedWithId).map((a) => ({ ...a, accountId: "account-2" }));
+    assert.deepEqual(statuses(plan(data, moved)), ["new", "new"]);
+    // Another add-on's or a broker's IDs don't count: those activities match by their values.
+    const others = sent().map((r) => ({ ...stored(r), sourceRecordId: `addon:other-addon:${r.sourceRecordId}` }));
+    assert.deepEqual(statuses(plan(data, others)), ["existing", "existing"]);
+    assert.deepEqual(statuses(plan(data, others.map((a) => ({ ...a, comment: "Edited" })))), ["new", "new"]);
+  });
+
+  test("a statement that omits the fund's ISIN finds the rows a statement with it imported", () => {
+    const existing = importRows(plan(data), () => false).map(storedWithId);
+    // Another issuer's statement of the same folio, confirmed as the same fund.
+    for (const extra of [{ isin: null }, { isin: null, rta: "KFINTECH" }]) {
+      const other = statement(scheme("A", [...sip("2023-04-10"), ...sip("2023-05-10")], extra));
+      const planned = plan(other, existing);
+      assert.deepEqual(statuses(planned), ["existing", "existing"], JSON.stringify(extra));
+      assert.deepEqual(importRows(planned, () => false), []);
+    }
+  });
+
+  test("another fund's charge or unsupported row doesn't change a unit-less payout's ID when funds are reordered", () => {
+    const payout = scheme("B", [tx("2024-01-10", "DIVIDEND_PAYOUT", "100")]);
+    for (const type of ["TDS_TAX", "STT_TAX", "STAMP_DUTY_TAX", "UNKNOWN", "MISC", "REVERSAL"]) {
+      const other = scheme("A", [
+        tx("2024-01-10", "REDEMPTION", "-1000", "-100", "10"),
+        tx("2024-01-10", type, "100"),
+      ]);
+      for (const bank of [undefined, "bank-1"]) {
+        const existing = importRows(plan(statement(other, payout), [], {}, bank), () => false).map(storedWithId);
+        assert.equal(existing.length, bank ? 6 : 4);
+        const planned = plan(statement(payout, other), existing, {}, bank);
+        assert.deepEqual(statuses(planned), ["existing", "existing"], `${type}, bank ${bank}`);
+        assert.deepEqual(importRows(planned, () => false), []);
+      }
+    }
+  });
+
+  test("a fund account's cash found by its ID keeps it without its trade", () => {
+    const [, deposit] = sent();
+    const existing = [storedWithId(deposit)];
+    const planned = plan(data, existing);
+    assert.equal(planned[0].status, "duplicate");
+    assert.deepEqual(planned[0].rows.map((r) => r.existingId), [undefined, existing[0].id]);
+  });
+
+  test("a fund account's cash found by its ID under the other type says so", () => {
+    // Imported as a deposit, and now with a bank account as a transfer in.
+    const planned = plan(data, sent().map(storedWithId), {}, "bank-1");
+    assert.deepEqual(statuses(planned), ["existing", "existing"]);
+    assert.deepEqual(
+      planned[0].rows.map((r) => [r.activity.activityType, r.existingType]),
+      [["BUY", undefined], ["TRANSFER_IN", "DEPOSIT"], ["TRANSFER_OUT", undefined]],
+    );
+  });
+
+  test("a reversed purchase imported with its ID needs correcting, even after an edit", () => {
+    const purchase = tx("2023-04-10", "PURCHASE", "5000.00", "103.093", "48.5000");
+    const existing = importRows(plan(statement(scheme("A", [purchase]))), () => false)
+      .map(storedWithId)
+      .map((a) => ({ ...a, comment: "Edited" }));
+    const reversed = statement(scheme("A", [purchase, tx("2023-04-20", "REVERSAL", "-5000.00", "-103.093", "48.5000")]));
+    const mapping = map(reversed, existing);
+    assert.match(mapping.warnings[0].message, /^Wealthfolio has this purchase from an earlier import, but the statement reverses it\./);
+  });
+});
+
 describe("mergers", () => {
   const out = (date = "2024-08-01") => tx(date, "SWITCH_OUT_MERGER", "-1000.00", "-100.000", "10.0000");
   const into = (date = "2024-08-01") => tx(date, "SWITCH_IN_MERGER", "1000.00", "50.000", "20.0000");
@@ -311,6 +443,15 @@ describe("mergers", () => {
     assert.ok(again[0].rows.every((r) => r.existingId));
     assert.equal(again[0].earlier, undefined);
     assert.deepEqual(importRows(again, () => true), [], "a conversion is never forced");
+  });
+
+  test("a statement that omits the funds' ISINs finds the conversion a statement with them imported", () => {
+    const existing = importRows(plan(data), () => false).map(storedWithId);
+    const other = statement(scheme("A", [out()], { isin: null }), scheme("B", [into()], { isin: null }));
+    const planned = plan(other, existing);
+    assert.deepEqual(statuses(planned), ["existing"]);
+    assert.equal(planned[0].problem, undefined);
+    assert.deepEqual(importRows(planned, () => false), []);
   });
 
   test("an overlapping statement finds the merger, and separate mergers aren't mistaken for each other", () => {
@@ -742,6 +883,17 @@ describe("gifts", () => {
     }
   });
 
+  test("a gift imported with its ID is found by it after an edit, not taken for one entered by hand", () => {
+    for (const data of [received, given]) {
+      const [row] = importRows(planGifts(data), () => false);
+      // Moved to 02:00 on 03-Jun in India, the 2nd in UTC.
+      const edited = { ...storedWithId(row), unitPrice: "40", isUserModified: true, date: "2024-06-02T20:30:00+00:00" };
+      const planned = planGifts(data, [edited], {}, "Asia/Kolkata");
+      assert.deepEqual(statuses(planned), ["existing"]);
+      assert.equal(planned[0].problem, undefined);
+    }
+  });
+
   test("an exact earlier gift does not hide another changed entry of the same units", () => {
     for (const data of [received, given, pair]) {
       const rows = importRows(planGifts(data), () => false);
@@ -834,17 +986,30 @@ describe("segregated portfolios", () => {
     assert.deepEqual(segregation(importRows(partly, () => false)).map((r) => r.quantity), [second.quantity]);
   });
 
-  test("equal credits of a day are possible duplicates of each other, and import anyway sends each once", () => {
+  test("equal credits of a day each go in once, with their own IDs", () => {
     const data = credited("50.000", "50.000");
     const planned = plan(data);
+    assert.deepEqual(statuses(planned), ["new", "new", "new"]);
+    const sent = importRows(planned, () => false);
+    assert.deepEqual(segregation(sent).map((r) => [r.quantity, r.forceImport ?? false]), [["50.000", false], ["50.000", false]]);
+    assert.deepEqual(statuses(plan(data, sent.map(storedWithId))), ["existing", "existing", "existing"]);
+    // With one imported before the IDs, the other is new to the add-on.
+    const main = sent.filter((r) => r.symbol !== "s").map(storedWithId);
+    const one = plan(data, [...main, stored(segregation(sent)[0])]);
+    assert.deepEqual(statuses(one), ["existing", "existing", "new"]);
+  });
+
+  test("before Wealthfolio 3.13.0, equal credits of a day are possible duplicates of each other, and import anyway sends each once", () => {
+    const data = credited("50.000", "50.000");
+    const planned = planWithoutIds(data);
     assert.deepEqual(statuses(planned), ["new", "new", "duplicate"]);
     const sent = importRows(planned, (t) => t === planned[2]);
     assert.deepEqual(segregation(sent).map((r) => [r.quantity, r.forceImport ?? false]), [["50.000", false], ["50.000", true]]);
     // Wealthfolio stores both; a second read finds one for each.
-    assert.deepEqual(statuses(plan(data, sent.map(stored))), ["existing", "existing", "existing"]);
+    assert.deepEqual(statuses(planWithoutIds(data, sent.map(stored))), ["existing", "existing", "existing"]);
     // With only one in Wealthfolio, the other is still a possible duplicate, of this statement's first.
     const main = sent.filter((r) => r.symbol !== "s").map(stored);
-    const one = plan(data, [...main, stored(segregation(sent)[0])]);
+    const one = planWithoutIds(data, [...main, stored(segregation(sent)[0])]);
     assert.deepEqual(statuses(one), ["existing", "existing", "duplicate"]);
   });
 
@@ -1036,7 +1201,8 @@ describe("bank account", () => {
   });
 
   test("using a bank row adds the fund's transfer, changes a withdrawal into a transfer and links them", async () => {
-    const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
+    const data = statement(scheme("A", sip("2023-04-10")));
+    const [t] = banked(data);
     const calls = [];
     const api = {
       create: async (a) => (calls.push(["create", a]), { id: "fund-leg" }),
@@ -1045,11 +1211,25 @@ describe("bank account", () => {
     };
     const withdrawal = bankRow("WITHDRAWAL", "5000.00", "2023-04-08");
     assert.equal(await linkBankRow(api, t, withdrawal), undefined);
+    const sourceRecordId = `${RECORD_PREFIX}${t.transaction.cash.sourceRecordId}`;
     assert.deepEqual(calls, [
-      ["create", { accountId: "account-1", activityType: "TRANSFER_IN", activityDate: "2023-04-10", amount: "5000.018", currency: "INR", idempotencyKey: `cas-importer-bank:${withdrawal.id}` }],
+      ["create", {
+        accountId: "account-1", activityType: "TRANSFER_IN", activityDate: "2023-04-10", amount: "5000.018", currency: "INR",
+        sourceRecordId,
+        metadata: { addons: { "cas-importer": t.transaction.cash.metadata } },
+        idempotencyKey: `cas-importer-bank:${withdrawal.id}`,
+      }],
       ["update", { id: withdrawal.id, accountId: BANK, activityType: "TRANSFER_OUT", activityDate: withdrawal.date, currency: "INR", comment: "ACH D- FUND HOUSE" }],
       ["link", withdrawal.id, "fund-leg"],
     ]);
+    const created = calls[0][1];
+    const existing = [storedWithId(t.transaction.activity), {
+      ...stored(t.transaction.cash), sourceRecordId: created.sourceRecordId, metadata: created.metadata,
+      amount: "1", comment: "Edited", date: "2023-04-11T00:00:00+00:00",
+    }];
+    const again = banked(data, existing);
+    assert.deepEqual(statuses(again), ["existing"]);
+    assert.deepEqual(importRows(again, () => false), []);
     // A transfer keeps its type.
     calls.length = 0;
     assert.equal(await linkBankRow(api, t, bankRow("TRANSFER_OUT", "5000.00", "2023-04-08")), undefined);
