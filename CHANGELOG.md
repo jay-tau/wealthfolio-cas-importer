@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Require Wealthfolio 3.13.0 or newer, which keeps the statement's name of a fund the import adds when the fund's Yahoo listing has no name ([wealthfolio/wealthfolio#2265](https://github.com/wealthfolio/wealthfolio/issues/2265)). Before, once Wealthfolio fetched the fund's profile after the import, it renamed the fund to its Yahoo ticker. A fund whose profile has a name still takes that name. Older versions refuse to install this version; Wealthfolio 3.12.0's desktop app does so without a message
 
 ### Deprecated
 
