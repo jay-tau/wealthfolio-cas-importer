@@ -242,6 +242,12 @@ describe("duplicates", () => {
     assert.deepEqual(statuses(refused), ["invalid", "invalid", "new"]);
     assert.deepEqual(refused[0].rows[0].errors, noExchange);
     assert.equal(importRows(refused, () => false).length, 2);
+    // So does a rejection without a message, which gets one of its own.
+    const silent = rowsOf(mapping).map((r) => (r.symbol === "122639" ? { ...r, isValid: false, errors: {} } : { ...r }));
+    const unexplained = planImport(mapping, [], silent, funds);
+    assert.deepEqual(statuses(unexplained), ["invalid", "invalid", "new"]);
+    assert.deepEqual(unexplained[0].rows[0].errors, ["Wealthfolio can't import this row."]);
+    assert.equal(importRows(unexplained, () => false).length, 2);
   });
 
   test("a duplicate only Wealthfolio reports still needs a decision", () => {
