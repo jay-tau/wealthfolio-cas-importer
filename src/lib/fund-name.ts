@@ -84,10 +84,11 @@ const WORD_START = /(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z]|IDCW)/g;
 // The name's last part in parentheses.
 const LAST_GROUP = new RegExp(String.raw`\(([^()]*)\)${SEPARATORS}*$`);
 
-/** Reads the plan and option from the end of `text`, and what's left before them. */
-function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string } {
+/** Reads the plan and option from the end of `text`, what's left, and how many known entries it read. */
+function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string; count: number } {
   const found: PlanAndOption = {};
   let rest = text;
+  let count = 0;
   // The plan found is a bare word before the option, so it can belong to the option.
   let beforeOption = false;
   // The word after the one read, in the name's order.
@@ -126,22 +127,90 @@ function readEnd(text: string, inGroup = false): PlanAndOption & { rest: string 
       if (!inGroup && found.plan && found.option) break;
       found.option ??= OPTIONS.get(word) ?? "Growth";
     } else if (!FILLERS.has(word) && !OTHER_FILLER.test(word)) break;
+    count++;
     next = word;
     rest = rest.slice(0, last.index);
   }
-  return { ...found, rest };
+  return { ...found, rest, count };
 }
+
+/**
+ * Whether a fund's printed name is about as long as a CDSL demat account's long name cut short, which
+ * can end partway through a word: a real one ended "- DIRECT GROW" at 101 characters, as casparser
+ * joins its lines. casparser adds a space where it joins a word wrapped over two lines, so a few
+ * more characters count too.
+ */
+export function mayBeCut(printed: string) {
+  const { length } = printed.replace(/\s+/g, " ").trim();
+  return length >= 100 && length <= 105;
+}
+
+// What each plan, option and filler word or phrase reads as, to complete a cut one.
+const READINGS = new Map<string, Plan | FundOption | "filler">([
+  ...PLANS, ...OPTIONS, ...[...FILLERS].map((words) => [words, "filler"] as const),
+]);
+const PHRASE_GAP = new RegExp(String.raw`^[\s–—-]+$`);
+const NAME_END = new RegExp(String.raw`^${SEPARATORS}*$`);
+
+/**
+ * `text` with its last word completed, when it ends partway through a plan, option or filler word or
+ * phrase, and every one it could be reads the same: "- DIRECT GROW" → "- DIRECT growth", "- INCOME
+ * DISTRIBUTION CUM CAP" → "- income distribution cum capital withdrawal". A phrase counts from its
+ * second word on, and outruns a word that its last word starts: "INCOME DISTRIBUTION CUM" isn't
+ * Cumulative. Undefined for a whole entry, or words that could read differently ("- D" or "- DI":
+ * Direct, Dividend or Daily; "- RE": Regular or Reinvestment). A single letter outside a phrase
+ * starts too many words of a fund's own name, like Gilt or Institutional, so it isn't completed.
+ */
+function completeCut(text: string) {
+  const words = [...text.matchAll(/[a-z]+/gi)];
+  const last = words.at(-1);
+  const partial = last?.[0].toLowerCase();
+  if (!last || !partial || READINGS.has(partial) || !NAME_END.test(text.slice(last.index + last[0].length))) return undefined;
+  let longest = 0;
+  const found = new Map<string, { entry: string; start: number }>();
+  for (const [entry, reading] of READINGS) {
+    const parts = entry.split(" ");
+    for (let k = Math.min(parts.length, 2); k <= parts.length && k <= words.length; k++) {
+      const tail = words.slice(-k);
+      const whole = tail.slice(0, -1).every((word, i) =>
+        word[0].toLowerCase() === parts[i] && PHRASE_GAP.test(text.slice(word.index + word[0].length, tail[i + 1].index)));
+      const proper = parts[k - 1].startsWith(partial) && (k < parts.length || parts[k - 1] !== partial);
+      if (!whole || !proper || (k === 1 && partial.length < 2) || k < longest) continue;
+      if (k > longest) found.clear();
+      longest = k;
+      found.set(reading, { entry, start: tail[0].index });
+    }
+  }
+  if (found.size !== 1) return undefined;
+  const [{ entry, start }] = found.values();
+  let completed = text.slice(0, start) + entry;
+  // A cut inside parentheses loses the closing parenthesis too.
+  if (completed.lastIndexOf("(") > completed.lastIndexOf(")")) completed += ")";
+  return { text: completed, start };
+}
+
+const TRAILING_SEPARATORS = new RegExp(`${SEPARATORS}+$`);
 
 /**
  * The plan (Direct or Regular) and option (Growth or IDCW) at the end of a fund's name, in any of
  * the usual spellings: "- Direct Plan - Growth", "DIRECT PLAN GROWTH", "Dir Gr", "- Growth - Direct
  * Plan", "(Direct Plan) (Growth)", "- Regular Plan - Income Distribution cum Capital Withdrawal
  * Option - Reinvestment", Yahoo's "Reg Wk IDCW-R" and "RegMnIDCW-P". A field the name doesn't give is
- * left out, never guessed.
+ * left out, never guessed. A name that `cut` says may be cut short also reads a last word cut partway
+ * through, as in "- DIRECT GROW", when it can only be one plan, option or filler word or phrase.
  */
-export function planAndOption(name: string): PlanAndOption {
+export function planAndOption(name: string, cut = false): PlanAndOption {
   // Keep recognized words case-insensitive, including the words of a phrase ("PLan A").
   const spaced = name.replace(/[a-z]+/gi, (word) => WORDS.has(word.toLowerCase()) ? word : word.replace(WORD_START, " "));
-  const { plan, option } = readEnd(spaced);
+  const completed = cut ? completeCut(spaced) : undefined;
+  let read = readEnd(completed?.text ?? spaced);
+  if (completed) {
+    // A completed word counts in the plan and option's part of the name: where the reading goes on
+    // past it, or after a dash. "# FICTIVA REGU", cut from a fund called Fictiva Regular Savings, doesn't.
+    const before = spaced.slice(0, completed.start);
+    const stem = before.replace(TRAILING_SEPARATORS, "");
+    if (read.count < 2 && !/[–—-]/.test(before.slice(stem.length))) read = readEnd(spaced);
+  }
+  const { plan, option } = read;
   return { ...(plan && { plan }), ...(option && { option }) };
 }

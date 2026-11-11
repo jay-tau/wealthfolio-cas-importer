@@ -59,8 +59,8 @@ Every line here is its own text-show op; lines meant as separate blocks are
         Security (may wrap) | Current Bal | Frozen Bal | Pledge Bal | Pledge
         Setup Bal | Free Bal | Market Price | Value. num_shares is the first
         number after the name (Current Bal), price/value the last two cells.
-        Zero balances print "--". INF ISINs (the ETF and the fund) go to
-        mutual_funds. The fund's Security cell prints "<fund house's company
+        Zero balances print "--". INF ISINs (the ETF and the funds) go to
+        mutual_funds. A fund's Security cell prints "<fund house's company
         name> # <scheme name>"; casparser joins its lines with spaces.
   * "MUTUAL FUND UNITS HELD AS ON ...": rows go to the Mutual Fund Folios
     account. Row: "<CODE> - <scheme>" (wraps) | ISIN | Folio | ARN code or
@@ -282,6 +282,14 @@ CDSL_ACCOUNT = Account(
             D("1520.384"),
             D("38.42"),
         ),
+        # A long fund name cut short at 100 characters, mid-word, as CDSL prints one: the
+        # transactions and the holding both end in "- DIRECT GROW", for "- DIRECT GROWTH".
+        Holding(
+            isin("INFZ90K01GS"),
+            ["FICTIVA ASSET MANAGEMENT", "PVT LTD # FICTIVA TESTBRIDGE", "GLOBAL PLACEHOLDERS", "SAMPLES FUND - DIRECT GROW"],
+            D("850.000"),
+            D("24.68"),
+        ),
     ],
     txns=[
         (
@@ -298,6 +306,14 @@ CDSL_ACCOUNT = Account(
                 ("01-04-2025", "Opening Balance", "--", "", "", ""),
                 ("05-08-2025", "BY-CM FICTIVA SECURITIES LIMITED / PURCHASE", "", "300.000", "", "300.000"),
                 ("31-03-2026", "Closing Balance", "", "", "", "300.000"),
+            ],
+        ),
+        (
+            5,
+            [
+                ("01-04-2025", "Opening Balance", "--", "", "", ""),
+                ("18-11-2025", "BY-CM FICTIVA SECURITIES LIMITED / PURCHASE", "", "850.000", "", "850.000"),
+                ("31-03-2026", "Closing Balance", "", "", "", "850.000"),
             ],
         ),
     ],
