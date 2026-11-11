@@ -84,6 +84,8 @@ function checkRows({ activity, cash, bank, arriving, receiving, standIns }) {
       assert.ok(row.instrumentType);
     }
   }
+  checkCharges(activity);
+  for (const row of [cash, bank].filter(Boolean)) assert.equal(row.charges, undefined, "cash rows have no charges");
   let effect = dec(activity.amount);
   if (activity.activityType === "BUY" || activity.activityType === "SELL") {
     // Wealthfolio replaces an amount near quantity × unit price ± charges with that figure.
@@ -113,6 +115,23 @@ function checkRows({ activity, cash, bank, arriving, receiving, standIns }) {
   assert.equal(cmp(add(effect, cashEffect), dec("0")), 0, "signed host cash nets to zero");
 }
 
+/** Wealthfolio 3.13.0 rejects a row whose fee and tax lines don't add up to its `fee` and `tax`. */
+function checkCharges(activity) {
+  if (activity.tax === undefined) return assert.equal(activity.charges, undefined, "no tax, no lines");
+  assert.ok(activity.charges.length > 0, "a row with tax has its lines");
+  let sum = dec("0");
+  for (const line of activity.charges) {
+    assert.deepEqual(Object.keys(line), ["category", "label", "amount"]);
+    assert.equal(line.category, "tax");
+    assert.ok(["Stamp duty", "STT", "TDS"].includes(line.label), line.label);
+    assert.equal(typeof line.amount, "string");
+    assert.ok(cmp(dec(line.amount), dec("0")) > 0, "positive lines");
+    sum = add(sum, dec(line.amount));
+  }
+  assert.equal(cmp(sum, dec(activity.tax)), 0, "the lines add up to the tax");
+  assert.equal(new Set(activity.charges.map((line) => line.label)).size, activity.charges.length, "one line per kind");
+}
+
 /** Wealthfolio's rule for a conversion: one group, one account and day, two assets, units on both, no charges or cash. */
 function checkConversion(leaving, arriving, cash, bank) {
   assert.equal(cash, undefined);
@@ -126,7 +145,7 @@ function checkConversion(leaving, arriving, cash, bank) {
     assert.equal(row.assetId, undefined);
     assert.ok(row.quoteCcy && row.instrumentType);
     assert.ok(cmp(dec(row.quantity), dec("0")) > 0, "units on both rows");
-    for (const key of ["amount", "unitPrice", "fee", "tax", "comment"]) assert.equal(row[key], undefined, key);
+    for (const key of ["amount", "unitPrice", "fee", "tax", "charges", "comment"]) assert.equal(row[key], undefined, key);
   }
   assert.match(leaving.sourceGroupId, /^cas-importer-merger:[0-9a-f]{64}$/);
   for (const key of ["sourceGroupId", "accountId", "date"]) assert.equal(arriving[key], leaving[key], key);
@@ -149,7 +168,7 @@ function checkGift(activity, receiving, cash, bank) {
     assert.ok(row.symbol && row.quoteCcy && row.instrumentType);
     assert.ok(cmp(dec(row.quantity), dec("0")) > 0, "positive units");
     assert.ok(cmp(dec(row.unitPrice), dec("0")) > 0, "positive NAV");
-    for (const key of ["amount", "fee", "tax", "comment", "assetId", "sourceGroupId", "subtype"]) assert.equal(row[key], undefined, key);
+    for (const key of ["amount", "fee", "tax", "charges", "comment", "assetId", "sourceGroupId", "subtype"]) assert.equal(row[key], undefined, key);
   }
   if (!receiving) return assert.equal(activity.isExternal, true);
   assert.equal(activity.activityType, "TRANSFER_OUT");
@@ -175,7 +194,7 @@ function checkSegregation(activity, cash, bank, standIns) {
   assert.equal(activity.isValid, true);
   assert.ok(activity.symbol && activity.quoteCcy && activity.instrumentType);
   assert.ok(cmp(dec(activity.quantity), dec("0")) > 0, "positive units");
-  for (const key of ["unitPrice", "fee", "tax", "comment", "assetId", "subtype", "isExternal", "sourceGroupId"]) assert.equal(activity[key], undefined, key);
+  for (const key of ["unitPrice", "fee", "tax", "charges", "comment", "assetId", "subtype", "isExternal", "sourceGroupId"]) assert.equal(activity[key], undefined, key);
 }
 
 const summary = ({ transactions, warnings }) => ({
@@ -365,6 +384,39 @@ describe("amounts and charges", () => {
       ],
       warnings: [],
     });
+  });
+
+  test("each charge is a tax line labelled as the statement's row, adding up to the row's tax", () => {
+    const lines = (rows) => map(statement(scheme("A", rows))).transactions.map(({ activity }) => [activity.activityType, activity.tax, activity.charges]);
+    assert.deepEqual(
+      lines([tx("2024-01-10", "PURCHASE", "1000.00", "100.000", "10.0000"), charge("2024-01-10", "STAMP_DUTY_TAX", "0.050")]),
+      [["BUY", "0.05", [{ category: "tax", label: "Stamp duty", amount: "0.05" }]]],
+    );
+    // A non-resident's redemption: STT, then TDS on the gain.
+    assert.deepEqual(
+      lines([
+        tx("2024-01-10", "REDEMPTION", "-10000.00", "-1000.000", "10.0000"),
+        charge("2024-01-10", "STT_TAX", "0.10"),
+        charge("2024-01-10", "TDS_TAX", "125.00"),
+      ]),
+      [["SELL", "125.1", [{ category: "tax", label: "STT", amount: "0.1" }, { category: "tax", label: "TDS", amount: "125" }]]],
+    );
+    assert.deepEqual(
+      lines([
+        tx("2023-06-01", "PURCHASE", "10000.00", "1000.000", "10.0000", { balance: "1000.000" }),
+        tx("2023-12-28", "DIVIDEND_PAYOUT", "1800.00", null, null, { dividend_rate: "2.00" }),
+        charge("2023-12-28", "TDS_TAX", "200.00"),
+      ]),
+      [["BUY", undefined, undefined], ["DIVIDEND", "200", [{ category: "tax", label: "TDS", amount: "200" }]]],
+    );
+    assert.deepEqual(
+      lines([
+        tx("2023-09-25", "DIVIDEND_REINVEST", "1312.46", "84.054", "15.6145", { dividend_rate: "0.40" }),
+        charge("2023-09-25", "STAMP_DUTY_TAX", "0.07"),
+        charge("2023-09-25", "TDS_TAX", "131.25"),
+      ]),
+      [["DIVIDEND", "131.32", [{ category: "tax", label: "Stamp duty", amount: "0.07" }, { category: "tax", label: "TDS", amount: "131.25" }]]],
+    );
   });
 
   test("a second charge of the same kind, or a charge with no transaction, is a warning", () => {

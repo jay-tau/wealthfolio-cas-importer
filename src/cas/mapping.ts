@@ -18,6 +18,20 @@ export interface FundAsset {
   providerSymbol?: string;
 }
 
+/**
+ * One labelled part of an import row's fee or tax. Wealthfolio 3.13.0 and newer check that a row's
+ * lines add up to its `fee` and `tax`, and keep them with the activity; older versions ignore them.
+ * Typed here because @wealthfolio/addon-sdk 3.12.0's `ActivityImport` doesn't have them.
+ */
+export interface ActivityCharge {
+  category: "fee" | "tax";
+  label: string;
+  amount: string;
+}
+
+/** An import row with its charge lines. */
+export type ImportRow = ActivityImport & { charges?: ActivityCharge[] };
+
 export interface SchemeTarget {
   accountId: string;
   asset: FundAsset;
@@ -46,7 +60,7 @@ export interface MappedTransaction {
   scheme: string;
   /** The statement's transaction, then the charges in its `tax`. */
   rows: CasTransaction[];
-  activity: ActivityImport;
+  activity: ImportRow;
   /**
    * The fund account's cash row that balances `activity`: a DEPOSIT or WITHDRAWAL, or a transfer
    * from or to the bank account. A reinvested dividend balances itself.
@@ -116,10 +130,10 @@ const KINDS: Partial<Record<TransactionType, Kind>> = {
  * Charge rows, and the transactions each kind can belong to. A charge on a gift's or a segregated
  * portfolio's credit's day may be theirs, which their rows can't carry, so it keeps them out.
  */
-const CHARGES: Partial<Record<TransactionType, { name: string; kinds: Kind[] }>> = {
-  STAMP_DUTY_TAX: { name: "stamp duty", kinds: ["buy", "reinvest", "gift", "segregation"] },
-  STT_TAX: { name: "STT", kinds: ["sell", "gift", "segregation"] },
-  TDS_TAX: { name: "TDS", kinds: ["sell", "payout", "reinvest", "gift", "segregation"] },
+const CHARGES: Partial<Record<TransactionType, { name: string; label: string; kinds: Kind[] }>> = {
+  STAMP_DUTY_TAX: { name: "stamp duty", label: "Stamp duty", kinds: ["buy", "reinvest", "gift", "segregation"] },
+  STT_TAX: { name: "STT", label: "STT", kinds: ["sell", "gift", "segregation"] },
+  TDS_TAX: { name: "TDS", label: "TDS", kinds: ["sell", "payout", "reinvest", "gift", "segregation"] },
 };
 
 /** Rows whose money comes from or goes to the investor's bank account. */
@@ -163,7 +177,7 @@ interface Entry {
   /** The other side of a gift between two folios of this statement. */
   counterpart?: Entry;
   rows?: {
-    activity: ActivityImport;
+    activity: ImportRow;
     cash?: ActivityImport;
     bank?: ActivityImport;
     /** Imported, with this caveat. */
@@ -729,13 +743,15 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
   if (row.amount === null || dec(row.amount).n * sign <= 0n) return "This row has no amount, or one with the wrong sign.";
   const printed = abs(dec(row.amount));
   let charges = ZERO;
+  const lines: ActivityCharge[] = [];
   for (const charge of entry.charges) {
     if (charge.amount === null || dec(charge.amount).n <= 0n) return "One of this transaction's charges has no positive amount.";
     charges = add(charges, dec(charge.amount));
+    lines.push({ category: "tax", label: CHARGES[charge.type]!.label, amount: format(dec(charge.amount)) });
   }
   const names = `₹${format(charges)} ${[...new Set(entry.charges.map((charge) => CHARGES[charge.type]!.name))].join(" and ")}`;
   const base = baseRow(entry, target);
-  const tax = isZero(charges) ? {} : { tax: format(charges) };
+  const tax = isZero(charges) ? {} : { tax: format(charges), charges: lines };
   const asset = assetOf(entry, target);
   // A purchase is paid from the bank account and a redemption or payout paid into it, when there
   // is one; a switch's or merger's money stays with the fund house.
