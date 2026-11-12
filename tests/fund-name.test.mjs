@@ -56,6 +56,8 @@ test("keeps a segregated portfolio's name and number, so the search doesn't find
   assert.equal(fundName("Fictiva Credit Risk Fund - Direct Plan - Growth (Segregated Portfolio 1)"), "Fictiva Credit Risk Fund Segregated Portfolio 1");
   assert.equal(fundName("Fictiva Credit Risk Fund- Segregated Portfolio - 1 - Direct Plan - Growth"), "Fictiva Credit Risk Fund- Segregated Portfolio - 1");
   assert.equal(fundName("Fictiva Credit Risk Fund - Segregated Portfolio (9.10% Madeup Ltd) - Direct Plan - Growth"), "Fictiva Credit Risk Fund Segregated Portfolio");
+  assert.equal(fundName("Fictiva Credit Risk Fund - Units of Segregated Portfolio 1 - Direct Plan - Growth"), "Fictiva Credit Risk Fund Segregated Portfolio 1");
+  assert.equal(fundName("Fictiva Credit Risk Fund - Direct Plan - Growth (Units of Segregated Portfolio 1)"), "Fictiva Credit Risk Fund Segregated Portfolio 1");
 });
 
 test("gives nothing to search when only a plan is left", () => {
@@ -173,7 +175,34 @@ test("searches a segregated portfolio with its marker and number after the short
     ["Fictiva Credit Risk Fund - Segregated Portfolio (9.10% Madeup Ltd) - Direct Plan - Growth", "Fictiva Credit Risk Segregated Portfolio"],
     ["FICTIVA CREDIT RISK FUND SEGREGATED PORTFOLIO 1 DIRECT PLAN GROWTH", "FICTIVA CREDIT RISK SEGREGATED PORTFOLIO 1"],
     ["FICTIVA CREDIT RISK FUND DIRECT PLAN GROWTH SEGREGATED PORTFOLIO 2", "FICTIVA CREDIT RISK SEGREGATED PORTFOLIO 2"],
+    ["Fictiva Credit Risk Fund - Units of Segregated Portfolio 1 - Direct Plan - Growth", "Fictiva Credit Risk Segregated Portfolio 1"],
+    ["Fictiva Credit Risk Fund - Direct Plan - Growth (Units of Segregated Portfolio 1)", "Fictiva Credit Risk Segregated Portfolio 1"],
   ]) assert.equal(fundQuery(name), query, name);
+});
+
+test("searches a main fund whose name counts its segregated portfolios as a main fund", () => {
+  // AMFI's count notes, and singular counts with other spacing or wording.
+  for (const [name, search, query] of [
+    ["Fictiva Short Term Fund (the scheme has 2 segregated portfolios) - Regular Plan - Defunct Growth", "Fictiva Short Term Fund", "Fictiva Short Term"],
+    ["Fictiva Credit Risk Fund (No. of segregated portfolios-3) - Direct Plan - Growth", "Fictiva Credit Risk Fund", "Fictiva Credit Risk"],
+    ["Fictiva Credit Risk Fund (no. of segregated portfolios- 2) - Direct Plan - IDCW", "Fictiva Credit Risk Fund", "Fictiva Credit Risk"],
+    ["Fictiva Credit Risk Fund (Existing Number of Segregated Portfolios - 1) - Regular Plan - Growth", "Fictiva Credit Risk Fund", "Fictiva Credit Risk"],
+    ["Fictiva Ultra Short Bond Fund (no. of segregated portfolio-1) - Direct Plan - Growth", "Fictiva Ultra Short Bond Fund", "Fictiva Ultra Short Bond"],
+    ["Fictiva Ultra Short Bond Fund (No.of Segregated Portfolio-1) - Direct Plan - Growth", "Fictiva Ultra Short Bond Fund", "Fictiva Ultra Short Bond"],
+    ["Fictiva Credit Risk Fund (Existing Number of Segregated Portfolio - 1) - Regular Plan - Growth", "Fictiva Credit Risk Fund", "Fictiva Credit Risk"],
+    ["FICTIVA ULTRA SHORT BOND FUND (NO. OF SEGREGATED PORTFOLIO-1) DIRECT PLAN GROWTH", "FICTIVA ULTRA SHORT BOND FUND DIRECT PLAN GROWTH", "FICTIVA ULTRA SHORT BOND"],
+  ]) {
+    for (const form of [(text) => text, (text) => text.toUpperCase(), (text) => text.toLowerCase()]) {
+      assert.equal(fundName(form(name)), form(search), form(name));
+      assert.equal(fundQuery(form(name)), form(query), form(name));
+    }
+  }
+  // A segregated portfolio's own marker after such a note still counts, with its number.
+  for (const note of ["(No. of segregated portfolios-3)", "(no. of segregated portfolio-1)"]) {
+    const portfolio = `Fictiva Credit Risk Fund ${note} - Segregated Portfolio 2 - Direct Plan - Growth`;
+    assert.equal(fundName(portfolio), "Fictiva Credit Risk Fund Segregated Portfolio 2");
+    assert.equal(fundQuery(portfolio), "Fictiva Credit Risk Segregated Portfolio 2");
+  }
 });
 
 test("keeps other securities' searches whole", () => {
