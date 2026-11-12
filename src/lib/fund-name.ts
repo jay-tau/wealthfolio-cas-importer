@@ -1,10 +1,15 @@
-// Keep a portfolio's own marker and number, but not a main fund's count note such as
-// "(No. of segregated portfolios-3)" or AMFI's singular "(no. of segregated portfolio-1)".
-const SEGREGATED = /(?<!\b(?:no\.?|number)\s*of\s+)\bsegregated\s+portfolio\b(?:[\s-]*(?:\d+|[IVX]+\b))?/i;
+// A segregated portfolio's own marker: "Segregated Portfolio" and its number, but not a main fund's
+// count note such as "(No. of segregated portfolios-3)" or AMFI's singular "(no. of segregated
+// portfolio-1)"; or a dated note in parentheses, as AMFI names UTI's segregated portfolios:
+// "(Segregated - 06032020)", also with spaces inside the parentheses. The match keeps the note's
+// date but not its parentheses.
+const SEGREGATED =
+  /(?<!\b(?:no\.?|number)\s*of\s+)\bsegregated\s+portfolio\b(?:[\s-]*(?:\d+|[IVX]+\b))?|(?<=\(\s*)segregated[\s\-–—]+\d+(?:[./-]\d+)*(?=\s*\))/i;
 
 /**
- * Whether a scheme's name has a segregated portfolio's own "Segregated Portfolio" marker, in any
- * case. A main fund's note that counts its segregated portfolios, singular or plural, isn't one.
+ * Whether a scheme's name has a segregated portfolio's own marker, in any case: "Segregated
+ * Portfolio", or a dated note such as "(Segregated - 06032020)". A main fund's note that counts its
+ * segregated portfolios, singular or plural, isn't one.
  */
 export function hasSegregatedMarker(scheme: string) {
   return SEGREGATED.test(scheme);
@@ -23,7 +28,8 @@ function schemeParts(scheme: string) {
  * The name without its plan and option, searched for a share, bond or NPS scheme when the printed
  * ISIN finds nothing: the scheme name up to the first " - ", without anything in parentheses.
  * "Fictiva Flexi Cap Fund - Direct Plan - Growth" → "Fictiva Flexi Cap Fund". A segregated
- * portfolio keeps "Segregated Portfolio" and its number, or the search finds its main fund.
+ * portfolio keeps "Segregated Portfolio" and its number, or its dated note's "Segregated" and date,
+ * or the search finds its main fund.
  */
 export function fundName(scheme: string) {
   const { first, segregated } = schemeParts(scheme);
@@ -39,7 +45,8 @@ export function fundName(scheme: string) {
  * and their filler words at its end. Yahoo finds some funds only by such a shorter name.
  * "Fictiva Flexi Cap Fund - Direct Plan - Growth" → "Fictiva Flexi Cap", "FICTIVA FLEXI CAP FUND
  * DIRECT PLAN GROWTH" → "FICTIVA FLEXI CAP". A segregated portfolio keeps "Segregated Portfolio" and
- * its number, after the rest of its name.
+ * its number, or its dated note's "Segregated" and date, after the rest of its name: "Fictiva Credit
+ * Risk Fund (Segregated - 15032020)" → "Fictiva Credit Risk Segregated - 15032020".
  */
 export function fundQuery(scheme: string) {
   const { first, dashed, segregated } = schemeParts(scheme);

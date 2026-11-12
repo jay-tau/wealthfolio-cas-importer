@@ -571,8 +571,9 @@ function pairGifts(schemes: Scheme[], fails: (entry: Entry) => boolean, input: M
 
 /**
  * A segregated portfolio: casparser credits its units in `SEGREGATION` rows, or its name has its own
- * "Segregated Portfolio" marker. A main fund's note counting its segregated portfolios, such as AMFI's
- * "(no. of segregated portfolio-1)", doesn't make it one.
+ * marker, "Segregated Portfolio" or a dated note such as AMFI's "(Segregated - 06032020)". A main
+ * fund's note counting its segregated portfolios, such as AMFI's "(no. of segregated portfolio-1)",
+ * doesn't make it one.
  */
 const segregated = ({ scheme }: Scheme) =>
   scheme.transactions.some((row) => row.type === "SEGREGATION") || hasSegregatedMarker(scheme.scheme);

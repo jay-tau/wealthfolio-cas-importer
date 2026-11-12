@@ -205,6 +205,24 @@ test("searches a main fund whose name counts its segregated portfolios as a main
   }
 });
 
+test("searches a segregated portfolio named with a dated note, as AMFI names UTI's, with \"Segregated\" and its date", () => {
+  // AMFI's form and its spacing variants, after a plan and option too, and a date with separators.
+  for (const [name, search, query] of [
+    ["Fictiva Credit Risk Fund (Segregated - 15032020)", "Fictiva Credit Risk Fund Segregated - 15032020", "Fictiva Credit Risk Segregated - 15032020"],
+    ["Fictiva Credit Risk Fund ( Segregated - 15032020)", "Fictiva Credit Risk Fund Segregated - 15032020", "Fictiva Credit Risk Segregated - 15032020"],
+    ["Fictiva Medium Term Fund ( Segregated - 15032020 )", "Fictiva Medium Term Fund Segregated - 15032020", "Fictiva Medium Term Segregated - 15032020"],
+    ["Fictiva Credit Risk Fund (Segregated - 15032020) - Direct Plan - Growth", "Fictiva Credit Risk Fund Segregated - 15032020", "Fictiva Credit Risk Segregated - 15032020"],
+    ["Fictiva Credit Risk Fund - Direct Plan - Growth (Segregated - 15032020)", "Fictiva Credit Risk Fund Segregated - 15032020", "Fictiva Credit Risk Segregated - 15032020"],
+    ["Fictiva Credit Risk Fund (Segregated - 15-03-2020)", "Fictiva Credit Risk Fund Segregated - 15-03-2020", "Fictiva Credit Risk Segregated - 15-03-2020"],
+    ["FICTIVA CREDIT RISK FUND (SEGREGATED - 15032020) DIRECT PLAN GROWTH", "FICTIVA CREDIT RISK FUND DIRECT PLAN GROWTH SEGREGATED - 15032020", "FICTIVA CREDIT RISK SEGREGATED - 15032020"],
+  ]) {
+    for (const form of [(text) => text, (text) => text.toUpperCase(), (text) => text.toLowerCase()]) {
+      assert.equal(fundName(form(name)), form(search), form(name));
+      assert.equal(fundQuery(form(name)), form(query), form(name));
+    }
+  }
+});
+
 test("keeps other securities' searches whole", () => {
   for (const name of ["Fictiva Growth", "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31", "Fictiva Fund", "Fictiva Direct Plan Growth"]) {
     assert.equal(fundName(name), name);

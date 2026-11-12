@@ -1351,6 +1351,27 @@ describe("segregated portfolios", () => {
     }
   });
 
+  test("a scheme named with a dated segregated note, as AMFI names UTI's, is a segregated portfolio", () => {
+    const main = "Fictiva Credit Risk Fund - Direct Plan - Growth";
+    // AMFI's form and its spacing variants, after a plan and option too, and a date with separators.
+    const portfolios = [
+      "Fictiva Credit Risk Fund (Segregated - 15032020)",
+      "Fictiva Credit Risk Fund ( Segregated - 15032020)",
+      "Fictiva Credit Risk Fund ( Segregated - 15032020 )",
+      "Fictiva Credit Risk Fund (Segregated - 15032020) - Direct Plan - Growth",
+      "Fictiva Credit Risk Fund (Segregated - 15-03-2020)",
+    ];
+    for (const [mainName, portfolio] of portfolios.flatMap((name) => cases(main).map((m, i) => [m, cases(name)[i]]))) {
+      // A statement that starts after the credit, so no SEGREGATION row: its payout gets the note.
+      const data = statement(scheme("M", [bought], { scheme: mainName }), scheme("S", [payout], { scheme: portfolio, open: "100.000" }));
+      assert.deepEqual(messages(map(data)), [[portfolio, ["REDEMPTION"], false, PAYOUT]], portfolio);
+      // Confirmed as the same Wealthfolio asset as its main fund, it's left out.
+      const left = sameAsset(data);
+      assert.deepEqual(left.transactions.map((t) => t.scheme), [mainName], portfolio);
+      assert.deepEqual(messages(left), [[portfolio, [], true, confirmedAs(mainName)]], portfolio);
+    }
+  });
+
   test("a segregated portfolio's own marker after a note counting its main fund's still makes it one", () => {
     for (const note of ["(no. of segregated portfolio-1)", "(No. of segregated portfolios-3)"]) {
       const mains = cases(`Fictiva Credit Risk Fund ${note} - Direct Plan - Growth`);

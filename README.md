@@ -171,9 +171,13 @@ Wealthfolio has such a row, which changed the units' cost and purchase dates.
 After a credit event, such as a bond downgraded below investment grade, a debt fund can move the
 affected securities into a segregated portfolio and credit each investor one of its units for each
 unit held. The statement lists the segregated portfolio as a fund of its own, and casparser marks the
-rows crediting its units as `SEGREGATION`. They print units but no amount or NAV. Confirm the
-segregated portfolio's own fund under **Funds**, by its ISIN or AMFI scheme code. When its ISIN finds
-nothing, or none is printed, the add-on searches its name with "Segregated Portfolio" and its number,
+rows crediting its units as `SEGREGATION`. They print units but no amount or NAV. The add-on also
+reads a scheme as a segregated portfolio when its name has "Segregated Portfolio", or a dated note
+such as "(Segregated - 06032020)", as AMFI names UTI's, on a statement that starts after the credit
+too. A main fund's note counting its segregated portfolios, such as "(no. of segregated
+portfolio-1)", doesn't make it one. Confirm the segregated portfolio's own fund under **Funds**, by
+its ISIN or AMFI scheme code. When its ISIN finds nothing, or none is printed, the add-on searches
+its name with "Segregated Portfolio" and its number, or with the dated note's "Segregated" and date,
 not the main fund's name. A segregated portfolio confirmed as the same Wealthfolio asset as a fund
 that isn't one is left out, with its payouts.
 
