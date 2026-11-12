@@ -1,4 +1,6 @@
-const SEGREGATED = /\bsegregated\s+portfolio(?:[\s-]*(?:\d+|[IVX]+\b))?/i;
+// Keep a portfolio's own marker and number, but not a main fund's count note such as
+// "(No. of segregated portfolios-3)" or AMFI's singular "(no. of segregated portfolio-1)".
+const SEGREGATED = /(?<!\b(?:no\.?|number)\s*of\s+)\bsegregated\s+portfolio\b(?:[\s-]*(?:\d+|[IVX]+\b))?/i;
 
 /**
  * The scheme name up to the first " - ", without anything in parentheses, whether the name goes on
