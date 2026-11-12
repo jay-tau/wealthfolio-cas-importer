@@ -1,4 +1,5 @@
 import type { ActivityCharge, ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
+import { hasSegregatedMarker } from "../lib/fund-name.ts";
 import { plural } from "../lib/plural.ts";
 import { sha256 } from "../lib/sha256.ts";
 import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, step, sub } from "./decimal.ts";
@@ -568,9 +569,13 @@ function pairGifts(schemes: Scheme[], fails: (entry: Entry) => boolean, input: M
   }
 }
 
-/** A segregated portfolio: casparser credits its units in `SEGREGATION` rows, or its name says so. */
+/**
+ * A segregated portfolio: casparser credits its units in `SEGREGATION` rows, or its name has its own
+ * "Segregated Portfolio" marker. A main fund's note counting its segregated portfolios, such as AMFI's
+ * "(no. of segregated portfolio-1)", doesn't make it one.
+ */
 const segregated = ({ scheme }: Scheme) =>
-  scheme.transactions.some((row) => row.type === "SEGREGATION") || /\bsegregated\s+portfolio\b/i.test(scheme.scheme);
+  scheme.transactions.some((row) => row.type === "SEGREGATION") || hasSegregatedMarker(scheme.scheme);
 
 /**
  * #1: a segregated portfolio confirmed as the same Wealthfolio asset as a fund that isn't one, such as
