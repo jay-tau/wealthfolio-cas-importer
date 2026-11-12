@@ -350,6 +350,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const resultBadges = (section) => section.getByRole("radiogroup").locator("label").evaluateAll((labels) =>
       labels.map((label) => [...label.querySelectorAll("[data-slot=badge]")].map((b) => `${b.textContent} ${b.dataset.variant}`)));
     const choiceBadges = (section) => badges(section.getByText("Confirmed", { exact: true }).locator("xpath=.."));
+    // The codes behind each result, under its Details.
+    const resultCodes = (section) => section.getByRole("radiogroup").locator("details p").allTextContents();
+    // A holding confirmed to use the statement's prices says so, and its Details has its symbol.
+    const statementPriced = async (section, symbol, type) => {
+      await section.getByText("Confirmed", { exact: true }).waitFor();
+      await section.getByText("Statement prices", { exact: true }).waitFor();
+      assert.equal(await section.locator("details p").textContent(), `Symbol ${symbol} · Type ${type} · Currency INR`);
+    };
     assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
     assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" })), ["Regular secondary", "IDCW secondary"]);
     assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: "IDCW Reinvestment" })), ["Direct secondary", "IDCW secondary"]);
@@ -382,6 +390,68 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await useFund.click();
       await firstFund.getByText("Confirmed", { exact: true }).waitFor();
       assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", ...expected]);
+      await firstFund.getByRole("button", { name: /^Change the / }).click();
+    }
+    // Under its name, each result says where its prices come from; its codes are behind Details.
+    // Yahoo names some funds only by their ticker: such a result says it's unnamed, keeps its ticker
+    // to tell it apart, and takes no name, plan or option from the statement.
+    const firstName = await firstFund.locator("h3").textContent();
+    await search.fill("Fictiva Flexi Cap Yahoo");
+    await search.press("Enter");
+    await firstFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    assert.deepEqual(await firstFund.getByRole("radiogroup").locator("label").allTextContents(), [
+      "Fictiva Flexi Cap Dir Gr Direct Growth Yahoo Finance",
+      "Unnamed Yahoo listing (0P0000FFC2.BO) Plan and option unknown Yahoo Finance",
+    ]);
+    assert.deepEqual(await resultBadges(firstFund), [["Direct secondary", "Growth secondary"], ["Plan and option unknown warning-subtle"]]);
+    assert.deepEqual(await resultCodes(firstFund), [
+      "Symbol 0P0000FFC1 · Exchange XBOM · Type MUTUALFUND · Currency INR",
+      "Symbol 0P0000FFC2 · Exchange XBOM · Type MUTUALFUND · Currency INR",
+    ]);
+    // Each Details is named for its result, for screen readers, and opens and closes from the
+    // keyboard without picking the result.
+    const resultDetails = firstFund.getByRole("radiogroup").locator("details");
+    assert.deepEqual(await resultDetails.locator("summary").evaluateAll((all) => all.map((s) => [s.textContent, s.getAttribute("aria-label")])), [
+      ["Details", `Details of Fictiva Flexi Cap Dir Gr, Yahoo Finance, for ${firstName}`],
+      ["Details", `Details of Unnamed Yahoo listing (0P0000FFC2.BO), Yahoo Finance, for ${firstName}`],
+    ]);
+    const unnamedSummary = resultDetails.nth(1).locator("summary");
+    await unnamedSummary.focus();
+    await unnamedSummary.press("Enter");
+    assert.equal(await resultDetails.nth(1).evaluate((d) => d.open), true);
+    await unnamedSummary.press(" ");
+    assert.equal(await resultDetails.nth(1).evaluate((d) => d.open), false);
+    assert.deepEqual(await firstFund.getByRole("radio").evaluateAll((all) => all.map((r) => r.getAttribute("aria-checked"))), ["false", "false"]);
+    // Confirmed, it's shown the same way.
+    await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
+    await useFund.click();
+    await firstFund.getByText("Confirmed", { exact: true }).waitFor();
+    assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", "Plan and option unknown warning-subtle"]);
+    assert.match(await firstFund.getByText("Confirmed", { exact: true }).locator("xpath=..").textContent(), /^ConfirmedUnnamed Yahoo listing \(0P0000FFC2\.BO\) Plan and option unknownChange/);
+    await firstFund.getByText("Yahoo Finance", { exact: true }).waitFor();
+    assert.equal(await firstFund.locator("details summary").getAttribute("aria-label"), `Details of the fund confirmed for ${firstName}`);
+    assert.equal(await firstFund.locator("details p").textContent(), "Symbol 0P0000FFC2 · Exchange XBOM · Type MUTUALFUND · Currency INR");
+    await firstFund.getByRole("button", { name: /^Change the / }).click();
+    // Same displayed names, including unnamed listings, stay distinct for screen readers.
+    for (const [query, name, badges] of [
+      ["Fictiva Flexi Cap exchanges", "Fictiva Flexi Cap Dir Gr", "Direct Growth"],
+      ["Fictiva Flexi Cap unnamed", "Unnamed Yahoo listing (FICTIVA)", "Plan and option unknown"],
+    ]) {
+      await search.fill(query);
+      await search.press("Enter");
+      await firstFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
+      assert.deepEqual(await resultCodes(firstFund), [
+        "Symbol FICTIVA · Exchange XBOM · Type MUTUALFUND · Currency INR",
+        "Symbol FICTIVA · Exchange XNSE · Type MUTUALFUND · Currency INR",
+      ]);
+      for (const number of [1, 2]) {
+        assert.equal(await firstFund.getByRole("radio", { name: `${name} ${badges} Yahoo Finance, listing ${number}`, exact: true }).count(), 1);
+        assert.equal(await resultDetails.nth(number - 1).locator("summary").getAttribute("aria-label"), `Details of ${name}, listing ${number}, Yahoo Finance, for ${firstName}`);
+      }
+      await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
+      await useFund.click();
+      await firstFund.getByText("Confirmed", { exact: true }).waitFor();
+      assert.equal(await firstFund.locator("details p").textContent(), "Symbol FICTIVA · Exchange XNSE · Type MUTUALFUND · Currency INR");
       await firstFund.getByRole("button", { name: /^Change the / }).click();
     }
     await search.fill("MULTI");
@@ -560,7 +630,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const inUsd = "The statement's prices and amounts are in rupees, but this asset is quoted in USD. Check that it's the right listing.";
     const usdRowNote = "The statement's prices and amounts are in rupees, but DMCB is quoted in USD. Check that it's the right listing.";
     const quotedIn = (locator) => locator.getByText(/^The statement's prices and amounts are in rupees, but /);
-    const usdResults = ["Democorp Bank ADR USD (DMCB · XNYS · EQUITY)" + inUsd, "Democorp Bank Ltd (DEMOCORPBK · XNSE · EQUITY · INR)"];
+    const usdResults = ["Democorp Bank ADR USD FAKE " + inUsd, "Democorp Bank Ltd FAKE"];
+    const usdCodes = ["Symbol DMCB · Exchange XNYS · Type EQUITY · Currency USD", "Symbol DEMOCORPBK · Exchange XNSE · Type EQUITY · Currency INR"];
     const usdFund = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
     const usdSearch = usdFund.getByRole("textbox", { name: /^Search for / });
     await usdFund.getByRole("button", { name: /^Change the / }).click();
@@ -568,6 +639,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await usdSearch.press("Enter");
     await usdFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
     assert.deepEqual(await usdFund.locator("label").allTextContents(), usdResults);
+    assert.deepEqual(await resultCodes(usdFund), usdCodes);
     assert.deepEqual(await resultBadges(usdFund), [["USD warning-subtle"], []]);
     assert.equal(await quotedIn(frame).count(), 1);
     // A warning, not a block.
@@ -575,7 +647,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await usdFund.getByRole("button", { name: "Use this fund", disabled: false }).click();
     await usdFund.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(usdFund), ["Confirmed success-subtle", "USD warning-subtle"]);
-    assert.equal(await usdFund.getByText("(DMCB · XNYS · EQUITY)", { exact: true }).count(), 1);
+    assert.equal(await usdFund.getByText(usdCodes[0], { exact: true }).count(), 1);
+    assert.equal(await usdFund.getByText("FAKE", { exact: true }).count(), 1);
     assert.equal(await usdFund.getByText(inUsd, { exact: true }).count(), 1);
     assert.equal(await quotedIn(frame).count(), 1);
     await frame.getByRole("button", { name: "Preview the import" }).click();
@@ -1468,10 +1541,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // The fund printed without an ISIN finds no AMFI result, which AMFI's search never gives for a
     // name, and with AMFI on, the card doesn't recommend it either.
     await noAmfiNote();
-    assert.match(await liquidSection.locator("label").nth(1).textContent(), /^Scheme \d{6} \(\d{6} · MUTUALFUND · INR · AMFI selected\)$/);
+    assert.match(await liquidSection.locator("label").nth(1).textContent(), /^Scheme \d{6} AMFI$/);
+    assert.match((await resultCodes(liquidSection))[1], /^Symbol \d{6} · Type MUTUALFUND · Currency INR$/);
     assert.equal(await liquidResults.nth(1).getAttribute("aria-checked"), "true", "AMFI's result is preselected");
     await liquidSection.getByRole("button", { name: "Use this fund" }).click();
-    await liquidSection.getByText(/^Scheme \d{6} \(\d{6} · MUTUALFUND · INR · AMFI selected\)$/).waitFor();
+    await liquidSection.getByText(/^Scheme \d{6}$/).waitFor();
+    await liquidSection.getByText("AMFI", { exact: true }).waitFor();
     const amfiFund = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     assert.deepEqual(
       [amfiFund.providerId, amfiFund.exchangeMic, amfiFund.providerSymbol, amfiFund.instrumentType, amfiFund.quoteCcy],
@@ -1531,7 +1606,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await liquidResults.nth(1).waitFor({ state: "attached" });
     await noAmfiNote();
     assert.equal(await liquidResults.count(), 2);
-    assert.match(await liquidSection.locator("label").first().textContent(), / · EQUITY · INR · AMFI selected\)$/);
+    assert.match(await liquidSection.locator("label").first().textContent(), /AMFI$/);
+    assert.match((await resultCodes(liquidSection))[0], / · Type EQUITY · Currency INR$/);
     assert.equal(await liquidResults.first().getAttribute("aria-checked"), "true");
     await liquidSection.getByRole("button", { name: "Use this fund" }).click();
     const existingAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
@@ -1587,6 +1663,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
     await frame.getByText("MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail", { exact: true }).waitFor();
     assert.equal(await frame.getByText("Left out", { exact: true }).count(), 0);
+    // An older remembered choice keeps no provider, so where its prices come from is unknown.
+    await frame.locator("section").filter({ hasText: "ISIN INFZ91T01NF4" }).getByText("Unknown source", { exact: true }).waitFor();
     const choose = async (label, option) => {
       await frame.getByLabel(label).click();
       await frame.getByRole("option", { name: option }).waitFor();
@@ -1689,7 +1767,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await holdingsFund.getByText("Confirmed", { exact: true }).waitFor();
     await focused(holdingsFund.getByRole("button", { name: /^Change the / }), "Use this fund on the Holdings card");
     await noAmfiNote();
-    await frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" }).getByText("INEZ91A07012 · BOND · INR · priced from statements").waitFor();
+    await statementPriced(frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" }), "INEZ91A07012", "BOND");
     await frame.locator("section").filter({ hasText: "ISIN INEZ93A08016" }).getByText("Democorp Infra 7.60% 2033").waitFor();
 
     // A remembered demat account that doesn't track holdings, NOT_SET included, is ignored, and its
@@ -1899,13 +1977,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await democorpSearch.press("Enter");
     await democorpShare.getByRole("radio").nth(1).waitFor({ state: "attached" });
     assert.deepEqual(await democorpShare.locator("label").allTextContents(), usdResults);
+    assert.deepEqual(await resultCodes(democorpShare), usdCodes);
     assert.deepEqual(await resultBadges(democorpShare), [["USD warning-subtle"], []]);
     assert.equal(await quotedIn(frame).count(), 1);
     await democorpShare.getByRole("radio").first().dispatchEvent("click");
     await democorpShare.getByRole("button", { name: "Use this share", disabled: false }).click();
     await democorpShare.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(democorpShare), ["Confirmed success-subtle", "USD warning-subtle"]);
-    assert.equal(await democorpShare.getByText("(DMCB · XNYS · EQUITY)", { exact: true }).count(), 1);
+    assert.equal(await democorpShare.getByText(usdCodes[0], { exact: true }).count(), 1);
     assert.equal(await democorpShare.getByText(inUsd, { exact: true }).count(), 1);
     assert.equal(await quotedIn(frame).count(), 1);
     await preview.click();
@@ -2413,7 +2492,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await choiceBadges(npsSection), ["Confirmed success-subtle"]);
     await npsSection.getByRole("button", { name: /^Change the / }).click();
     await npsSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await npsSection.getByText("NPS-TEST-E-TIER-I · EQUITY · INR · priced from statements").waitFor();
+    await statementPriced(npsSection, "NPS-TEST-E-TIER-I", "EQUITY");
     assert.deepEqual(await badges(npsSection), ["Confirmed success-subtle"]);
     // A PRAN's remembered account that's archived is ignored too, though it doesn't track holdings either.
     const pran = frame.getByLabel(/^NPS, PRAN XXXXXXXX9001/);
@@ -2781,17 +2860,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }, corporateFund);
     await readHoldingsAgain();
     const corporateSection = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
-    await corporateSection.getByText("(0P0000TBCB · XBOM · MUTUALFUND · INR)", { exact: true }).waitFor();
+    await corporateSection.getByText("Symbol 0P0000TBCB · Exchange XBOM · Type MUTUALFUND · Currency INR", { exact: true }).waitFor({ state: "attached" });
+    await corporateSection.getByText("FAKE", { exact: true }).waitFor();
     await corporateSection.getByRole("button", { name: /^Change the / }).click();
     await corporateSection.getByText(`Nothing found for the ISIN; showing results for "Testbridge Corporate Bond". These results can be other funds. Pick one with the statement's fund name, plan and option, use the statement's prices, or leave this fund out.`, { exact: true }).waitFor();
     await corporateSection.getByRole("radio").first().waitFor({ state: "attached" });
     await corporateSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
+    await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
     const giltSection = frame.locator("section").filter({ hasText: gilt });
     await giltSection.getByText("No ISIN printed", { exact: true }).waitFor();
     await giltSection.getByText(`No ISIN on the statement, and nothing found for "Testbridge Gilt". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
     await giltSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await giltSection.getByText("MF-KFINTECH-TGLDG · MUTUALFUND · INR · priced from statements").waitFor();
+    await statementPriced(giltSection, "MF-KFINTECH-TGLDG", "MUTUALFUND");
     for (const section of await frame.locator("section").all()) {
       await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).first().waitFor();
       if (await section.getByText("Confirmed", { exact: true }).count()) continue;
@@ -2852,8 +2932,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // The next import finds both choices and assets again, and finishes the incomplete writes.
     await hosted(() => { window.host.failQuoteIds = []; window.host.failProfileIds = []; });
     await readHoldingsAgain();
-    await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
-    await giltSection.getByText("MF-KFINTECH-TGLDG · MUTUALFUND · INR · priced from statements").waitFor();
+    await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
+    await statementPriced(giltSection, "MF-KFINTECH-TGLDG", "MUTUALFUND");
     await preview.click();
     await folios.getByRole("row").filter({ hasText: gilt }).getByText("From the account's average cost in Wealthfolio").waitFor();
     await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
@@ -2879,11 +2959,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await corporateSection.getByRole("button", { name: /^Change the / }).click();
     await corporateSection.getByRole("radio", { checked: true }).waitFor({ state: "attached" });
     assert.equal(await corporateSection.getByRole("radio").count(), 1);
-    await corporateSection.getByText("(INFZ91T01CB6 · MUTUALFUND · INR · priced from statements)", { exact: true }).waitFor();
+    // The result is shown as that choice: the statement's name, and the statement's prices.
+    const ownResult = await corporateSection.getByRole("radiogroup").locator("label").textContent();
+    assert.ok(ownResult.startsWith(corporate) && ownResult.endsWith(" Statement prices"), ownResult);
+    assert.deepEqual(await resultCodes(corporateSection), ["Symbol INFZ91T01CB6 · Type MUTUALFUND · Currency INR"]);
     await corporateSection.getByRole("button", { name: "Use this fund" }).click();
-    await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
+    await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
     await readHoldingsAgain();
-    await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
+    await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
     assert.deepEqual(await corporateStored(), corporatePriced);
     // The same symbol with another type or currency is still that search result, with its ID and warning.
     for (const [type, currency] of [["BOND", "INR"], ["EQUITY", "USD"]]) {
@@ -2891,15 +2974,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         Object.assign(window.host.assets["fund-priced-014"], { instrumentType: type, quoteCcy: currency });
       }, [type, currency]);
       await corporateSection.getByRole("button", { name: /^Change the / }).click();
-      const description = `(INFZ91T01CB6 · ${type}${currency === "INR" ? " · INR" : ""})`;
-      await corporateSection.getByText(description, { exact: true }).waitFor();
+      const description = `Symbol INFZ91T01CB6 · Type ${type} · Currency ${currency}`;
+      await corporateSection.getByText(description, { exact: true }).waitFor({ state: "attached" });
+      await corporateSection.getByText("Priced by hand", { exact: true }).waitFor();
       if (currency === "USD") {
         await corporateSection.getByText("USD", { exact: true }).waitFor();
         await corporateSection.getByText(inUsd, { exact: true }).waitFor();
       }
       await corporateSection.getByRole("button", { name: "Use this fund" }).click();
       await corporateSection.getByText("Confirmed", { exact: true }).waitFor();
-      await corporateSection.getByText(description, { exact: true }).waitFor();
+      await corporateSection.getByText(description, { exact: true }).waitFor({ state: "attached" });
+      await corporateSection.getByText("Priced by hand", { exact: true }).waitFor();
       if (currency === "USD") {
         await corporateSection.getByText("USD", { exact: true }).waitFor();
         await corporateSection.getByText(inUsd, { exact: true }).waitFor();
@@ -2917,7 +3002,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await corporateSection.getByRole("button", { name: /^Change the / }).click();
     await corporateSection.getByRole("textbox", { name: /^Search for / }).fill("0P0000TBCB");
     await corporateSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await corporateSection.getByText("(0P0000TBCB · XBOM · MUTUALFUND · INR)", { exact: true }).waitFor();
+    await corporateSection.getByText("Symbol 0P0000TBCB · Exchange XBOM · Type MUTUALFUND · Currency INR", { exact: true }).waitFor({ state: "attached" });
     await corporateSection.getByRole("radio", { checked: true }).waitFor({ state: "attached" });
     await corporateSection.getByRole("button", { name: "Use this fund" }).click();
     await corporateSection.getByText("Confirmed", { exact: true }).waitFor();
@@ -2981,7 +3066,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await choiceBadges(textilesSection), ["Confirmed success-subtle"]);
     await textilesSection.getByRole("button", { name: /^Change the / }).click();
     await textilesSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await textilesSection.getByText("INEZ94A01017 · EQUITY · INR · priced from statements").waitFor();
+    await statementPriced(textilesSection, "INEZ94A01017", "EQUITY");
     const smallCapSection = frame.locator("section").filter({ hasText: smallCap });
     await smallCapSection.getByText(`Nothing found for the ISIN or for "PRETEND SMALL CAP". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
     // With no option on the statement, a result's option is no warning; another plan is.
@@ -2996,7 +3081,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await choiceBadges(smallCapSection), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW secondary"]);
     await smallCapSection.getByRole("button", { name: /^Change the / }).click();
     await smallCapSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await smallCapSection.getByText("INFZ92P01SC5 · MUTUALFUND · INR · priced from statements").waitFor();
+    await statementPriced(smallCapSection, "INFZ92P01SC5", "MUTUALFUND");
     assert.deepEqual(await choiceBadges(smallCapSection), ["Confirmed success-subtle", "Direct secondary"]);
     await choose(/^CDSL Demat Account 1, PRETEND BROKING LIMITED/, "Demat (INR)");
     await preview.click();
@@ -3073,7 +3158,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
     const detailedCorporate = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
     await detailedCorporate.getByText("Confirmed", { exact: true }).waitFor();
-    await detailedCorporate.getByText("(0P0000TBCB · XBOM · MUTUALFUND · INR)", { exact: true }).waitFor();
+    await detailedCorporate.getByText("Symbol 0P0000TBCB · Exchange XBOM · Type MUTUALFUND · Currency INR", { exact: true }).waitFor({ state: "attached" });
     assert.equal(await frame.getByRole("button", { name: "Use the statement's prices" }).count(), 0);
     await frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" }).getByText("Confirmed", { exact: true }).waitFor();
     // Its search doesn't offer the asset priced from statements, whether by ISIN or by name.
@@ -3256,7 +3341,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // on, the card's funds are searched again and find AMFI's schemes.
     for (const section of await frame.locator("section").all()) await section.getByRole("radio").first().waitFor({ state: "attached" });
     await noAmfiNote();
-    assert.equal(await frame.locator("section").getByText("AMFI selected").count(), 0);
+    assert.equal(await frame.locator("section").getByText("AMFI", { exact: true }).count(), 0);
     await hosted(() => { window.host.amfi = true; });
     await checkAgain.click();
     await amfiBanner.waitFor({ state: "detached" });
@@ -3264,7 +3349,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const schemeCodes = [];
     for (const section of await frame.locator("section").all()) {
       await section.getByRole("radio").first().waitFor({ state: "attached" });
-      const amfiLabel = await section.locator("label").filter({ hasText: "AMFI selected" }).textContent();
+      const amfiLabel = await section.locator("label").filter({ hasText: /AMFI$/ }).textContent();
       schemeCodes.push(amfiLabel.match(/^Scheme (\d{6})/)[1]);
       if (await section.getByText("ISIN INFZ90K01LQ6", { exact: true }).count()) continue;
       await section.getByRole("button", { name: /^Leave this fund out for / }).click();
@@ -3291,14 +3376,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await summaryResults.nth(1).waitFor({ state: "attached" });
     assert.equal(await summaryResults.count(), 2);
     assert.equal(await summaryResults.first().getAttribute("aria-checked"), "true");
-    assert.match(await summaryLiquid.locator("label").first().textContent(), / · EQUITY · INR · AMFI selected\)$/);
+    // Wealthfolio has the fund with AMFI preferred, but priced by hand.
+    assert.match(await summaryLiquid.locator("label").first().textContent(), /Priced by hand$/);
     assert.equal(await summaryLiquid.getByText(/priced from AMFI/).count(), 0);
     await summaryLiquid.getByRole("button", { name: /^Use this fund for / }).click();
     const summaryExisting = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     assert.equal(summaryExisting.assetId, `asset-${summaryAmfi.symbol}`);
     assert.equal(summaryExisting.providerSymbol, undefined);
     await readHoldingsAgain();
-    await summaryLiquid.getByText(/ · EQUITY · INR · AMFI selected\)$/).waitFor();
+    // Remembered, it's read again: a remembered choice doesn't keep the pricing mode.
+    await summaryLiquid.getByText("Priced by hand", { exact: true }).waitFor();
+    assert.equal(await summaryLiquid.getByText("AMFI", { exact: true }).count(), 0);
     for (const section of await frame.locator("section").all()) {
       if (await section.getByText("ISIN INFZ90K01LQ6", { exact: true }).count()) continue;
       await section.getByRole("button", { name: /^Leave this fund out for / }).click();

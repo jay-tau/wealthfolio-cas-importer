@@ -24,7 +24,14 @@ Cumulative, or IDCW, which older names call Dividend) that each name ends with, 
 as "Direct Plan - Growth", "Dir Gr" or Yahoo's "Reg Wk IDCW-R". A result's or confirmed fund's
 badge is a warning when the statement's name gives a different one. A name that doesn't give its
 plan or option has no badge for it, and no warning: the
-add-on doesn't guess it. Closed schemes, with no units at either end and
+add-on doesn't guess it. Below each result's and the confirmed fund's name, grey text says where its
+prices come from: "AMFI", "Yahoo Finance", another provider's name as Wealthfolio's Market data
+settings give it, "Statement prices", "Priced by hand" for an asset in Wealthfolio whose prices are
+entered by hand, or "Unknown source". Its symbol,
+exchange, type and currency are under **Details**. A listing that Yahoo names only by its ticker, as
+it does some Indian funds, reads "Unnamed Yahoo listing" with the ticker and "Plan and option
+unknown"; Yahoo's other names for Indian funds are often abbreviated, and AMFI's (see
+[AMFI prices](#amfi-prices)) are full. Closed schemes, with no units at either end and
 nothing to import, are skipped. The preview lists every activity with its
 cash deposit or withdrawal (or [bank transfer](#bank-account)), the rows left out and why, and anything Wealthfolio already has. After
 the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
@@ -230,8 +237,8 @@ before it: "FICTIVA ASSET MGMT PVT LTD#FICTIVA MF␂ FICTIVA FLEXI CAP FUND-DIRE
 A holding that no search result fits, including when the search finds only other funds or shares,
 can use the statement's prices instead. The add-on then creates an INR asset priced by hand, and the
 next statement finds it again. While it's priced by hand, with the same type and in INR, the holding's
-search can find it too, marked "priced from statements", and picking it there is choosing the
-statement's prices. A result of another type or currency stays as listed, including its currency
+search can find it too, shown with the statement's name and "Statement prices", and picking it there
+is choosing the statement's prices. A result of another type or currency stays as listed, including its currency
 warning. The asset priced from statements gets its price from the statements you import and the
 prices you enter, not from market data:
 
@@ -425,7 +432,7 @@ the later snapshot's prices.
   Choosing the statement's prices keeps the fund confirmed for detailed imports beside that choice.
   A detailed import's choices, leaving the fund out included, then change only that fund. A holdings
   import's choice of another search result or leaving the holding out still replaces or forgets both;
-  picking the result marked "priced from statements" is choosing the statement's prices.
+  picking the result that says "Statement prices" is choosing the statement's prices.
 - Dated records of which holdings each holdings import added, with both their ISIN and
   registrar scheme code when available, or an NPS scheme's symbol, and the Wealthfolio asset's
   symbol, exchange and, when the import knew it, ID, keyed by a hash of the folio,

@@ -627,6 +627,25 @@ const api = {
         { ...fund("DEMOCORPBK"), symbol: "DEMOCORPBK.NS", canonicalExchangeMic: "XNSE", exchangeMic: "XNSE", exchange: "NSE", quoteType: "EQUITY", longName: "Democorp Bank Ltd", providerSymbol: "DEMOCORPBK.NS" },
       ];
     }
+    // Like Yahoo with some Indian funds: a listing named in Yahoo's short form, and one named only by its ticker.
+    if (query === "Fictiva Flexi Cap Yahoo") {
+      return [
+        { ...fund("0P0000FFC1"), providerId: "YAHOO", longName: "Fictiva Flexi Cap Dir Gr", shortName: "Fictiva Flexi Cap Dir Gr" },
+        { ...fund("0P0000FFC2"), providerId: "YAHOO", longName: "", shortName: "0P0000FFC2.BO" },
+      ];
+    }
+    if (query === "Fictiva Flexi Cap exchanges") {
+      return [
+        { ...fund("FICTIVA"), providerId: "YAHOO", longName: "Fictiva Flexi Cap Dir Gr" },
+        { ...fund("FICTIVA"), providerId: "YAHOO", longName: "Fictiva Flexi Cap Dir Gr", canonicalExchangeMic: "XNSE", exchangeMic: "XNSE", providerSymbol: "FICTIVA.NS" },
+      ];
+    }
+    if (query === "Fictiva Flexi Cap unnamed") {
+      return [
+        { ...fund("FICTIVA"), providerId: "YAHOO", longName: "FICTIVA.BO", providerSymbol: undefined },
+        { ...fund("FICTIVA"), providerId: "YAHOO", longName: "FICTIVA.NS", canonicalExchangeMic: "XNSE", exchangeMic: "XNSE", providerSymbol: undefined },
+      ];
+    }
     if (host.emptySearchQueries.includes(query)) return [];
     // AMFI finds a fund's exact ISIN or scheme code, listed after Yahoo's results.
     const amfi = host.amfi && /^(INF\w{9}|\d{6})$/.test(query) ? [amfiScheme(/^\d/.test(query) ? query : amfiCode(query))] : [];
