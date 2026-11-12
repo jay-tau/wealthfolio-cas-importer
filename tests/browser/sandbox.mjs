@@ -2722,6 +2722,64 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       casStatement: { name: corporate, isin: "INFZ91T01CB6", registrar: "KFINTECH", schemeCode: "TCBRP" },
     });
     assert.deepEqual(["INFZ91T01CB6", "MF-KFINTECH-TGLDG"].map((symbol) => againFunds.modes[symbol]), ["MANUAL", "MANUAL"]);
+    // The holding's search now finds that asset by its ISIN, and picking it is using the statement's
+    // prices: the fund the detailed import confirmed stays beside it, as the detailed statement below
+    // shows. Another search result still replaces both choices.
+    const corporateStored = async () => JSON.parse((await storage())["isin:INFZ91T01CB6"]);
+    const corporatePriced = {
+      symbol: "INFZ91T01CB6", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: corporate, statementPrices: true, transactions: corporateFund,
+    };
+    await corporateSection.getByRole("button", { name: /^Change the / }).click();
+    await corporateSection.getByRole("radio", { checked: true }).waitFor({ state: "attached" });
+    assert.equal(await corporateSection.getByRole("radio").count(), 1);
+    await corporateSection.getByText("(INFZ91T01CB6 · MUTUALFUND · INR · priced from statements)", { exact: true }).waitFor();
+    await corporateSection.getByRole("button", { name: "Use this fund" }).click();
+    await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
+    await readHoldingsAgain();
+    await corporateSection.getByText("INFZ91T01CB6 · MUTUALFUND · INR · priced from statements").waitFor();
+    assert.deepEqual(await corporateStored(), corporatePriced);
+    // The same symbol with another type or currency is still that search result, with its ID and warning.
+    for (const [type, currency] of [["BOND", "INR"], ["EQUITY", "USD"]]) {
+      await hosted(([type, currency]) => {
+        Object.assign(window.host.assets["fund-priced-014"], { instrumentType: type, quoteCcy: currency });
+      }, [type, currency]);
+      await corporateSection.getByRole("button", { name: /^Change the / }).click();
+      const description = `(INFZ91T01CB6 · ${type}${currency === "INR" ? " · INR" : ""})`;
+      await corporateSection.getByText(description, { exact: true }).waitFor();
+      if (currency === "USD") {
+        await corporateSection.getByText("USD", { exact: true }).waitFor();
+        await corporateSection.getByText(inUsd, { exact: true }).waitFor();
+      }
+      await corporateSection.getByRole("button", { name: "Use this fund" }).click();
+      await corporateSection.getByText("Confirmed", { exact: true }).waitFor();
+      await corporateSection.getByText(description, { exact: true }).waitFor();
+      if (currency === "USD") {
+        await corporateSection.getByText("USD", { exact: true }).waitFor();
+        await corporateSection.getByText(inUsd, { exact: true }).waitFor();
+      }
+      await tab.frames()[1].waitForFunction(([type, currency]) => {
+        const fund = JSON.parse(window.host.storage.get("isin:INFZ91T01CB6"));
+        return fund.assetId === "fund-priced-014" && fund.instrumentType === type && fund.quoteCcy === currency;
+      }, [type, currency]);
+      const stored = await corporateStored();
+      assert.deepEqual([stored.statementPrices, stored.transactions], [undefined, undefined]);
+    }
+    await hosted(() => {
+      Object.assign(window.host.assets["fund-priced-014"], { instrumentType: "EQUITY", quoteCcy: "INR" });
+    });
+    await corporateSection.getByRole("button", { name: /^Change the / }).click();
+    await corporateSection.getByRole("textbox", { name: /^Search for / }).fill("0P0000TBCB");
+    await corporateSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
+    await corporateSection.getByText("(0P0000TBCB · XBOM · MUTUALFUND · INR)", { exact: true }).waitFor();
+    await corporateSection.getByRole("radio", { checked: true }).waitFor({ state: "attached" });
+    await corporateSection.getByRole("button", { name: "Use this fund" }).click();
+    await corporateSection.getByText("Confirmed", { exact: true }).waitFor();
+    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ91T01CB6")).symbol === "0P0000TBCB");
+    assert.deepEqual(await corporateStored(), corporateFund);
+    await corporateSection.getByRole("button", { name: /^Change the / }).click();
+    await corporateSection.getByRole("button", { name: "Use the statement's prices" }).click();
+    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ91T01CB6")).statementPrices);
+    assert.deepEqual(await corporateStored(), corporatePriced);
 
     // A depository statement's share and fund: the share's ISIN finds only another fund, the fund's nothing.
     const textiles = "IMAGINARY TEXTILES LIMITED";
@@ -2863,7 +2921,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await detailedCorporate.getByText("(0P0000TBCB · XBOM · MUTUALFUND · INR)", { exact: true }).waitFor();
     assert.equal(await frame.getByRole("button", { name: "Use the statement's prices" }).count(), 0);
     await frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" }).getByText("Confirmed", { exact: true }).waitFor();
-    const corporateStored = async () => JSON.parse((await storage())["isin:INFZ91T01CB6"]);
     // Its search doesn't offer the asset priced from statements, whether by ISIN or by name.
     const withheld = "The asset that holdings imports price from statements for this fund isn't listed: detailed imports don't use the statement's prices.";
     await detailedCorporate.getByRole("button", { name: /^Change the / }).click();
