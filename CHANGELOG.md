@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Read a scheme whose name has a dated segregated note, the form AMFI's names give UTI's segregated portfolios, such as "Fictiva Credit Risk Fund (Segregated - 15032020)", as a segregated portfolio, in any case and with spaces inside the parentheses. Before, without the statement's segregated portfolio row, as on a statement that starts after the credit, the add-on read it as a main fund: its payouts had no note on their gain, and confirmed as the same Wealthfolio asset as its main fund, its payouts imported as sales of the main fund's units at the segregated portfolio's NAV, with no warning. When its ISIN finds nothing, or none is printed, its search now keeps "Segregated" and the date, as in "Fictiva Credit Risk Segregated - 15032020"; before, it searched for the main fund's name. No statement is known yet to print such a name
 
 ### Security
 
