@@ -41,6 +41,8 @@ interface HostAsset {
   metadata?: unknown;
   /** AMFI for a fund with AMFI selected, even if automatic updates are off. */
   providerId?: string;
+  /** Symbols its market data settings map providers to, such as AMFI to the fund's ISIN: a search for one finds it exactly. */
+  aliases?: string[];
 }
 
 type WorkerFault = "" | "no-ready" | "no-reply" | "stop" | "fatal";
@@ -122,6 +124,13 @@ const host = {
   // Shows the same mounted page again, as Wealthfolio does when the page is opened again: the add-on's
   // frame stays loaded while another page is shown, and the page gets its route's location again.
   revisit: () => {},
+  // What the search answers for these queries instead, made with `make`.
+  answers: {} as Record<string, (SymbolSearchResult & { exactMatch?: boolean })[]>,
+  // A provider's listing for a query, and AMFI's scheme for an ISIN, as the search lists them.
+  make: {
+    listing: (_query: string) => ({}) as SymbolSearchResult,
+    scheme: (_isin: string) => ({}) as SymbolSearchResult,
+  },
   failGetProfileIds: [] as string[],
   failProfileIds: [] as string[],
   failSnapshotAccounts: [] as string[],
@@ -248,6 +257,8 @@ const amfiScheme = (code: string): SymbolSearchResult & { quoteMode?: string } =
   score: 0,
   longName: `Scheme ${code}`,
 });
+
+host.make = { listing: fund, scheme: (isin) => amfiScheme(amfiCode(isin)) };
 
 // Adds the invented folio to every read while the test sets host.sharedIsin.
 const parse = CasParser.prototype.parse;
@@ -616,6 +627,7 @@ const api = {
     await wait("market");
     await wait(query);
     if (query === "FAIL" || host.failSearchQueries.includes(query)) throw new Error("Search unavailable");
+    if (host.answers[query]) return host.answers[query];
     const named = planResults.get(query);
     if (named) {
       return named.map((longName, i) => ({ ...fund(`${query.replace(/\W/g, "").toUpperCase()}${i + 1}`), longName }));
@@ -649,15 +661,20 @@ const api = {
     if (host.emptySearchQueries.includes(query)) return [];
     // AMFI finds a fund's exact ISIN or scheme code, listed after Yahoo's results.
     const amfi = host.amfi && /^(INF\w{9}|\d{6})$/.test(query) ? [amfiScheme(/^\d/.test(query) ? query : amfiCode(query))] : [];
-    // Existing assets are returned even when no account currently holds them.
+    // Existing assets are returned even when no account currently holds them. Like Wealthfolio 3.13.0,
+    // the search marks `exactMatch` an asset that a provider's result for the query is, or that a
+    // provider is mapped to the query for, but not one whose symbol or name merely contains it.
+    const exact = (a: HostAsset) =>
+      amfi.some((r) => a.symbol === r.symbol && a.exchangeMic === null && instrumentType(a.instrumentType) === "EQUITY") ||
+      !!a.aliases?.some((alias) => alias.toUpperCase() === query.toUpperCase());
     const existing = [...knownAssets()].filter(([, a]) =>
-      [a.symbol, a.displayCode, a.name].some((s) => s?.toUpperCase().includes(query.toUpperCase())) ||
-      amfi.some((r) => a.symbol === r.symbol && a.exchangeMic === null && instrumentType(a.instrumentType) === "EQUITY"),
+      [a.symbol, a.displayCode, a.name].some((s) => s?.toUpperCase().includes(query.toUpperCase())) || exact(a),
     ).map(([id, a]) => ({
       ...fund(a.symbol), symbol: a.displayCode ?? a.symbol, canonicalSymbol: a.symbol,
       canonicalExchangeMic: a.exchangeMic ?? undefined, exchangeMic: a.exchangeMic ?? undefined,
       quoteType: instrumentType(a.instrumentType) ?? "OTHER", currency: a.quoteCcy ?? "INR", longName: a.name ?? a.symbol,
       quoteMode: host.pricingModes[a.symbol] ?? "MARKET", isExisting: true, existingAssetId: id, providerId: a.providerId, providerSymbol: undefined,
+      ...(exact(a) && { exactMatch: true }),
     }));
     // Replace a provider result with its existing asset, keeping Yahoo's other listing for an ISIN.
     if (existing.length) {

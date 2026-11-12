@@ -15,11 +15,11 @@ import {
 import { Fragment, type ReactNode, type RefCallback, useEffect, useRef, useState } from "react";
 import { isStatementAsset, statementSymbol } from "../cas/holdings";
 import type { CasData, CasScheme } from "../cas/types";
-import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
+import { certain, fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
 import { useFocusMove } from "../lib/focus";
 import { codes, listingName, priceSource, unnamed } from "../lib/fund-label";
-import { fundName, fundQuery, type PlanAndOption, planAndOption } from "../lib/fund-name";
+import { differs, fundName, fundQuery, type PlanAndOption, planAndOption } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
 import { plural } from "../lib/plural";
@@ -85,11 +85,10 @@ function PlanBadges({ own, statement }: { own: PlanAndOption; statement?: PlanAn
   return (["plan", "option"] as const).map((field) => {
     const value = own[field];
     if (!value) return null;
-    const differs = !!statement?.[field] && statement[field] !== value;
     return (
       <Fragment key={field}>
         {" "}
-        <Badge variant={differs ? "warning-subtle" : "secondary"}>{value}</Badge>
+        <Badge variant={differs(own, statement, field) ? "warning-subtle" : "secondary"}>{value}</Badge>
       </Fragment>
     );
   });
@@ -134,6 +133,15 @@ function Codes({ fund, of }: { fund: ChosenFund; of: string }) {
     </details>
   );
 }
+
+/**
+ * Whether a chosen fund's name is the statement's, as searched without "Fund", the plan and option,
+ * whatever their case: otherwise the fund's row also gives the statement's name.
+ */
+const sameName = (chosen: string | undefined, printed: string) =>
+  !!chosen && fundQuery(chosen).toUpperCase() === fundQuery(printed).toUpperCase();
+
+const capitalized = (text: string) => text.replace(/^./, (first) => first.toUpperCase());
 
 /** The statement's funds, one entry per fund however many folios hold it. */
 export function fundsOf(data: CasData) {
@@ -182,22 +190,31 @@ function FundSearch({
   ctx,
   item,
   label,
+  auto,
   searchRef,
   searchAgain,
   onChoose,
+  onMatch,
   onLeaveOut,
   onNoAmfi,
+  onChecking,
 }: {
   ctx: AddonContext;
   item: FundItem;
   label: string;
+  /** The search for the printed ISIN, as the fund is shown or searched again, confirms the result that's certainly the fund. */
+  auto: boolean;
   searchRef: RefCallback<HTMLInputElement>;
   /** A change searches again as when the fund was first shown. */
   searchAgain: number;
   onChoose: (fund: ChosenFund) => void;
+  /** Confirms the result that's certainly the fund, without a click. */
+  onMatch: (fund: ChosenFund) => void;
   onLeaveOut: () => void;
   /** Called with true while the fund's own search finds no AMFI result, and with false after. */
   onNoAmfi: (noAmfi: boolean) => void;
+  /** Called with true while the search that can confirm the fund without a click runs, and with false after. */
+  onChecking: (checking: boolean) => void;
 }) {
   const { isin, noun, statementAsset, statementSymbol } = item;
   // A holding's own asset priced from statements is the statement's prices however it's picked, so
@@ -233,8 +250,13 @@ function FundSearch({
   // Every section searches by itself when a statement is read, and reading each of those out would
   // drown the page: a section's outcome is read out once the focus has been in its search.
   const [live, setLive] = useState(false);
+  // The focus has been in the fund's section: its search no longer confirms it and takes the section
+  // away from the user.
+  const touched = useRef(false);
+  // Answers that arrive after the fund is confirmed or left out confirm nothing.
+  const mounted = useRef(true);
 
-  const search = async (text: string) => {
+  const search = async (text: string, automatic = false) => {
     if (!text.trim()) return;
     const id = ++latest.current;
     setResults(null);
@@ -267,22 +289,47 @@ function FundSearch({
       setResults(found);
       setWithheld(left);
       setPicked(String(preselected(found, named) ?? ""));
+      // AMFI's scheme for the printed ISIN is confirmed without a click, when nothing contradicts it.
+      const match = automatic && !named && !left && !touched.current
+        ? certain(found, (r) => {
+          // As the result's badges show it: a listing its provider didn't name has a warning instead.
+          const shown = listingName(choiceOf(r));
+          return !!shown && !(["plan", "option"] as const).some((field) => differs(planAndOption(shown), plan, field));
+        })
+        : undefined;
+      if (match !== undefined && mounted.current) onMatch(choiceOf(found[match]));
     } catch (e) {
       if (id === latest.current) setError(`The search failed: ${String(e)}`);
     } finally {
-      if (id === latest.current) setSearching(false);
+      if (id === latest.current) {
+        setSearching(false);
+        if (mounted.current) onChecking(false);
+      }
     }
   };
 
   // Search the printed ISIN, or the fund's name when there's none, when the fund is first shown, and
-  // again when `searchAgain` changes, in place of what the search box holds.
+  // again when `searchAgain` changes, in place of what the search box holds. Such a search for a
+  // fund's printed ISIN can confirm it without a click, unless the focus has been in its section.
   const searched = useRef<number | null>(null);
   useEffect(() => {
-    if (searched.current === searchAgain) return;
-    if (searched.current !== null) setQuery(first);
-    searched.current = searchAgain;
-    void search(first);
+    // Register before requesting: a fast answer must wait for the other funds' searches too.
+    // AMFI lists only mutual funds, so it never confirms a share, bond or NPS scheme.
+    const automatic = auto && !!isin && noun === "fund" && !touched.current;
+    onChecking(automatic);
+    if (searched.current !== searchAgain) {
+      if (searched.current !== null) setQuery(first);
+      searched.current = searchAgain;
+      void search(first, automatic);
+    }
+    return () => onChecking(false);
   }, [searchAgain]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // The printed ISIN, or the name of a fund printed without one, finds no AMFI result: AMFI may not
   // be added in Wealthfolio. Other search terms say nothing about AMFI.
@@ -297,7 +344,12 @@ function FundSearch({
   const names = funds?.map((fund) => ({ name: listingName(fund) ?? unnamed(fund) })) ?? [];
   const result = picked === "" ? undefined : results?.[Number(picked)];
   return (
-    <div className="grid gap-3">
+    <div
+      className="grid gap-3"
+      onFocus={() => {
+        touched.current = true;
+      }}
+    >
       <div onFocus={() => setLive(true)}>
         <div className="flex flex-wrap items-center gap-2">
           <Input
@@ -445,6 +497,7 @@ function ConfirmedFund({
   fund,
   plan,
   of,
+  note,
   children,
 }: {
   ctx: AddonContext;
@@ -452,6 +505,8 @@ function ConfirmedFund({
   plan?: PlanAndOption;
   /** Whose details these are, for screen readers. */
   of: string;
+  /** A line under its name, such as the statement's name when the fund's own is another. */
+  note?: string;
   children: ReactNode;
 }) {
   const source = useSource(ctx, fund);
@@ -465,6 +520,7 @@ function ConfirmedFund({
         </span>
         {children}
       </div>
+      {note && <p className="text-muted-foreground text-sm">{note}</p>}
       {/* Keeps its line while the pricing mode is read, so nothing below it moves. */}
       <p className="text-muted-foreground text-sm">{source ?? "\u00a0"}</p>
       {currency && <p className="text-muted-foreground text-sm">{currency}</p>}
@@ -496,12 +552,41 @@ export function FundChoicesCard({
 }) {
   // The open fund searches that find no AMFI result.
   const [noAmfi, setNoAmfi] = useState<readonly string[]>([]);
-  // Each choice replaces the control pressed with another in the fund's section, which takes the focus.
+  // The funds chosen for, changed or left out since the statement was read, which are never
+  // confirmed without a click again; those confirmed without one; and the searches that still can.
+  const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
+  const [matched, setMatched] = useState<ReadonlySet<string>>(new Set());
+  const [checking, setChecking] = useState<readonly string[]>([]);
+  // Each choice replaces the control pressed with another for the same fund, which takes the focus.
   const focus = useFocusMove();
   const choose = (key: string, choice: FundChoice | undefined) => {
     focus.expect(key);
+    setHandled((keys) => new Set(keys).add(key));
     onChange(key, choice);
   };
+  const match = (key: string, fund: ChosenFund) => {
+    setMatched((keys) => new Set(keys).add(key));
+    onChange(key, { fund });
+  };
+  const listed = (keys: readonly string[], key: string, on: boolean) => (on ? [...keys.filter((k) => k !== key), key] : keys.filter((k) => k !== key));
+
+  const funds = items.map((item, i) => {
+    const stored = choices[item.key];
+    // A remembered statement-price choice can predate a corrected statement name, which imports use (`planSnapshots`).
+    const choice = stored && "fund" in stored && stored.fund.statementPrices ? { fund: { ...stored.fund, name: item.name } } : stored;
+    return { item, label: `${item.name.trim()}${nameNumber(items, i, item.noun)}`, choice };
+  });
+  // Said once every search that can confirm a fund without a click is done, so screen readers hear it once.
+  const count = funds.filter(({ item, choice }) => matched.has(item.key) && !handled.has(item.key) && choice && "fund" in choice).length;
+  const summary = checking.length > 0 || count === 0
+    ? ""
+    : count === 1
+      ? "1 fund matched from AMFI by its ISIN. Change it if it looks wrong."
+      : `${count} funds matched from AMFI by their ISIN. Change any that look wrong.`;
+  // Funds that need a choice come first, each in a section of its own. The others follow, a row each.
+  // A fund moves between the two as it's chosen, changed or left out, so the others stay where they are.
+  const open = funds.filter(({ choice }) => !choice);
+  const decided = funds.filter(({ choice }) => choice);
   return (
     <Card>
       <CardHeader>
@@ -515,12 +600,12 @@ export function FundChoicesCard({
         )}
       </CardHeader>
       <CardContent className="space-y-6">
-        {items.map((item, i) => {
+        {/* Out of the layout while empty. */}
+        <p aria-live="polite" aria-atomic="true" className={summary ? "text-muted-foreground text-sm" : "sr-only"}>
+          {summary}
+        </p>
+        {open.map(({ item, label }) => {
           const { key } = item;
-          const label = `${item.name.trim()}${nameNumber(items, i, item.noun)}`;
-          const stored = choices[key];
-          // A remembered statement-price choice can predate a corrected statement name, which imports use (`planSnapshots`).
-          const choice = stored && "fund" in stored && stored.fund.statementPrices ? { fund: { ...stored.fund, name: item.name } } : stored;
           const plan = statementPlan(item);
           return (
             <section key={key} className="grid gap-2">
@@ -532,37 +617,62 @@ export function FundChoicesCard({
                 {item.isin ? `ISIN ${item.isin}` : "No ISIN printed"}
                 {item.where && ` · ${item.where}`}
               </p>
-              {choice && "fund" in choice ? (
-                <ConfirmedFund ctx={ctx} fund={choice.fund} plan={plan} of={`the ${item.noun} confirmed for ${label}`}>
-                  <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
-                    Change<span className="sr-only"> the {item.noun} for {label}</span>
-                  </Button>
-                </ConfirmedFund>
-              ) : choice ? (
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="secondary">Left out</Badge>
-                  <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
-                    Choose a {item.noun}
-                    <span className="sr-only"> for {label}</span>
-                  </Button>
-                </div>
-              ) : (
-                <FundSearch
-                  ctx={ctx}
-                  item={item}
-                  label={label}
-                  searchRef={focus.target(key)}
-                  searchAgain={item.noun === "fund" ? amfi.searches : 0}
-                  onChoose={(fund) => choose(key, { fund })}
-                  onLeaveOut={() => choose(key, { leftOut: true })}
-                  onNoAmfi={(missing) =>
-                    setNoAmfi((keys) => (missing ? [...keys.filter((k) => k !== key), key] : keys.filter((k) => k !== key)))
-                  }
-                />
-              )}
+              <FundSearch
+                ctx={ctx}
+                item={item}
+                label={label}
+                auto={!handled.has(key)}
+                searchRef={focus.target(key)}
+                searchAgain={item.noun === "fund" ? amfi.searches : 0}
+                onChoose={(fund) => choose(key, { fund })}
+                onMatch={(fund) => match(key, fund)}
+                onLeaveOut={() => choose(key, { leftOut: true })}
+                onNoAmfi={(missing) => setNoAmfi((keys) => listed(keys, key, missing))}
+                onChecking={(running) => setChecking((keys) => listed(keys, key, running))}
+              />
             </section>
           );
         })}
+        {decided.length > 0 && (
+          <ul className="grid gap-3">
+            {decided.map(({ item, label, choice }) => {
+              const { key } = item;
+              const plan = statementPlan(item);
+              if (!choice || !("fund" in choice)) {
+                return (
+                  <li key={key} className="grid gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Badge variant="secondary">Left out</Badge>
+                      <span>
+                        {item.name}
+                        {plan && <PlanBadges own={plan} />}
+                      </span>
+                      <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
+                        Choose a {item.noun}
+                        <span className="sr-only"> for {label}</span>
+                      </Button>
+                    </div>
+                    {item.where && <p className="text-muted-foreground text-sm">{capitalized(item.where)}</p>}
+                  </li>
+                );
+              }
+              const { fund } = choice;
+              // The statement's name when the chosen fund's is another, and where the statement lists it.
+              const note = capitalized(
+                [!sameName(listingName(fund), item.name) && `On the statement: ${item.name}`, item.where].filter(Boolean).join(" · "),
+              );
+              return (
+                <li key={key}>
+                  <ConfirmedFund ctx={ctx} fund={fund} plan={plan} note={note} of={`the ${item.noun} confirmed for ${label}`}>
+                    <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
+                      Change<span className="sr-only"> the {item.noun} for {label}</span>
+                    </Button>
+                  </ConfirmedFund>
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </CardContent>
     </Card>
   );

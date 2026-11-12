@@ -71,6 +71,10 @@ export interface PlanAndOption {
   option?: FundOption;
 }
 
+/** Whether a name's plan or option differs from the statement's. A field either name doesn't give doesn't. */
+export const differs = (own: PlanAndOption, statement: PlanAndOption | undefined, field: keyof PlanAndOption) =>
+  !!own[field] && !!statement?.[field] && own[field] !== statement[field];
+
 // Each word or phrase in lower case, with Yahoo's abbreviations, as in "Rg Gr" or "Ann Dr IDCW-P".
 const PLANS = new Map<string, Plan>([
   ["direct", "Direct"],

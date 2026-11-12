@@ -31,7 +31,11 @@ entered by hand, or "Unknown source". Its symbol,
 exchange, type and currency are under **Details**. A listing that Yahoo names only by its ticker, as
 it does some Indian funds, reads "Unnamed Yahoo listing" with the ticker and "Plan and option
 unknown"; Yahoo's other names for Indian funds are often abbreviated, and AMFI's (see
-[AMFI prices](#amfi-prices)) are full. Closed schemes, with no units at either end and
+[AMFI prices](#amfi-prices)) are full. Funds that still need a choice come first, each with its
+search; the confirmed and left-out ones follow, one row each, with **Change** or **Choose a fund** to
+search again. A confirmed fund's row gives the statement's name too when the fund's own name is
+another, such as an unnamed listing's, and where the statement lists it, such as "in 2 folios".
+Closed schemes, with no units at either end and
 nothing to import, are skipped. The preview lists every activity with its
 cash deposit or withdrawal (or [bank transfer](#bank-account)), the rows left out and why, and anything Wealthfolio already has. After
 the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
@@ -84,9 +88,9 @@ publishes each fund's daily NAV. It's off until you add it in **Settings** → *
 recommend adding it before your first import: a fund Wealthfolio already has, priced from Yahoo for
 example, isn't switched to AMFI later without editing its asset in Wealthfolio (see below). Then the
 search for a fund's ISIN, on detailed, summary and depository statements, finds AMFI's scheme as
-well as Yahoo's listing, and the add-on preselects AMFI's; confirm it as any other result. AMFI
-finds a fund only by its exact ISIN or AMFI scheme code, in its current list of schemes: some closed
-or merged schemes aren't in it, and an ISIN listed under more than one scheme code finds nothing.
+well as Yahoo's listing. AMFI finds a fund only by its exact ISIN or AMFI scheme code, in its
+current list of schemes: some closed or merged schemes aren't in it, and an ISIN listed under more
+than one scheme code finds nothing.
 
 While AMFI is off, a banner at the top of the add-on's page says so before you read a statement. Add-ons
 can't turn AMFI on, so its **Open Market data settings** button opens **Settings** → **Market data**,
@@ -100,6 +104,24 @@ search for a fund's ISIN, or for the name of one printed without it, finds no AM
 or Holdings card shows one note below its introduction: it recommends AMFI, says to add it in
 **Settings** → **Market data** if it isn't on, and to enter each fund's ISIN or AMFI scheme code in
 its search box and press **Search**.
+
+When a statement is read, or a check finds AMFI on and the funds are searched again, a fund without
+a remembered choice is confirmed without a click, and saved as **Use this fund** saves it, when the
+search for its printed ISIN finds exactly one AMFI
+result and nothing contradicts it: AMFI's scheme, or a saved asset with AMFI selected that the search
+finds by an identifier, such as AMFI mapped to the ISIN, rather than because its symbol or name
+contains the ISIN; quoted in rupees; named, with no plan or option that differs from the statement's;
+and no saved asset with another provider selected, or none, among the results. An asset with AMFI
+selected can be confirmed even when automatic updates are off; its row then says **Priced by hand**. Since
+Wealthfolio searches its own assets whether or not AMFI is on, such an asset is confirmed this way
+with AMFI off too. The card says once how many funds were matched this way, and each has **Change**
+on its row. Change or Choose a fund opens its search again, which then never confirms the fund by
+itself. Leaving a fund out keeps it left out for this read. For an ISIN search, AMFI's result is
+preselected when it's the only AMFI result and no asset is priced from another source, and you
+confirm it as any other result. Results from Yahoo or any other provider, from the
+search for a fund's name when its ISIN finds nothing or none is printed, or from a search you type,
+are never confirmed this way. Neither is a fund whose search answers once the focus has been in its
+section, so the section doesn't go from under you.
 
 A fund Wealthfolio already has, priced from Yahoo or from statements, isn't switched: the add-on
 doesn't preselect AMFI's result for it, since picking that adds a second asset for the fund. To
@@ -224,7 +246,9 @@ Choose such an account for the whole statement, and a different one or "Leave ou
 demat account or National Pension System (NPS) account. Demat labels use their order on the statement and
 broker name, without account numbers; an NPS account's label is its PRAN as printed, masked.
 Confirm the Wealthfolio asset for each holding: shares and bonds are searched by their
-ISIN too, and a fund confirmed for a detailed statement is already confirmed here. Funds have the
+ISIN too, a fund confirmed for a detailed statement is already confirmed here, and a fund whose
+ISIN finds exactly one AMFI scheme is confirmed without a click, as on the Funds card (see
+[AMFI prices](#amfi-prices)). Funds have the
 same plan and option badges as on the Funds card; shares, bonds and NPS schemes have none. If no holdings
 account is offered, create one in Wealthfolio and choose Read statement again.
 
@@ -420,10 +444,11 @@ the later snapshot's prices.
 
 - In Wealthfolio's add-on storage, which device sync copies to your other devices: the account and
   bank account chosen for each PAN or folio, keyed by a SHA-256 hash of the PAN or folio number, and the fund
-  confirmed for each ISIN, or for the registrar and scheme code of a scheme with no ISIN. Leaving
+  confirmed for each ISIN, or for the registrar and scheme code of a scheme with no ISIN, including
+  one confirmed without a click from AMFI. Leaving
   a fund out forgets the fund confirmed for it, in every folio that holds it; if Wealthfolio can't
   delete it, the add-on says so and it can come back. "Left out" itself isn't kept: the next read
-  searches for the fund again.
+  searches for the fund again, and can confirm it from AMFI again.
 - Also in add-on storage, for summary and depository statements: the account chosen for the
   statement and for each folio, demat account or NPS account, keyed by a hash of the PAN, email address or investor
   name; the folio number and parsed AMC (summary) or ISIN issuer (depository); the demat account's DP and
