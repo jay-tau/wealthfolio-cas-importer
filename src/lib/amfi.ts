@@ -40,3 +40,27 @@ export function amfiStatus(providers: unknown): AmfiStatus {
   const enabled = (amfi as { enabled?: unknown } | undefined)?.enabled;
   return typeof enabled === "boolean" ? (enabled ? "on" : "off") : "unknown";
 }
+
+/**
+ * A saved asset the search found by one of its identifiers, not because its symbol or name merely
+ * contains the query. Wealthfolio 3.13.0 marks it `exactMatch`; the SDK's type doesn't declare it.
+ */
+const exactMatch = (result: Result) => (result as { exactMatch?: unknown }).exactMatch === true;
+
+/**
+ * Of the results of the search for a fund's printed ISIN, the one that's certainly that fund: the
+ * only AMFI result, either AMFI's own (AMFI answers only an exact ISIN or scheme code) or a saved
+ * asset the search found by an identifier, quoted in rupees and accepted by `fits`. None while
+ * Wealthfolio has an asset among them priced from another source, since confirming AMFI's would
+ * add a second asset for the fund.
+ */
+export function certain<R extends Result & Pick<SymbolSearchResult, "currency">>(
+  results: R[],
+  fits: (result: R) => boolean,
+): number | undefined {
+  const amfi = results.flatMap((result, i) => (fromAmfi(result) ? [i] : []));
+  if (amfi.length !== 1 || results.some(pricedElsewhere)) return undefined;
+  const result = results[amfi[0]];
+  if (result.existingAssetId && !exactMatch(result)) return undefined;
+  return result.currency === "INR" && fits(result) ? amfi[0] : undefined;
+}

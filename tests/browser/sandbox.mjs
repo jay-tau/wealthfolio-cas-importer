@@ -289,8 +289,24 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Closed schemes get no fund section, so no search either.
     assert.equal(await frame.locator("section").count(), 5);
     assert.equal(await frame.getByText(/Midcap|Gilt/).count(), 0);
+    // A fund's or other holding's section while it needs a choice, and its row once it's confirmed or
+    // left out. The row doesn't show the ISIN, so a holding is found by its name as the statement
+    // prints it, which ends the names of all its controls.
+    const holding = (name) => {
+      const escaped = name.replace(/\s+/g, " ").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return frame.locator("section, li").filter({ has: frame.getByRole("button", { name: new RegExp(` for ${escaped}(, [a-zA-Z ]+ \\d+)?$`) }) });
+    };
+    // The funds on the made-up detailed statement that aren't closed.
+    const detailed = {
+      flexi: "Fictiva Flexi Cap Fund - Direct Plan - Growth",
+      liquid: "Fictiva Liquid Fund - Direct Plan - Growth",
+      balanced: "Fictiva Balanced Advantage Fund - Direct Plan - IDCW Reinvestment",
+      corporate: "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout",
+      overnight: "Testbridge Overnight Fund - Direct Plan - Growth",
+    };
     // The Overnight fund has no ISIN, so its name is searched without "Fund", the plan and option when it's first shown.
-    const noIsin = frame.locator("section").filter({ hasText: "No ISIN printed" });
+    const noIsin = holding(detailed.overnight);
+    await frame.locator("section").filter({ hasText: "No ISIN printed" }).locator("h3").getByText(detailed.overnight).waitFor();
     await noIsin.getByText(`No ISIN on the statement; showing results for "Testbridge Overnight". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`).waitFor();
     assert.equal(await noIsin.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Overnight");
     assert.equal(await noIsin.getByRole("radio").count(), 1);
@@ -304,7 +320,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Each section repeats the same controls, so their names say which fund, share, bond or NPS scheme
     // they're for: each name is in its section, and only once on the page.
     const namedFor = async (section, controls) => {
-      const item = await section.locator("h3").textContent();
+      // A row has no heading: its controls are named for the statement's name as it's given.
+      const item = await section.locator("h3").count() ? await section.locator("h3").textContent() : undefined;
       for (const [role, name] of controls(item)) {
         await section.getByRole(role, { name, exact: true }).waitFor({ state: "attached" });
         assert.equal(await section.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
@@ -320,8 +337,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ]);
     }
     await namedFor(noIsin, (fund) => [["radiogroup", `Search results for ${fund}`]]);
-    assert.equal(await noIsin.locator("h3").textContent(), "Testbridge Overnight Fund - Direct Plan - Growth");
-    const firstFund = frame.locator("section").first();
+    assert.equal(await noIsin.locator("h3").textContent(), detailed.overnight);
+    assert.equal(await frame.locator("section").first().locator("h3").textContent(), detailed.flexi);
+    const firstFund = holding(detailed.flexi);
     // With AMFI not added in Settings → Market data, the search for a fund's ISIN or for the name of one
     // printed without it finds no AMFI result. While any fund's does, its card recommends AMFI once,
     // directly below the card's intro and in no fund's section. Other search terms say nothing about AMFI.
@@ -359,7 +377,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       assert.equal(await section.locator("details p").textContent(), `Symbol ${symbol} · Type ${type} · Currency INR`);
     };
     assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
-    assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" })), ["Regular secondary", "IDCW secondary"]);
+    assert.deepEqual(await nameBadges(holding(detailed.corporate)), ["Regular secondary", "IDCW secondary"]);
     assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: "IDCW Reinvestment" })), ["Direct secondary", "IDCW secondary"]);
     await search.fill("Fictiva Flexi Cap");
     await search.press("Enter");
@@ -378,7 +396,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await firstFund.getByText("Confirmed", { exact: true }).waitFor();
     await focused(firstFund.getByRole("button", { name: /^Change the / }), "Use this fund");
     assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW warning-subtle"]);
-    assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
+    // A confirmed fund is a row of its own, without the statement's name when the chosen one is the
+    // same fund's, whatever the plan and option.
+    assert.equal(await firstFund.evaluate((row) => row.tagName), "LI");
+    assert.equal(await firstFund.locator("h3").count(), 0);
+    assert.equal(await firstFund.getByText(/^On the statement: /).count(), 0);
     await firstFund.getByRole("button", { name: /^Change the / }).press("Enter");
     await focused(search, "Change");
     assert.equal(await outcome(firstFund).getAttribute("aria-live"), "polite", "a section opened again announces its own search");
@@ -484,7 +506,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await search.fill(expected.folios[0].schemes[0].isin);
     await search.press("Enter");
     // The Corporate Bond fund's ISIN finds nothing, so its name is searched without "Fund", the plan and option.
-    const byName = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
+    const byName = holding(detailed.corporate);
     await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond".').waitFor();
     assert.equal(await byName.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Corporate Bond");
     await byName.getByRole("radio").first().waitFor({ state: "attached" });
@@ -511,14 +533,22 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.match(await outcome(byName).textContent(), /^1 result\.Nothing found for the ISIN; showing results for "Testbridge Corporate Bond"\./);
     await byName.getByRole("radio").first().dispatchEvent("click");
     await noIsin.getByRole("radio").first().dispatchEvent("click");
-    for (const section of await frame.locator("section").all()) {
+    // Each fund confirmed leaves the sections for the list of rows after them, in the statement's order.
+    for (let open = 5; open > 0; open--) {
+      const section = frame.locator("section").first();
       await section.getByRole("radio").first().waitFor();
       await section.getByRole("button", { name: "Use this fund" }).click();
-      await section.getByText("Confirmed").waitFor();
+      await frame.locator("section").nth(open - 1).waitFor({ state: "detached" });
     }
-    for (const section of await frame.locator("section").all()) {
-      await namedFor(section, (fund) => [["button", `Change the fund for ${fund}`]]);
+    const rows = frame.getByRole("listitem").filter({ has: frame.getByRole("button", { name: /^(Change the|Choose an?) / }) });
+    assert.equal(await rows.count(), 5);
+    for (const [i, name] of [detailed.flexi, detailed.liquid, detailed.balanced, detailed.corporate, detailed.overnight].entries()) {
+      await namedFor(rows.nth(i), () => [["button", `Change the fund for ${name}`]]);
+      assert.equal(await rows.nth(i).getByText("Confirmed", { exact: true }).count(), 1);
+      // The fake host's names aren't the statement's, so each row gives the statement's too.
+      assert.equal(await rows.nth(i).getByText(`On the statement: ${name}`, { exact: true }).count(), 1);
     }
+    assert.equal(await frame.getByText(/^\d+ funds? matched from AMFI/).count(), 0, "AMFI isn't added");
     // Once no open fund search lacks an AMFI result, the note goes.
     await noAmfiNote();
     const searches = await tab.frames()[1].evaluate(() => window.host.searches);
@@ -632,7 +662,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const quotedIn = (locator) => locator.getByText(/^The statement's prices and amounts are in rupees, but /);
     const usdResults = ["Democorp Bank ADR USD FAKE " + inUsd, "Democorp Bank Ltd FAKE"];
     const usdCodes = ["Symbol DMCB · Exchange XNYS · Type EQUITY · Currency USD", "Symbol DEMOCORPBK · Exchange XNSE · Type EQUITY · Currency INR"];
-    const usdFund = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
+    const usdFund = holding(detailed.liquid);
     const usdSearch = usdFund.getByRole("textbox", { name: /^Search for / });
     await usdFund.getByRole("button", { name: /^Change the / }).click();
     await usdSearch.fill("Democorp Bank");
@@ -950,6 +980,33 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await section.getByRole("button", { name: "Leave this fund out" }).click();
       await section.getByText("Left out", { exact: true }).waitFor();
     };
+    // Confirms the first result for each fund with these ISINs, whose sections go once they're confirmed.
+    const confirmFirst = async (isins) => {
+      for (const isin of isins) {
+        const section = frame.locator("section").filter({ hasText: `ISIN ${isin}` });
+        await section.getByRole("radio").first().waitFor({ state: "attached" });
+        await section.getByRole("radio").first().dispatchEvent("click");
+        await section.getByRole("button", { name: "Use this fund" }).click();
+        await section.waitFor({ state: "detached" });
+      }
+    };
+    // Confirms the first result for every holding that still needs a choice, each in a section of its own until then.
+    const useFirstResults = async () => {
+      for (let open = await frame.locator("section").count(); open > 0; open--) {
+        const section = frame.locator("section").first();
+        await section.getByRole("radio").first().waitFor({ state: "attached" });
+        await section.getByRole("radio").first().click();
+        await section.getByRole("button", { name: /^Use this / }).click();
+        await frame.locator("section").nth(open - 1).waitFor({ state: "detached" });
+      }
+    };
+    // Leaves out every fund that still needs a choice, each in a section of its own until then.
+    const leaveOutOthers = async () => {
+      for (let open = await frame.locator("section").count(); open > 0; open--) {
+        await frame.locator("section").first().getByRole("button", { name: "Leave this fund out" }).click();
+        await frame.locator("section").nth(open - 1).waitFor({ state: "detached" });
+      }
+    };
 
     // A remembered PAN or folio account that tracks holdings is ignored, and its row says why. The
     // folio's own account needs choosing again, even to go with its PAN.
@@ -1002,9 +1059,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await bankFolios[0].click();
     await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).click();
     assert.equal(await previewButton.isDisabled(), true);
-    for (const isin of ["INFZ90K01FC8", "INFZ90K01LQ6", "INFZ90K01BA1"]) {
-      await leaveOut(frame.locator("section").filter({ hasText: `ISIN ${isin}` }));
-    }
+    for (const name of [detailed.flexi, detailed.liquid, detailed.balanced]) await leaveOut(holding(name));
     assert.equal(await previewButton.isDisabled(), false);
     await tab.frames()[1].evaluate((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeBankValidation);
     await readAgain();
@@ -1171,7 +1226,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText(/^Couldn't load the accounts/).count(), 0);
 
     // Change alone keeps the saved fund, so reading again confirms it again.
-    const flexi = frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" });
+    const flexi = holding(detailed.flexi);
     const remembered = await storage();
     await flexi.getByRole("button", { name: /^Change the / }).click();
     await flexi.getByRole("button", { name: "Leave this fund out" }).waitFor();
@@ -1194,7 +1249,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // Choosing a fund after leaving it out doesn't bring the old one back; confirming another saves it.
     await flexi.getByRole("button", { name: "Leave this fund out" }).press("Enter");
-    await namedFor(flexi, (fund) => [["button", `Choose a fund for ${fund}`]]);
+    await namedFor(flexi, () => [["button", `Choose a fund for ${detailed.flexi}`]]);
     await focused(flexi.getByRole("button", { name: "Choose a fund" }), "Leave this fund out");
     await flexi.getByRole("button", { name: "Choose a fund" }).press("Enter");
     await focused(flexi.getByRole("textbox", { name: /^Search for / }), "Choose a fund");
@@ -1224,7 +1279,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // A deletion that fails keeps the fund saved and says it can come back; it stays left out for this read.
     assert.deepEqual(await tab.frames()[1].evaluate(() => window.host.toasts), []);
     await tab.frames()[1].evaluate(() => { window.host.failDelete = true; });
-    const balanced = frame.locator("section").filter({ hasText: "ISIN INFZ90K01BA1" });
+    const balanced = holding(detailed.balanced);
     await leaveOut(balanced);
     await tab.frames()[1].waitForFunction(() => window.host.toasts.length);
     assert.deepEqual(await tab.frames()[1].evaluate(() => window.host.toasts), [
@@ -1241,9 +1296,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.frames()[1].evaluate(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
     await readAgain();
     await frame.getByText(/3 folios, 8 schemes, 83 rows\./).waitFor();
-    assert.equal(await frame.locator("section").count(), 5);
-    const liquid = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6 · in 2 folios" });
+    const liquid = holding(detailed.liquid);
     await liquid.getByText("Confirmed", { exact: true }).waitFor();
+    assert.equal(await liquid.count(), 1);
+    // Its row says where the statement lists it, as its section does.
+    await liquid.getByText(`On the statement: ${detailed.liquid} · in 2 folios`, { exact: true }).waitFor();
+    assert.equal(await rows.count(), 4);
+    assert.equal(await frame.locator("section").count(), 1);
     // The failed deletion left the Balanced Advantage fund saved, so it's back.
     await balanced.getByText("Confirmed", { exact: true }).waitFor();
     await leaveOut(liquid);
@@ -1298,18 +1357,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.merger = true;
     });
     await readAgain();
-    for (const isin of ["INFZ90K01FC8", "INFZ90K01OF7", "INFZ90K01NF5"]) {
-      const section = frame.locator("section").filter({ hasText: `ISIN ${isin}` });
-      await section.getByRole("radio").first().waitFor({ state: "attached" });
-      await section.getByRole("radio").first().dispatchEvent("click");
-      await section.getByRole("button", { name: "Use this fund" }).click();
-      await section.getByText("Confirmed", { exact: true }).waitFor();
-    }
-    for (const section of await frame.locator("section").all()) {
-      if (await section.getByText(/^(Confirmed|Left out)$/).count()) continue;
-      await section.getByRole("button", { name: "Leave this fund out" }).click();
-      await section.getByText("Left out", { exact: true }).waitFor();
-    }
+    await confirmFirst(["INFZ90K01FC8", "INFZ90K01OF7", "INFZ90K01NF5"]);
+    await leaveOutOthers();
     await frame.getByRole("button", { name: "Preview the import" }).click();
     const leaving = frame.getByRole("row").filter({ hasText: "fund conversion out" });
     const arriving = frame.getByRole("row").filter({ hasText: "fund conversion in" });
@@ -1362,18 +1411,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.gifts = true;
     });
     await readAgain();
-    for (const isin of ["INFZ90K01GF3", "INFZ90K01SF6"]) {
-      const section = frame.locator("section").filter({ hasText: `ISIN ${isin}` });
-      await section.getByRole("radio").first().waitFor({ state: "attached" });
-      await section.getByRole("radio").first().dispatchEvent("click");
-      await section.getByRole("button", { name: "Use this fund" }).click();
-      await section.getByText("Confirmed", { exact: true }).waitFor();
-    }
-    for (const section of await frame.locator("section").all()) {
-      if (await section.getByText(/^(Confirmed|Left out)$/).count()) continue;
-      await section.getByRole("button", { name: "Leave this fund out" }).click();
-      await section.getByText("Left out", { exact: true }).waitFor();
-    }
+    await confirmFirst(["INFZ90K01GF3", "INFZ90K01SF6"]);
+    await leaveOutOthers();
     // In one account the units don't move, so neither side goes in.
     await frame.getByRole("button", { name: "Preview the import" }).click();
     const sameAccount = "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported.";
@@ -1428,20 +1467,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.segregated = true;
     });
     await readAgain();
-    for (const isin of ["INFZ90K01CR3", "INFZ90K01S17"]) {
-      const section = frame.locator("section").filter({ hasText: `ISIN ${isin}` });
-      await section.getByRole("radio").first().waitFor({ state: "attached" });
-      await section.getByRole("radio").first().dispatchEvent("click");
-      await section.getByRole("button", { name: "Use this fund" }).click();
-      await section.getByText("Confirmed", { exact: true }).waitFor();
-    }
-    const leaveOutOthers = async () => {
-      for (const section of await frame.locator("section").all()) {
-        if (await section.getByText(/^(Confirmed|Left out)$/).count()) continue;
-        await section.getByRole("button", { name: "Leave this fund out" }).click();
-        await section.getByText("Left out", { exact: true }).waitFor();
-      }
-    };
+    await confirmFirst(["INFZ90K01CR3", "INFZ90K01S17"]);
     await leaveOutOthers();
     await frame.getByRole("button", { name: "Preview the import" }).click();
     const segregatedRows = frame.getByRole("row").filter({ hasText: "Fictiva Credit Risk Fund - Segregated Portfolio 1" });
@@ -1493,11 +1519,16 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await undecided(flexi);
 
     // With AMFI off, the banner asks to add it, and the Funds card says nothing more about AMFI,
-    // though no fund's search finds AMFI's scheme.
+    // though no fund's search finds AMFI's scheme. Once it's added, a fund whose ISIN finds exactly one
+    // AMFI result, in rupees, with no plan or option that differs from the statement's, is confirmed
+    // without a click and saved as Use this fund saves it. Funds confirmed before keep their choice,
+    // unsearched. Funds that still need a choice come first, each in its section; the confirmed ones
+    // follow, a row each, and the card says once how many were matched.
     const beforeAmfi = await tab.frames()[1].evaluate(() => ({
       activities: window.host.activities, assets: window.host.assets, storage: [...window.host.storage], searches: window.host.searches,
       failHistory: window.host.failHistory, rejectLine: window.host.rejectLine, skipLine: window.host.skipLine,
     }));
+    const rememberedBefore = await storage();
     await tab.frames()[1].evaluate(() => {
       window.host.providers = "";
       window.host.activities = [];
@@ -1511,17 +1542,25 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await revisit();
     await amfiBanner.waitFor();
     await readAgain();
-    const liquidSection = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
-    await undecided(liquidSection);
-    const liquidResults = liquidSection.getByRole("radio");
-    for (const section of [liquidSection, flexi, noIsin]) await section.getByRole("radio").first().waitFor({ state: "attached" });
+    const savedFund = (key) => tab.frames()[1].evaluate((key) => JSON.parse(window.host.storage.get(key) ?? "null"), key);
+    const liquidRow = holding(detailed.liquid);
+    const liquidResults = liquidRow.getByRole("radio");
+    // Whether Liquid's AMFI result, AMFI's scheme or the asset an import created from it, is preselected.
+    const amfiPicked = async () => (await liquidRow.locator("label").filter({ hasText: /AMFI$/ }).getByRole("radio").getAttribute("aria-checked")) === "true";
+    // AMFI's scheme's name, as a confirmed row shows it.
+    const amfiLabel = /^Scheme \d{6}$/;
+    const matched = frame.getByText(/^\d+ funds? matched from AMFI by (its|their) ISIN\./);
+    const matchedOne = "1 fund matched from AMFI by its ISIN. Change it if it looks wrong.";
+    for (const section of [liquidRow, flexi, noIsin]) await section.getByRole("radio").first().waitFor({ state: "attached" });
     await noAmfiNote();
     assert.equal(await liquidResults.count(), 1);
+    assert.equal(await matched.count(), 0);
     await flexi.getByRole("textbox", { name: /^Search for / }).fill("MULTI");
     // Once AMFI is added, Check again finds it on and the banner goes. In the same page, with the
     // statement still read and every choice kept, the funds that have no choice yet are searched again
-    // as when first shown, and now find AMFI's scheme too. A fund's ISIN finds Yahoo's result and then
-    // AMFI's, which is preselected but still needs confirming. Funds confirmed before aren't searched.
+    // as when first shown, and now find AMFI's scheme too. Liquid's ISIN finds Yahoo's result and then
+    // AMFI's, its only AMFI result, so it's confirmed without a click. Flexi Cap isn't: its search box
+    // has had the focus, and Wealthfolio has it priced from Yahoo. Funds confirmed before aren't searched.
     const statementSummary = await frame.getByText(/ detailed statement for /).elementHandle();
     const confirmedBefore = await confirmed();
     await tab.frames()[1].evaluate(() => {
@@ -1532,28 +1571,65 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await amfiBanner.waitFor({ state: "detached" });
     await focused(fileInput, "Check again, AMFI added");
     assert.equal(await amfiOutcome.textContent(), "AMFI is on.");
-    await liquidResults.nth(1).waitFor({ state: "attached" });
+    await matched.waitFor();
+    assert.equal(await matched.textContent(), matchedOne);
+    assert.equal(await matched.getAttribute("aria-live"), "polite");
+    await focused(fileInput, "a fund matched after Check again");
     assert.equal(await statementSummary.evaluate((p) => p.isConnected), true, "the same page");
-    assert.equal(await confirmed(), confirmedBefore);
+    assert.equal(await confirmed(), confirmedBefore + 1);
     assert.equal(await flexi.getByRole("textbox", { name: /^Search for / }).inputValue(), "INFZ90K01FC8");
     await noIsin.getByRole("radio").first().waitFor({ state: "attached" });
     assert.deepEqual((await hosted(() => window.host.searches)).sort(), ["INFZ90K01FC8", "INFZ90K01LQ6", "Testbridge Overnight"]);
     // The fund printed without an ISIN finds no AMFI result, which AMFI's search never gives for a
     // name, and with AMFI on, the card doesn't recommend it either.
     await noAmfiNote();
-    assert.match(await liquidSection.locator("label").nth(1).textContent(), /^Scheme \d{6} AMFI$/);
-    assert.match((await resultCodes(liquidSection))[1], /^Symbol \d{6} · Type MUTUALFUND · Currency INR$/);
-    assert.equal(await liquidResults.nth(1).getAttribute("aria-checked"), "true", "AMFI's result is preselected");
-    await liquidSection.getByRole("button", { name: "Use this fund" }).click();
-    await liquidSection.getByText(/^Scheme \d{6}$/).waitFor();
-    await liquidSection.getByText("AMFI", { exact: true }).waitFor();
-    const amfiFund = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
+    await liquidRow.getByText(amfiLabel).waitFor();
+    await liquidRow.getByText("AMFI", { exact: true }).waitFor();
+    assert.match(await liquidRow.locator("details p").textContent(), /^Symbol \d{6} · Type MUTUALFUND · Currency INR$/);
+    assert.equal(await liquidRow.evaluate((row) => row.tagName), "LI");
+    assert.deepEqual(await choiceBadges(liquidRow), ["Confirmed success-subtle"]);
+    // AMFI's name isn't the statement's here, so the row gives that too.
+    assert.equal(await liquidRow.getByText(`On the statement: ${detailed.liquid}`, { exact: true }).count(), 1);
+    const amfiFund = await savedFund("isin:INFZ90K01LQ6");
     assert.deepEqual(
       [amfiFund.providerId, amfiFund.exchangeMic, amfiFund.providerSymbol, amfiFund.instrumentType, amfiFund.quoteCcy],
       ["AMFI", undefined, amfiFund.symbol, "MUTUALFUND", "INR"],
     );
+    // Flexi Cap and Overnight still need a choice, so their sections come first. The rows follow in
+    // the statement's order.
+    assert.deepEqual(await frame.locator("section h3").allTextContents(), [detailed.flexi, detailed.overnight]);
+    assert.deepEqual(
+      await rows.evaluateAll((all) => all.map((row) => row.querySelector("button").textContent)),
+      [detailed.liquid, detailed.balanced, detailed.corporate].map((name) => `Change the fund for ${name}`),
+    );
+    assert.ok(await rows.first().evaluate((row) =>
+      [...document.querySelectorAll("section")].every((section) => section.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)));
+    // Change opens the fund's search again. It doesn't confirm the fund by itself, though AMFI's
+    // result is still the only AMFI result for the ISIN: it's preselected, the focus stays in the search, and
+    // the fund no longer counts as matched.
+    await liquidRow.getByRole("button", { name: /^Change the / }).press("Enter");
+    const liquidSearch = liquidRow.getByRole("textbox", { name: /^Search for / });
+    await focused(liquidSearch, "Change on a fund matched from AMFI");
+    await liquidResults.nth(1).waitFor({ state: "attached" });
+    assert.ok(await amfiPicked(), "AMFI's result is preselected");
+    await focused(liquidSearch, "Change, once its search is done");
+    assert.equal(await liquidRow.getByText("Confirmed", { exact: true }).count(), 0);
+    await matched.waitFor({ state: "detached" });
+    assert.deepEqual(await savedFund("isin:INFZ90K01LQ6"), amfiFund, "Change alone keeps the saved fund");
+    // Another result can be confirmed instead, then AMFI's again, by hand.
+    await liquidResults.first().dispatchEvent("click");
+    await liquidRow.getByRole("button", { name: "Use this fund", disabled: false }).press("Enter");
+    await focused(liquidRow.getByRole("button", { name: /^Change the / }), "Use this fund after Change");
+    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ90K01LQ6")).providerId === "FAKE");
+    await liquidRow.getByRole("button", { name: /^Change the / }).click();
+    await liquidResults.nth(1).waitFor({ state: "attached" });
+    await liquidRow.getByRole("button", { name: "Use this fund", disabled: false }).click();
+    await liquidRow.getByText(amfiLabel).waitFor();
+    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ90K01LQ6")).providerId === "AMFI");
+    assert.deepEqual(await savedFund("isin:INFZ90K01LQ6"), amfiFund);
+    assert.equal(await matched.count(), 0, "a fund confirmed by hand isn't counted");
     // Picking AMFI's result for a fund Wealthfolio has priced from another source would add a second
-    // asset, so nothing is preselected, and the card says how to switch the asset to AMFI instead.
+    // asset, so it isn't confirmed or preselected, and the card says how to switch the asset to AMFI instead.
     await undecided(flexi);
     await flexi.getByText(/^Wealthfolio already has this fund, priced from another source, and picking AMFI's result adds a second asset for it\./).waitFor();
     assert.equal(await flexi.getByRole("button", { name: "Use this fund" }).isDisabled(), true);
@@ -1592,6 +1668,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await confirmed(), 5);
     const amfiSearches = await tab.frames()[1].evaluate(() => window.host.searches);
     assert.ok(!amfiSearches.some((query) => /INFZ90K01BA1|INFZ91T01CB6/.test(query)), amfiSearches.join(" "));
+    for (const key of ["isin:INFZ90K01BA1", "isin:INFZ91T01CB6"]) assert.equal((await storage())[key], rememberedBefore[key], key);
     // Wealthfolio's checkImport accepts a new fund chosen from AMFI without an exchange, and its
     // import creates the fund priced from AMFI.
     await frame.getByRole("button", { name: "Preview the import" }).click();
@@ -1601,22 +1678,143 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.ok(await tab.frames()[1].evaluate((code) => window.host.activities.some((a) => a.assetSymbol === code), amfiFund.symbol));
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
-    // Searching the ISIN again resolves AMFI's scheme code to the asset the import created.
-    await liquidSection.getByRole("button", { name: /^Change the / }).click();
+    // Searching the ISIN again resolves AMFI's scheme code to the asset the import created, which the
+    // search finds by an identifier, so a read without the saved choice confirms it without a click.
+    const forget = (...keys) => tab.frames()[1].evaluate((keys) => { for (const key of keys) window.host.storage.delete(key); }, keys);
+    await forget("isin:INFZ90K01LQ6");
+    await readAgain();
+    await liquidRow.getByText("Confirmed", { exact: true }).waitFor();
+    await liquidRow.getByText("AMFI", { exact: true }).waitFor();
+    assert.match(await liquidRow.locator("details p").textContent(), / · Type EQUITY · Currency INR$/);
+    await frame.getByText(matchedOne, { exact: true }).waitFor();
+    const existingAmfi = await savedFund("isin:INFZ90K01LQ6");
+    assert.ok(existingAmfi.assetId);
+    assert.equal(existingAmfi.providerSymbol, undefined);
+    // Its search lists it first, beside Yahoo's listing.
+    await liquidRow.getByRole("button", { name: /^Change the / }).click();
     await liquidResults.nth(1).waitFor({ state: "attached" });
     await noAmfiNote();
     assert.equal(await liquidResults.count(), 2);
-    assert.match(await liquidSection.locator("label").first().textContent(), /AMFI$/);
-    assert.match((await resultCodes(liquidSection))[0], / · Type EQUITY · Currency INR$/);
+    assert.match(await liquidRow.locator("label").first().textContent(), /AMFI$/);
+    assert.match((await resultCodes(liquidRow))[0], / · Type EQUITY · Currency INR$/);
     assert.equal(await liquidResults.first().getAttribute("aria-checked"), "true");
-    await liquidSection.getByRole("button", { name: "Use this fund" }).click();
-    const existingAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
-    assert.ok(existingAmfi.assetId);
-    assert.equal(existingAmfi.providerSymbol, undefined);
+    await liquidRow.getByRole("button", { name: "Use this fund" }).click();
+    await liquidRow.getByText("Confirmed", { exact: true }).waitFor();
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
+
+    // Reads the statement while the search for this query waits.
+    const readPaused = async (query) => {
+      await pause(query);
+      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+      await tab.frames()[1].waitForFunction(() => window.host.resume, null, { timeout: 180_000 });
+      await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
+    };
+    // An answer that arrives once the fund is left out doesn't confirm it, nor does it confirm the
+    // search that Choose a fund starts again.
+    await forget("isin:INFZ90K01LQ6");
+    await readPaused("INFZ90K01LQ6");
+    await liquidRow.getByRole("button", { name: "Leave this fund out" }).click();
+    await liquidRow.getByText("Left out", { exact: true }).waitFor();
+    await liquidRow.getByRole("button", { name: "Choose a fund" }).click();
+    await resume();
+    await liquidResults.nth(1).waitFor({ state: "attached" });
+    await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.ok(await amfiPicked());
+    assert.equal(await liquidRow.getByText("Confirmed", { exact: true }).count(), 0);
+    assert.equal(await savedFund("isin:INFZ90K01LQ6"), null);
+    assert.equal(await matched.count(), 0);
+    // An answer that arrives while the focus is in the fund's section doesn't take the section away.
+    await readPaused("INFZ90K01LQ6");
+    await liquidSearch.focus();
+    await resume();
+    await liquidResults.nth(1).waitFor({ state: "attached" });
+    await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.ok(await amfiPicked());
+    assert.equal(await liquidRow.getByText("Confirmed", { exact: true }).count(), 0);
+    await focused(liquidSearch, "a fund's answer while the focus is in its section");
+    assert.equal(await matched.count(), 0);
+    // One that arrives while the focus is on another fund confirms it, and the focus stays where it is
+    // as the fund moves to the rows.
+    await readPaused("INFZ90K01LQ6");
+    const corporateChange = holding(detailed.corporate).getByRole("button", { name: /^Change the / });
+    await corporateChange.focus();
+    await resume();
+    await liquidRow.getByText("Confirmed", { exact: true }).waitFor();
+    await focused(corporateChange, "a fund matched while the focus is on another");
+    await frame.getByText(matchedOne, { exact: true }).waitFor();
+    // The card says how many once every search that can confirm a fund is done, so it's read out once.
+    await forget("isin:INFZ90K01LQ6", "isin:INFZ90K01BA1");
+    await readPaused("INFZ90K01BA1");
+    await liquidRow.getByText("Confirmed", { exact: true }).waitFor();
+    assert.equal(await matched.count(), 0);
+    await resume();
+    await holding(detailed.balanced).getByText("Confirmed", { exact: true }).waitFor();
+    await frame.getByText("2 funds matched from AMFI by their ISIN. Change any that look wrong.", { exact: true }).waitFor();
+    assert.equal(await matched.count(), 1);
+    // Leaving one out takes it out of the count.
+    await leaveOut(holding(detailed.balanced));
+    await frame.getByText(matchedOne, { exact: true }).waitFor();
+
+    // Not confirmed: AMFI's scheme quoted in dollars or with no currency, AMFI's name on another plan,
+    // and two AMFI schemes for one ISIN. Each is listed, and preselected when it's the only AMFI result.
+    await forget("isin:INFZ90K01FC8", "isin:INFZ90K01LQ6", "isin:INFZ90K01BA1", "isin:INFZ91T01CB6");
+    await tab.frames()[1].evaluate(() => {
+      const { listing, scheme } = window.host.make;
+      window.host.answers = {
+        INFZ90K01FC8: [listing("INFZ90K01FC8"), { ...scheme("INFZ90K01FC8"), currency: "USD" }],
+        INFZ90K01LQ6: [{ ...scheme("INFZ90K01LQ6"), currency: undefined }],
+        INFZ90K01BA1: [listing("INFZ90K01BA1"), { ...scheme("INFZ90K01BA1"), longName: "Fictiva Balanced Advantage Fund - Regular Plan - IDCW Reinvestment" }],
+        INFZ91T01CB6: [scheme("INFZ91T01CB6"), { ...scheme("INFZ91T01CB6"), symbol: "199999", canonicalSymbol: "199999", providerSymbol: "199999" }],
+      };
+    });
+    await readAgain();
+    for (const [name, preselect] of [[detailed.flexi, 1], [detailed.liquid, 0], [detailed.balanced, 1], [detailed.corporate, undefined]]) {
+      const section = holding(name);
+      await section.getByRole("radio").nth(preselect ?? 1).waitFor({ state: "attached" });
+      await undecided(section);
+      const checked = await section.getByRole("radio").evaluateAll((all) => all.map((radio) => radio.getAttribute("aria-checked") === "true"));
+      assert.deepEqual(checked.flatMap((on, i) => (on ? [i] : [])), preselect === undefined ? [] : [preselect], name);
+    }
+    assert.deepEqual(await resultBadges(holding(detailed.balanced)), [[], ["Regular warning-subtle", "IDCW secondary"]]);
+    assert.equal(await matched.count(), 0);
+
+    // With AMFI off, a saved asset priced from AMFI that the search finds by an identifier, here AMFI
+    // mapped to the ISIN, is still confirmed: Wealthfolio searches its assets either way. Not one it
+    // finds because its name has the ISIN, Yahoo's listing alone, or AMFI's scheme in the results of
+    // the name searched when the ISIN finds nothing.
+    await tab.frames()[1].evaluate(() => {
+      window.host.amfi = false;
+      window.host.answers = { "Testbridge Corporate Bond": [window.host.make.scheme("INFZ91T01CB6")] };
+      delete window.host.assets["yahoo-flexi"];
+      window.host.assets["amfi-flexi"] = {
+        symbol: "100123", exchangeMic: null, instrumentType: "EQUITY", name: "Fictiva Flexi Cap Fund - Direct Plan - Growth", providerId: "AMFI", aliases: ["INFZ90K01FC8"],
+      };
+      window.host.assets["amfi-balanced"] = {
+        symbol: "100456", exchangeMic: null, instrumentType: "EQUITY", name: "Scheme 100456, ISIN INFZ90K01BA1", providerId: "AMFI",
+      };
+    });
+    await readAgain();
+    await flexi.getByText("Confirmed", { exact: true }).waitFor();
+    await frame.getByText(matchedOne, { exact: true }).waitFor();
+    assert.equal(await flexi.getByText(/^On the statement: /).count(), 0, "the asset has the statement's name");
+    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ90K01FC8") ?? "null")?.assetId === "amfi-flexi");
+    for (const name of [detailed.liquid, detailed.balanced, detailed.corporate]) {
+      await holding(name).getByRole("radio").first().waitFor({ state: "attached" });
+      await undecided(holding(name));
+    }
+    await holding(detailed.corporate).getByText(/^Nothing found for the ISIN; showing results for "Testbridge Corporate Bond"\./).waitFor();
+    // Nor is a search typed in, even for the ISIN once AMFI is added.
+    await tab.frames()[1].evaluate(() => { window.host.amfi = true; });
+    await liquidSearch.fill("INFZ90K01LQ6");
+    await liquidSearch.press("Enter");
+    await liquidRow.locator("label").filter({ hasText: /AMFI$/ }).waitFor();
+    assert.ok(await amfiPicked());
+    await undecided(liquidRow);
+    assert.equal(await confirmed(), 2);
     await tab.frames()[1].evaluate((state) => {
       window.host.amfi = false;
+      window.host.answers = {};
       Object.assign(window.host, { ...state, storage: new Map(state.storage) });
     }, beforeAmfi);
 
@@ -1664,7 +1862,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail", { exact: true }).waitFor();
     assert.equal(await frame.getByText("Left out", { exact: true }).count(), 0);
     // An older remembered choice keeps no provider, so where its prices come from is unknown.
-    await frame.locator("section").filter({ hasText: "ISIN INFZ91T01NF4" }).getByText("Unknown source", { exact: true }).waitFor();
+    await holding("TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH").getByText("Unknown source", { exact: true }).waitFor();
     const choose = async (label, option) => {
       await frame.getByLabel(label).click();
       await frame.getByRole("option", { name: option }).waitFor();
@@ -1691,7 +1889,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
     await choose(/^Folio 1040012345/, "Leave out");
     const preview = frame.getByRole("button", { name: "Preview the snapshots" });
-    assert.equal(await frame.locator("section").count(), 16);
+    // 16 holdings: three confirmed before, the Index fund, Balanced Advantage and Corporate Bond funds, in rows.
+    assert.equal(await frame.locator("section").count(), 13);
+    assert.deepEqual(
+      await rows.evaluateAll((all) => all.map((row) => row.querySelector("button").textContent)),
+      ["TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH", detailed.balanced, detailed.corporate].map((name) => `Change the fund for ${name}`),
+    );
     // The Holdings card recommends AMFI the same way while a fund's search finds no AMFI result.
     const holdingsIntro = /^Confirm the Wealthfolio asset for each holding\./;
     await amfiNoteShown(holdingsIntro);
@@ -1700,13 +1903,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const headings = await frame.locator("section h3").evaluateAll((all) => all.map((h) =>
       [h.textContent, [...h.parentElement.querySelectorAll("[data-slot=badge]")].map((b) => `${b.textContent} ${b.dataset.variant}`)]));
     assert.deepEqual(headings.filter(([, b]) => b.length), [
-      ["TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH", ["Direct secondary", "Growth secondary"]],
       ["Fictiva Flexi Cap Fund - Direct Plan - Growth", ["Direct secondary", "Growth secondary"]],
       ["Fictiva Liquid Fund - Direct Plan - Growth", ["Direct secondary", "Growth secondary"]],
-      ["Fictiva Balanced Advantage Fund - Direct Plan - IDCW Reinvestment", ["Direct secondary", "IDCW secondary"]],
-      ["Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout", ["Regular secondary", "IDCW secondary"]],
     ]);
-    const bondSection = frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" });
+    const bondSection = holding("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31");
     const bondSearch = bondSection.getByRole("textbox", { name: /^Search for / });
     await bondSearch.fill("Fictiva Flexi Cap");
     await bondSearch.press("Enter");
@@ -1723,36 +1923,39 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await bondSection.getByRole("button", { name: "Use this bond" }).click();
     await bondSection.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(bondSection), ["Confirmed success-subtle"]);
-    await namedFor(bondSection, (bond) => [["button", `Change the bond for ${bond}`]]);
+    await namedFor(bondSection, () => [["button", "Change the bond for FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31"]]);
     await bondSection.getByRole("button", { name: /^Change the / }).click();
     await bondSearch.fill("INEZ91A07012");
     await bondSearch.press("Enter");
     await bondSection.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
     assert.equal(await outcome(bondSection).getAttribute("aria-live"), "polite");
     assert.match(await outcome(bondSection).textContent(), /^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/);
-    for (const section of await frame.locator("section").all()) {
+    // Each holding chosen for leaves the sections for the rows.
+    for (let open = await frame.locator("section").count(); open > 0; open--) {
+      const section = frame.locator("section").first();
+      const item = holding(await section.locator("h3").textContent());
       if (await section.getByText("PLACEHOLDER PHARMA LIMITED").count()) {
         await section.getByRole("button", { name: "Leave this share out" }).click();
+        await item.getByText("Left out", { exact: true }).waitFor();
         continue;
       }
       const use = section.getByRole("button", { name: /^Use this (fund|share|bond) for / });
       const nothing = section.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/);
-      await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).or(nothing).first().waitFor();
-      if (await section.getByText("Confirmed", { exact: true }).count()) continue;
+      await section.getByRole("radio").first().or(nothing).first().waitFor();
       // Bonds the search can't find use the statement's prices; the one it finds is used as found.
       if (await nothing.count()) {
         await section.getByRole("button", { name: "Use the statement's prices" }).press("Enter");
-        await focused(section.getByRole("button", { name: /^Change the / }), "Use the statement's prices on the Holdings card");
+        await focused(item.getByRole("button", { name: /^Change the / }), "Use the statement's prices on the Holdings card");
       } else {
         if (await use.isDisabled()) await section.getByRole("radio").first().click();
         await use.click();
       }
-      await section.getByText("Confirmed", { exact: true }).waitFor();
+      await item.getByText("Confirmed", { exact: true }).waitFor();
     }
     await noAmfiNote();
     // Leaving out the only qualifying Holdings fund removes the note too; restore its choice after.
     // With the keyboard, each control's replacement in the holding's section takes the focus.
-    const holdingsFund = frame.locator("section").filter({ hasText: "ISIN INFZ90K01NE8" });
+    const holdingsFund = holding("FICTIVA NIFTY 50 ETF");
     await holdingsFund.getByRole("button", { name: /^Change the / }).press("Enter");
     await focused(holdingsFund.getByRole("textbox", { name: /^Search for / }), "Change on the Holdings card");
     await amfiNoteShown(holdingsIntro);
@@ -1767,8 +1970,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await holdingsFund.getByText("Confirmed", { exact: true }).waitFor();
     await focused(holdingsFund.getByRole("button", { name: /^Change the / }), "Use this fund on the Holdings card");
     await noAmfiNote();
-    await statementPriced(frame.locator("section").filter({ hasText: "ISIN INEZ91A07012" }), "INEZ91A07012", "BOND");
-    await frame.locator("section").filter({ hasText: "ISIN INEZ93A08016" }).getByText("Democorp Infra 7.60% 2033").waitFor();
+    await statementPriced(bondSection, "INEZ91A07012", "BOND");
+    await holding("DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33").getByText("Democorp Infra 7.60% 2033").waitFor();
 
     // A remembered demat account that doesn't track holdings, NOT_SET included, is ignored, and its
     // row says why. It needs choosing again, even to go with the statement's account.
@@ -1970,7 +2173,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // On the Holdings card too, a result or a confirmed share quoted in another currency has a warning
     // badge with its currency and a line saying so, and so has its row in the snapshot preview. A result
     // in rupees, the other holdings and their rows say nothing about currency.
-    const democorpShare = frame.locator("section").filter({ hasText: "ISIN INEZ90C01021" });
+    const democorpShare = holding("DEMOCORP BANK LIMITED");
     const democorpSearch = democorpShare.getByRole("textbox", { name: /^Search for / });
     await democorpShare.getByRole("button", { name: /^Change the / }).click();
     await democorpSearch.fill("Democorp Bank");
@@ -2264,7 +2467,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await flexiRow.getByText(/^(An earlier import|Leaving this row out)/).count(), 0);
 
     // Leaving a still-listed fund out keeps both its units and the earlier import's provenance.
-    await leaveOut(frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" }));
+    await leaveOut(holding(detailed.liquid));
     await preview.click();
     await folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" }).getByText("Kept", { exact: true }).waitFor();
     await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
@@ -2315,7 +2518,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // A resolved choice still supplies its symbol when its profile has none, even when the display
     // code matches another asset's symbol. Restore the remembered choice before the next read.
     const shareChoiceBefore = (await storage())["isin:INEZ90A01017"];
-    const shareChoice = frame.locator("section").filter({ hasText: "ISIN INEZ90A01017" });
+    const shareChoice = holding("FICTIVA POWER AND LIGHT LIMITED");
     await shareChoice.getByRole("button", { name: /^Change the / }).click();
     await shareChoice.getByRole("button", { name: /^Use this share for / }).click();
     await hosted(() => {
@@ -2415,7 +2618,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await preview.click();
     const sharesRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90B01015" });
     await sharesRow.getByText(priced, { exact: true }).waitFor();
-    const manualShare = frame.locator("section").filter({ hasText: "ISIN INEZ90B01015" });
+    const manualShare = holding("SAMPLEWORKS TECHNOLOGIES LIMITED");
     await manualShare.getByRole("button", { name: /^Change the / }).click();
     await manualShare.getByRole("button", { name: "Use this share" }).click();
     await manualShare.getByText("Confirmed", { exact: true }).waitFor();
@@ -2477,7 +2680,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I, NPS, PRAN XXXXXXXX9001: No units on the statement.", { exact: true }).waitFor({ timeout: 180_000 });
-    const npsSection = frame.locator("section").filter({ hasText: scheme });
+    const npsSection = holding(scheme);
     await npsSection.getByText(/^No ISIN on the statement, and nothing found for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
     // A card without funds never recommends AMFI.
     await noAmfiNote();
@@ -2781,8 +2984,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.failProfileIds = ["pension-g-009"];
     });
     await readHoldingsAgain();
-    for (const section of await frame.locator("section").all()) {
-      await section.getByRole("button", { name: /^Use the statement's prices for / }).click();
+    for (let open = await frame.locator("section").count(); open > 0; open--) {
+      await frame.locator("section").first().getByRole("button", { name: /^Use the statement's prices for / }).click();
+      await frame.locator("section").nth(open - 1).waitFor({ state: "detached" });
     }
     await choose("All of this statement", "Fund folios (INR)");
     await choose(/^NSDL Demat Account 1, FAILURE TEST BROKER/, "Demat (INR)");
@@ -2859,7 +3063,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.failProfileIds = ["fund-priced-014"];
     }, corporateFund);
     await readHoldingsAgain();
-    const corporateSection = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
+    const corporateSection = holding(corporate);
     await corporateSection.getByText("Symbol 0P0000TBCB · Exchange XBOM · Type MUTUALFUND · Currency INR", { exact: true }).waitFor({ state: "attached" });
     await corporateSection.getByText("FAKE", { exact: true }).waitFor();
     await corporateSection.getByRole("button", { name: /^Change the / }).click();
@@ -2867,18 +3071,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await corporateSection.getByRole("radio").first().waitFor({ state: "attached" });
     await corporateSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
-    const giltSection = frame.locator("section").filter({ hasText: gilt });
+    const giltSection = holding(gilt);
     await giltSection.getByText("No ISIN printed", { exact: true }).waitFor();
     await giltSection.getByText(`No ISIN on the statement, and nothing found for "Testbridge Gilt". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
     await giltSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await statementPriced(giltSection, "MF-KFINTECH-TGLDG", "MUTUALFUND");
-    for (const section of await frame.locator("section").all()) {
-      await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).first().waitFor();
-      if (await section.getByText("Confirmed", { exact: true }).count()) continue;
-      await section.getByRole("radio").first().click();
-      await section.getByRole("button", { name: "Use this fund" }).click();
-      await section.getByText("Confirmed", { exact: true }).waitFor();
-    }
+    await useFirstResults();
     await choose("All of this statement", "Fund folios (INR)");
     await preview.click();
     await folios.getByRole("row").filter({ hasText: corporate }).getByText(priced, { exact: true }).waitFor();
@@ -3036,7 +3234,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 30-Apr-2025: 1 demat account, 0 folios, 2 holdings.").waitFor({ timeout: 180_000 });
     // With an option but no plan on the statement, only the differing option warns.
-    const optionOnlySection = frame.locator("section").filter({ hasText: "PRETEND SMALL CAP FUND - GROWTH" });
+    const optionOnlySection = holding("PRETEND SMALL CAP FUND - GROWTH");
     assert.deepEqual(await nameBadges(optionOnlySection), ["Growth secondary"]);
     await optionOnlySection.getByRole("textbox", { name: /^Search for / }).fill("Pretend Small Cap");
     await optionOnlySection.getByRole("textbox", { name: /^Search for / }).press("Enter");
@@ -3052,7 +3250,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await optionOnlySection.getByText("Left out", { exact: true }).waitFor();
     await hosted((smallCap) => { window.host.depositoryAccounts[0].mutual_funds[0].name = smallCap; }, smallCap);
     await readAgain();
-    const textilesSection = frame.locator("section").filter({ hasText: textiles });
+    const textilesSection = holding(textiles);
     await textilesSection.getByText("Fund INEZ94A01017").waitFor();
     assert.equal(await textilesSection.getByRole("button", { name: "Use this share" }).isDisabled(), false);
     // A share's results have no plan or option badges, even when their names give them.
@@ -3067,7 +3265,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await textilesSection.getByRole("button", { name: /^Change the / }).click();
     await textilesSection.getByRole("button", { name: "Use the statement's prices" }).click();
     await statementPriced(textilesSection, "INEZ94A01017", "EQUITY");
-    const smallCapSection = frame.locator("section").filter({ hasText: smallCap });
+    const smallCapSection = holding(smallCap);
     await smallCapSection.getByText(`Nothing found for the ISIN or for "PRETEND SMALL CAP". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
     // With no option on the statement, a result's option is no warning; another plan is.
     assert.deepEqual(await nameBadges(smallCapSection), ["Direct secondary"]);
@@ -3127,7 +3325,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.locator("section").filter({ hasText: "ISIN INFZ91T01GR3" }).locator("h3").textContent(), "TESTBRIDGE GILT FUND");
     const cdslHeadings = await frame.locator("section h3").allTextContents();
     assert.ok(cdslHeadings.includes("TESTBRIDGE GILT FUND") && cdslHeadings.every((h) => !/[\x00-\x1f\x7f#]/.test(h)), cdslHeadings.join(" | "));
-    const cutSection = frame.locator("section").filter({ hasText: "ISIN INFZ90K01GS2" });
+    const cutSection = holding("FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW");
     assert.equal(
       await cutSection.locator("h3").textContent(),
       "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW",
@@ -3141,7 +3339,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await cutSection.getByRole("button", { name: "Use this fund" }).click();
     await cutSection.getByText("Confirmed", { exact: true }).waitFor();
     assert.deepEqual(await choiceBadges(cutSection), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW warning-subtle"]);
-    assert.deepEqual(await nameBadges(cutSection), ["Direct secondary", "Growth secondary"]);
     await hosted((kept) => {
       window.host.depositoryAccounts = kept.accounts;
       window.host.statementDate = kept.date;
@@ -3156,11 +3353,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
-    const detailedCorporate = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
+    const detailedCorporate = holding(detailed.corporate);
     await detailedCorporate.getByText("Confirmed", { exact: true }).waitFor();
     await detailedCorporate.getByText("Symbol 0P0000TBCB · Exchange XBOM · Type MUTUALFUND · Currency INR", { exact: true }).waitFor({ state: "attached" });
     assert.equal(await frame.getByRole("button", { name: "Use the statement's prices" }).count(), 0);
-    await frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" }).getByText("Confirmed", { exact: true }).waitFor();
+    await holding(detailed.flexi).getByText("Confirmed", { exact: true }).waitFor();
     // Its search doesn't offer the asset priced from statements, whether by ISIN or by name.
     const withheld = "The asset that holdings imports price from statements for this fund isn't listed: detailed imports don't use the statement's prices.";
     await detailedCorporate.getByRole("button", { name: /^Change the / }).click();
@@ -3228,14 +3425,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.locator("#cas-password").fill("ABCDE1234F");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText(/^No account tracks holdings\. To save snapshots,/).waitFor({ timeout: 180_000 });
-    assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: balancedName })), ["Direct secondary", "IDCW secondary"]);
-    for (const section of await frame.locator("section").all()) {
-      await section.getByText("Confirmed", { exact: true }).or(section.getByRole("radio").first()).first().waitFor();
-      if (await section.getByText("Confirmed", { exact: true }).count()) continue;
-      await section.getByRole("radio").first().click();
-      await section.getByRole("button", { name: /^Use this / }).click();
-      await section.getByText("Confirmed", { exact: true }).waitFor();
-    }
+    // Confirmed before, so it's a row, without the statement name's badges (tests/fund-name.test.mjs reads them).
+    await holding(balancedName).getByText("Confirmed", { exact: true }).waitFor();
+    await useFirstResults();
     assert.equal(await preview.isDisabled(), true);
     await frame.getByText("No account tracks holdings, so there's nowhere to save a snapshot.", { exact: true }).waitFor();
     const accountData = () => hosted(() => JSON.stringify({
@@ -3322,7 +3514,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await setAccountList(beforeCheck);
 
     // A summary import creates an AMFI fund without an exchange. Searching its ISIN then finds
-    // that asset, even if automatic updates have since been turned off.
+    // that asset, even if automatic updates have since been turned off. Every fund's ISIN finds one
+    // AMFI scheme, so each is confirmed without a click, on the Holdings card too.
     await hosted(() => {
       window.host.providers = "";
       window.host.storage.clear();
@@ -3338,25 +3531,26 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readHoldingsAgain();
     await choose("All of this statement", "Fund folios (INR)");
     // With AMFI off, the banner says so, and the Holdings card doesn't. Once Check again finds AMFI
-    // on, the card's funds are searched again and find AMFI's schemes.
+    // on, the card's funds are searched again, find AMFI's schemes and are confirmed without a click.
     for (const section of await frame.locator("section").all()) await section.getByRole("radio").first().waitFor({ state: "attached" });
     await noAmfiNote();
     assert.equal(await frame.locator("section").getByText("AMFI", { exact: true }).count(), 0);
+    assert.equal(await frame.getByText(/ matched from AMFI /).count(), 0);
     await hosted(() => { window.host.amfi = true; });
     await checkAgain.click();
     await amfiBanner.waitFor({ state: "detached" });
-    const summaryLiquid = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
-    const schemeCodes = [];
-    for (const section of await frame.locator("section").all()) {
-      await section.getByRole("radio").first().waitFor({ state: "attached" });
-      const amfiLabel = await section.locator("label").filter({ hasText: /AMFI$/ }).textContent();
-      schemeCodes.push(amfiLabel.match(/^Scheme (\d{6})/)[1]);
-      if (await section.getByText("ISIN INFZ90K01LQ6", { exact: true }).count()) continue;
-      await section.getByRole("button", { name: /^Leave this fund out for / }).click();
-    }
+    const summaryLiquid = holding(liquidName);
+    const summaryOthers = [flexiName, balancedName, corporate, gilt, "Testbridge Fixed Term Plan - Series 12 - Direct Plan - Growth"];
+    await frame.getByText("6 funds matched from AMFI by their ISIN. Change any that look wrong.", { exact: true }).waitFor();
+    assert.equal(await frame.locator("section").count(), 0);
+    const schemeCodes = await rows.evaluateAll((all) => all.map((row) => row.textContent.match(/Scheme (\d{6})/)[1]));
+    assert.equal(schemeCodes.length, 6);
     assert.equal(new Set(schemeCodes).size, schemeCodes.length, "different funds have different AMFI scheme codes");
-    assert.equal(await summaryLiquid.getByRole("radio").nth(1).getAttribute("aria-checked"), "true");
-    await summaryLiquid.getByRole("button", { name: /^Use this fund for / }).click();
+    const leaveOutOthersThanLiquid = async () => {
+      for (const name of summaryOthers) await leaveOut(holding(name));
+    };
+    await leaveOutOthersThanLiquid();
+    await frame.getByText("1 fund matched from AMFI by its ISIN. Change it if it looks wrong.", { exact: true }).waitFor();
     const summaryAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     await preview.click();
     await frame.getByRole("button", { name: "Save 1 snapshot", exact: true }).click();
@@ -3387,10 +3581,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Remembered, it's read again: a remembered choice doesn't keep the pricing mode.
     await summaryLiquid.getByText("Priced by hand", { exact: true }).waitFor();
     assert.equal(await summaryLiquid.getByText("AMFI", { exact: true }).count(), 0);
-    for (const section of await frame.locator("section").all()) {
-      if (await section.getByText("ISIN INFZ90K01LQ6", { exact: true }).count()) continue;
-      await section.getByRole("button", { name: /^Leave this fund out for / }).click();
-    }
+    await leaveOutOthersThanLiquid();
     await preview.click();
     await frame.getByText("Priced by hand: saving also saves the statement's price as its price on this date.", { exact: true }).waitFor();
 
@@ -3402,11 +3593,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       `${liquidName}, ${liquidFolio}: It has no units but a value of ₹35799.22, so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.`,
       { exact: true },
     ).waitFor();
-    await summaryLiquid.getByText("ISIN INFZ90K01LQ6 · a line may have been misread, so the import leaves its holding as it is", { exact: true }).waitFor();
-    for (const section of await frame.locator("section").all()) {
-      if (await section.getByText(/^ISIN INFZ90K01LQ6\b/).count()) continue;
-      await section.getByRole("button", { name: /^Leave this fund out for / }).click();
-    }
+    // Its row says so, as its section does.
+    await summaryLiquid.getByText(/(^|· )[Aa] line may have been misread, so the import leaves its holding as it is$/).waitFor();
+    await leaveOutOthersThanLiquid();
     await preview.click();
     // The account's AMFI asset, under its own name.
     const heldBackNote = `Its line in ${liquidFolio} may have been misread, so this import leaves it as it is: its units, cost and price stay. Check it against the PDF.`;

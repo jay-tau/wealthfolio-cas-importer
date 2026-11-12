@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { fundName, fundQuery, mayBeCut, planAndOption, readableName } from "../src/lib/fund-name.ts";
+import { differs, fundName, fundQuery, mayBeCut, planAndOption, readableName } from "../src/lib/fund-name.ts";
 
 test("detailed CAMS and KFintech schemes keep their search names", async () => {
   const data = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
@@ -683,4 +683,14 @@ test("reads a shorter or longer name's last word, or one not marked as cut, as b
     // Only a fund in a CDSL statement's CDSL demat account is marked as cut.
     assert.deepEqual(planAndOption(printed(100, end)), {}, end);
   }
+});
+
+test("a plan or option differs only when both names give it", () => {
+  const statement = { plan: "Direct", option: "Growth" };
+  assert.equal(differs({ plan: "Regular", option: "Growth" }, statement, "plan"), true);
+  assert.equal(differs({ plan: "Regular", option: "Growth" }, statement, "option"), false);
+  assert.equal(differs({ plan: "Direct", option: "IDCW" }, statement, "option"), true);
+  assert.equal(differs({}, statement, "plan"), false);
+  assert.equal(differs({ plan: "Regular" }, { option: "Growth" }, "plan"), false);
+  assert.equal(differs({ plan: "Regular" }, undefined, "plan"), false);
 });
