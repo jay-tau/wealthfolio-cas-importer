@@ -195,6 +195,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   for (const folio of data.folios) matchMergers(schemes.filter((s) => s.folio === folio));
   matchGifts(schemes);
   checkSegregated(schemes);
+  const ids = rowIds(schemes);
   for (const entry of schemes.flatMap((s) => s.entries)) {
     const target = entry.scheme.target;
     if (!entry.kind || entry.problem || entry.scheme.problem || !target) continue;
@@ -207,8 +208,8 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
           : buildRows(entry, target);
     if (typeof rows === "string") entry.problem = rows;
     else {
-      entry.rows = rows;
       if (entry.kind === "sell" && segregated(entry.scheme)) rows.note = [rows.note, SEGREGATED_PAYOUT].filter(Boolean).join(" ");
+      entry.rows = identify(rows, entry, ids.get(entry.scheme)![entry.index]);
     }
   }
   const fails = (entry: Entry) => !!(entry.problem || entry.scheme.problem || heldBack(entry.scheme));
@@ -728,6 +729,55 @@ function mergerGroup(accountId: string, out: Entry, into: Entry) {
   const folio = out.scheme.folio.folio.replace(/\s+/g, "");
   const key = [accountId, folio, out.row.date, fund(out.scheme), fund(into.scheme)].join("|");
   return `cas-importer-merger:${sha256(`cas-importer merger ${key}`)}`;
+}
+
+/**
+ * #5: each statement row's ID, the same on every statement that lists the row and different for
+ * every other row: a hash of its folio, day, units and amount, and how many equal transaction rows
+ * of the folio come before it. Charge and unsupported rows don't count: they make no activity to
+ * match. A day's rows are all on a statement or all off it, so that count holds. The fund
+ * is left out, as one statement can omit its ISIN or print another registrar code than another
+ * (see `mergerGroup`), and the confirmed fund can change; so is the fund house, whose printed name
+ * changes when it's renamed. Two funds' rows in one folio, or two fund houses' folios with the same
+ * number, are equal only with the same units and amount on one day: the count tells those apart,
+ * though statements that list them in another order can swap which equal activity each matches.
+ * casparser's type is left out too, as a later casparser can read the same row as another type.
+ */
+function rowIds(schemes: Scheme[]) {
+  const ids = new Map<Scheme, string[]>();
+  const counts = new Map<string, number>();
+  const value = (d: string | null) => (d === null ? "" : format(dec(d)));
+  for (const state of schemes) {
+    const { folio, scheme } = state;
+    ids.set(state, scheme.transactions.map((row) => {
+      const key = [folio.folio.replace(/\s+/g, ""), row.date, value(row.units), value(row.amount)].join("|");
+      const count = counts.get(key) ?? 0;
+      if (KINDS[row.type]) counts.set(key, count + 1);
+      return sha256(`cas-importer row ${key}|${count}`);
+    }));
+  }
+  return ids;
+}
+
+/** A PAN: five letters, four digits and a letter. */
+const PAN = /\b[A-Z]{5}\d{4}[A-Z]\b/gi;
+
+/**
+ * The statement row's ID on each activity it makes: its transaction, the transaction's cash and
+ * the bank's side of that, each with its own suffix, since Wealthfolio matches IDs per account.
+ * Each carries what the statement says about the row, without PANs, which Wealthfolio keeps with
+ * the activity.
+ */
+function identify(rows: NonNullable<Entry["rows"]>, entry: Entry, id: string): NonNullable<Entry["rows"]> {
+  const { folio, scheme } = entry.scheme;
+  const { type, description } = entry.row;
+  const tag = <T extends ActivityImport | undefined>(row: T, suffix = "") =>
+    row && {
+      ...row,
+      sourceRecordId: `${id}${suffix}`,
+      metadata: { folio: folio.folio, registrar: scheme.rta, casparserType: type, description: description.replace(PAN, "[PAN]") },
+    };
+  return { ...rows, activity: tag(rows.activity), cash: tag(rows.cash, ":cash"), bank: tag(rows.bank, ":bank") };
 }
 
 function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"]> | string {

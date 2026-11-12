@@ -3,10 +3,14 @@ import { abs, add, cmp, dec, type Dec, div, format, isZero, neg } from "./decima
 import type { FundAsset, MappedTransaction, Mapping } from "./mapping.ts";
 import type { CasData, CasFolio, CasScheme } from "./types.ts";
 
-// Which mapped transactions the import sends. Each row is compared with the account's
-// activities on the import key's fields, and each activity matches one row at most.
-// Wealthfolio's checkImport can't count copies: a duplicate row imported with "Import anyway"
-// is stored without a duplicate key and isn't found by later checks. Before Wealthfolio 3.12.0,
+// Which mapped transactions the import sends. Each row carries its statement row's ID (#5) and
+// matches the activity the add-on imported with that ID into its account, whatever its values, as
+// Wealthfolio 3.13.0's import does. Otherwise it's compared with the account's activities that have
+// no ID from the add-on, on the import key's fields: imports from before the IDs, and activities
+// entered by hand. Each activity matches one row at most. Wealthfolio's checkImport can't count
+// copies among those: a duplicate row imported with "Import anyway" is stored without a duplicate
+// key and isn't found by later checks. Wealthfolio before 3.13.0 drops the IDs, so there two rows
+// with equal values are duplicates too. Before Wealthfolio 3.12.0,
 // checkImport also missed a trade that an earlier import saved when that import created the
 // fund: the import keyed the trade by symbol and exchange, and checkImport keyed it by the
 // asset's ID. A merger's conversion rows also go by their direction and group, as Wealthfolio
@@ -214,18 +218,39 @@ function activityIdentity(a: ActivityDetails, funds: FundRefs) {
   return fund === undefined ? undefined : identity(a.accountId, keyType(a.activityType, a.subtype, groupOf(a)), a.date, fund, a);
 }
 
-/** Wealthfolio's activities by identity. */
+/** Wealthfolio stores an add-on's row IDs behind `addon:<the manifest's id>:`. */
+export const RECORD_PREFIX = "addon:cas-importer:";
+
+/** The row ID the add-on imported an activity with, if any. */
+const recordOf = (a: ActivityDetails) =>
+  a.sourceRecordId?.startsWith(RECORD_PREFIX) ? a.sourceRecordId.slice(RECORD_PREFIX.length) : undefined;
+
+const recordKey = (accountId: string, id: string) => `${accountId}|${id}`;
+
+/**
+ * Wealthfolio's activities: those the add-on imported with row IDs by account and ID in `records`,
+ * and the others by identity in `index`. A row with an ID matches the first only by its ID.
+ */
 export function indexActivities(existing: ActivityDetails[], funds: FundRefs) {
   const index = new Map<string, string[]>();
+  const records = new Map<string, string[]>();
+  const add = (map: Map<string, string[]>, key: string, id: string) => map.set(key, [...(map.get(key) ?? []), id]);
   for (const activity of existing) {
+    const record = recordOf(activity);
+    if (record) {
+      add(records, recordKey(activity.accountId, record), activity.id);
+      continue;
+    }
     const key = activityIdentity(activity, funds);
-    if (key === undefined) continue;
-    index.set(key, [...(index.get(key) ?? []), activity.id]);
+    if (key !== undefined) add(index, key, activity.id);
   }
   return {
-    /** Whether Wealthfolio has an activity equal to this row; for a cash row, under either type. */
-    has: (row: ActivityImport) => cashIdentities(row).some(({ key }) => index.has(key)),
+    /** Whether Wealthfolio has this row, by its ID or as an activity equal to it; for a cash row, under either type. */
+    has: (row: ActivityImport) =>
+      (!!row.sourceRecordId && records.has(recordKey(row.accountId, row.sourceRecordId))) ||
+      cashIdentities(row).some(({ key }) => index.has(key)),
     index,
+    records,
   };
 }
 
@@ -241,8 +266,10 @@ export function planImport(
   /** Wealthfolio's timezone setting, from `engineTimeZone`: the day it counts a hand-entered activity on. */
   timeZone = "UTC",
 ): PlannedTransaction[] {
-  const available = indexActivities(existing, funds).index;
+  const { index: available, records } = indexActivities(existing, funds);
   const byId = new Map(existing.map((a) => [a.id, a]));
+  // Wealthfolio 3.13.0 and newer return the rows' IDs; older versions drop them.
+  const keepsIds = checked.some((r) => r?.sourceRecordId);
   // Stored group rows can make a new conversion fail the whole import.
   const groups = new Set(existing.flatMap((a) => groupOf(a) ?? []));
   const seen = new Map<string, number>();
@@ -255,8 +282,12 @@ export function planImport(
       // bank account was chosen; the bank's side never does: its deposits and withdrawals are the
       // bank's own rows.
       const keys = activity === transaction.cash ? cashIdentities(activity) : [{ key: rowIdentity(activity), type: undefined }];
+      // Rows with different IDs aren't duplicates of each other where Wealthfolio keeps the IDs.
+      const own = keepsIds && activity.sourceRecordId ? `record:${recordKey(activity.accountId, activity.sourceRecordId)}` : keys[0].key;
+      const recorded = settled || !activity.sourceRecordId ? undefined : records.get(recordKey(activity.accountId, activity.sourceRecordId))?.shift();
+      const recordedType = recorded && byId.get(recorded)!.activityType;
       const deferCash = activity === transaction.cash && !tradeFound;
-      const match = settled || deferCash ? undefined : keys.find(({ key }) => available.get(key)?.length);
+      const match = recorded || settled || deferCash ? undefined : keys.find(({ key }) => available.get(key)?.length);
       // Keep untouched imported dates; gifts and segregated credits entered or edited in the form must match their engine day.
       const ids = match && available.get(match.key)!;
       const at = ids?.findIndex((id) => !activity.symbol?.trim() ||
@@ -266,14 +297,14 @@ export function planImport(
         activity,
         errors: messages(result?.errors),
         warnings: messages(result?.warnings, "_duplicate"),
-        existingId: at < 0 ? undefined : ids!.splice(at, 1)[0],
-        existingType: match?.type,
-        repeatsLine: settled ? undefined : seen.get(keys[0].key),
+        existingId: recorded ?? (at < 0 ? undefined : ids!.splice(at, 1)[0]),
+        existingType: recordedType ? (recordedType === activity.activityType ? undefined : recordedType) : match?.type,
+        repeatsLine: settled ? undefined : seen.get(own),
         flagged: !!(result?.duplicateOfId || result?.duplicateOfLineNumber),
       };
       if (!result) row.errors.push("Wealthfolio didn't check this row.");
       else if (!result.isValid && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
-      if (!settled && !seen.has(keys[0].key)) seen.set(keys[0].key, activity.lineNumber ?? position);
+      if (!settled && !seen.has(own)) seen.set(own, activity.lineNumber ?? position);
       return row;
     };
     const rows = [plan(transaction.activity)];
@@ -298,6 +329,8 @@ export function planImport(
     }
   }
   const takeAvailable = (row: PlannedRow) => {
+    // A row found by its ID keeps that activity.
+    if (row.existingId) return;
     const keys = cashIdentities(row.activity);
     const match = keys.find(({ key }) => available.get(key)?.length);
     row.existingId = match && available.get(match.key)!.shift();
@@ -384,9 +417,10 @@ export function planImport(
     for (const r of t.rows) {
       if ((!segregation && !r.activity.activityType.startsWith("TRANSFER_")) || !r.activity.symbol?.trim()) continue;
       if (segregation && r.existingId) continue;
-      // A UTC match reserved on another day must not hide this day's hand-entered row.
-      const found = likely(r.activity, segregation).filter((a) =>
-        available.get(activityIdentity(a, funds)!)?.includes(a.id) || day(a.date) !== day(r.activity.date));
+      // A UTC match reserved on another day must not hide this day's hand-entered row. An activity
+      // with an ID from the add-on is an import of a statement row, not an entry by hand.
+      const found = likely(r.activity, segregation).filter((a) => !recordOf(a) &&
+        (available.get(activityIdentity(a, funds)!)?.includes(a.id) || day(a.date) !== day(r.activity.date)));
       if (found.length) t.problem ??= handEntered(found, segregation);
     }
   }
@@ -535,13 +569,18 @@ export async function linkBankRow(activities: LinkApi, t: PlannedTransaction, ba
   const when = `on ${day(bankRow.date)}`;
   let fundId: string;
   try {
-    // Wealthfolio accepts this key even though ActivityCreate omits it; equal confirmed bank rows need distinct cash.
+    // create bypasses the import bridge, so namespace the fields here. ActivityCreate omits
+    // sourceRecordId and idempotencyKey, but Wealthfolio keeps both.
+    const sourceRecordId = `${RECORD_PREFIX}${cash.sourceRecordId}`;
     const transfer = {
       accountId: cash.accountId,
       activityType: cash.activityType,
       activityDate: String(cash.date),
       amount: cash.amount,
       currency: cash.currency,
+      sourceRecordId,
+      metadata: { addons: { "cas-importer": cash.metadata } },
+      // Keep retries from duplicating this bank row's cash, including copies made with "Import anyway".
       idempotencyKey: `cas-importer-bank:${bankRow.id}`,
     };
     ({ id: fundId } = await activities.create(transfer));

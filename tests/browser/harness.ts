@@ -348,6 +348,9 @@ const stored = (row: ActivityImport, i: number) =>
     ...row,
     id: `activity-${host.activities.length + i}`,
     date: `${row.date}T00:00:00+00:00`,
+    // Wealthfolio 3.13.0 keeps an add-on's row ID behind the add-on's id, and its metadata under it.
+    sourceRecordId: row.sourceRecordId ? `addon:cas-importer:${row.sourceRecordId}` : undefined,
+    metadata: row.metadata ? { addons: { "cas-importer": row.metadata } } : undefined,
     // Wealthfolio finds or creates the row's asset by its symbol and exchange.
     assetId: row.symbol ? assetId({ symbol: row.symbol, exchangeMic: row.exchangeMic, instrumentType: row.instrumentType } as SnapshotHoldingInput) : "",
     assetSymbol: row.symbol ?? "",
@@ -566,7 +569,12 @@ const api = {
       };
     },
     create: async (activity: ActivityCreate) => {
-      const row = stored({ ...activity, date: String(activity.activityDate), symbol: "" } as unknown as ActivityImport, 0);
+      const row = {
+        ...stored({ ...activity, date: String(activity.activityDate), symbol: "" } as unknown as ActivityImport, 0),
+        // create receives stored fields directly, without the import bridge's namespace changes.
+        sourceRecordId: (activity as ActivityCreate & { sourceRecordId?: string }).sourceRecordId,
+        metadata: activity.metadata,
+      } as ActivityDetails;
       host.activities.push(row);
       return row;
     },

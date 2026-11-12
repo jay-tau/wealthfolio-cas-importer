@@ -219,10 +219,12 @@ export function Preview({
         />
         {count("duplicate") + count("existing") > 0 && (
           <p className="text-sm">
-            Transactions marked as duplicates are skipped unless you tick "Import anyway", for example for two equal
-            purchases on the same day. A fund conversion has no "Import anyway": Wealthfolio keeps one per merger. The
-            add-on compares each row with the account's activities, so a later import of this statement still finds
-            them.
+            Transactions marked as duplicates are skipped unless you tick "Import anyway". Each row the add-on imports
+            carries an ID from the statement, which later imports find it by, even after you edit it, so equal
+            transactions, such as two equal purchases on one day, each go in once. Activities without such an ID,
+            imported by an earlier version of the add-on or entered by hand, are compared by their values: tick "Import
+            anyway" for a transaction that isn't one of them. A fund conversion has no "Import anyway": Wealthfolio keeps
+            one per merger.
           </p>
         )}
         {/* Narrow padding and wrapping Cash keep Status visible with Extra large text in a 1440 px window. */}

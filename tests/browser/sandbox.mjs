@@ -409,19 +409,30 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       name: "Import anyway for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001.1470564, folio 91234567 / 12, transaction 1",
       exact: true,
     }).waitFor({ state: "attached" });
-    // Equal purchases of the same fund in two folios still have distinct transaction names.
+    // Equal purchases of the same fund in two folios have their own IDs: the other folio's are new
+    // and go in without "Import anyway". Then each has one, with a distinct name.
+    const beforeTwins = await tab.frames()[1].evaluate(() => window.host.activities.length);
     await tab.frames()[1].evaluate(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
     await readButton.press("Enter");
     await frame.getByText(/3 folios, 8 schemes, 83 rows\./).waitFor({ timeout: 180_000 });
     await focused(readButton, "Read statement");
     await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^\d+ new transactions?, 13 already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
     const twins = frame.getByRole("checkbox", { name: /^Import anyway for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001\.1470564,/ });
+    assert.equal(await twins.count(), 1);
+    await frame.getByRole("button", { name: /^Import \d+ activit(y|ies)$/ }).click();
+    await frame.getByText(/^Imported (\d+) of \1 activit(y|ies)/).waitFor();
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
     await twins.nth(1).waitFor({ state: "attached" });
     assert.equal(await twins.count(), 2);
     for (const name of await twins.evaluateAll((all) => all.map((box) => box.closest("label").textContent))) {
       assert.equal(await frame.getByRole("checkbox", { name, exact: true }).count(), 1, name);
     }
-    await tab.frames()[1].evaluate(() => { window.host.sharedIsin = ""; });
+    await tab.frames()[1].evaluate((length) => {
+      window.host.sharedIsin = "";
+      window.host.activities.length = length;
+    }, beforeTwins);
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
     await frame.getByRole("button", { name: "Preview the import" }).click();
