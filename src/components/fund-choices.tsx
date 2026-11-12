@@ -19,6 +19,7 @@ import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
 import { useFocusMove } from "../lib/focus";
 import { fundName, fundQuery, type PlanAndOption, planAndOption } from "../lib/fund-name";
+import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
 import { plural } from "../lib/plural";
 
@@ -164,6 +165,14 @@ function FundSearch({
   onNoAmfi: (noAmfi: boolean) => void;
 }) {
   const { isin, noun, statementAsset, statementSymbol } = item;
+  // A holding's own asset priced from statements is the statement's prices however it's picked, so
+  // the fund kept for detailed imports stays beside it.
+  const choiceOf = (result: SymbolSearchResult) =>
+    statementAsset && isStatementAsset(result, statementAsset.symbol) &&
+    instrumentType(result.quoteType) === instrumentType(statementAsset.instrumentType) &&
+    (result.currency || RUPEES) === statementAsset.quoteCcy
+      ? statementAsset
+      : toFund(result);
   // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing or isn't
   // printed, or what the user types is sent to market-data providers. A fund's name is searched
   // shorter, without a final "Fund" or the plan and option.
@@ -311,7 +320,7 @@ function FundSearch({
           className="grid gap-2"
         >
           {results.map((r, i) => {
-            const fund = toFund(r);
+            const fund = choiceOf(r);
             const currency = otherCurrency(fund.quoteCcy);
             return (
               <Label key={`${r.symbol} ${r.exchangeMic} ${i}`} className="flex items-center gap-2 font-normal">
@@ -329,7 +338,7 @@ function FundSearch({
         </RadioGroup>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" disabled={!result} onClick={() => result && onChoose(toFund(result))}>
+        <Button type="button" disabled={!result} onClick={() => result && onChoose(choiceOf(result))}>
           Use this {noun}
           {forItem}
         </Button>

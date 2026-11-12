@@ -214,8 +214,11 @@ account is offered, create one in Wealthfolio and choose Read statement again.
 
 A holding that no search result fits, including when the search finds only other funds or shares,
 can use the statement's prices instead. The add-on then creates an INR asset priced by hand, and the
-next statement finds it again. Its price comes from the statements you import and the prices you
-enter, not from market data:
+next statement finds it again. While it's priced by hand, with the same type and in INR, the holding's
+search can find it too, marked "priced from statements", and picking it there is choosing the
+statement's prices. A result of another type or currency stays as listed, including its currency
+warning. The asset priced from statements gets its price from the statements you import and the
+prices you enter, not from market data:
 
 - A fund or share has its ISIN as the symbol. A summary statement's fund without an ISIN goes by
   its registrar and scheme code: KFintech's `TONDG` is `MF-KFINTECH-TONDG`. A fund's type is sent
@@ -404,7 +407,8 @@ the later snapshot's prices.
   The asset confirmed for a bond is kept under its ISIN, and for an NPS scheme under a hash of its symbol.
   Choosing the statement's prices keeps the fund confirmed for detailed imports beside that choice.
   A detailed import's choices, leaving the fund out included, then change only that fund. A holdings
-  import's choice of a search result or leaving the holding out still replaces or forgets both.
+  import's choice of another search result or leaving the holding out still replaces or forgets both;
+  picking the result marked "priced from statements" is choosing the statement's prices.
 - Dated records of which holdings each holdings import added, with both their ISIN and
   registrar scheme code when available, or an NPS scheme's symbol, and the Wealthfolio asset's
   symbol, exchange and, when the import knew it, ID, keyed by a hash of the folio,
