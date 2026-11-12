@@ -1,9 +1,9 @@
-import type { ActivityDetails, SnapshotHoldingInput } from "@wealthfolio/addon-sdk";
+import type { ActivityDetails, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { mayBeCut } from "../lib/fund-name.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
 import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
-import { type CasData, type DepositoryData, isDepository, type Statement } from "./types.ts";
+import { type CasData, type CasScheme, type DepositoryData, isDepository, type Statement } from "./types.ts";
 
 // A summary or NSDL/CDSL statement's holdings → the snapshots saved to Wealthfolio accounts that
 // track holdings. Wealthfolio's snapshot is the account's whole state on its date, so each one
@@ -155,6 +155,20 @@ export function statementAsset(h: StatementHolding): ChosenAsset | undefined {
   const symbol = h.kind === "nps" ? h.code : (h.isin ?? (h.kind === "fund" ? registrarSymbol(h.rta, h.rtaCode) : undefined));
   if (!symbol) return undefined;
   return { symbol, quoteCcy: CURRENCY, instrumentType: TYPES[h.kind], name: h.name, manual: true, statementPrices: true };
+}
+
+/** The symbol `statementAsset` gives a holding of a detailed statement's fund. */
+export const statementSymbol = (scheme: Pick<CasScheme, "isin" | "rta" | "rta_code">) =>
+  scheme.isin ?? registrarSymbol(scheme.rta, scheme.rta_code);
+
+/**
+ * Whether a search result is the asset priced by hand under `symbol` that `statementAsset` creates
+ * and holdings imports find again: one Wealthfolio has, priced by hand, with no exchange.
+ */
+export function isStatementAsset(result: SymbolSearchResult, symbol: string) {
+  const mode = result as SymbolSearchResult & { pricingMode?: string | null; quoteMode?: string | null };
+  return !!result.existingAssetId && (mode.pricingMode ?? mode.quoteMode) === "MANUAL" &&
+    fundRef(result.canonicalSymbol || result.symbol, result.canonicalExchangeMic || result.exchangeMic) === fundRef(symbol);
 }
 
 /** Printed details, without the ones the statement leaves blank. */

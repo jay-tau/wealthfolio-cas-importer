@@ -2617,18 +2617,25 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // depository fund and share. The first save can't write one price and one asset's details.
     const corporate = "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout";
     const gilt = "Testbridge Gilt Fund - Direct Plan - Growth";
-    await hosted(() => {
+    // The Corporate Bond fund, as a detailed import confirmed it, which holdings imports share.
+    const corporateFund = {
+      symbol: "0P0000TBCB", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", providerId: "FAKE", providerSymbol: "0P0000TBCB.BO",
+      name: "Fund 0P0000TBCB",
+    };
+    await hosted((corporateFund) => {
       window.host.snapshots = {};
       window.host.held = {};
       window.host.summaryWithoutIsin = ["INFZ91T01GL6"];
       window.host.emptySearchQueries = ["Testbridge Gilt"];
-      window.host.storage.delete("isin:INFZ91T01CB6");
+      window.host.storage.set("isin:INFZ91T01CB6", JSON.stringify(corporateFund));
       Object.assign(window.host.assetIds, { INFZ91T01CB6: "fund-priced-014", "MF-KFINTECH-TGLDG": "fund-priced-015" });
       window.host.failQuoteIds = ["fund-priced-015"];
       window.host.failProfileIds = ["fund-priced-014"];
-    });
+    }, corporateFund);
     await readHoldingsAgain();
     const corporateSection = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
+    await corporateSection.getByText("(0P0000TBCB · XBOM · MUTUALFUND · INR)", { exact: true }).waitFor();
+    await corporateSection.getByRole("button", { name: /^Change the / }).click();
     await corporateSection.getByText(`Nothing found for the ISIN; showing results for "Testbridge Corporate Bond". These results can be other funds. Pick one with the statement's fund name, plan and option, use the statement's prices, or leave this fund out.`, { exact: true }).waitFor();
     await corporateSection.getByRole("radio").first().waitFor({ state: "attached" });
     await corporateSection.getByRole("button", { name: "Use the statement's prices" }).click();
@@ -2687,8 +2694,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       const a = firstFunds.assets[h.assetId] ?? Object.values(firstFunds.assets).find((a) => a.symbol === h.symbol && a.exchangeMic === (h.exchangeMic ?? null));
       assert.equal(a.metadata?.casStatement, undefined, h.symbol);
     }
-    // Remembered for the next holdings import: by ISIN, or by registrar and scheme code.
-    assert.equal(JSON.parse(firstFunds.storage["isin:INFZ91T01CB6"]).statementPrices, true);
+    // Remembered for the next holdings import: by ISIN, or by registrar and scheme code. The fund
+    // the detailed import confirmed stays beside it for detailed imports.
+    assert.deepEqual(JSON.parse(firstFunds.storage["isin:INFZ91T01CB6"]), {
+      symbol: "INFZ91T01CB6", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: corporate, statementPrices: true, transactions: corporateFund,
+    });
     assert.ok(Object.entries(firstFunds.storage).some(([key, value]) =>
       /^fund:[0-9a-f]{64}$/.test(key) && JSON.parse(value).symbol === "MF-KFINTECH-TGLDG" && JSON.parse(value).statementPrices));
 
@@ -2839,7 +2849,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.statementDate = kept.date;
     }, pretendStatement);
 
-    // A detailed statement searches for that fund again instead of using the asset priced from statements.
+    // A detailed statement keeps the fund confirmed for it instead of using the asset priced from statements.
     // This copy has no password, so it reads with the box empty, and Remember the password keeps the saved one.
     assert.equal(await remember.getAttribute("aria-checked"), "true");
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
@@ -2849,13 +2859,40 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
     const detailedCorporate = frame.locator("section").filter({ hasText: "ISIN INFZ91T01CB6" });
-    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).waitFor();
-    assert.equal(await detailedCorporate.getByRole("textbox", { name: /^Search for / }).inputValue(), "INFZ91T01CB6");
-    assert.equal(await detailedCorporate.getByText("Confirmed", { exact: true }).count(), 0);
+    await detailedCorporate.getByText("Confirmed", { exact: true }).waitFor();
+    await detailedCorporate.getByText("(0P0000TBCB · XBOM · MUTUALFUND · INR)", { exact: true }).waitFor();
     assert.equal(await frame.getByRole("button", { name: "Use the statement's prices" }).count(), 0);
     await frame.locator("section").filter({ hasText: "ISIN INFZ90K01FC8" }).getByText("Confirmed", { exact: true }).waitFor();
-    // Reading it changes nothing remembered for holdings imports.
-    assert.equal(JSON.parse((await storage())["isin:INFZ91T01CB6"]).statementPrices, true);
+    const corporateStored = async () => JSON.parse((await storage())["isin:INFZ91T01CB6"]);
+    // Its search doesn't offer the asset priced from statements, whether by ISIN or by name.
+    const withheld = "The asset that holdings imports price from statements for this fund isn't listed: detailed imports don't use the statement's prices.";
+    await detailedCorporate.getByRole("button", { name: /^Change the / }).click();
+    await detailedCorporate.getByText(withheld, { exact: true }).waitFor();
+    await detailedCorporate.getByText(`Nothing found for the ISIN or for "Testbridge Corporate Bond". Try another name or a ticker.`, { exact: true }).waitFor();
+    assert.equal(await detailedCorporate.getByRole("radio").count(), 0);
+    assert.equal(await detailedCorporate.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Corporate Bond");
+    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).fill("INFZ91T01CB6");
+    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).press("Enter");
+    await detailedCorporate.getByText(`Nothing found for the ISIN or for "Testbridge Corporate Bond". Try another name or a ticker.`, { exact: true }).waitFor();
+    await detailedCorporate.getByText(withheld, { exact: true }).waitFor();
+    // Leaving the fund out, or confirming one, changes only the fund kept for detailed imports.
+    await detailedCorporate.getByRole("button", { name: "Leave this fund out" }).click();
+    await detailedCorporate.getByText("Left out", { exact: true }).waitFor();
+    await tab.frames()[1].waitForFunction(() => !JSON.parse(window.host.storage.get("isin:INFZ91T01CB6")).transactions);
+    assert.deepEqual(await corporateStored(), { symbol: "INFZ91T01CB6", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: corporate, statementPrices: true });
+    await detailedCorporate.getByRole("button", { name: /^Choose a fund / }).click();
+    await detailedCorporate.getByText(withheld, { exact: true }).waitFor();
+    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).fill("0P0000TBCB");
+    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).press("Enter");
+    await detailedCorporate.getByRole("radio", { checked: true }).waitFor({ state: "attached" });
+    assert.equal(await detailedCorporate.getByText(withheld, { exact: true }).count(), 0);
+    await detailedCorporate.getByRole("button", { name: "Use this fund" }).click();
+    await detailedCorporate.getByText("Confirmed", { exact: true }).waitFor();
+    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ91T01CB6")).transactions);
+    const reconfirmed = await corporateStored();
+    assert.deepEqual([reconfirmed.symbol, reconfirmed.statementPrices, reconfirmed.transactions.symbol, reconfirmed.transactions.exchangeMic], [
+      "INFZ91T01CB6", true, "0P0000TBCB", "XBOM",
+    ]);
     await hosted(() => {
       window.host.summaryWithoutIsin = [];
       window.host.emptySearchQueries = [];

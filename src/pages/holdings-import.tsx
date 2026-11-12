@@ -660,7 +660,7 @@ export function HoldingsImport({
           onFund(key, choice);
         }}
         title="Holdings"
-        intro="Confirm the Wealthfolio asset for each holding. Holdings are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed. A holding that no result fits can use the statement's prices: the add-on creates an asset priced by hand, saves the statement's price on its date, and keeps the printed name, identifiers and details on the asset. Its price then changes only with the statements you import or the prices you enter, not with market data. The add-on remembers what you confirm for each ISIN or scheme, for detailed statements too, except the statement's prices, which detailed statements don't use."
+        intro="Confirm the Wealthfolio asset for each holding. Holdings are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed. A holding that no result fits can use the statement's prices: the add-on creates an asset priced by hand, saves the statement's price on its date, and keeps the printed name, identifiers and details on the asset. Its price then changes only with the statements you import or the prices you enter, not with market data. The add-on remembers what you confirm for each ISIN or scheme, for detailed statements too, except the statement's prices, which detailed statements don't use: they keep the fund confirmed for them."
       />
       <UnitsCheckCard
         checked={checked}

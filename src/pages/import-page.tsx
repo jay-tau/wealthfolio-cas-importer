@@ -38,6 +38,7 @@ import { StatementForm } from "../components/statement-form";
 import {
   bankKey,
   folioKey,
+  forgetFund,
   fundKey,
   investorKey,
   LEFT_OUT,
@@ -233,9 +234,10 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
         if (id) choices[key] = id;
       }),
       ...fundKeys.map(async (key) => {
-        const fund = await readFund(api.storage, key);
-        // A holdings import's asset priced from statements isn't for transactions: search for the fund again.
-        if (fund && !(isDetailed && fund.statementPrices)) funds[key] = { fund };
+        // Beside a holdings import's asset priced from statements, which isn't for transactions, the
+        // fund a detailed import confirmed; without one, the fund is searched for again.
+        const fund = await readFund(api.storage, key, isDetailed);
+        if (fund) funds[key] = { fund };
       }),
     ]);
     if (!loaded) return;
@@ -263,12 +265,14 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
 
   // Undefined (Change, or Choose a fund) keeps what's saved, so a reread restores it. Leaving a
   // fund out forgets it for every folio that shares the key; the left-out state isn't saved.
-  const chooseFund = (key: string, choice: FundChoice | undefined) => {
+  // `detailed` is for the Funds card: beside a holdings import's asset priced from statements, its
+  // choices change only the fund kept for detailed imports.
+  const chooseFund = (key: string, choice: FundChoice | undefined, detailed = false) => {
     setFundChoices((choices) => ({ ...choices, [key]: choice }));
     changed();
     if (!choice) return;
     choiceWrites.current = choiceWrites.current
-      .then(() => ("fund" in choice ? saveFund(api.storage, key, choice.fund) : api.storage.delete(key)))
+      .then(() => ("fund" in choice ? saveFund(api.storage, key, choice.fund, detailed) : forgetFund(api.storage, key, detailed)))
       .catch(() =>
         api.toast.error(
           "fund" in choice
@@ -450,7 +454,12 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
                 ignored={ignored}
                 onChange={chooseAccount}
               />
-              <FundChoicesCard ctx={ctx} items={fundItems(data)} choices={fundChoices} onChange={chooseFund} />
+              <FundChoicesCard
+                ctx={ctx}
+                items={fundItems(data)}
+                choices={fundChoices}
+                onChange={(key, choice) => chooseFund(key, choice, true)}
+              />
               <div className="flex flex-wrap items-center gap-3">
                 <Button type="button" disabled={undecided || bankUndecided || busy !== ""} onClick={() => void runPreview()}>
                   {busy === "preview" && <Spinner />}
