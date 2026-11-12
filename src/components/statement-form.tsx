@@ -1,16 +1,17 @@
 import type { AddonContext } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Checkbox, Input, Label, Spinner } from "@wealthfolio/ui";
-import { useEffect, useRef, useState } from "react";
+import { type RefCallback, useEffect, useRef, useState } from "react";
 import { CasError, CasParser } from "../cas/parser";
 import type { Statement } from "../cas/types";
 import { PASSWORD_SECRET } from "../lib/choices";
 import { useFocusReturn } from "../lib/focus";
 
-export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
+export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef }: {
   ctx: AddonContext;
   onClear: () => void;
   onRead: (data: Statement) => Promise<void>;
   disabled?: boolean;
+  fileRef?: RefCallback<HTMLInputElement>;
 }) {
   const parser = useRef<CasParser | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -106,6 +107,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false }: {
         <div className="grid gap-2">
           <Label htmlFor="cas-file">Statement PDF</Label>
           <Input
+            ref={locked ? undefined : fileRef}
             id="cas-file"
             type="file"
             accept="application/pdf,.pdf"

@@ -123,7 +123,7 @@ test("controls distinguish equal holding names and overlap contributions", () =>
     [Object.fromEntries(items.map((item) => [item.key, { fund: asset(first) }])), ["Change the share for"]],
     [Object.fromEntries(items.map((item) => [item.key, { leftOut: true }])), ["Choose a share for"]],
   ]) {
-    const card = renderToStaticMarkup(createElement(components.FundChoicesCard, { ctx: {}, items, choices }));
+    const card = renderToStaticMarkup(createElement(components.FundChoicesCard, { ctx: {}, items, choices, amfi: { status: "unknown", searches: 0 } }));
     const names = card.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").replaceAll("&#x27;", "'");
     for (const row of [1, 2]) {
       for (const control of controls) {
@@ -218,7 +218,7 @@ test("the Holdings card names CDSL demat funds without their fund house, short n
     "TESTBRIDGE GILT FUND",
   ]);
   for (const item of items) assert.equal(item.statementAsset?.name, item.name);
-  const props = { ctx: {}, items, choices: {} };
+  const props = { ctx: {}, items, choices: {}, amfi: { status: "unknown", searches: 0 } };
   assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.FundChoicesCard, props))));
   const card = text("FundChoicesCard", props);
   for (const isin of isins) assert.ok(card.includes(` ${named[isin]} `), isin);
@@ -231,7 +231,7 @@ test("the Holdings card names CDSL demat funds without their fund house, short n
   const priced = { ...fund.statementAsset, name: printed };
   const listed = { symbol: "0P0000FBAD", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Fictiva Balanced Advantage Dir Gr" };
   for (const [choice, shown] of [[priced, fund.name], [listed, listed.name]]) {
-    const confirmed = { ctx: {}, items: [fund], choices: { [fund.key]: { fund: choice } } };
+    const confirmed = { ctx: {}, items: [fund], choices: { [fund.key]: { fund: choice } }, amfi: { status: "unknown", searches: 0 } };
     assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.FundChoicesCard, confirmed))));
     assert.ok(text("FundChoicesCard", confirmed).includes(` Confirmed ${shown} Direct Growth (${choice.symbol} `), shown);
   }
@@ -244,7 +244,7 @@ test("the Funds card names a detailed statement's schemes without control charac
   scheme.scheme = `\u0002${name.replace(" - ", "\u0002 - ")}\u0002`;
   const items = components.fundItems(withoutClosed(withReadableNames(data)));
   assert.equal(items[0].name, name);
-  const props = { ctx: {}, items, choices: {} };
+  const props = { ctx: {}, items, choices: {}, amfi: { status: "unknown", searches: 0 } };
   assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.FundChoicesCard, props))));
   assert.ok(text("FundChoicesCard", props).includes(` ${name} `));
 });

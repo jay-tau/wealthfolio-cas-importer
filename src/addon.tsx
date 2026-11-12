@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { AddonContext, AddonEnableFunction } from '@wealthfolio/addon-sdk';
+import type { AddonContext, AddonEnableFunction, AddonRouteLocation } from '@wealthfolio/addon-sdk';
 import { ImportPage } from './pages/import-page';
 
 // The host owns a single React root per addon and mounts the route `component`
@@ -12,10 +12,11 @@ let addonCtx: AddonContext | undefined;
 // (`contributes.routes` + `contributes.links`), so the host renders navigation
 // without booting the addon; this component only runs when the route is first
 // visited. The QueryClientProvider reuses this addon's isolated cache across
-// route navigations; invalidations/refetches are bridged to the host.
-const AddonRoute = () => (
+// route navigations; invalidations/refetches are bridged to the host. The host passes `location`
+// again each time the route is shown, while this component stays mounted.
+const AddonRoute = ({ location }: { location: AddonRouteLocation }) => (
   <QueryClientProvider client={addonCtx!.api.query.getClient() as QueryClient}>
-    <ImportPage ctx={addonCtx!} />
+    <ImportPage ctx={addonCtx!} location={location} />
   </QueryClientProvider>
 );
 
