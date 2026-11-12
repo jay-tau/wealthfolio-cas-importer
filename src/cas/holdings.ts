@@ -1,4 +1,4 @@
-import type { ActivityDetails, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
+import type { ActivityDetails, MonetaryValue, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { mayBeCut } from "../lib/fund-name.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
@@ -413,6 +413,12 @@ export interface ExistingPosition {
   /** A split was recorded since the snapshot, so its units and cost predate it. */
   split?: boolean;
 }
+
+/** `ExistingPosition.cost` of a holding `snapshots.getByDate` returns: none, null or 0 means no cost. */
+export const existingCost = (costBasis: MonetaryValue | null | undefined) => {
+  const local = costBasis?.local;
+  return local != null && Number(local) !== 0 ? String(local) : null;
+};
 
 export interface ExistingSnapshot {
   /** The latest snapshot on or before the statement's date; null when there's none. */

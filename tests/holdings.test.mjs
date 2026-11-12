@@ -7,6 +7,7 @@ import {
   assetName,
   assetNames,
   checkUnits,
+  existingCost,
   importedRefs,
   included,
   keepsDetails,
@@ -436,6 +437,11 @@ test("merges onto the account's snapshot: replaces listed holdings, keeps others
       ["folio|1040012345|amc:Testbridge Mutual Fund", { [ref("INFZ91T01CB6")]: ["INFZ91T01CB6", "KFINTECH|TCBRP"], [ref("INFZ91T01GL6")]: ["INFZ91T01GL6", "KFINTECH|TGLDG"], [ref("INFZ91T01FT1")]: ["INFZ91T01FT1", "KFINTECH|TFT12"] }],
     ],
   );
+});
+
+test("an existing holding's cost is unknown when Wealthfolio sends none, a null one or 0", () => {
+  for (const none of [undefined, null, { local: null, base: null }, { local: 0, base: 0 }]) assert.equal(existingCost(none), null, JSON.stringify(none));
+  assert.equal(existingCost({ local: 1234.5, base: null }), "1234.5");
 });
 
 test("a folio's fund that an account tracking transactions holds is left out by default", async () => {

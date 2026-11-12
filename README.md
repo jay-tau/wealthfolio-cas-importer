@@ -371,7 +371,7 @@ account's complete snapshot before anything is saved:
 Whether a holding is priced by hand comes from the snapshot being carried over, returned portfolio
 holdings, pricing information in search results, and the latest readable snapshot of each archived
 account when one is available. Those archived snapshots supply pricing information only, not
-current overlap warnings. SDK 3.12.0 can't list every existing asset: an asset absent from these
+current overlap warnings. SDK 3.13.0 can't list every existing asset: an asset absent from these
 results, including one in an archived account with no readable snapshot, can be priced by hand
 without the add-on knowing, and then takes its average cost as its price on the snapshot's date.
 For a statement-price or other manual-priced choice, the add-on also searches for its existing
