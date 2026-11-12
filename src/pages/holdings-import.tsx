@@ -37,6 +37,7 @@ import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type U
 import { type Checked, UnitsCheckCard } from "../components/units-check";
 import { holdingKey, indexSources, LEFT_OUT, readImported, readRecordChoices, readUnlisted, saveImports, saveUnlisted, securityKey, sourceKey } from "../lib/choices";
 import { useFocusReturn } from "../lib/focus";
+import { readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
 
@@ -369,7 +370,8 @@ export function HoldingsImport({
   const accountOf = (source: Source) => sourceKey(source) in ignored ? undefined : accountForSource(usable, holdings, source);
   const assetOf = (h: StatementHolding) => {
     const choice = fundChoices[holdingKey(h)];
-    return choice && "fund" in choice ? choice.fund : undefined;
+    const fund = choice && "fund" in choice ? choice.fund : undefined;
+    return fund?.statementPrices ? { ...fund, name: h.name } : fund;
   };
 
   const changed = () => {
@@ -775,7 +777,7 @@ export function HoldingsSummary({ statement, holdings }: { statement: Statement;
             Check these warnings against the PDF before importing.
             <ul className="list-disc ps-4">
               {statement.parse_warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
+                <li key={warning}>{readableName(warning)}</li>
               ))}
             </ul>
           </AlertDescription>

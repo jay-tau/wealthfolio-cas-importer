@@ -7,6 +7,7 @@ import { after, before, test } from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
+import { withoutClosed, withReadableNames } from "../src/cas/mapping.ts";
 import { plural } from "../src/lib/plural.ts";
 
 let server;
@@ -191,12 +192,59 @@ test("the holdings statement line counts demat accounts, folios, NPS accounts an
   assert.equal(line(source("folio", 0)), `${start} 1 folio, 0 holdings.`);
 });
 
-test("the Holdings card names a CDSL demat fund without its fund house", async () => {
-  const holdings = components.readHoldings(JSON.parse(await readFile("tests/fixtures/made-up-cdsl.json", "utf8")));
-  const item = components.holdingItems(holdings).find((i) => i.isin === "INFZ90K01BG8");
-  assert.equal(item.name, "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH");
-  assert.equal(item.statementAsset.name, item.name);
-  const card = text("FundChoicesCard", { ctx: {}, items: [item], choices: {} });
-  assert.ok(card.includes(` ${item.name} `));
-  assert.ok(!card.includes("ASSET MANAGEMENT"));
+test("parser warnings show scheme names without control characters on both statement summaries", async () => {
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cas-mismatch.json", "utf8"));
+  const [warning] = data.parse_warnings;
+  data.parse_warnings = [warning.replace("Fictiva Flexi Cap Fund", "Fictiva\u0002 Flexi Cap Fund\u007f")];
+  for (const [component, props] of [
+    ["StatementSummary", { data }],
+    ["HoldingsSummary", { statement: data, holdings: components.readHoldings(data) }],
+  ]) {
+    const rendered = renderToStaticMarkup(createElement(components[component], props));
+    assert.ok(!/[\x00-\x1f\x7f]/.test(rendered), component);
+    assert.ok(text(component, props).includes(warning), component);
+  }
+  assert.ok(data.parse_warnings[0].includes("\u0002"));
+});
+
+test("the Holdings card names CDSL demat funds without their fund house, short name or control characters", async () => {
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cdsl.json", "utf8"));
+  const items = components.holdingItems(components.readHoldings(data));
+  const named = Object.fromEntries(items.map((i) => [i.isin, i.name]));
+  const isins = ["INFZ90K01BG8", "INFZ90K01GS2", "INFZ91T01GR3"];
+  assert.deepEqual(isins.map((isin) => named[isin]), [
+    "FICTIVA BALANCED ADVANTAGE FUND-DIRECT PLAN-GROWTH",
+    "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW",
+    "TESTBRIDGE GILT FUND",
+  ]);
+  for (const item of items) assert.equal(item.statementAsset?.name, item.name);
+  const props = { ctx: {}, items, choices: {} };
+  assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.FundChoicesCard, props))));
+  const card = text("FundChoicesCard", props);
+  for (const isin of isins) assert.ok(card.includes(` ${named[isin]} `), isin);
+  for (const printed of ["ASSET MGMT", "LTD#", "MF-", "FICTIVAMF"]) assert.ok(!card.includes(printed), printed);
+
+  // A statement-price choice remembered with the name as printed, as version 3.0.0 saved it, shows the
+  // readable name. Another remembered choice keeps the name its search result gave it.
+  const [fund] = items.filter((i) => i.isin === "INFZ90K01BG8");
+  const printed = data.accounts[0].mutual_funds.find((f) => f.isin === fund.isin).name;
+  const priced = { ...fund.statementAsset, name: printed };
+  const listed = { symbol: "0P0000FBAD", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Fictiva Balanced Advantage Dir Gr" };
+  for (const [choice, shown] of [[priced, fund.name], [listed, listed.name]]) {
+    const confirmed = { ctx: {}, items: [fund], choices: { [fund.key]: { fund: choice } } };
+    assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.FundChoicesCard, confirmed))));
+    assert.ok(text("FundChoicesCard", confirmed).includes(` Confirmed ${shown} Direct Growth (${choice.symbol} `), shown);
+  }
+});
+
+test("the Funds card names a detailed statement's schemes without control characters", async () => {
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
+  const [scheme] = data.folios[0].schemes;
+  const name = scheme.scheme;
+  scheme.scheme = `\u0002${name.replace(" - ", "\u0002 - ")}\u0002`;
+  const items = components.fundItems(withoutClosed(withReadableNames(data)));
+  assert.equal(items[0].name, name);
+  const props = { ctx: {}, items, choices: {} };
+  assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.FundChoicesCard, props))));
+  assert.ok(text("FundChoicesCard", props).includes(` ${name} `));
 });

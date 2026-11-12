@@ -120,7 +120,10 @@ export function fundsOf(data: CasData) {
 export interface FundItem {
   key: string;
   isin: string | null;
-  /** As printed, except a CDSL folio's leading scheme code and a CDSL demat fund's fund house. */
+  /**
+   * As printed, without a CDSL folio's leading scheme code or a CDSL demat fund's fund house, and with
+   * control characters as spaces (`readableName`).
+   */
   name: string;
   /** The name can end partway through a word, as a CDSL demat account cuts a long one short. */
   cut?: boolean;
@@ -396,7 +399,9 @@ export function FundChoicesCard({
         {items.map((item, i) => {
           const { key } = item;
           const label = `${item.name.trim()}${nameNumber(items, i, item.noun)}`;
-          const choice = choices[key];
+          const stored = choices[key];
+          // A remembered statement-price choice can predate a corrected statement name, which imports use (`planSnapshots`).
+          const choice = stored && "fund" in stored && stored.fund.statementPrices ? { fund: { ...stored.fund, name: item.name } } : stored;
           const plan = statementPlan(item);
           const currency = choice && "fund" in choice ? otherCurrency(choice.fund.quoteCcy) : undefined;
           return (

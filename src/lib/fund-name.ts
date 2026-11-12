@@ -1,3 +1,10 @@
+/**
+ * A name from a statement as the add-on shows, searches and saves it: each C0 control character
+ * (U+0000 to U+001F) and U+007F as a space, repeated spaces as one, trimmed. A CDSL statement prints
+ * U+0002 in some fund names, which casparser keeps. Empty for a name with nothing else.
+ */
+export const readableName = (printed: string) => printed.replace(/[\x00-\x1f\x7f]/g, " ").replace(/ {2,}/g, " ").trim();
+
 // A segregated portfolio's own marker: "Segregated Portfolio" and its number, but not a main fund's
 // count note such as "(No. of segregated portfolios-3)" or AMFI's singular "(no. of segregated
 // portfolio-1)"; or a dated note in parentheses, as AMFI names UTI's segregated portfolios:

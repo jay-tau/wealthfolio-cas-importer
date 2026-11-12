@@ -5,8 +5,8 @@
       "type": "CDSL Demat Account",
       "dp_id": "19999901",
       "client_id": "00012345",
-      "folios": 6,
-      "balance": "478466.15",
+      "folios": 7,
+      "balance": "546150.95",
       "owners": [
         {
           "name": "ANANYA R TESTWALA",
@@ -59,7 +59,7 @@
           "return": null
         },
         {
-          "name": "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH",
+          "name": "FICTIVA ASSET MGMT PVT LTD#FICTIVA MF\u0002 FICTIVA BALANCED ADVANTAGE FUND-DIRECT PLAN-GROWTH\u0002",
           "isin": "INFZ90K01BG8",
           "amfi": null,
           "type": null,
@@ -74,13 +74,28 @@
           "return": null
         },
         {
-          "name": "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW",
+          "name": "FICTIVA ASSET MGMT PVT LTD#FICTIVAMF\u0002 FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW",
           "isin": "INFZ90K01GS2",
           "amfi": null,
           "type": null,
           "balance": "850.000",
           "nav": "24.68",
           "value": "20978.00",
+          "avg_cost": null,
+          "total_cost": null,
+          "ucc": null,
+          "folio": null,
+          "pnl": null,
+          "return": null
+        },
+        {
+          "name": "TESTBRIDGE AMC LTD#TESTBRIDGE MF-TESTBRIDGE GILT FUND",
+          "isin": "INFZ91T01GR3",
+          "amfi": null,
+          "type": null,
+          "balance": "1180.000",
+          "nav": "57.36",
+          "value": "67684.80",
           "avg_cost": null,
           "total_cost": null,
           "ucc": null,

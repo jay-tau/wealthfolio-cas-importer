@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { fundName, fundQuery, mayBeCut, planAndOption } from "../src/lib/fund-name.ts";
+import { fundName, fundQuery, mayBeCut, planAndOption, readableName } from "../src/lib/fund-name.ts";
 
 test("detailed CAMS and KFintech schemes keep their search names", async () => {
   const data = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
@@ -232,7 +232,27 @@ test("keeps other securities' searches whole", () => {
   assert.equal(fundQuery("Fictiva Fund"), "Fictiva");
 });
 
+test("reads a name with each control character as a space, repeated spaces as one, trimmed", () => {
+  // As casparser reads a real CDSL statement's fund names, with U+0002.
+  assert.equal(readableName("FICTIVA ASSET MGMT PVT LTD#FICTIVA MF\u0002 FICTIVA FLEXI CAP FUND-DIRECT PLAN-GROWTH\u0002"),
+    "FICTIVA ASSET MGMT PVT LTD#FICTIVA MF FICTIVA FLEXI CAP FUND-DIRECT PLAN-GROWTH");
+  // Every C0 control character and U+007F, tabs and line breaks included.
+  const controls = [...Array(32).keys(), 0x7f].map((code) => String.fromCharCode(code));
+  assert.equal(readableName(`Fictiva${controls.join("")}Fund`), "Fictiva Fund");
+  for (const c of controls) assert.equal(readableName(`${c} Fictiva ${c}${c}Fund ${c}`), "Fictiva Fund", c.charCodeAt(0));
+  assert.equal(readableName("  Fictiva   Flexi  Cap Fund - Direct Plan  "), "Fictiva Flexi Cap Fund - Direct Plan");
+  // Nothing else: an empty name.
+  assert.equal(readableName("\u0002 \u0002\t"), "");
+  assert.equal(readableName(""), "");
+  // Other characters stay as they are.
+  assert.equal(readableName("Fictiva\u0080Fund\u00a0– Direct"), "Fictiva\u0080Fund\u00a0– Direct");
+  // A trailing U+0002 hides the option from the plan and option's reading until it's read as a space.
+  assert.deepEqual(planAndOption("FICTIVA FLEXI CAP FUND-DIRECT PLAN-GROWTH\u0002"), {});
+  assert.deepEqual(planAndOption(readableName("FICTIVA FLEXI CAP FUND-DIRECT PLAN-GROWTH\u0002")), { plan: "Direct", option: "Growth" });
+});
+
 test("reads the plan and option of every made-up statement's funds", async () => {
+  // As the add-on reads them: control characters as spaces.
   const names = [];
   for (const file of ["made-up-cas", "made-up-cas-mismatch", "made-up-cas-no-price", "made-up-cas-segregated", "made-up-summary-cams", "made-up-summary-kfintech"]) {
     const data = JSON.parse(await readFile(`tests/fixtures/${file}.json`, "utf8"));
@@ -240,7 +260,7 @@ test("reads the plan and option of every made-up statement's funds", async () =>
   }
   for (const file of ["made-up-cdsl", "made-up-nsdl"]) {
     const data = JSON.parse(await readFile(`tests/fixtures/${file}.json`, "utf8"));
-    names.push(...data.accounts.flatMap((a) => a.mutual_funds.map((f) => f.name)));
+    names.push(...data.accounts.flatMap((a) => a.mutual_funds.map((f) => readableName(f.name))));
   }
   const read = Object.fromEntries([...new Set(names)].map((name) => [name, planAndOption(name)]));
   assert.deepEqual(read, {
@@ -259,10 +279,11 @@ test("reads the plan and option of every made-up statement's funds", async () =>
     "FMCDG - Fictiva Midcap Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
     "TCBRP - Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout": { plan: "Regular", option: "IDCW" },
     "TGLDG - Testbridge Gilt Fund - Direct Plan - Growth": { plan: "Direct", option: "Growth" },
-    "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH": { plan: "Direct", option: "Growth" },
+    "FICTIVA ASSET MGMT PVT LTD#FICTIVA MF FICTIVA BALANCED ADVANTAGE FUND-DIRECT PLAN-GROWTH": { plan: "Direct", option: "Growth" },
+    "TESTBRIDGE AMC LTD#TESTBRIDGE MF-TESTBRIDGE GILT FUND": {},
     "TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH": { plan: "Direct", option: "Growth" },
     // Cut short, as CDSL prints a long name: read as cut only in a CDSL demat account (`mayBeCut`).
-    "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW": {},
+    "FICTIVA ASSET MGMT PVT LTD#FICTIVAMF FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW": {},
     // Depository statements list ETFs among mutual funds.
     "FICTIVA NIFTY 50 ETF": {},
     "TESTBRIDGE GOLD ETF": {},

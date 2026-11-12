@@ -60,8 +60,14 @@ Every line here is its own text-show op; lines meant as separate blocks are
         Setup Bal | Free Bal | Market Price | Value. num_shares is the first
         number after the name (Current Bal), price/value the last two cells.
         Zero balances print "--". INF ISINs (the ETF and the funds) go to
-        mutual_funds. A fund's Security cell prints "<fund house's company
-        name> # <scheme name>"; casparser joins its lines with spaces.
+        mutual_funds. A fund's Security cell prints, as a real CDSL
+        statement does, "<fund house's company name>#<its short name ending
+        in MF><separator> <scheme name>", where the separator is U+0002
+        (START OF TEXT) or "-", and a name can end with another U+0002;
+        casparser joins the cell's lines with spaces and keeps the U+0002.
+        reportlab draws a character its font can't encode as a box from
+        another font, so each U+0002 is drawn as "\xa4" and written as
+        character code 2 afterwards, which pdfium reads as U+0002.
   * "MUTUAL FUND UNITS HELD AS ON ...": rows go to the Mutual Fund Folios
     account. Row: "<CODE> - <scheme>" (wraps) | ISIN | Folio | ARN code or
     DIRECT | Units | NAV | Invested | Valuation | TER % | Commission |
@@ -107,6 +113,10 @@ from reportlab.pdfbase.pdfmetrics import stringWidth
 from reportlab.pdfgen import canvas
 
 PAN = "ABCDE1234F"
+# U+0002 (START OF TEXT), as a real CDSL statement prints it in some fund names, and the character
+# reportlab draws in its place (WinAnsi code 0xA4, written "\244"), which main() turns into code 2.
+STX = "\x02"
+STAND_IN = "\xa4"
 JOINT_PAN = "ABCDE5678K"
 OWNER_PASSWORD = "fixture-owner-password"
 PERIOD = ("01-Apr-2025", "31-Mar-2026")
@@ -275,20 +285,29 @@ CDSL_ACCOUNT = Account(
             D("6.29"),
         ),
         Holding(isin("INFZ90K01NF"), ["FICTIVA NIFTY 50 ETF"], D("300.000"), D("268.41")),
-        # A fund printed after its fund house's company name and "#", over several lines.
+        # A fund printed after its fund house's company name, "#" and short name, over several
+        # lines: "MF", U+0002 at a line's end, and another U+0002 at the name's end.
         Holding(
             isin("INFZ90K01BG"),
-            ["FICTIVA ASSET MANAGEMENT PVT LTD #", "FICTIVA BALANCED ADVANTAGE", "FUND - DIRECT PLAN GROWTH"],
+            ["FICTIVA ASSET MGMT PVT", f"LTD#FICTIVA MF{STX}", "FICTIVA BALANCED ADVANTAGE", f"FUND-DIRECT PLAN-GROWTH{STX}"],
             D("1520.384"),
             D("38.42"),
         ),
-        # A long fund name cut short at 100 characters, mid-word, as CDSL prints one: the
-        # transactions and the holding both end in "- DIRECT GROW", for "- DIRECT GROWTH".
+        # A long fund name cut short at about 100 characters, mid-word, as CDSL prints one: the
+        # transactions and the holding both end in "- DIRECT GROW", for "- DIRECT GROWTH". Its
+        # short name has no space before "MF", and a space follows its U+0002 on the same line.
         Holding(
             isin("INFZ90K01GS"),
-            ["FICTIVA ASSET MANAGEMENT", "PVT LTD # FICTIVA TESTBRIDGE", "GLOBAL PLACEHOLDERS", "SAMPLES FUND - DIRECT GROW"],
+            ["FICTIVA ASSET MGMT PVT", f"LTD#FICTIVAMF{STX} FICTIVA", "TESTBRIDGE GLOBAL PLACEHOLDERS", "SAMPLES FUND - DIRECT GROW"],
             D("850.000"),
             D("24.68"),
+        ),
+        # A short name and "-", with no plan or option in the name.
+        Holding(
+            isin("INFZ91T01GR"),
+            ["TESTBRIDGE AMC LTD#TESTBRIDGE", "MF-TESTBRIDGE GILT FUND"],
+            D("1180.000"),
+            D("57.36"),
         ),
     ],
     txns=[
@@ -701,8 +720,9 @@ def render(L: Doc) -> bytes:
         c.setFont(BOLD, 10)
         c.drawCentredString(PAGE_W / 2, 812, "Central Depository Services (India) Limited")
         for kind, x, y, s, font, size in ops:
+            assert STAND_IN not in s, s
             c.setFont(font, size)
-            {"l": c.drawString, "r": c.drawRightString, "c": c.drawCentredString}[kind](x, y, s)
+            {"l": c.drawString, "r": c.drawRightString, "c": c.drawCentredString}[kind](x, y, s.replace(STX, STAND_IN))
         c.setFont(FONT, 6.5)
         c.drawCentredString(PAGE_W / 2, 24, f"Page {pno} of {n_pages}")
         c.showPage()
@@ -723,6 +743,12 @@ def main(argv: List[str]) -> None:
     nps(L)
     plain = render(L)
     with pikepdf.open(io.BytesIO(plain)) as pdf:
+        written = 0
+        for page in pdf.pages:
+            content = page.Contents.read_bytes()
+            written += content.count(b"\\244")
+            page.Contents.write(content.replace(b"\\244", b"\\002"))
+        assert written == sum(s.count(STX) for ops in L.pages for *_, s, _font, _size in ops), written
         pdf.save(
             argv[0],
             encryption=pikepdf.Encryption(owner=OWNER_PASSWORD, user=PAN, R=6, aes=True),
