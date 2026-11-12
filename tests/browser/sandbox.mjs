@@ -2886,7 +2886,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cdsl.pdf");
     await frame.locator("#cas-password").fill("ABCDE1234F");
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("CDSL statement for ANANYA R TESTWALA, as on 31-Mar-2026: 2 demat accounts, 2 folios, 1 NPS account, 14 holdings.").waitFor({ timeout: 180_000 });
+    await frame.getByText("CDSL statement for ANANYA R TESTWALA, as on 31-Mar-2026: 2 demat accounts, 2 folios, 1 NPS account, 15 holdings.").waitFor({ timeout: 180_000 });
+    // Funds printed as a real CDSL statement prints them, after the fund house, "#", its short name
+    // and U+0002 or "-", show their scheme names alone, without control characters.
+    const cdslBalanced = frame.locator("section").filter({ hasText: "ISIN INFZ90K01BG8" });
+    assert.equal(await cdslBalanced.locator("h3").textContent(), "FICTIVA BALANCED ADVANTAGE FUND-DIRECT PLAN-GROWTH");
+    assert.deepEqual(await nameBadges(cdslBalanced), ["Direct secondary", "Growth secondary"]);
+    assert.equal(await frame.locator("section").filter({ hasText: "ISIN INFZ91T01GR3" }).locator("h3").textContent(), "TESTBRIDGE GILT FUND");
+    const cdslHeadings = await frame.locator("section h3").allTextContents();
+    assert.ok(cdslHeadings.includes("TESTBRIDGE GILT FUND") && cdslHeadings.every((h) => !/[\x00-\x1f\x7f#]/.test(h)), cdslHeadings.join(" | "));
     const cutSection = frame.locator("section").filter({ hasText: "ISIN INFZ90K01GS2" });
     assert.equal(
       await cutSection.locator("h3").textContent(),

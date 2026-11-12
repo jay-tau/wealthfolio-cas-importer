@@ -212,6 +212,12 @@ ISIN too, and a fund confirmed for a detailed statement is already confirmed her
 same plan and option badges as on the Funds card; shares, bonds and NPS schemes have none. If no holdings
 account is offered, create one in Wealthfolio and choose Read statement again.
 
+The add-on shows, searches and saves each name with its control characters, such as the U+0002 a CDSL
+statement prints in some fund names, as spaces, for detailed statements too. A fund in a CDSL
+statement's own demat account goes without the fund house's company name, "#" and short name printed
+before it: "FICTIVA ASSET MGMT PVT LTD#FICTIVA MF␂ FICTIVA FLEXI CAP FUND-DIRECT PLAN-GROWTH" reads
+"FICTIVA FLEXI CAP FUND-DIRECT PLAN-GROWTH", where ␂ is U+0002.
+
 A holding that no search result fits, including when the search finds only other funds or shares,
 can use the statement's prices instead. The add-on then creates an INR asset priced by hand, and the
 next statement finds it again. While it's priced by hand, with the same type and in INR, the holding's
@@ -237,8 +243,8 @@ prices you enter, not from market data:
 - An NPS scheme is one asset however many PRANs hold it; Tier I and Tier II are separate schemes.
   Statements print no scheme code, so its symbol comes from the printed name, without the words
   every scheme name repeats: "NPS TRUST- A/C SBI PENSION FUNDS PRIVATE LIMITED SCHEME E - TIER I" is
-  `NPS-SBI-E-TIER-I`. Its name is the printed one. casparser 1.4.1 returns NPS holdings for CDSL
-  statements only. An NPS account goes by its PRAN as printed (masked), or by the investor when
+  `NPS-SBI-E-TIER-I`. Its name is the printed one, with control characters as spaces. casparser
+  1.4.1 returns NPS holdings for CDSL statements only. An NPS account goes by its PRAN as printed (masked), or by the investor when
   none is printed.
 - After saving, the add-on keeps the statement's details on the asset's metadata: as printed under
   `casStatement` (a fund's or share's name, ISIN, registrar and scheme code, as printed), and for a

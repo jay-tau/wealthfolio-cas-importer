@@ -1,5 +1,5 @@
 import type { ActivityCharge, ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
-import { hasSegregatedMarker } from "../lib/fund-name.ts";
+import { hasSegregatedMarker, readableName } from "../lib/fund-name.ts";
 import { plural } from "../lib/plural.ts";
 import { sha256 } from "../lib/sha256.ts";
 import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, step, sub } from "./decimal.ts";
@@ -316,6 +316,19 @@ export const closedScheme = (scheme: CasScheme) =>
 export function withoutClosed(data: CasData): CasData {
   const folios = data.folios.map((folio) => ({ ...folio, schemes: folio.schemes.filter((s) => !closedScheme(s)) }));
   return { ...data, folios: folios.filter((folio) => folio.schemes.length > 0) };
+}
+
+/**
+ * The statement with each scheme's name as `readableName` gives it, which detailed imports show,
+ * search and save, since they keep no printed details. A name with nothing readable reads as the
+ * scheme's ISIN, or else its registrar's scheme code.
+ */
+export function withReadableNames(data: CasData): CasData {
+  const folios = data.folios.map((folio) => ({
+    ...folio,
+    schemes: folio.schemes.map((s) => ({ ...s, scheme: readableName(s.scheme) || s.isin || s.rta_code || "" })),
+  }));
+  return { ...data, folios };
 }
 
 function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: MappingInput): Scheme {

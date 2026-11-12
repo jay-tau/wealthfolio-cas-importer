@@ -1,5 +1,5 @@
 import type { ActivityDetails, MonetaryValue, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
-import { mayBeCut } from "../lib/fund-name.ts";
+import { mayBeCut, readableName } from "../lib/fund-name.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
 import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
@@ -182,12 +182,27 @@ const printed = (details: Record<string, string | null | undefined>) =>
  */
 const withoutSchemeCode = (name: string) => name.replace(/^\s*[A-Z0-9]+\s*-\s*/, "") || name;
 
+/** A fund house's short name ending in "MF", and the separator after it: U+0002 or "-", with any spaces around it. */
+const SHORT_NAME = /^\s*[^\s#\x02-][^#\x02-]*?MF\s*[\x02-]\s*/;
+
 /**
- * A CDSL statement prints a fund in one of its own demat accounts as "<fund house's company name>
- * # <scheme name>". "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT
- * PLAN GROWTH" → "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH".
+ * A CDSL statement prints a fund in one of its own demat accounts after its fund house's company
+ * name and "#", with or without spaces around it, and real ones then print the fund house's short
+ * name ending in "MF" and a separator. "FICTIVA ASSET MGMT PVT LTD#FICTIVA MF<U+0002> FICTIVA FLEXI
+ * CAP FUND-DIRECT PLAN-GROWTH" → "FICTIVA FLEXI CAP FUND-DIRECT PLAN-GROWTH", and "FICTIVA ASSET
+ * MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH" → " FICTIVA BALANCED
+ * ADVANTAGE FUND - DIRECT PLAN GROWTH". Only the first "#" counts. A name with no company name
+ * before it, or with nothing readable after the cut, stays as printed.
  */
-const withoutFundHouse = (name: string) => name.replace(/^.*?\s#\s+/s, "") || name;
+function withoutFundHouse(name: string) {
+  const at = name.indexOf("#");
+  if (at < 0 || !readableName(name.slice(0, at))) return name;
+  const scheme = name.slice(at + 1).replace(SHORT_NAME, "");
+  return readableName(scheme) ? scheme : name;
+}
+
+/** The name shown, searched and saved: `readableName`, or the ISIN when nothing's readable, as for a holding printed without one. */
+const named = (printed: string | null, isin: string) => readableName(printed ?? "") || isin;
 
 /** The same folio prints as `91234567 / 12` on CAMS statements and `91234567/12` on NSDL ones. */
 export const folioNumber = (folio: string) => folio.replace(/\s+/g, "");
@@ -245,7 +260,7 @@ function readSummary(data: CasData): Holdings {
         isin: scheme.isin,
         rta: scheme.rta,
         rtaCode: scheme.rta_code,
-        name: scheme.scheme,
+        name: readableName(scheme.scheme) || scheme.isin || scheme.rta_code || "",
         units: scheme.close,
         price: scheme.valuation.nav,
         value: scheme.valuation.value,
@@ -275,7 +290,7 @@ function readDepository(data: DepositoryData): Holdings {
     isin: f.isin,
     rta: null,
     rtaCode: null,
-    name: f.name ?? f.isin,
+    name: named(f.name, f.isin),
     units: f.balance,
     price: f.nav,
     value: f.value,
@@ -292,7 +307,7 @@ function readDepository(data: DepositoryData): Holdings {
         const number = folioNumber(f.folio ?? "");
         const holding = fund(f);
         // The search and a new asset go by the scheme name; the printed details keep the code.
-        if (data.file_type === "CDSL" && f.name) holding.name = withoutSchemeCode(f.name);
+        if (data.file_type === "CDSL" && f.name) holding.name = named(withoutSchemeCode(f.name), f.isin);
         const id = `folio|${number}|${issuerOf(f.isin) ?? `isin:${f.isin}`}`;
         const folio = folios.get(id) ?? { source: { id, kind: "folio", label: number ? `Folio ${number}` : "Mutual fund folios", holdings: [] }, funds: [] };
         folio.funds.push(holding);
@@ -316,7 +331,7 @@ function readDepository(data: DepositoryData): Holdings {
           isin: e.isin,
           rta: null,
           rtaCode: null,
-          name: e.name ?? e.isin,
+          name: named(e.name, e.isin),
           units: e.num_shares,
           price: e.price,
           value: e.value,
@@ -327,7 +342,7 @@ function readDepository(data: DepositoryData): Holdings {
       ...account.mutual_funds.map((f) => {
         const holding = fund(f);
         // The search and a new asset go by the scheme name; the printed details keep the fund house.
-        if (cdsl && f.name) holding.name = withoutFundHouse(f.name);
+        if (cdsl && f.name) holding.name = named(withoutFundHouse(f.name), f.isin);
         // Whether it may be cut short goes by the printed name's length, fund house included.
         if (cdsl && f.name && mayBeCut(f.name)) holding.cut = true;
         return holding;
@@ -338,7 +353,7 @@ function readDepository(data: DepositoryData): Holdings {
           isin: b.isin,
           rta: null,
           rtaCode: null,
-          name: b.name ?? b.isin,
+          name: named(b.name, b.isin),
           units: b.num_bonds,
           // NSDL demat accounts print each bond's value but not its price.
           price: b.market_price ?? (positive(b.num_bonds) ? format(div(dec(b.value), dec(b.num_bonds), 6)) : "0"),
@@ -368,7 +383,7 @@ function readDepository(data: DepositoryData): Holdings {
         rta: null,
         rtaCode: null,
         code: npsSymbol(s.scheme),
-        name: s.scheme,
+        name: readableName(s.scheme) || npsSymbol(s.scheme),
         units: s.units,
         price: s.nav,
         value: s.value,

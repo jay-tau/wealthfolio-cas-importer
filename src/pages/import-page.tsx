@@ -3,7 +3,7 @@ import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
 import { useMemo, useRef, useState } from "react";
 import { type Holdings, readHoldings } from "../cas/holdings";
-import { closedScheme, type Mapping, mapStatement, withoutClosed } from "../cas/mapping";
+import { closedScheme, type Mapping, mapStatement, withoutClosed, withReadableNames } from "../cas/mapping";
 import { CasError } from "../cas/parser";
 import {
   bankCandidates,
@@ -49,6 +49,7 @@ import {
   sourceKey,
 } from "../lib/choices";
 import { useFocusMove, useFocusReturn } from "../lib/focus";
+import { readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
 import { HoldingsImport, holdingItems } from "./holdings-import";
@@ -81,8 +82,9 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
   // Bumped on every read, so a holdings import starts afresh.
   const [reads, setReads] = useState(0);
   const detailed = statement && !holdings ? (statement as CasData) : null;
-  // Closed schemes need no account or fund, so everything after the summary leaves them out.
-  const data = useMemo(() => detailed && withoutClosed(detailed), [detailed]);
+  // Closed schemes need no account or fund, so everything after the summary leaves them out, and
+  // uses each scheme's readable name.
+  const data = useMemo(() => detailed && withoutClosed(withReadableNames(detailed)), [detailed]);
   const [remembered, setRemembered] = useState<AccountChoices | null>(null);
   const [fundChoices, setFundChoices] = useState<Record<string, FundChoice | undefined>>({});
   // Storage requests can finish out of order; rereads must wait for these writes too.
@@ -554,7 +556,7 @@ export function StatementSummary({ data }: { data: CasData }) {
             importing.
             <ul className="list-disc ps-4">
               {data.parse_warnings.map((warning) => (
-                <li key={warning}>{warning}</li>
+                <li key={warning}>{readableName(warning)}</li>
               ))}
             </ul>
           </AlertDescription>

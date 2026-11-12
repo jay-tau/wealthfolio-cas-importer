@@ -4,7 +4,8 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { describe, test } from "node:test";
 import { abs, add, cmp, dec, format, mul, neg, sub } from "../src/cas/decimal.ts";
-import { closedScheme, mapStatement, withoutClosed } from "../src/cas/mapping.ts";
+import { closedScheme, mapStatement, withoutClosed, withReadableNames } from "../src/cas/mapping.ts";
+import { fundKey } from "../src/lib/choices.ts";
 
 const tx = (date, type, amount, units = null, nav = null, extra = {}) => ({
   date,
@@ -1501,6 +1502,39 @@ test("a scheme without units at either end is closed when its rows record nothin
   assert.ok(!closedScheme(scheme("A", [bought, sold])));
   assert.ok(!closedScheme(scheme("A", [], { open: "100.000", close: "100.000" })));
   assert.ok(!closedScheme(scheme("A", [tx("2024-04-10", "MISC", "50.00")])));
+});
+
+test("a detailed statement's schemes are named readable, and nothing else about their rows changes", () => {
+  const buy = (date) => tx(date, "PURCHASE", "1000.00", "100.000", "10.0000");
+  const out = tx("2024-08-01", "SWITCH_OUT_MERGER", "-1000.00", "-100.000", "10.0000");
+  const into = tx("2024-08-01", "SWITCH_IN_MERGER", "1000.00", "50.000", "20.0000");
+  const bonus = tx("2024-06-05", "PURCHASE", null, "5.000");
+  const printed = statement(
+    scheme("A", [buy("2024-06-03"), bonus, out], { scheme: "Fictiva\u0002 Flexi Cap Fund - Direct Plan - Growth\u0002" }),
+    scheme("B", [into], { scheme: "Testbridge\tGilt  Fund\r\n" }),
+    // Nothing readable: the ISIN, or without one, the registrar's scheme code.
+    scheme("C", [buy("2024-06-07")], { scheme: "\u0002 \u0002" }),
+    scheme("D", [buy("2024-06-09")], { scheme: "\u007f", isin: null }),
+  );
+  const readable = withReadableNames(printed);
+  const names = ["Fictiva Flexi Cap Fund - Direct Plan - Growth", "Testbridge Gilt Fund", "INF-C", "D"];
+  assert.deepEqual(readable.folios[0].schemes.map((s) => s.scheme), names);
+  assert.deepEqual(printed.folios[0].schemes[0].scheme, "Fictiva\u0002 Flexi Cap Fund - Direct Plan - Growth\u0002");
+  const mapping = map(readable);
+  // Rows, the activities' and conversions' names, and warnings.
+  assert.deepEqual(mapping.transactions.map((t) => [t.scheme, t.activity.symbolName, t.arriving?.scheme, t.arriving?.activity.symbolName]), [
+    [names[0], names[0], undefined, undefined],
+    [names[0], names[0], names[1], names[1]],
+    [names[2], names[2], undefined, undefined],
+    [names[3], names[3], undefined, undefined],
+  ]);
+  assert.deepEqual(mapping.warnings.map((w) => w.scheme), [names[0]]);
+  // Only the names differ from the printed statement's: the same rows, IDs and fund keys.
+  const unnamed = (m) => JSON.parse(JSON.stringify(m, (key, value) => (key === "scheme" || key === "symbolName" ? undefined : value)));
+  assert.deepEqual(unnamed(mapping), unnamed(map(printed)));
+  assert.deepEqual(readable.folios[0].schemes.map(fundKey), printed.folios[0].schemes.map(fundKey));
+  // Closed schemes go the same way.
+  assert.deepEqual(withoutClosed(withReadableNames(printed)), withReadableNames(withoutClosed(printed)));
 });
 
 test("withoutClosed drops closed schemes and the folios they leave empty", () => {
