@@ -332,6 +332,10 @@ export function HoldingsImport({
 }) {
   const { api } = ctx;
   const targets = accounts.filter((a) => a.trackingMode === "HOLDINGS");
+  // Accounts that track transactions, which in Wealthfolio include NOT_SET. Check units compares the
+  // unarchived ones, hidden ones included; without one there's nothing to compare, so the check isn't shown.
+  const tracked = allAccounts.filter((a) => a.trackingMode !== "HOLDINGS");
+  const compared = tracked.filter((a) => !a.isArchived);
   // Like a hidden, archived or missing one, a remembered account that no longer tracks holdings is
   // ignored, and its row says why.
   const usable: HoldingsAccountChoices = Object.fromEntries(
@@ -582,8 +586,6 @@ export function HoldingsImport({
     setChecked(null);
     setSame(new Set());
     try {
-      const tracked = allAccounts.filter((a) => a.trackingMode !== "HOLDINGS");
-      const accounts = tracked.filter((a) => !a.isArchived);
       const timeZone = await engineTimeZone(api.settings);
       let activities: ActivityDetails[] | { error: string };
       try {
@@ -596,7 +598,7 @@ export function HoldingsImport({
       const unidentified = holdings.sources.some((s) =>
         [...s.holdings, ...(s.zero ?? []), ...(s.misread ?? [])].some((h) => assetOf(h) && !assetOf(h)!.assetId));
       if (Array.isArray(activities) && unidentified) {
-        const ids = new Set(activities.filter((a) => a.assetId && accounts.some((account) => account.id === a.accountId)).map((a) => a.assetId));
+        const ids = new Set(activities.filter((a) => a.assetId && compared.some((account) => account.id === a.accountId)).map((a) => a.assetId));
         await Promise.all([...ids].map(async (id) => {
           try {
             const profile = await api.assets.getProfile(id);
@@ -608,7 +610,7 @@ export function HoldingsImport({
       }
       setChecked({
         // Wealthfolio shows add-ons no activities of archived accounts.
-        checks: checkUnits(holdings, { asset: assetOf, accounts, activities, identities, timeZone }),
+        checks: checkUnits(holdings, { asset: assetOf, accounts: compared, activities, identities, timeZone }),
         archived: tracked.filter((a) => a.isArchived).map((a) => a.name),
       });
     } catch (e) {
@@ -645,6 +647,7 @@ export function HoldingsImport({
         accounts={targets}
         choices={usable}
         ignored={ignored}
+        checks={compared.length > 0}
         onChange={(key, value) => {
           changed();
           onAccount(key, value);
@@ -662,27 +665,29 @@ export function HoldingsImport({
         title="Holdings"
         intro="Confirm the Wealthfolio asset for each holding. Holdings are searched by their printed ISIN, and by name when that finds nothing or no ISIN is printed. A holding that no result fits can use the statement's prices: the add-on creates an asset priced by hand, saves the statement's price on its date, and keeps the printed name, identifiers and details on the asset. Its price then changes only with the statements you import or the prices you enter, not with market data. The add-on remembers what you confirm for each ISIN or scheme, for detailed statements too, except the statement's prices, which detailed statements don't use: they keep the fund confirmed for them."
       />
-      <UnitsCheckCard
-        checked={checked}
-        same={same}
-        checking={busy === "check"}
-        blocked={
-          items.some((item) => !fundChoices[item.key])
-            ? "Confirm or leave out each holding first."
-            : !confirmedAny
-              ? "Every holding is left out, so there's nothing to check."
-              : ""
-        }
-        onCheck={() => void runCheck()}
-        onSame={(ref, yes) =>
-          setSame((set) => {
-            const next = new Set(set);
-            if (yes) next.add(ref);
-            else next.delete(ref);
-            return next;
-          })
-        }
-      />
+      {compared.length > 0 && (
+        <UnitsCheckCard
+          checked={checked}
+          same={same}
+          checking={busy === "check"}
+          blocked={
+            items.some((item) => !fundChoices[item.key])
+              ? "Confirm or leave out each holding first."
+              : !confirmedAny
+                ? "Every holding is left out, so there's nothing to check."
+                : ""
+          }
+          onCheck={() => void runCheck()}
+          onSame={(ref, yes) =>
+            setSame((set) => {
+              const next = new Set(set);
+              if (yes) next.add(ref);
+              else next.delete(ref);
+              return next;
+            })
+          }
+        />
+      )}
       <div className="flex flex-wrap items-center gap-3">
         <Button type="button" disabled={undecided || nothing || busy !== ""} onClick={() => void runPreview()}>
           {busy === "preview" && <Spinner />}

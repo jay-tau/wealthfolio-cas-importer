@@ -264,8 +264,10 @@ fund isn't added, even from another folio's line. Check units marks it for revie
 statement unknown.
 
 Check units compares the statement with Wealthfolio accounts that track transactions (Not set
-included), once each holding is confirmed or left out. It needs no account that tracks holdings,
-and saves nothing. Each holding's printed units are summed over its folios, demat accounts and
+included), once each holding is confirmed or left out. It shows only when Wealthfolio has such an
+account that isn't archived, hidden ones included, when you choose Read statement: with none, there's
+nothing to compare. It needs no account that tracks holdings, and saves nothing. Each holding's
+printed units are summed over its folios, demat accounts and
 PRANs, holdings printed with zero units included: those are confirmed for the check, but never go in
 a snapshot. Against them go the units that the posted activities of accounts with any for its asset
 by the statement's date add up to on that date, summed over those accounts. Each activity counts on its
