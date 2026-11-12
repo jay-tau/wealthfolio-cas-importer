@@ -20,7 +20,9 @@ import {
   replacesSnapshot,
   snapshotOf,
   splitSince,
+  isStatementAsset,
   statementAsset,
+  statementSymbol,
   undecided,
   unidentified,
   unitStatus,
@@ -1885,6 +1887,34 @@ test("bonds and NPS schemes priced from statements keep their identity and print
       for (const ids of Object.values(refs)) assert.ok(ids.every((id) => /^(INE|nps\|NPS-)/.test(id)), ids.join());
     }
   }
+});
+
+test("a detailed statement's fund knows its asset priced from statements, which a search result can be", async () => {
+  const detailed = await fixture("made-up-cas");
+  const summary = readHoldings(await fixture("made-up-summary-cams"));
+  const scheme = detailed.folios.flatMap((f) => f.schemes).find((s) => s.isin === "INFZ90K01FC8");
+  const holding = summary.sources.flatMap((s) => s.holdings).find((h) => h.isin === scheme.isin);
+  assert.equal(statementSymbol(scheme), statementAsset(holding).symbol);
+  // Without an ISIN, the registrar and scheme code, as for a summary statement's fund.
+  assert.equal(statementSymbol({ isin: null, rta: "KFINTECH", rta_code: "TGLDG" }), "MF-KFINTECH-TGLDG");
+  assert.equal(statementSymbol({ isin: null, rta: "KFINTECH", rta_code: "" }), undefined);
+
+  // The asset holdings imports find again: Wealthfolio has it, priced by hand, under the symbol, with no exchange.
+  const handPriced = {
+    symbol: "MY-CODE", canonicalSymbol: "infz90k01fc8 ", shortName: "Fund", longName: "Fund", exchange: "", quoteType: "EQUITY",
+    typeDisplay: "", index: "", score: 100, existingAssetId: "asset-1", quoteMode: "MANUAL",
+  };
+  assert.equal(isStatementAsset(handPriced, "INFZ90K01FC8"), true);
+  assert.equal(isStatementAsset({ ...handPriced, quoteMode: undefined, pricingMode: "MANUAL" }, "INFZ90K01FC8"), true);
+  assert.equal(isStatementAsset({ ...handPriced, canonicalSymbol: undefined, symbol: "INFZ90K01FC8" }, "INFZ90K01FC8"), true);
+  for (const [result, why] of [
+    [{ ...handPriced, quoteMode: "MARKET" }, "priced from market data"],
+    [{ ...handPriced, quoteMode: undefined }, "no pricing mode"],
+    [{ ...handPriced, existingAssetId: undefined }, "not in Wealthfolio"],
+    [{ ...handPriced, canonicalExchangeMic: "XBOM" }, "a listing on an exchange"],
+    [{ ...handPriced, exchangeMic: "XBOM" }, "a listing on an exchange"],
+    [{ ...handPriced, canonicalSymbol: "INFZ90K01BA1" }, "another fund's"],
+  ]) assert.equal(isStatementAsset(result, "INFZ90K01FC8"), false, why);
 });
 
 test("funds and shares the search can't find can be priced from statements", async () => {

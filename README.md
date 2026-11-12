@@ -219,7 +219,10 @@ enter, not from market data:
   classify the new asset as a mutual fund, with an asset class guessed from its name
   ([wealthfolio/wealthfolio#2408](https://github.com/wealthfolio/wealthfolio/issues/2408)); older
   versions file funds and shares alike under common stock. Check a fund's classifications on its
-  asset page. Detailed statements don't preconfirm this choice: reading one searches for the fund again.
+  asset page. Choosing the statement's prices keeps the fund confirmed for detailed imports beside this
+  choice. Without one, reading a detailed statement searches for the fund again. Detailed searches leave
+  out this asset while it's priced by hand. A plain fund choice saved by an older version after picking
+  this asset still comes back confirmed; choose Change to search for its replacement.
 - A bond is a `BOND` asset with its ISIN as the symbol. Its cost defaults to the face value times
   the number of bonds when the statement prints a face value (NSDL demat accounts do); CDSL demat
   accounts on NSDL statements print a market price instead. casparser 1.4.1 returns no bonds for
@@ -395,7 +398,9 @@ the later snapshot's prices.
   name; the folio number and parsed AMC (summary) or ISIN issuer (depository); the demat account's DP and
   client IDs; or the PRAN as printed. Summary and depository folio account overrides are separate.
   The asset confirmed for a bond is kept under its ISIN, and for an NPS scheme under a hash of its symbol.
-  A fund or share priced from statements is kept like any confirmed fund, but detailed imports don't preconfirm this choice.
+  Choosing the statement's prices keeps the fund confirmed for detailed imports beside that choice.
+  A detailed import's choices, leaving the fund out included, then change only that fund. A holdings
+  import's choice of a search result or leaving the holding out still replaces or forgets both.
 - Dated records of which holdings each holdings import added, with both their ISIN and
   registrar scheme code when available, or an NPS scheme's symbol, and the Wealthfolio asset's
   symbol, exchange and, when the import knew it, ID, keyed by a hash of the folio,

@@ -308,19 +308,36 @@ export interface ChosenFund extends FundAsset {
   statementPrices?: boolean;
 }
 
-function parseFund(value: string | null): ChosenFund | undefined {
-  try {
-    const fund = JSON.parse(value ?? "null");
-    if (typeof fund?.symbol !== "string" || typeof fund?.quoteCcy !== "string") return undefined;
-    const { manual, ...choice } = fund;
-    return choice;
-  } catch {
-    return undefined;
-  }
+function asFund(value: unknown): ChosenFund | undefined {
+  if (!record(value) || typeof value.symbol !== "string" || typeof value.quoteCcy !== "string" ||
+      typeof value.name !== "string" || typeof value.instrumentType !== "string") return undefined;
+  const { manual, transactions, ...choice } = value;
+  return choice as unknown as ChosenFund;
 }
 
-export async function readFund(storage: Storage, key: string): Promise<ChosenFund | undefined> {
-  return parseFund(await storage.get(key).catch(() => null));
+/**
+ * A remembered choice. Detailed and holdings imports share it, except a holdings import's asset
+ * priced from statements, which detailed imports don't use: beside that, `transactions` keeps the
+ * fund confirmed for detailed imports.
+ */
+function parseChoice(value: string | null): { fund?: ChosenFund; transactions?: ChosenFund } {
+  let stored: unknown;
+  try {
+    stored = JSON.parse(value ?? "null");
+  } catch {
+    return {};
+  }
+  const fund = asFund(stored);
+  const transactions = fund?.statementPrices ? asFund((stored as Record<string, unknown>).transactions) : undefined;
+  return fund ? { fund, ...(transactions && !transactions.statementPrices && { transactions }) } : {};
+}
+
+const parseFund = (value: string | null) => parseChoice(value).fund;
+
+/** The fund confirmed under `key` for holdings imports, or with `detailed`, for detailed imports. */
+export async function readFund(storage: Storage, key: string, detailed = false): Promise<ChosenFund | undefined> {
+  const { fund, transactions } = parseChoice(await storage.get(key).catch(() => null));
+  return detailed && fund?.statementPrices ? transactions : fund;
 }
 
 /**
@@ -333,10 +350,40 @@ export async function readRecordChoices(storage: Storage, keys: Iterable<string>
   return choices.filter((choice) => choice !== undefined);
 }
 
-export const saveFund = (storage: Storage, key: string, fund: ChosenFund) => {
+/**
+ * Remembers the fund a holdings import, or with `detailed`, a detailed import, confirmed under `key`.
+ * A detailed import's fund goes beside an asset priced from statements, and that asset keeps the fund
+ * a detailed import confirmed, or the one it replaces. Other choices replace the stored one. A
+ * failed read rejects, so the other import's fund isn't lost.
+ */
+export async function saveFund(storage: Storage, key: string, fund: ChosenFund, detailed = false) {
   const { manual, ...choice } = fund;
-  return storage.set(key, JSON.stringify(choice));
-};
+  let value: ChosenFund & { transactions?: ChosenFund } = choice;
+  if (detailed || choice.statementPrices) {
+    const stored = parseChoice(await storage.get(key));
+    if (detailed && !choice.statementPrices && stored.fund?.statementPrices) value = { ...stored.fund, transactions: choice };
+    if (!detailed) {
+      const transactions = stored.fund?.statementPrices ? stored.transactions : stored.fund;
+      if (transactions) value = { ...choice, transactions };
+    }
+  }
+  await storage.set(key, JSON.stringify(value));
+}
+
+/**
+ * Forgets the fund confirmed under `key`, for both kinds of import. Beside an asset priced from
+ * statements, a detailed import forgets only its own.
+ */
+export async function forgetFund(storage: Storage, key: string, detailed = false) {
+  if (detailed) {
+    const { fund, transactions } = parseChoice(await storage.get(key));
+    if (fund?.statementPrices) {
+      if (transactions) await storage.set(key, JSON.stringify(fund));
+      return;
+    }
+  }
+  await storage.delete(key);
+}
 
 /** The statement password, saved only when the user ticks "Remember". */
 export const PASSWORD_SECRET = "statement-password";

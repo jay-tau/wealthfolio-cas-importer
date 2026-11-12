@@ -13,6 +13,7 @@ import {
   Spinner,
 } from "@wealthfolio/ui";
 import { Fragment, type RefCallback, useEffect, useRef, useState } from "react";
+import { isStatementAsset, statementSymbol } from "../cas/holdings";
 import type { CasData, CasScheme } from "../cas/types";
 import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
@@ -127,6 +128,11 @@ export interface FundItem {
   where?: string;
   /** The asset priced by hand from statements, offered when no search result fits. */
   statementAsset?: ChosenFund;
+  /**
+   * A detailed statement's fund: the symbol of its asset that holdings imports price from statements.
+   * Detailed imports don't use that asset, so the search doesn't offer it.
+   */
+  statementSymbol?: string;
 }
 
 export const fundItems = (data: CasData): FundItem[] =>
@@ -136,6 +142,7 @@ export const fundItems = (data: CasData): FundItem[] =>
     name: schemes[0].scheme,
     noun: "fund",
     where: schemes.length > 1 ? `in ${schemes.length} folios` : undefined,
+    statementSymbol: statementSymbol(schemes[0]),
   }));
 
 function FundSearch({
@@ -156,7 +163,7 @@ function FundSearch({
   /** Called with true while the fund's own search finds no AMFI result, and with false after. */
   onNoAmfi: (noAmfi: boolean) => void;
 }) {
-  const { isin, noun, statementAsset } = item;
+  const { isin, noun, statementAsset, statementSymbol } = item;
   // Only the printed ISIN, the fund's name from the statement when the ISIN finds nothing or isn't
   // printed, or what the user types is sent to market-data providers. A fund's name is searched
   // shorter, without a final "Fund" or the plan and option.
@@ -174,6 +181,8 @@ function FundSearch({
   const [byName, setByName] = useState("");
   // The results are for the printed ISIN, or for the name of a fund printed without one.
   const [own, setOwn] = useState(false);
+  // The search found the asset holdings imports price from statements, which a detailed import doesn't offer.
+  const [withheld, setWithheld] = useState(false);
   // Answers can arrive out of order; only the latest search's counts.
   const latest = useRef(0);
   // Every section searches by itself when a statement is read, and reading each of those out would
@@ -187,23 +196,31 @@ function FundSearch({
     setPicked("");
     setSearching(true);
     setError("");
+    setWithheld(false);
+    let left = false;
+    const offered = (found: SymbolSearchResult[]) => {
+      const kept = statementSymbol ? found.filter((r) => !isStatementAsset(r, statementSymbol)) : found;
+      left ||= kept.length < found.length;
+      return kept;
+    };
     // The shorter name can match several plans and options of the fund, so the user picks one
     // even when there's a single result.
     let named = !isin && text.trim() === name;
     setByName(named ? name : "");
     setOwn(named || (!!isin && text.trim().toUpperCase() === isin));
     try {
-      let found = await ctx.api.market.searchTicker(text.trim());
+      let found = offered(await ctx.api.market.searchTicker(text.trim()));
       if (id !== latest.current) return;
       // Yahoo doesn't list every fund under its ISIN.
       if (found.length === 0 && text.trim().toUpperCase() === isin && name !== "") {
         named = true;
         setByName(name);
         setQuery((typed) => (typed.trim().toUpperCase() === isin ? name : typed));
-        found = await ctx.api.market.searchTicker(name);
+        found = offered(await ctx.api.market.searchTicker(name));
         if (id !== latest.current) return;
       }
       setResults(found);
+      setWithheld(left);
       setPicked(String(preselected(found, named) ?? ""));
     } catch (e) {
       if (id === latest.current) setError(`The search failed: ${String(e)}`);
@@ -268,6 +285,12 @@ function FundSearch({
           {results?.length === 0 && !byName && (
             <p className="text-muted-foreground mt-3 text-sm">
               Nothing found. Try the {noun}'s name{statementAsset ? ", or use the statement's prices" : ""}.
+            </p>
+          )}
+          {results && withheld && (
+            <p className="text-muted-foreground mt-3 text-sm">
+              The asset that holdings imports price from statements for this {noun} isn't listed: detailed imports don't
+              use the statement's prices.
             </p>
           )}
         </div>

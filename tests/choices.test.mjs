@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { importedRefs, planSnapshots, readHoldings, reconcileRecord, security, snapshotOf, undecided, unlistedRefs } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
 import {
-  fundKey, holdingKey, indexSources, investorKey, readFund, readImported, readRecordChoices, readUnlisted, saveFund, saveImported, saveImports,
+  forgetFund, fundKey, holdingKey, indexSources, investorKey, readFund, readImported, readRecordChoices, readUnlisted, saveFund, saveImported, saveImports,
   saveUnlisted, securityKey,
 } from "../src/lib/choices.ts";
 
@@ -22,12 +22,13 @@ function storage() {
     data,
     async get(key) { return data.get(key) ?? null; },
     async set(key, value) { data.set(key, value); },
+    async delete(key) { data.delete(key); },
   };
 }
 
 test("manual pricing metadata is refreshed rather than stored with a fund choice", async () => {
   const store = storage();
-  const choice = { symbol: "FUND", quoteCcy: "INR", name: "Made-up Fund" };
+  const choice = { symbol: "FUND", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Made-up Fund" };
   await saveFund(store, "fund-choice", { ...choice, manual: true });
   assert.deepEqual(JSON.parse(store.data.get("fund-choice")), choice);
   store.data.set("fund-choice", JSON.stringify({ ...choice, manual: true }));
@@ -47,6 +48,103 @@ test("a choice to use the statement's prices is remembered, under the bond's ISI
   assert.equal(holdingKey({ ...nps, isin: "INEZ91A07012" }), "isin:INEZ91A07012");
 });
 
+// A fund confirmed by a detailed import, others, and a holdings import's asset priced from statements.
+const confirmed = { assetId: "asset-f", symbol: "0P0000FLEX", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Fictiva Flexi Cap" };
+const another = { ...confirmed, assetId: "asset-g", symbol: "0P0000FLX2" };
+const handPriced = { symbol: "INFZ90K01FC8", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Fictiva Flexi Cap Fund", statementPrices: true };
+const stored = (store, key) => JSON.parse(store.data.get(key));
+
+test("a holdings import's asset priced from statements keeps the fund a detailed import confirmed, for detailed imports", async () => {
+  const store = storage();
+  const key = "isin:INFZ90K01FC8";
+  await saveFund(store, key, { ...confirmed, manual: false }, true);
+  assert.deepEqual(stored(store, key), confirmed);
+  await saveFund(store, key, { ...handPriced, manual: true });
+  assert.deepEqual(stored(store, key), { ...handPriced, transactions: confirmed });
+  assert.deepEqual(await readFund(store, key), handPriced);
+  assert.deepEqual(await readFund(store, key, true), confirmed);
+  assert.deepEqual(await readRecordChoices(store, [key], new Map()), [handPriced]);
+  // Using the statement's prices again keeps it.
+  await saveFund(store, key, handPriced);
+  assert.deepEqual(stored(store, key), { ...handPriced, transactions: confirmed });
+  // So does a fund the holdings import confirmed, which both kinds of import share until then.
+  await saveFund(store, key, another);
+  assert.deepEqual(stored(store, key), another);
+  await saveFund(store, key, handPriced);
+  assert.deepEqual(await readFund(store, key, true), another);
+  // Without one, a detailed import searches for the fund again.
+  await forgetFund(store, key);
+  await saveFund(store, key, handPriced);
+  assert.deepEqual(stored(store, key), handPriced);
+  assert.equal(await readFund(store, key, true), undefined);
+});
+
+test("a detailed import's choices beside an asset priced from statements change only its own fund", async () => {
+  const store = storage();
+  const key = "isin:INFZ90K01FC8";
+  await saveFund(store, key, handPriced);
+  await saveFund(store, key, confirmed, true);
+  assert.deepEqual(stored(store, key), { ...handPriced, transactions: confirmed });
+  await saveFund(store, key, { ...another, manual: true }, true);
+  assert.deepEqual(stored(store, key), { ...handPriced, transactions: another });
+  // Leaving the fund out in a detailed import forgets only the fund kept for it.
+  await forgetFund(store, key, true);
+  assert.deepEqual(stored(store, key), handPriced);
+  assert.deepEqual(await readFund(store, key), handPriced);
+  assert.equal(await readFund(store, key, true), undefined);
+  const writes = [];
+  const watched = { ...store, set: async (...args) => { writes.push(args); }, delete: async (...args) => { writes.push(args); } };
+  await forgetFund(watched, key, true);
+  assert.deepEqual(writes, []);
+  // A holdings import's choice, and leaving the holding out, are for both kinds of import.
+  await saveFund(store, key, confirmed, true);
+  await forgetFund(store, key);
+  assert.equal(store.data.has(key), false);
+  // A fund both share is forgotten for both too.
+  await saveFund(store, key, confirmed, true);
+  assert.deepEqual(stored(store, key), confirmed);
+  await forgetFund(store, key, true);
+  assert.equal(store.data.has(key), false);
+});
+
+test("a fund kept for detailed imports is read only beside an asset priced from statements, and a failed read writes nothing", async () => {
+  const store = storage();
+  for (const [value, holdings, detailed] of [
+    [{ ...handPriced, transactions: "0P0000FLEX" }, handPriced, undefined],
+    [{ ...handPriced, transactions: { ...confirmed, quoteCcy: undefined } }, handPriced, undefined],
+    ...["name", "instrumentType"].flatMap((field) => [undefined, {}].map((value) =>
+      [{ ...handPriced, transactions: { ...confirmed, [field]: value } }, handPriced, undefined])),
+    [{ ...handPriced, transactions: { ...handPriced, symbol: "OTHER" } }, handPriced, undefined],
+    [{ ...handPriced, transactions: { ...confirmed, manual: true } }, handPriced, confirmed],
+    [{ ...confirmed, transactions: another }, confirmed, confirmed],
+  ]) {
+    store.data.set("choice", JSON.stringify(value));
+    assert.deepEqual(await readFund(store, "choice"), holdings);
+    assert.deepEqual(await readFund(store, "choice", true), detailed);
+    // Saving the statement's prices removes ignored fields and keeps only a valid detailed fund.
+    await saveFund(store, "choice", handPriced);
+    assert.deepEqual(stored(store, "choice"), detailed ? { ...handPriced, transactions: detailed } : handPriced);
+  }
+  store.data.set("choice", JSON.stringify({ ...confirmed, transactions: another }));
+  await saveFund(store, "choice", another, true);
+  assert.deepEqual(stored(store, "choice"), another);
+
+  const writes = [];
+  const failed = {
+    get: async () => { throw new Error("Storage unavailable"); },
+    set: async (...args) => { writes.push(args); },
+    delete: async (...args) => { writes.push(args); },
+  };
+  await assert.rejects(saveFund(failed, "choice", handPriced), /Storage unavailable/);
+  await assert.rejects(saveFund(failed, "choice", confirmed, true), /Storage unavailable/);
+  await assert.rejects(forgetFund(failed, "choice", true), /Storage unavailable/);
+  assert.deepEqual(writes, []);
+  // A holdings import's other choices don't need to read.
+  await saveFund(failed, "choice", confirmed);
+  await forgetFund(failed, "choice");
+  assert.deepEqual(writes, [["choice", JSON.stringify(confirmed)], ["choice"]]);
+});
+
 test("each identifier an import records leads to the key its holding's choice is remembered under", () => {
   const fund = { kind: "fund", isin: "INFZ90K01FC8", rta: "CAMS", rtaCode: "FFCDG", name: "Fund", units: "1", price: "1", value: "1", cost: null };
   const withoutIsin = { ...fund, isin: null };
@@ -59,7 +157,7 @@ test("each identifier an import records leads to the key its holding's choice is
 
 test("record choices use the card's entries, including undecided or left out, and stop on a storage failure", async () => {
   const store = storage();
-  const saved = { assetId: "old-asset", symbol: "OLD", quoteCcy: "INR", name: "Made-up Fund" };
+  const saved = { assetId: "old-asset", symbol: "OLD", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Made-up Fund" };
   const chosen = { ...saved, assetId: "new-asset", symbol: "NEW" };
   for (const key of ["confirmed", "undecided", "left-out", "absent"]) await saveFund(store, key, saved);
   store.data.set("malformed", "{");
