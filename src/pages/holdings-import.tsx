@@ -7,6 +7,7 @@ import {
   assetDetails,
   checkUnits,
   type Choices,
+  existingCost,
   type ExistingSnapshot,
   type HoldingKind,
   type Holdings,
@@ -130,14 +131,13 @@ async function readExisting(api: Api, profileOf: Profiles, accountId: string, da
     // The host sends exchange and pricing mode fields that the SDK's type leaves out.
     const instrument = h.instrument as HostInstrument | null | undefined;
     if (!instrument?.id) throw new Error(`a holding in its snapshot of ${base} has no asset`);
-    const cost = h.costBasis ? Number(h.costBasis.local) : 0;
     existing.positions.push({
       assetId: instrument.id,
       symbol: instrument.symbol,
       ref: refs.get(instrument.id)!,
       name: instrument.name || instrument.symbol,
       units: text(h.quantity),
-      cost: cost !== 0 ? text(h.costBasis!.local) : null,
+      cost: existingCost(h.costBasis),
       currency: h.localCurrency,
       manual: isManual(instrument),
     });

@@ -1,4 +1,4 @@
-import type { ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
+import type { ActivityCharge, ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
 import { plural } from "../lib/plural.ts";
 import { sha256 } from "../lib/sha256.ts";
 import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, step, sub } from "./decimal.ts";
@@ -17,20 +17,6 @@ export interface FundAsset {
   providerId?: string;
   providerSymbol?: string;
 }
-
-/**
- * One labelled part of an import row's fee or tax. Wealthfolio 3.13.0 and newer check that a row's
- * lines add up to its `fee` and `tax`, and keep them with the activity; older versions ignore them.
- * Typed here because @wealthfolio/addon-sdk 3.12.0's `ActivityImport` doesn't have them.
- */
-export interface ActivityCharge {
-  category: "fee" | "tax";
-  label: string;
-  amount: string;
-}
-
-/** An import row with its charge lines. */
-export type ImportRow = ActivityImport & { charges?: ActivityCharge[] };
 
 export interface SchemeTarget {
   accountId: string;
@@ -60,7 +46,7 @@ export interface MappedTransaction {
   scheme: string;
   /** The statement's transaction, then the charges in its `tax`. */
   rows: CasTransaction[];
-  activity: ImportRow;
+  activity: ActivityImport;
   /**
    * The fund account's cash row that balances `activity`: a DEPOSIT or WITHDRAWAL, or a transfer
    * from or to the bank account. A reinvested dividend balances itself.
@@ -177,7 +163,7 @@ interface Entry {
   /** The other side of a gift between two folios of this statement. */
   counterpart?: Entry;
   rows?: {
-    activity: ImportRow;
+    activity: ActivityImport;
     cash?: ActivityImport;
     bank?: ActivityImport;
     /** Imported, with this caveat. */
