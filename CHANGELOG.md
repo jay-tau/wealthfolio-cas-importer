@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Show "Check against transactions" on a summary or depository statement's page only when Wealthfolio has an account that tracks transactions and isn't archived, hidden ones and Not set included: the accounts Check units compares. Before, in a Wealthfolio with none, such as a new profile where a CDSL statement is the first import, the card still sat between the holdings and Preview the snapshots, asking to confirm each holding first for a check with nothing to compare. Add such an account, then choose Read statement again, and it shows. Without an account that tracks holdings either, the Accounts card no longer points to the check
 
 ### Deprecated
 

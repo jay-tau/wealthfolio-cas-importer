@@ -3052,6 +3052,33 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Not set, Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
     assert.deepEqual(await checkRow(balancedName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "3443.91", "3000"]);
     assert.equal(await accountData(), before);
+    // The check shows only while an account it compares exists: an unarchived one that tracks
+    // transactions, Not set and hidden ones included. Each read finds the accounts again.
+    const only = async (...ids) => {
+      await setAccountList(beforeCheck.filter((a) => ids.includes(a.id)));
+      await readHoldingsAgain();
+    };
+    const noHoldingsAccount = "No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then choose Read statement again.";
+    const checkShown = async (shown, what) => {
+      assert.equal(await frame.getByText("Check against transactions", { exact: true }).count(), shown ? 1 : 0, what);
+      assert.equal(await frame.getByRole("button", { name: "Check units", exact: true }).count(), shown ? 1 : 0, what);
+    };
+    await only("holdings-1", "holdings-2");
+    await checkShown(false, "only accounts that track holdings");
+    await only("archived-2", "unset-1");
+    await editAccounts({ "unset-1": { isArchived: true } });
+    await readHoldingsAgain();
+    await checkShown(false, "only archived accounts that track transactions");
+    // Nor does the Accounts card point to it.
+    await frame.getByText(noHoldingsAccount, { exact: true }).waitFor();
+    await editAccounts({ "new-3": { name: "New transactions", trackingMode: "TRANSACTIONS" } });
+    await readHoldingsAgain();
+    await checkShown(true, "a new account that tracks transactions");
+    await frame.getByText(`${noHoldingsAccount} The check against transactions below works without one.`, { exact: true }).waitFor();
+    await only("unset-1");
+    await checkShown(true, "a Not set account");
+    await only("hidden-1");
+    await checkShown(true, "a hidden account that tracks transactions");
     await setAccountList(beforeCheck);
 
     // A summary import creates an AMFI fund without an exchange. Searching its ISIN then finds

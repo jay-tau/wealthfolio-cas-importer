@@ -19,6 +19,7 @@ export function HoldingsAccountsCard({
   accounts,
   choices,
   ignored,
+  checks,
   onChange,
 }: {
   holdings: Holdings;
@@ -27,6 +28,8 @@ export function HoldingsAccountsCard({
   choices: HoldingsAccountChoices;
   /** Remembered choices that are ignored: key → the account. */
   ignored: Record<string, Ignored>;
+  /** Whether the check against transactions is shown below. */
+  checks: boolean;
   onChange: (key: string, value: string) => void;
 }) {
   const statementKey = investorKey(holdings.investor);
@@ -53,7 +56,7 @@ export function HoldingsAccountsCard({
           <>
             <p>
               No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then choose
-              Read statement again. The check against transactions below works without one.
+              Read statement again.{checks && " The check against transactions below works without one."}
             </p>
             {/* Still say why the accounts chosen before are ignored. */}
             {[[statementKey, "All of this statement"], ...holdings.sources.map((s) => [sourceKey(s), s.label])].map(
