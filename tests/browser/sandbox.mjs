@@ -87,6 +87,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const pause = (name) => tab.frames()[1].evaluate((name) => { window.host.pause = name; }, name);
     const waiting = () => tab.frames()[1].waitForFunction(() => window.host.resume);
     const resume = () => tab.frames()[1].evaluate(() => window.host.resume());
+    const hosted = (fn, arg) => tab.frames()[1].evaluate(fn, arg);
     // The fake host's accounts. The add-on sees a change on its next read.
     const accountList = () => tab.frames()[1].evaluate(() => window.host.accounts);
     const setAccountList = (accounts) => tab.frames()[1].evaluate((accounts) => { window.host.accounts = accounts; }, accounts);
@@ -125,13 +126,26 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       assert.equal(await tab.evaluate(() => document.activeElement.tagName), "BODY", what);
       assert.equal(await tab.frames()[1].evaluate(() => document.hasFocus()), false, what);
     };
+    const amfiBanner = frame.getByRole("alert").filter({ hasText: /^Add AMFI prices first/ });
+    const checkAgain = amfiBanner.getByRole("button", { name: "Check again" });
+    // What Check again found, which stays when the banner goes.
+    const amfiOutcome = frame.locator("fieldset > [role=status]");
+    const fileInput = frame.locator("#cas-file");
+    // Shows the same mounted page again, as when it's opened again in Wealthfolio.
+    const revisit = () => hosted(() => window.host.revisit());
+    const providerChecks = () => hosted(() => window.host.providerChecks);
     // A slow secret load cannot override an editable Remember opt-out.
     await waiting();
     assert.equal(await remember.getAttribute("aria-checked"), "false");
     assert.equal(await remember.isDisabled(), true);
     assert.equal(await frame.locator("#cas-password").isDisabled(), true);
     await tab.frames()[1].evaluate(() => window.host.secrets.set("statement-password", "saved-password"));
+    // The banner can go away while the form is locked. Its focus handoff waits for the file input.
+    await amfiBanner.getByRole("button", { name: "Continue without AMFI" }).press("Enter");
+    await amfiBanner.waitFor({ state: "detached" });
     await resume();
+    await frame.locator("#cas-file:enabled").waitFor();
+    await focused(fileInput, "Continue without AMFI during password loading");
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     assert.equal(await remember.getAttribute("aria-checked"), "false");
     assert.deepEqual((await host()).secrets, []);
@@ -140,6 +154,108 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const hint = await frame.locator("#cas-password").getAttribute("aria-describedby");
     assert.equal(await frame.locator(`#${hint}`).textContent(), "Leave it empty for a statement without a password.");
     assert.equal(await frame.getByRole("button", { name: "Read statement", exact: true }).isDisabled(), true);
+
+    // AMFI is off, as in a new profile. Before a statement is read, one banner at the top of the page
+    // asks to add it.
+    await revisit();
+    await amfiBanner.waitFor();
+    assert.equal(await amfiBanner.locator("[data-slot=alert-title]").textContent(), "Add AMFI prices first");
+    assert.equal(
+      await amfiBanner.locator("[data-slot=alert-description] p").textContent(),
+      "AMFI gives official names and daily NAVs for most Indian mutual funds. Without it, many funds only have Yahoo's abbreviated names.",
+    );
+    assert.deepEqual(await amfiBanner.getByRole("button").allTextContents(), ["Open Market data settings", "Check again", "Continue without AMFI"]);
+    assert.equal(await frame.locator("fieldset").first().locator("xpath=*[1]").getAttribute("data-slot"), "alert", "the banner comes first");
+    assert.equal(await amfiOutcome.textContent(), "");
+    // Add-ons can't turn a provider on, so the banner opens Wealthfolio's page where AMFI is added.
+    await amfiBanner.getByRole("button", { name: "Open Market data settings" }).click();
+    await tab.frames()[1].waitForFunction(() => window.host.navigations.length > 0);
+    assert.deepEqual(await hosted(() => window.host.navigations), ["/settings/market-data"]);
+    // Check again says what it found, cleared while it checks so the same outcome is read out again.
+    // While AMFI is off, the banner and the focus stay.
+    for (let i = 0; i < 2; i++) {
+      await pause("providers");
+      await checkAgain.press("Enter");
+      await waiting();
+      assert.equal(await amfiOutcome.textContent(), "");
+      await resume();
+      await amfiOutcome.getByText("AMFI is still off.", { exact: true }).waitFor();
+      await focused(checkAgain, "Check again, AMFI still off");
+    }
+    // Continue without AMFI hides the banner until the page is opened again. The focus goes to the form below it.
+    await amfiBanner.getByRole("button", { name: "Continue without AMFI" }).press("Enter");
+    await amfiBanner.waitFor({ state: "detached" });
+    await focused(fileInput, "Continue without AMFI");
+    assert.equal(await amfiOutcome.textContent(), "");
+    // A handoff waiting for the form to unlock must respect focus moved outside in the meantime.
+    await pause("password");
+    await hosted(() => window.host.reopen());
+    await waiting();
+    await amfiBanner.waitFor();
+    assert.equal(await fileInput.isDisabled(), true);
+    await amfiBanner.getByRole("button", { name: "Continue without AMFI" }).press("Enter");
+    await amfiBanner.waitFor({ state: "detached" });
+    await clickOutside();
+    await resume();
+    await frame.locator("#cas-file:enabled").waitFor();
+    await stayedOutside("Continue without AMFI, focus moved before password loaded");
+    await fileInput.focus();
+    await revisit();
+    await amfiBanner.waitFor();
+    // Without AMFI's entry, without its flag, or when the providers can't be read, Wealthfolio doesn't
+    // say whether AMFI is on, and there's no banner.
+    for (const mode of ["fail", "no-flag", "no-amfi"]) {
+      await hosted((mode) => { window.host.providers = mode; }, mode);
+      await checkAgain.press("Enter");
+      await amfiBanner.waitFor({ state: "detached" });
+      await focused(fileInput, `Check again, ${mode}`);
+      assert.equal(await amfiOutcome.textContent(), "Couldn't check whether AMFI is on.", mode);
+      await hosted(() => { window.host.providers = ""; });
+      await revisit();
+      await amfiBanner.waitFor();
+      assert.equal(await amfiOutcome.textContent(), "", "opened again, the page says nothing about checks before");
+    }
+    // Once AMFI is on, there's no banner either, opened again too.
+    await hosted(() => { window.host.amfi = true; });
+    await checkAgain.press("Enter");
+    await amfiBanner.waitFor({ state: "detached" });
+    await focused(fileInput, "Check again, AMFI on");
+    assert.equal(await amfiOutcome.textContent(), "AMFI is on.");
+    let checks = await providerChecks();
+    await revisit();
+    await tab.frames()[1].waitForFunction((n) => window.host.providerChecks > n, checks);
+    assert.equal(await providerChecks(), checks + 1, "opened again, the page checks again");
+    assert.equal(await amfiOutcome.textContent(), "");
+    assert.equal(await amfiBanner.count(), 0);
+    // When the window gets the focus while AMFI isn't on, the add-on checks again by itself, and says
+    // nothing when it's still off.
+    await hosted(() => { window.host.amfi = false; });
+    await revisit();
+    await amfiBanner.waitFor();
+    for (const amfiOn of [false, true]) {
+      await clickOutside();
+      await hosted((on) => { window.host.amfi = on; }, amfiOn);
+      checks = await providerChecks();
+      await frame.getByRole("heading", { name: "CAS Importer (India)" }).click();
+      await tab.frames()[1].waitForFunction((n) => window.host.providerChecks > n, checks);
+    }
+    await amfiBanner.waitFor({ state: "detached" });
+    assert.equal(await amfiOutcome.textContent(), "");
+    // Once it's on, it doesn't.
+    await clickOutside();
+    checks = await providerChecks();
+    await frame.getByRole("heading", { name: "CAS Importer (India)" }).click();
+    assert.equal(await providerChecks(), checks);
+    // The detailed statement's checks below run with Wealthfolio not saying whether AMFI is on, so the
+    // Funds card keeps its note.
+    await hosted(() => {
+      window.host.amfi = false;
+      window.host.providers = "fail";
+    });
+    checks = await providerChecks();
+    await revisit();
+    await tab.frames()[1].waitForFunction((n) => window.host.providerChecks > n, checks);
+
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
     assert.equal(await frame.locator("#cas-password").inputValue(), "");
     await readButton.press("Enter");
@@ -1303,14 +1419,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await restoreChoices(storageBeforeSegregated);
     await undecided(flexi);
 
-    // With AMFI added, a fund's ISIN finds Yahoo's result and then AMFI's, which
-    // is preselected but still needs confirming. Funds confirmed before keep their choice, unsearched.
+    // With AMFI off, the banner asks to add it, and the Funds card says nothing more about AMFI,
+    // though no fund's search finds AMFI's scheme.
     const beforeAmfi = await tab.frames()[1].evaluate(() => ({
       activities: window.host.activities, assets: window.host.assets, storage: [...window.host.storage], searches: window.host.searches,
       failHistory: window.host.failHistory, rejectLine: window.host.rejectLine, skipLine: window.host.skipLine,
     }));
     await tab.frames()[1].evaluate(() => {
-      window.host.amfi = true;
+      window.host.providers = "";
       window.host.activities = [];
       window.host.failHistory = false;
       window.host.rejectLine = undefined;
@@ -1319,11 +1435,39 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       // Wealthfolio has the Flexi Cap fund, priced from Yahoo.
       window.host.assets["yahoo-flexi"] = { symbol: "INFZ90K01FC8", exchangeMic: "XBOM", instrumentType: "EQUITY", name: "Yahoo Flexi Cap" };
     });
+    await revisit();
+    await amfiBanner.waitFor();
     await readAgain();
     const liquidSection = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
     await undecided(liquidSection);
     const liquidResults = liquidSection.getByRole("radio");
+    for (const section of [liquidSection, flexi, noIsin]) await section.getByRole("radio").first().waitFor({ state: "attached" });
+    await noAmfiNote();
+    assert.equal(await liquidResults.count(), 1);
+    await flexi.getByRole("textbox", { name: /^Search for / }).fill("MULTI");
+    // Once AMFI is added, Check again finds it on and the banner goes. In the same page, with the
+    // statement still read and every choice kept, the funds that have no choice yet are searched again
+    // as when first shown, and now find AMFI's scheme too. A fund's ISIN finds Yahoo's result and then
+    // AMFI's, which is preselected but still needs confirming. Funds confirmed before aren't searched.
+    const statementSummary = await frame.getByText(/ detailed statement for /).elementHandle();
+    const confirmedBefore = await confirmed();
+    await tab.frames()[1].evaluate(() => {
+      window.host.amfi = true;
+      window.host.searches = [];
+    });
+    await checkAgain.press("Enter");
+    await amfiBanner.waitFor({ state: "detached" });
+    await focused(fileInput, "Check again, AMFI added");
+    assert.equal(await amfiOutcome.textContent(), "AMFI is on.");
     await liquidResults.nth(1).waitFor({ state: "attached" });
+    assert.equal(await statementSummary.evaluate((p) => p.isConnected), true, "the same page");
+    assert.equal(await confirmed(), confirmedBefore);
+    assert.equal(await flexi.getByRole("textbox", { name: /^Search for / }).inputValue(), "INFZ90K01FC8");
+    await noIsin.getByRole("radio").first().waitFor({ state: "attached" });
+    assert.deepEqual((await hosted(() => window.host.searches)).sort(), ["INFZ90K01FC8", "INFZ90K01LQ6", "Testbridge Overnight"]);
+    // The fund printed without an ISIN finds no AMFI result, which AMFI's search never gives for a
+    // name, and with AMFI on, the card doesn't recommend it either.
+    await noAmfiNote();
     assert.match(await liquidSection.locator("label").nth(1).textContent(), /^Scheme \d{6} \(\d{6} · MUTUALFUND · INR · AMFI selected\)$/);
     assert.equal(await liquidResults.nth(1).getAttribute("aria-checked"), "true", "AMFI's result is preselected");
     await liquidSection.getByRole("button", { name: "Use this fund" }).click();
@@ -1341,9 +1485,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await flexi.getByRole("radio").first().dispatchEvent("click");
     await flexi.getByRole("button", { name: "Use this fund" }).click();
     await flexi.getByText("Yahoo Flexi Cap").waitFor();
-    // AMFI doesn't search names, so the note stays while the fund printed without an ISIN is the only
-    // one open, and goes once it's left out. Choosing a fund for it again searches again.
+    // When Wealthfolio doesn't say whether AMFI is on, the card's note is back: AMFI doesn't search
+    // names, so the note stays while the fund printed without an ISIN is the only one open, and goes
+    // once it's left out. Choosing a fund for it again searches again.
     await undecided(noIsin);
+    await noAmfiNote();
+    await hosted(() => { window.host.providers = "fail"; });
+    await revisit();
     await amfiNoteShown();
     // A mounted search stops qualifying while it runs, and for a different query's results.
     const overnightSearch = noIsin.getByRole("textbox", { name: /^Search for / });
@@ -1397,7 +1545,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }, beforeAmfi);
 
     // An NSDL statement's holdings go to accounts that track holdings, as snapshots.
-    const hosted = (fn, arg) => tab.frames()[1].evaluate(fn, arg);
     const unindexedAside = `holdings-imported:${createHash("sha256")
       .update("cas-importer holdings imported folio|1040012345|INFZ91T|holdings-2").digest("hex")}`;
     await hosted((key) => {
@@ -3092,7 +3239,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // A summary import creates an AMFI fund without an exchange. Searching its ISIN then finds
     // that asset, even if automatic updates have since been turned off.
     await hosted(() => {
-      window.host.amfi = true;
+      window.host.providers = "";
       window.host.storage.clear();
       window.host.assets = {};
       window.host.snapshots = {};
@@ -3101,8 +3248,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.pricingModes = {};
       window.host.quotes = {};
     });
+    await revisit();
+    await amfiBanner.waitFor();
     await readHoldingsAgain();
     await choose("All of this statement", "Fund folios (INR)");
+    // With AMFI off, the banner says so, and the Holdings card doesn't. Once Check again finds AMFI
+    // on, the card's funds are searched again and find AMFI's schemes.
+    for (const section of await frame.locator("section").all()) await section.getByRole("radio").first().waitFor({ state: "attached" });
+    await noAmfiNote();
+    assert.equal(await frame.locator("section").getByText("AMFI selected").count(), 0);
+    await hosted(() => { window.host.amfi = true; });
+    await checkAgain.click();
+    await amfiBanner.waitFor({ state: "detached" });
     const summaryLiquid = frame.locator("section").filter({ hasText: "ISIN INFZ90K01LQ6" });
     const schemeCodes = [];
     for (const section of await frame.locator("section").all()) {

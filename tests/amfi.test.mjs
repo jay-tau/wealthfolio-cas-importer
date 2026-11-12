@@ -1,7 +1,7 @@
 // Which search result the Funds card preselects when Wealthfolio offers AMFI's.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { fromAmfi, preselected, pricedElsewhere } from "../src/lib/amfi.ts";
+import { amfiStatus, fromAmfi, preselected, pricedElsewhere } from "../src/lib/amfi.ts";
 
 // As Wealthfolio 3.12.0 lists them for a fund's ISIN: Yahoo's listing first, then AMFI's scheme.
 const yahoo = { providerId: "YAHOO" };
@@ -46,4 +46,18 @@ test("an automatic name search preselects nothing", () => {
 
 test("AMFI results", () => {
   assert.deepEqual([yahoo, amfi, existing, existingAmfi].map(fromAmfi), [false, true, false, true]);
+});
+
+test("AMFI's state from Wealthfolio's market data providers", () => {
+  // As Wealthfolio 3.13.0 lists them in a new profile, then after AMFI is added.
+  const yahooOn = { id: "YAHOO", name: "Yahoo Finance", enabled: true };
+  assert.equal(amfiStatus([yahooOn, { id: "AMFI", name: "AMFI", enabled: false }]), "off");
+  assert.equal(amfiStatus([{ id: "AMFI", name: "AMFI", enabled: true }, yahooOn]), "on");
+  // Without AMFI, without its flag, or not a list of providers, Wealthfolio doesn't say.
+  assert.equal(amfiStatus([yahooOn]), "unknown");
+  assert.equal(amfiStatus([]), "unknown");
+  assert.equal(amfiStatus([{ id: "AMFI", name: "AMFI" }]), "unknown");
+  assert.equal(amfiStatus([{ id: "AMFI", enabled: "true" }]), "unknown");
+  assert.equal(amfiStatus([null, 3, { id: "AMFI", enabled: true }]), "on");
+  for (const value of [undefined, null, {}, "AMFI", { id: "AMFI", enabled: true }]) assert.equal(amfiStatus(value), "unknown");
 });

@@ -1,4 +1,11 @@
-import type { Account, ActivityDetails, ActivityImport, AddonContext, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
+import type {
+  Account,
+  ActivityDetails,
+  ActivityImport,
+  AddonContext,
+  AddonRouteLocation,
+  ImportActivitiesResult,
+} from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
 import { useMemo, useRef, useState } from "react";
@@ -32,6 +39,7 @@ import {
   bankFor,
   type Ignored,
 } from "../components/account-choices";
+import { AmfiBanner, useAmfiCheck } from "../components/amfi-banner";
 import { type FundChoice, FundChoicesCard, fundItems, fundsOf } from "../components/fund-choices";
 import { type BankLink, ImportResult, Preview, previewCounts } from "../components/preview";
 import { StatementForm } from "../components/statement-form";
@@ -68,8 +76,10 @@ interface Imported {
   links: BankLink[];
 }
 
-export function ImportPage({ ctx }: { ctx: AddonContext }) {
+/** `location` is the route's, which Wealthfolio passes again each time it shows the page. */
+export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: AddonRouteLocation }) {
   const { api } = ctx;
+  const amfi = useAmfiCheck(api, location);
   // As of the last read: Wealthfolio keeps this page loaded while the user changes accounts elsewhere.
   const [allAccounts, setAllAccounts] = useState<Account[] | null>(null);
   const accounts = allAccounts?.filter((a) => a.isActive && !a.isArchived) ?? null;
@@ -421,7 +431,8 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
       />
       <PageContent>
         <fieldset disabled={busy !== ""} className="min-w-0 space-y-6">
-          <StatementForm ctx={ctx} onClear={clear} onRead={read} disabled={busy !== ""} />
+          <AmfiBanner amfi={amfi} />
+          <StatementForm ctx={ctx} onClear={clear} onRead={read} disabled={busy !== ""} fileRef={amfi.next} />
           {detailed && <StatementSummary data={detailed} />}
           {statement && holdings && remembered && accounts && (
             <HoldingsImport
@@ -436,6 +447,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
               onAccount={chooseAccount}
               fundChoices={fundChoices}
               onFund={chooseFund}
+              amfi={amfi}
               busy={busy}
               setBusy={setBusy}
             />
@@ -460,6 +472,7 @@ export function ImportPage({ ctx }: { ctx: AddonContext }) {
                 ctx={ctx}
                 items={fundItems(data)}
                 choices={fundChoices}
+                amfi={amfi}
                 onChange={(key, choice) => chooseFund(key, choice, true)}
               />
               <div className="flex flex-wrap items-center gap-3">

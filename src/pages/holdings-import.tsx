@@ -31,6 +31,7 @@ import {
 import { engineTimeZone, fundRef } from "../cas/plan";
 import type { Statement } from "../cas/types";
 import type { Ignored } from "../components/account-choices";
+import type { Amfi } from "../components/amfi-banner";
 import { type FundChoice, FundChoicesCard, type FundItem } from "../components/fund-choices";
 import { accountForSource, type HoldingsAccountChoices, HoldingsAccountsCard } from "../components/holdings-accounts";
 import { HoldingsPreview, HoldingsResult, noChoices, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
@@ -312,6 +313,7 @@ export function HoldingsImport({
   onAccount,
   fundChoices,
   onFund,
+  amfi,
   busy,
   setBusy,
 }: {
@@ -328,6 +330,7 @@ export function HoldingsImport({
   onAccount: (key: string, value: string) => void;
   fundChoices: Record<string, FundChoice | undefined>;
   onFund: (key: string, choice: FundChoice | undefined) => void;
+  amfi: Amfi;
   busy: "" | "preview" | "import" | "check";
   setBusy: (busy: "" | "preview" | "import" | "check") => void;
 }) {
@@ -659,6 +662,7 @@ export function HoldingsImport({
         ctx={ctx}
         items={items}
         choices={fundChoices}
+        amfi={amfi}
         onChange={(key, choice) => {
           changed();
           setChecked(null);

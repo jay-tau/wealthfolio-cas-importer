@@ -60,8 +60,8 @@
     },
     {
       "category": "market-data",
-      "functions": ["searchTicker"],
-      "purpose": "Find each asset by the ISIN or name printed on the statement, or by what you type, and check existing assets before using statement prices"
+      "functions": ["searchTicker", "getProviders"],
+      "purpose": "Find each asset by the ISIN or name printed on the statement, or by what you type, check existing assets before using statement prices, and check whether AMFI prices are on, to ask you to add them before reading a statement"
     },
     {
       "category": "quotes",

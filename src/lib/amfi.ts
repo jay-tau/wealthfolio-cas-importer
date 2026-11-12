@@ -25,3 +25,18 @@ export function preselected(results: Result[], byName: boolean): number | undefi
   if (amfi.length === 1 && !results.some(pricedElsewhere)) return amfi[0];
   return results.length === 1 ? 0 : undefined;
 }
+
+/** Whether AMFI is on in Wealthfolio's Settings → Market data, or "unknown" when Wealthfolio doesn't say. */
+export type AmfiStatus = "on" | "off" | "unknown";
+
+/**
+ * AMFI's state from Wealthfolio's market data providers. Wealthfolio 3.13.0 lists every provider
+ * with an `enabled` flag, which the SDK's type doesn't declare, so a list without AMFI, an AMFI entry
+ * without the flag, or anything else that isn't such a list, is "unknown".
+ */
+export function amfiStatus(providers: unknown): AmfiStatus {
+  if (!Array.isArray(providers)) return "unknown";
+  const amfi: unknown = providers.find((provider) => (provider as { id?: unknown } | null)?.id === AMFI);
+  const enabled = (amfi as { enabled?: unknown } | undefined)?.enabled;
+  return typeof enabled === "boolean" ? (enabled ? "on" : "off") : "unknown";
+}

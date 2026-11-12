@@ -80,10 +80,19 @@ search for a fund's ISIN, on detailed, summary and depository statements, finds 
 well as Yahoo's listing, and the add-on preselects AMFI's; confirm it as any other result. AMFI
 finds a fund only by its exact ISIN or AMFI scheme code, in its current list of schemes: some closed
 or merged schemes aren't in it, and an ISIN listed under more than one scheme code finds nothing.
-While the search for a fund's ISIN, or for the name of one printed without it, finds no AMFI result,
-the Funds or Holdings card shows one note below its introduction: it recommends AMFI, says to add it
-in **Settings** → **Market data** if it isn't on, and to enter each fund's ISIN or AMFI scheme code
-in its search box and press **Search**.
+
+While AMFI is off, a banner at the top of the add-on's page says so before you read a statement. Add-ons
+can't turn AMFI on, so its **Open Market data settings** button opens **Settings** → **Market data**,
+where **Add provider** adds it. **Check again** checks whether it's on now, and **Continue without
+AMFI** hides the banner until you open the page again. The add-on also checks each time you open its
+page, and when its window gets the focus while AMFI isn't on. Once a check finds AMFI on, the banner
+goes, and each fund that has no choice yet is searched again as when it was first shown, so its
+search finds AMFI's scheme too. The statement stays read, and the funds confirmed or left out stay
+as they are. When Wealthfolio doesn't say whether AMFI is on, there's no banner. Instead, while the
+search for a fund's ISIN, or for the name of one printed without it, finds no AMFI result, the Funds
+or Holdings card shows one note below its introduction: it recommends AMFI, says to add it in
+**Settings** → **Market data** if it isn't on, and to enter each fund's ISIN or AMFI scheme code in
+its search box and press **Search**.
 
 A fund Wealthfolio already has, priced from Yahoo or from statements, isn't switched: the add-on
 doesn't preselect AMFI's result for it, since picking that adds a second asset for the fund. To

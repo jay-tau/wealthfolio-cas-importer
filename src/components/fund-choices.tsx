@@ -22,6 +22,7 @@ import { fundName, fundQuery, type PlanAndOption, planAndOption } from "../lib/f
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
 import { plural } from "../lib/plural";
+import type { Amfi } from "./amfi-banner";
 
 /** Undefined while undecided. */
 export type FundChoice = { fund: ChosenFund } | { leftOut: true };
@@ -154,6 +155,7 @@ function FundSearch({
   item,
   label,
   searchRef,
+  searchAgain,
   onChoose,
   onLeaveOut,
   onNoAmfi,
@@ -162,6 +164,8 @@ function FundSearch({
   item: FundItem;
   label: string;
   searchRef: RefCallback<HTMLInputElement>;
+  /** A change searches again as when the fund was first shown. */
+  searchAgain: number;
   onChoose: (fund: ChosenFund) => void;
   onLeaveOut: () => void;
   /** Called with true while the fund's own search finds no AMFI result, and with false after. */
@@ -184,7 +188,8 @@ function FundSearch({
   // readers which fund it's for. Browsers read a space before hidden text, so it starts with a word.
   const forItem = <span className="sr-only"> for {label}</span>;
   const plan = statementPlan(item);
-  const [query, setQuery] = useState(isin ?? name);
+  const first = isin ?? name;
+  const [query, setQuery] = useState(first);
   const [results, setResults] = useState<SymbolSearchResult[] | null>(null);
   const [picked, setPicked] = useState<string>("");
   const [searching, setSearching] = useState(false);
@@ -241,10 +246,15 @@ function FundSearch({
     }
   };
 
-  // Search the printed ISIN, or the fund's name when there's none, once, when the fund is first shown.
+  // Search the printed ISIN, or the fund's name when there's none, when the fund is first shown, and
+  // again when `searchAgain` changes, in place of what the search box holds.
+  const searched = useRef<number | null>(null);
   useEffect(() => {
-    void search(query);
-  }, []);
+    if (searched.current === searchAgain) return;
+    if (searched.current !== null) setQuery(first);
+    searched.current = searchAgain;
+    void search(first);
+  }, [searchAgain]);
 
   // The printed ISIN, or the name of a fund printed without one, finds no AMFI result: AMFI may not
   // be added in Wealthfolio. Other search terms say nothing about AMFI.
@@ -364,6 +374,7 @@ export function FundChoicesCard({
   ctx,
   items,
   choices,
+  amfi,
   onChange,
   title = "Funds",
   intro = "Check that each fund found matches the statement's name, plan and option, then choose Use this fund. This is only needed the first time: the add-on remembers each fund you confirm.",
@@ -371,6 +382,11 @@ export function FundChoicesCard({
   ctx: AddonContext;
   items: FundItem[];
   choices: Record<string, FundChoice | undefined>;
+  /**
+   * Whether AMFI is on. The page's banner says when it's off, so the card's note is only for when
+   * Wealthfolio doesn't say. Once it's turned on, the funds without a choice are searched again.
+   */
+  amfi: Amfi;
   onChange: (key: string, choice: FundChoice | undefined) => void;
   title?: string;
   intro?: string;
@@ -388,7 +404,7 @@ export function FundChoicesCard({
       <CardHeader>
         <CardTitle>{title}</CardTitle>
         <p className="text-muted-foreground text-sm">{intro}</p>
-        {noAmfi.length > 0 && (
+        {noAmfi.length > 0 && amfi.status === "unknown" && (
           <p className="text-muted-foreground text-sm">
             We recommend AMFI for daily fund prices. Before confirming, add it in Settings → Market data if it isn't on.
             In each fund's search box, enter its ISIN or AMFI scheme code and press Search.
@@ -444,6 +460,7 @@ export function FundChoicesCard({
                   item={item}
                   label={label}
                   searchRef={focus.target(key)}
+                  searchAgain={item.noun === "fund" ? amfi.searches : 0}
                   onChoose={(fund) => choose(key, { fund })}
                   onLeaveOut={() => choose(key, { leftOut: true })}
                   onNoAmfi={(missing) =>

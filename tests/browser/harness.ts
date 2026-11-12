@@ -1,7 +1,8 @@
 // Runs inside the sandboxed iframe that tests/browser/sandbox.mjs builds. The page posts the
 // packaged files as Blobs; this stands in for ctx.assets and drives the real CasParser, then
 // mounts the import page on a fake host: accounts tracking transactions or holdings, some of them
-// hidden or archived, in-memory storage, secrets and snapshots, a fund search, recorded error toasts, and
+// hidden or archived, in-memory storage, secrets and snapshots, a fund search, market data providers,
+// recorded navigation and error toasts, and
 // an import that stores rows the way Wealthfolio returns them. Snapshot saves write a manual
 // asset's average cost as its quote for the day, and profile updates store every field as sent,
 // both as Wealthfolio does. The parser's Workers can be made to stall or stop. Wealthfolio's own
@@ -112,6 +113,15 @@ const host = {
   emptySearchQueries: [] as string[],
   // AMFI added in Wealthfolio's Settings → Market data. Off until a test adds it, as in a new profile.
   amfi: false,
+  // How the market data providers are listed: as Wealthfolio 3.13.0 does, with AMFI's `enabled`
+  // flag, or without AMFI, without the flag, or not at all.
+  providers: "" as "" | "no-amfi" | "no-flag" | "fail",
+  providerChecks: 0,
+  // Routes the add-on opened in Wealthfolio.
+  navigations: [] as string[],
+  // Shows the same mounted page again, as Wealthfolio does when the page is opened again: the add-on's
+  // frame stays loaded while another page is shown, and the page gets its route's location again.
+  revisit: () => {},
   failGetProfileIds: [] as string[],
   failProfileIds: [] as string[],
   failSnapshotAccounts: [] as string[],
@@ -591,7 +601,17 @@ const api = {
       return [];
     },
   },
-  market: { searchTicker: async (query: string) => {
+  market: { getProviders: async () => {
+    host.providerChecks++;
+    await wait("providers");
+    if (host.providers === "fail") throw new Error("Providers unavailable");
+    const amfi = { id: "AMFI", name: "AMFI", logoFilename: "amfi.svg", lastSyncedDate: null, enabled: host.amfi };
+    if (host.providers === "no-flag") delete (amfi as Partial<typeof amfi>).enabled;
+    return [
+      { id: "YAHOO", name: "Yahoo Finance", logoFilename: "yahoo-finance.png", lastSyncedDate: null, enabled: true },
+      ...(host.providers === "no-amfi" ? [] : [amfi]),
+    ];
+  }, searchTicker: async (query: string) => {
     host.searches.push(query);
     await wait("market");
     await wait(query);
@@ -661,6 +681,7 @@ const api = {
     delete: async (key: string) => void host.secrets.delete(key),
   },
   toast: { success() {}, error: (message: string) => void host.toasts.push(message), warning() {}, info() {} },
+  navigation: { navigate: async (route: string) => void host.navigations.push(route) },
   logger: { error() {}, warn() {}, info() {}, debug() {}, trace() {} },
   query: { invalidateQueries() {}, refetchQueries() {} },
   settings: {
@@ -704,7 +725,9 @@ window.addEventListener("message", async ({ data }) => {
   const root = createRoot(document.body.appendChild(document.createElement("div")));
   const ctx = { assets, api } as unknown as AddonContext;
   let opens = 0;
-  host.reopen = () => flushSync(() => root.render(createElement(ImportPage, { ctx, key: opens++ })));
+  const location = () => ({ pathname: "/addons/cas-importer", search: "", hash: "", params: {} });
+  host.reopen = () => flushSync(() => root.render(createElement(ImportPage, { ctx, location: location(), key: ++opens })));
+  host.revisit = () => flushSync(() => root.render(createElement(ImportPage, { ctx, location: location(), key: opens })));
   host.reopen();
   parent.postMessage({ result }, "*");
 });
