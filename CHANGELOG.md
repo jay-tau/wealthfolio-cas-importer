@@ -8,16 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+
+### Changed
+
+### Deprecated
+
+### Removed
+
+### Fixed
+
+### Security
+
+## [3.0.0] - 2026-11-12
+
+### Added
 - Send each transaction's stamp duty, STT and TDS to Wealthfolio as tax lines labelled "Stamp duty", "STT" and "TDS", which add up to its tax. Wealthfolio keeps them with the activity and lists them under the tax in its details; they change no figure. Activities imported earlier keep only the total: importing the statement again doesn't add the lines
 - Give each activity a detailed statement imports an ID made from its statement row, which Wealthfolio 3.13.0 keeps: a hash of the folio number, the date, the units and the amount, numbered when equal transaction rows repeat; charge and unsupported rows don't advance the count. The fund isn't part of it, since one statement can omit a fund's ISIN or print another registrar code than another. The trade, its cash and the bank account's side each have their own. A later import finds each row by its ID in the same account, even after the activity is edited, so equal transactions in one account each go in once: the same purchase on one day in two folios, two equal purchases on one day in one folio, or two funds' purchases whose deposits are equal. Before, the second was a possible duplicate that needed "Import anyway", and Wealthfolio couldn't tell the forced copy apart afterwards. Activities imported by version 2.2.0 or earlier, or entered by hand, are still found by their values, each for one row, so importing an earlier statement again adds nothing twice; Wealthfolio can still report an equal row as a duplicate of one of them, and "Import anyway" imports it with its ID. Each activity's metadata keeps the folio number, the registrar, casparser's type for the row and the statement's description, with anything shaped like a PAN replaced by `[PAN]`
 
 ### Changed
 - Require Wealthfolio 3.13.0 or newer, which keeps the statement's name of a fund the import adds when the fund's Yahoo listing has no name ([wealthfolio/wealthfolio#2265](https://github.com/wealthfolio/wealthfolio/issues/2265)). Before, once Wealthfolio fetched the fund's profile after the import, it renamed the fund to its Yahoo ticker. A fund whose profile has a name still takes that name. Older versions refuse to install this version; Wealthfolio 3.12.0's desktop app does so without a message
 - Count Wealthfolio's import check of a trade in a new fund chosen from AMFI like any other row's: an error keeps the transaction out, and the preview shows it. Wealthfolio 3.13.0's check accepts such a fund without an exchange ([wealthfolio/wealthfolio#2461](https://github.com/wealthfolio/wealthfolio/issues/2461)). Before, the add-on ignored a symbol error for such a trade, the one Wealthfolio 3.12.0's check gave each of them, and offered the transaction as new
-
-### Deprecated
-
-### Removed
 
 ### Fixed
 - Show, search for and name a fund in a CDSL statement's CDSL demat account by its scheme name, without the fund house's company name and "#" that the statement prints before it: "FICTIVA ASSET MANAGEMENT PVT LTD # FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH" now reads "FICTIVA BALANCED ADVANTAGE FUND - DIRECT PLAN GROWTH" on the Holdings card, in the Left out alert and in Check units. When its ISIN finds nothing, the search now looks for "FICTIVA BALANCED ADVANTAGE"; before, it kept the company name and "#", which can leave Yahoo's search with no results. "Use the statement's prices" names a new asset, and its row in the preview, the same way. The asset's printed details keep the name as printed, and an asset an earlier import created keeps its name. Funds in an NSDL demat account within a CDSL statement, and in other statements, keep their names as printed
@@ -26,8 +36,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Search for a main fund whose name counts its segregated portfolios by its own name, like any other fund's, when its printed ISIN finds nothing or none is printed. AMFI's names count them in notes such as "(No. of segregated portfolios-3)", "(no. of segregated portfolio-1)", "(Existing Number of Segregated Portfolios - 1)" or "(the scheme has 2 segregated portfolios)": "Fictiva Credit Risk Fund (No. of segregated portfolios-3) - Direct Plan - Growth" is now searched as "Fictiva Credit Risk". Before, the search added "segregated portfolio" to the name, which asks for a segregated portfolio the fund isn't. A segregated portfolio's search still keeps "Segregated Portfolio" and its number, wherever its name puts them
 - Keep the fund confirmed for detailed imports when a holdings import uses the statement's prices for the same ISIN or scheme. Beside that choice, a detailed import's choices and leaving the fund out change only its own fund. Detailed searches leave out the existing asset priced by hand under the statement's symbol, with no exchange, and explain why. Before, choosing the statement's prices replaced the detailed import's fund, and its next search could preselect that asset. Using it put transactions under a different asset and could offer reinvested dividends again when their earlier activities had no source IDs: imports by add-on 2.2.0 or earlier, imports on Wealthfolio before 3.13.0, or entries by hand. A detailed fund already lost must be chosen again. A plain choice saved by an older version after picking the asset priced by hand still comes back confirmed; choose Change to replace it
 - Import a main fund whose name counts its segregated portfolios in AMFI's singular note, such as "Fictiva Ultra Short Bond Fund (no. of segregated portfolio-1) - Direct Plan - Growth", as a main fund. Before, the add-on read it as a segregated portfolio: its redemptions got the note on a segregated portfolio's payouts, and beside the same fund printed without the note, both confirmed as the same Wealthfolio asset, its transactions were left out. A note counting several, such as "(No. of segregated portfolios-3)", already counted as a main fund's. A scheme is still a segregated portfolio when the statement credits its units in a segregated portfolio row, or when its name has its own "Segregated Portfolio" marker, after such a note too
-
-### Security
 
 ## [2.2.0] - 2026-11-11
 
