@@ -230,10 +230,12 @@ test("the Holdings card names CDSL demat funds without their fund house, short n
   const printed = data.accounts[0].mutual_funds.find((f) => f.isin === fund.isin).name;
   const priced = { ...fund.statementAsset, name: printed };
   const listed = { symbol: "0P0000FBAD", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Fictiva Balanced Advantage Dir Gr" };
-  for (const [choice, shown] of [[priced, fund.name], [listed, listed.name]]) {
+  for (const [choice, shown, source] of [[priced, fund.name, "Statement prices"], [listed, listed.name, "Unknown source"]]) {
     const confirmed = { ctx: {}, items: [fund], choices: { [fund.key]: { fund: choice } }, amfi: { status: "unknown", searches: 0 } };
     assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.FundChoicesCard, confirmed))));
-    assert.ok(text("FundChoicesCard", confirmed).includes(` Confirmed ${shown} Direct Growth (${choice.symbol} `), shown);
+    const shownCard = text("FundChoicesCard", confirmed);
+    assert.ok(shownCard.includes(` Confirmed ${shown} Direct Growth `), shown);
+    assert.ok(shownCard.includes(` ${source} Details Symbol ${choice.symbol} · `), shown);
   }
 });
 

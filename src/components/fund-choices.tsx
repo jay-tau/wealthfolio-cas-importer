@@ -12,12 +12,13 @@ import {
   RadioGroupItem,
   Spinner,
 } from "@wealthfolio/ui";
-import { Fragment, type RefCallback, useEffect, useRef, useState } from "react";
+import { Fragment, type ReactNode, type RefCallback, useEffect, useRef, useState } from "react";
 import { isStatementAsset, statementSymbol } from "../cas/holdings";
 import type { CasData, CasScheme } from "../cas/types";
 import { fromAmfi, preselected, pricedElsewhere } from "../lib/amfi";
 import { type ChosenFund, fundKey } from "../lib/choices";
 import { useFocusMove } from "../lib/focus";
+import { codes, listingName, priceSource, unnamed } from "../lib/fund-label";
 import { fundName, fundQuery, type PlanAndOption, planAndOption } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
@@ -61,19 +62,6 @@ export const otherCurrency = (quoteCcy: string | undefined, asset = "this asset"
     ? `The statement's prices and amounts are in rupees, but ${asset} is quoted in ${quoteCcy}. Check that it's the right listing.`
     : undefined;
 
-/** A non-rupee currency is a warning badge instead, so it isn't listed twice. */
-const describe = (fund: ChosenFund) =>
-  [
-    fund.symbol,
-    fund.exchangeMic,
-    fund.instrumentType,
-    !otherCurrency(fund.quoteCcy) && fund.quoteCcy,
-    fromAmfi(fund) && "AMFI selected",
-    fund.statementPrices && "priced from statements",
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
 /** A search result's or confirmed fund's currency as a warning badge, with a space before it, unless it's rupees. */
 function CurrencyBadge({ fund }: { fund: ChosenFund }) {
   if (!otherCurrency(fund.quoteCcy)) return null;
@@ -105,6 +93,46 @@ function PlanBadges({ own, statement }: { own: PlanAndOption; statement?: PlanAn
       </Fragment>
     );
   });
+}
+
+/**
+ * A search result's or confirmed fund's name, then badges for the plan and option it gives beside a
+ * statement's fund, and its currency unless it's rupees. A listing its provider didn't name shows
+ * as one: the statement's name and plan and option would only be a guess.
+ */
+function ListingName({ fund, plan }: { fund: ChosenFund; plan?: PlanAndOption }) {
+  const name = listingName(fund);
+  return (
+    <>
+      {name ?? unnamed(fund)}
+      {plan &&
+        (name ? (
+          <PlanBadges own={planAndOption(name)} statement={plan} />
+        ) : (
+          <>
+            {" "}
+            <Badge variant="warning-subtle">Plan and option unknown</Badge>
+          </>
+        ))}
+      <CurrencyBadge fund={fund} />
+    </>
+  );
+}
+
+/**
+ * The symbol, exchange, type and currency behind a search result or confirmed fund, behind a
+ * disclosure. `of` names whose they are, for screen readers: in a label, not hidden text, so the
+ * result's name isn't in the page's text twice.
+ */
+function Codes({ fund, of }: { fund: ChosenFund; of: string }) {
+  return (
+    <details className="text-muted-foreground text-sm">
+      <summary className="w-fit cursor-pointer" aria-label={`Details of ${of}`}>
+        Details
+      </summary>
+      <p>{codes(fund)}</p>
+    </details>
+  );
 }
 
 /** The statement's funds, one entry per fund however many folios hold it. */
@@ -265,6 +293,8 @@ function FundSearch({
     return () => onNoAmfi(false);
   }, [noAmfi]);
 
+  const funds = results?.map(choiceOf);
+  const names = funds?.map((fund) => ({ name: listingName(fund) ?? unnamed(fund) })) ?? [];
   const result = picked === "" ? undefined : results?.[Number(picked)];
   return (
     <div className="grid gap-3">
@@ -325,27 +355,38 @@ function FundSearch({
           fund's ISIN or scheme code.
         </p>
       )}
-      {results && results.length > 0 && (
+      {funds && funds.length > 0 && (
         <RadioGroup
           aria-label={`Search results for ${label}`}
           value={picked}
           onValueChange={(value) => setPicked(String(value))}
           className="grid gap-2"
         >
-          {results.map((r, i) => {
-            const fund = choiceOf(r);
+          {funds.map((fund, i) => {
             const currency = otherCurrency(fund.quoteCcy);
+            const source = priceSource(fund);
+            const number = nameNumber(names, i, "listing");
             return (
-              <Label key={`${r.symbol} ${r.exchangeMic} ${i}`} className="flex items-center gap-2 font-normal">
-                <RadioGroupItem value={String(i)} />
-                <span>
-                  {r.longName || r.shortName}
-                  {plan && <PlanBadges own={planAndOption(r.longName || r.shortName || "")} statement={plan} />}
-                  <CurrencyBadge fund={fund} />{" "}
-                  <span className="text-muted-foreground">({describe(fund)})</span>
-                  {currency && <span className="text-muted-foreground block">{currency}</span>}
-                </span>
-              </Label>
+              <div key={`${fund.symbol} ${fund.exchangeMic} ${i}`} className="grid gap-1">
+                <Label className="flex items-start gap-2 leading-snug font-normal">
+                  <RadioGroupItem value={String(i)} className="mt-0.5" />
+                  <span>
+                    <ListingName fund={fund} plan={plan} />
+                    {/* Spaces keep the lines apart in the radio's name, whatever the CSS. */}{" "}
+                    <span className="text-muted-foreground block">{source}</span>
+                    {currency && (
+                      <>
+                        {" "}
+                        <span className="text-muted-foreground block">{currency}</span>
+                      </>
+                    )}
+                    {number && <span className="sr-only">{number}</span>}
+                  </span>
+                </Label>
+                <div className="ms-6">
+                  <Codes fund={fund} of={`${listingName(fund) ?? unnamed(fund)}${number}, ${source}, for ${label}`} />
+                </div>
+              </div>
             );
           })}
         </RadioGroup>
@@ -366,6 +407,68 @@ function FundSearch({
           {forItem}
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Where a confirmed fund's prices come from, or undefined while that's read. A remembered choice
+ * doesn't keep its saved asset's pricing mode, which can change in Wealthfolio, so it's read again;
+ * if that fails, the choice's provider says.
+ */
+function useSource(ctx: AddonContext, fund: ChosenFund) {
+  const id = fund.manual === undefined && !fund.statementPrices ? fund.assetId : undefined;
+  const [read, setRead] = useState<{ id: string; manual?: boolean }>();
+  useEffect(() => {
+    if (!id) return;
+    let current = true;
+    ctx.api.assets.getProfile(id).then(
+      (asset) => {
+        const mode = (asset as typeof asset & { pricingMode?: string | null }).pricingMode ?? asset.quoteMode;
+        if (current) setRead({ id, manual: mode === "MANUAL" });
+      },
+      () => {
+        if (current) setRead({ id });
+      },
+    );
+    return () => {
+      current = false;
+    };
+  }, [id]);
+  if (!id) return priceSource(fund);
+  return read?.id === id ? priceSource({ ...fund, manual: read.manual }) : undefined;
+}
+
+/** A confirmed fund: its name and badges, `children` (its Change button), then where its prices come from. */
+function ConfirmedFund({
+  ctx,
+  fund,
+  plan,
+  of,
+  children,
+}: {
+  ctx: AddonContext;
+  fund: ChosenFund;
+  plan?: PlanAndOption;
+  /** Whose details these are, for screen readers. */
+  of: string;
+  children: ReactNode;
+}) {
+  const source = useSource(ctx, fund);
+  const currency = otherCurrency(fund.quoteCcy);
+  return (
+    <div className="grid gap-1">
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge variant="success-subtle">Confirmed</Badge>
+        <span>
+          <ListingName fund={fund} plan={plan} />
+        </span>
+        {children}
+      </div>
+      {/* Keeps its line while the pricing mode is read, so nothing below it moves. */}
+      <p className="text-muted-foreground text-sm">{source ?? "\u00a0"}</p>
+      {currency && <p className="text-muted-foreground text-sm">{currency}</p>}
+      <Codes fund={fund} of={of} />
     </div>
   );
 }
@@ -419,7 +522,6 @@ export function FundChoicesCard({
           // A remembered statement-price choice can predate a corrected statement name, which imports use (`planSnapshots`).
           const choice = stored && "fund" in stored && stored.fund.statementPrices ? { fund: { ...stored.fund, name: item.name } } : stored;
           const plan = statementPlan(item);
-          const currency = choice && "fund" in choice ? otherCurrency(choice.fund.quoteCcy) : undefined;
           return (
             <section key={key} className="grid gap-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -431,21 +533,11 @@ export function FundChoicesCard({
                 {item.where && ` · ${item.where}`}
               </p>
               {choice && "fund" in choice ? (
-                <>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Badge variant="success-subtle">Confirmed</Badge>
-                    <span>
-                      {choice.fund.name}
-                      {plan && <PlanBadges own={planAndOption(choice.fund.name)} statement={plan} />}
-                      <CurrencyBadge fund={choice.fund} />{" "}
-                      <span className="text-muted-foreground">({describe(choice.fund)})</span>
-                    </span>
-                    <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
-                      Change<span className="sr-only"> the {item.noun} for {label}</span>
-                    </Button>
-                  </div>
-                  {currency && <p className="text-muted-foreground text-sm">{currency}</p>}
-                </>
+                <ConfirmedFund ctx={ctx} fund={choice.fund} plan={plan} of={`the ${item.noun} confirmed for ${label}`}>
+                  <Button ref={focus.target(key)} type="button" variant="link" size="sm" onClick={() => choose(key, undefined)}>
+                    Change<span className="sr-only"> the {item.noun} for {label}</span>
+                  </Button>
+                </ConfirmedFund>
               ) : choice ? (
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant="secondary">Left out</Badge>
