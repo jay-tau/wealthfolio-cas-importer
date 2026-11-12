@@ -1208,6 +1208,14 @@ describe("segregated portfolios", () => {
     "A payout from a segregated portfolio: Wealthfolio counts its gain against the cost it has for these units, a stand-in ₹0 if the add-on imported them. For tax, they cost a share of the main portfolio units' cost and are held from when those were bought.";
   const payout = tx("2024-09-20", "REDEMPTION", "-30.00", "-50.000", "0.6000", { description: "Payment - Units Extinguished" });
   const messages = (mapping) => mapping.warnings.map((w) => [w.scheme, w.rows.map((row) => row.type), w.leftOut, w.message]);
+  // Every scheme confirmed as the main fund's asset.
+  const sameAsset = (data) => map(data, {
+    target: (folio, s) => ({ ...input().target(folio, s), asset: { ...input().target(folio, s).asset, symbol: "INF-M" } }),
+  });
+  const confirmedAs = (main) =>
+    `This segregated portfolio is confirmed as the same Wealthfolio asset as ${main}, so its transactions are left out. Under Funds, confirm the segregated portfolio's own fund: search its ISIN or AMFI scheme code.`;
+  /** A made-up name as printed, in upper case and in lower case. */
+  const cases = (name) => [name, name.toUpperCase(), name.toLowerCase()];
 
   test("units credited are a purchase of the segregated portfolio's own fund with a zero total and no cash", () => {
     const mapping = map(pair([bought], [credit()]));
@@ -1291,10 +1299,7 @@ describe("segregated portfolios", () => {
   });
 
   test("a segregated portfolio confirmed as its main fund is left out, with the payouts it would sell", () => {
-    const sameAsset = (data) => map(data, {
-      target: (folio, s) => ({ ...input().target(folio, s), asset: { ...input().target(folio, s).asset, symbol: "INF-M" } }),
-    });
-    const left = "This segregated portfolio is confirmed as the same Wealthfolio asset as Made-up Credit Risk Fund - Direct Plan - Growth, so its transactions are left out. Under Funds, confirm the segregated portfolio's own fund: search its ISIN or AMFI scheme code.";
+    const left = confirmedAs(MAIN);
     const mapping = sameAsset(pair([bought], [credit(), payout]));
     assert.deepEqual(mapping.transactions.map((t) => t.scheme), [MAIN]);
     assert.deepEqual(messages(mapping), [[SEGREGATED, [], true, left]]);
@@ -1316,6 +1321,50 @@ describe("segregated portfolios", () => {
       { ...statement().folios[0], folio: "F2", schemes: [scheme("S", [credit()], { scheme: SEGREGATED })] },
     ] });
     assert.deepEqual(twice.transactions.map((t) => t.activity.quantity), ["100.000", "100.000", "100.000"]);
+  });
+
+  test("a main fund whose name counts its segregated portfolios is a main fund", () => {
+    const sold = tx("2024-09-20", "REDEMPTION", "-550.00", "-50.000", "11.0000");
+    // AMFI's count notes, and singular counts with other spacing or wording.
+    const counted = [
+      "Fictiva Ultra Short Bond Fund (no. of segregated portfolio-1) - Direct Plan - Growth",
+      "Fictiva Ultra Short Bond Fund (No.of Segregated Portfolio-1) - Direct Plan - Growth",
+      "Fictiva Credit Risk Fund (Existing Number of Segregated Portfolio - 1) - Regular Plan - Growth",
+      "Fictiva Credit Risk Fund (No. of segregated portfolios-3) - Direct Plan - Growth",
+      "Fictiva Credit Risk Fund (Existing Number of Segregated Portfolios - 2) - Regular Plan - Growth",
+      "Fictiva Short Term Fund (the scheme has 2 segregated portfolios) - Regular Plan - Growth",
+    ];
+    for (const name of counted.flatMap(cases)) {
+      // Its redemption is a plain sale, with no segregated portfolio's payout note.
+      const alone = map(statement(scheme("M", [bought, sold], { scheme: name })));
+      assert.deepEqual(summary(alone), { rows: [["BUY", "", "100.000", "1000", "", "DEPOSIT"], ["SELL", "", "50.000", "550", "", "WITHDRAWAL"]], warnings: [] }, name);
+      // Beside the same fund printed without the note, both confirmed as the same asset, both folios import.
+      const plain = name.replace(/ \([^()]*\)/, "");
+      const twoFolios = map({ ...statement(), folios: [
+        { ...statement().folios[0], schemes: [scheme("M", [bought, sold], { scheme: name })] },
+        { ...statement().folios[0], folio: "F2", schemes: [scheme("M", [bought, sold], { scheme: plain })] },
+      ] });
+      assert.deepEqual(twoFolios.transactions.map((t) => [t.scheme, t.activity.symbol, t.activity.activityType]), [
+        [name, "INF-M", "BUY"], [name, "INF-M", "SELL"], [plain, "INF-M", "BUY"], [plain, "INF-M", "SELL"],
+      ], name);
+      assert.deepEqual(twoFolios.warnings, [], name);
+    }
+  });
+
+  test("a segregated portfolio's own marker after a note counting its main fund's still makes it one", () => {
+    for (const note of ["(no. of segregated portfolio-1)", "(No. of segregated portfolios-3)"]) {
+      const mains = cases(`Fictiva Credit Risk Fund ${note} - Direct Plan - Growth`);
+      const portfolios = cases(`Fictiva Credit Risk Fund ${note} - Segregated Portfolio 2 - Direct Plan - Growth`);
+      for (const [main, portfolio] of mains.map((main, i) => [main, portfolios[i]])) {
+        // A statement that starts after the credit, so no SEGREGATION row: its payout gets the note.
+        const data = statement(scheme("M", [bought], { scheme: main }), scheme("S", [payout], { scheme: portfolio, open: "100.000" }));
+        assert.deepEqual(messages(map(data)), [[portfolio, ["REDEMPTION"], false, PAYOUT]], portfolio);
+        // Confirmed as the same Wealthfolio asset as its main fund, it's left out.
+        const left = sameAsset(data);
+        assert.deepEqual(left.transactions.map((t) => t.scheme), [main], portfolio);
+        assert.deepEqual(messages(left), [[portfolio, [], true, confirmedAs(main)]], portfolio);
+      }
+    }
   });
 
   test("the made-up statement's segregated portfolio ends at its closing balance, with its payout sold at its NAV", async () => {

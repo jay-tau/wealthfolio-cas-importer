@@ -3,6 +3,14 @@
 const SEGREGATED = /(?<!\b(?:no\.?|number)\s*of\s+)\bsegregated\s+portfolio\b(?:[\s-]*(?:\d+|[IVX]+\b))?/i;
 
 /**
+ * Whether a scheme's name has a segregated portfolio's own "Segregated Portfolio" marker, in any
+ * case. A main fund's note that counts its segregated portfolios, singular or plural, isn't one.
+ */
+export function hasSegregatedMarker(scheme: string) {
+  return SEGREGATED.test(scheme);
+}
+
+/**
  * The scheme name up to the first " - ", without anything in parentheses, whether the name goes on
  * past a " - ", and its segregated portfolio's marker, wherever it is.
  */
