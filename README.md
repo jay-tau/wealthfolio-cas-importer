@@ -101,9 +101,18 @@ goes, and each fund that has no choice yet is searched again as when it was firs
 search finds AMFI's scheme too. The statement stays read, and the funds confirmed or left out stay
 as they are. When Wealthfolio doesn't say whether AMFI is on, there's no banner. Instead, while the
 search for a fund's ISIN, or for the name of one printed without it, finds no AMFI result, the Funds
-or Holdings card shows one note below its introduction: it recommends AMFI, says to add it in
+card shows one note below its introduction: it recommends AMFI, says to add it in
 **Settings** → **Market data** if it isn't on, and to enter each fund's ISIN or AMFI scheme code in
 its search box and press **Search**.
+
+On a summary or depository statement's Review screen, the banner gives way to a note at the top of
+**Questions for you** while AMFI is off: "AMFI isn't added, so 9 funds were only searched on Yahoo
+Finance and need you" ("AMFI may not be added" when Wealthfolio doesn't say), counting the open
+questions about funds with a printed ISIN whose search found no AMFI result, with
+**Open Market data settings** and, once that's used, **I've added AMFI: check**. When AMFI turns on,
+those questions are searched again and answer themselves where AMFI's scheme is certain (below);
+answers already given stay. The screen then says how many funds AMFI matched and how many questions
+remain, and the focus goes to the next one.
 
 When a statement is read, or a check finds AMFI on and the funds are searched again, a fund without
 a remembered choice is confirmed without a click, and saved as **Use this fund** saves it, when the
@@ -112,13 +121,15 @@ result and nothing contradicts it: AMFI's scheme, or a saved asset with AMFI sel
 finds by an identifier, such as AMFI mapped to the ISIN, rather than because its symbol or name
 contains the ISIN; quoted in rupees; named, with no plan or option that differs from the statement's;
 and no saved asset with another provider selected, or none, among the results. An asset with AMFI
-selected can be confirmed even when automatic updates are off; its row then says **Priced by hand**. Since
+selected can be confirmed even when automatic updates are off; the Funds card says **Priced by hand**,
+and a Review row says **Prices entered by hand**. Since
 Wealthfolio searches its own assets whether or not AMFI is on, such an asset is confirmed this way
-with AMFI off too. The card says once how many funds were matched this way, and each has **Change**
-on its row. Change or Choose a fund opens its search again, which then never confirms the fund by
-itself. Leaving a fund out keeps it left out for this read. For an ISIN search, AMFI's result is
-preselected when it's the only AMFI result and no asset is priced from another source, and you
-confirm it as any other result. Results from Yahoo or any other provider, from the
+with AMFI off too. The Funds card, or the Review screen's Ready to save list, says once how many funds
+were matched this way, and each has **Change** on its row. Change or Choose a fund opens its search
+again, which then never confirms the fund by itself. Leaving a fund out keeps it left out for this read.
+On the Funds card, for an ISIN search, AMFI's result is preselected when it's the only AMFI result and
+no asset is priced from another source, and you confirm it as any other result; the Review screen
+never preselects a result. Results from Yahoo or any other provider, from the
 search for a fund's name when its ISIN finds nothing or none is printed, or from a search you type,
 are never confirmed this way. Neither is a fund whose search answers once the focus has been in its
 section, so the section doesn't go from under you.
@@ -259,16 +270,54 @@ account for, such as one entered by hand, perhaps for several credits at once, a
 
 casparser returns holdings for these statements, including depository statements with transaction
 sections. The add-on saves the holdings as a snapshot, an account's holdings and cash on the
-statement's date, in Wealthfolio accounts that track holdings.
-Choose such an account for the whole statement, and a different one or "Leave out" for any folio,
-demat account or National Pension System (NPS) account. Demat labels use their order on the statement and
-broker name, without account numbers; an NPS account's label is its PRAN as printed, masked.
-Confirm the Wealthfolio asset for each holding: shares and bonds are searched by their
-ISIN too, a fund confirmed for a detailed statement is already confirmed here, and a fund whose
-ISIN finds exactly one AMFI scheme is confirmed without a click, as on the Funds card (see
-[AMFI prices](#amfi-prices)). Funds have the
-same plan and option badges as on the Funds card; shares, bonds and NPS schemes have none. If no holdings
-account is offered, create one in Wealthfolio and choose Read statement again.
+statement's date, in Wealthfolio accounts that track holdings. Once the statement is read, one
+Review screen shows, in this order:
+
+- **Holdings on 31 Jul 2026**, the kind of statement, the investor's name as printed (or its email)
+  and the file. **Use another file** goes back to choosing a file. If anything was answered,
+  changed, chosen or typed, it first asks "Discard your 3 changes and choose another file?", with
+  **Keep reviewing** focused. Nothing about the review is remembered until you save or finish, so
+  discarding drops it all; the saved password, AMFI and earlier choices stay.
+- The counts: holdings, ready, not included, and questions. The question count goes to the first
+  open question.
+- **Save to**: one Wealthfolio account that tracks holdings for all of the investor's holdings, or
+  "Don't save them". The one chosen last time is preselected. Under **Save part of it to another
+  account**, each folio, demat account and National Pension System (NPS) account can go to another
+  account, or "Don't save". Demat accounts are named by their broker, a summary statement's folios by
+  their fund house and number, and an NPS account by its PRAN as printed, masked. Changing where
+  something goes drops the questions and edits that only it needed. With no account that tracks
+  holdings, it says to add one in Wealthfolio and read the statement again.
+- **Questions for you**: each holding with no confirmed asset, as one card with what the statement
+  prints, why it's asked, its results, and **Search by fund code** (**Search by ISIN** for shares and
+  bonds). A share's results on the two Indian exchanges are named as **National Stock Exchange (NSE)**
+  and **Bombay Stock Exchange (BSE)**. With exactly one result, that result has its own confirmation
+  button (**Use this fund** for a fund, **Use this listing** for shares); with more, pick one and
+  confirm it. Each fund result says whether its plan and option match the statement's, and one quoted
+  in another currency than rupees says so.
+  **None of these: use the price on the statement** prices it from statements (below), and **Skip
+  this holding** leaves it out. An answered question becomes one line with **Change answer**.
+- **Ready to save**: every holding that will be saved, with its plan and option, where its prices
+  come from (and whether it was chosen before or by you), **Change**, units, value and purchase cost.
+  **Add cost** takes the total cost of the holding's units in rupees, with or without grouping commas
+  (Indian or Western) and up to two decimals; anything else stays open with a hint. With more than
+  five rows, only the first three, those with a missing cost and those just changed show, until
+  **Show all**. Below the `sm` width, the rows are a stacked list.
+- **Not included in this save**: funds already tracked from transactions in another account
+  (below), holdings you skipped, holdings of what's set to "Don't save", statement rows left out by
+  default under **Before saving**, and lines with no units or that may be misread, each with why.
+- **Before saving**, once the questions are answered: the snapshot choices below that still take a
+  tick or a choice of their own. An undecided keep or remove, and replacing a snapshot already saved
+  for the date, count as questions. A statement row left out by default there has **Change** too.
+- A bar that stays at the bottom: what's left before saving, or what will be saved ("Update
+  **Demat** to 31 Jul 2026 with 10 holdings from this statement. Its other holdings and cash stay.")
+  with **See Demat's holdings on 31 Jul 2026 after saving**, the missing costs with **Add costs**,
+  and **Update holdings** or **Save holdings**. With nothing to save, it's **Finish**. While a cost or
+  Change is open, saving waits until you save or cancel it.
+
+Each account's snapshot is worked out again as you answer, from reads of Wealthfolio that are
+repeated when you open the add-on's page again. A fund confirmed for a detailed statement is already
+confirmed here, and a fund whose ISIN finds exactly one AMFI scheme is confirmed without a click (see
+[AMFI prices](#amfi-prices)).
 
 The add-on shows, searches and saves each name with its control characters, such as the U+0002 a CDSL
 statement prints in some fund names, as spaces, for detailed statements too. A fund in a CDSL
@@ -279,7 +328,7 @@ before it: "FICTIVA ASSET MGMT PVT LTD#FICTIVA MF␂ FICTIVA FLEXI CAP FUND-DIRE
 A holding that no search result fits, including when the search finds only other funds or shares,
 can use the statement's prices instead. The add-on then creates an INR asset priced by hand, and the
 next statement finds it again. While it's priced by hand, with the same type and in INR, the holding's
-search can find it too, shown with the statement's name and "Statement prices", and picking it there
+search can find it too, shown with the statement's name and "the statement's prices", and picking it there
 is choosing the statement's prices. A result of another type or currency stays as listed, including its currency
 warning. The asset priced from statements gets its price from the statements you import and the
 prices you enter, not from market data:
@@ -324,45 +373,42 @@ units. casparser 1.4.1 reads a cell it can't read, such as "N.A.", as 0, and on 
 amount of ₹1 crore or more without its leading digit, without a warning. Check such a line against the
 PDF. You still confirm its asset, so the import can leave that fund's holding in the folio's account
 as it is: its units, cost and price, and what earlier imports added. Without such a holding, the
-fund isn't added, even from another folio's line. Check units marks it for review, its units on the
-statement unknown.
+fund isn't added, even from another folio's line. Its units on the statement are unknown, so it isn't
+compared with an account that tracks transactions.
 
-Check units compares the statement with Wealthfolio accounts that track transactions (Not set
-included), once each holding is confirmed or left out. It shows only when Wealthfolio has such an
-account that isn't archived, hidden ones included, when you choose Read statement: with none, there's
-nothing to compare. It needs no account that tracks holdings, and saves nothing. Each holding's
-printed units are summed over its folios, demat accounts and
-PRANs, holdings printed with zero units included: those are confirmed for the check, but never go in
-a snapshot. Against them go the units that the posted activities of accounts with any for its asset
-by the statement's date add up to on that date, summed over those accounts. Each activity counts on its
-day in Wealthfolio's timezone setting, or in UTC if none is set. A row shows Match or
-Differ once you tick Same holdings, confirming that those accounts hold its units only for the
-statement's folios, demat accounts and PRANs, and all of them. A difference can mean a purchase or
-redemption that wasn't imported, bonus units or shares, a transfer, or shares from a demerger. A
-holding with no such activities, one with a split or option expiry, which only Wealthfolio's
-portfolio engine can count, and every holding when activities can't be read need review. Wealthfolio
-doesn't show add-ons the activities of archived accounts, so those aren't compared. Activities show
-an asset's display code, which can be changed, so a holding goes by its asset's ID, or for a choice
-remembered without one, by the symbol and exchange on each asset's profile. For a choice without an
-ID, several assets with that symbol and exchange, or an unreadable profile that could hide another
-matching asset, need review.
+A folio's fund that a Wealthfolio account tracking transactions already holds, most likely from a
+detailed statement, is listed under **Already tracked in Mutual funds** and not saved, so it isn't
+counted twice. **Save in both accounts** saves it anyway, with a warning and **Don't save it here**.
+The statement is compared with the accounts that track transactions by itself (Not set and hidden
+ones included; archived ones not, since Wealthfolio doesn't show add-ons their activities): each
+holding's printed units, summed over its folios, demat accounts and PRANs, against what the posted
+activities of the accounts with any for its asset add up to by the statement's date, each counted
+on its day in Wealthfolio's timezone setting (UTC if none is set). A difference can mean a purchase
+or redemption that wasn't imported, bonus units, a transfer, or units from a merger; **Review its
+transactions in Mutual funds** opens that account in Wealthfolio. A holding with a split or option
+expiry, which only Wealthfolio's portfolio engine can count, or whose activities can't be read, says
+it couldn't be compared. Activities show an asset's display code, which can be changed, so a holding
+goes by its asset's ID, or for a choice remembered without one, by the symbol and exchange on each
+asset's profile. After saving, the result repeats how many funds weren't saved for this reason, and
+the first that differs.
 
-Wealthfolio's snapshot is the account's whole state on its date, so the preview shows each
-account's complete snapshot before anything is saved:
+Wealthfolio's snapshot is the account's whole state on its date, so **See Demat's holdings on 31 Jul
+2026 after saving** shows each account's complete snapshot before anything is saved, made by these
+rules:
 
 - It starts from the account's latest snapshot on or before the statement's date; calculated
   snapshots are ignored. The statement's holdings replace their own; the account's other holdings
   and its cash carry over. A holding that an earlier import of the same folio or demat account added on or before that snapshot's date,
   and that the statement no longer lists, defaults to removed. If the printed identifiers can't
-  be compared, it stays with a note to check it. You can keep or remove each one, and include or
-  leave out each holding.
+  be compared, it stays with a note to check it. Under **Before saving**, you can keep or remove each
+  one that has something to say.
 - An earlier import's record of a holding follows its asset after the asset's symbol or exchange
-  changes in Wealthfolio, by the asset ID the import recorded. The preview then applies the other
+  changes in Wealthfolio, by the asset ID the import recorded. The snapshot then follows the other
   snapshot rules using the asset's current symbol and exchange. Another asset that now has the
   recorded symbol and exchange doesn't take over the record. Version 2.1.0 and earlier record no
   asset IDs, also when they save on another synced device: such a record follows the asset only if
   the holding's remembered choice is that asset, confirmed while it had the recorded symbol and
-  exchange. Without such a choice, the preview may treat the asset like a holding no import added,
+  exchange. Without such a choice, the snapshot may treat the asset like a holding no import added,
   and saving a kept holding can drop its record. Importing the statement's units records the
   holding under its chosen asset's current symbol and exchange, with its ID.
 - A folio, demat account or PRAN you leave out keeps what its earlier imports added. When one of
@@ -415,8 +461,8 @@ account's complete snapshot before anything is saved:
   there isn't reused. A split counts on its day in Wealthfolio's timezone setting (UTC if none is
   set), from the snapshot's date to the statement's. Splits recorded in archived accounts are
   hidden from add-ons, so those go unnoticed.
-- A folio's fund that an account tracking transactions already holds, most likely from a detailed
-  statement, is left out by default so it isn't counted twice. Leaving it out keeps the units the
+- A folio's fund that an account tracking transactions already holds is left out by default (see
+  above) so it isn't counted twice. Leaving it out keeps the units the
   account already has of it unless you remove them; keeping them counts them in both accounts.
   When an earlier import of that folio recorded adding the holding for its own lines alone,
   saving waits until you choose to keep or remove its units; remove them only if all of them
@@ -425,17 +471,20 @@ account's complete snapshot before anything is saved:
   another asset left out for overlap, gets the same choice. If its units may include others,
   or no earlier import of that folio recorded the holding, they are kept with a note to check
   them in Wealthfolio. Another account holding a fund or share gets a warning.
-- The cost is the one printed on the statement. Otherwise, the preview tries the account's average
-  cost in INR for the statement's units, then a bond's face value times its units. You can change
-  that proposed amount or leave it blank. An existing cost in another currency is not reused and
-  gets a note. A printed zero is treated as unknown. Left blank, it's unknown: Wealthfolio stores
-  it as zero and counts the holding's whole value as gain.
-- Replacing a snapshot Wealthfolio already has for that date needs your confirmation.
+- The cost is the one printed on the statement. Otherwise, the add-on proposes the account's average
+  cost in INR for the statement's units ("from your earlier holdings"), then a bond's face value
+  times its units ("from the face value"); **Edit** changes it. An existing cost in another currency
+  is not reused and gets a note. A printed zero is treated as unknown. An unknown cost says "Purchase
+  cost missing: gains will look too high": Wealthfolio stores it as zero and counts the holding's
+  whole value as gain.
+- Replacing a snapshot Wealthfolio already has for that date needs your confirmation under **Before
+  saving**. When the account already has a later snapshot, the Review screen and the bar say the save
+  is holdings history: the account's current holdings still come from that later snapshot.
 - Saving a snapshot makes Wealthfolio write the average cost of each holding priced by hand as its
   price on the snapshot's date. Right after saving, the add-on writes the statement's price there
   instead for each such holding included from the statement. A kept holding uses that price too
   when another imported account includes it; otherwise it keeps its latest price on or before that
-  date. If neither price is available, the preview warns that its average cost becomes its price.
+  date. If neither price is available, a note warns that its average cost becomes its price.
   A statement's price that isn't positive is never saved.
   An existing quote on that date keeps its notes. A kept price also keeps the quote's other fields.
   If a snapshot fails after writing prices, the add-on still attempts price repair. Any price or
@@ -449,11 +498,11 @@ results, including one in an archived account with no readable snapshot, can be 
 without the add-on knowing, and then takes its average cost as its price on the snapshot's date.
 For a statement-price or other manual-priced choice, the add-on also searches for its existing
 asset and reads its profile. An existing market-priced asset keeps market pricing, even if no
-account holds it. If that lookup fails for a choice that would use manual prices, the preview
-stops. A known manually priced asset must also be found before saving, so its existing quote can
+account holds it. If that lookup fails for a choice that would use manual prices, saving waits
+and the bar says why, with **Try again**. A known manually priced asset must also be found before saving, so its existing quote can
 be kept. Holdings show an asset's display code, which can be changed, so the account's holdings and
-other accounts' go by the symbol and exchange on each asset's profile, and the preview stops when a
-profile can't be read. Try the preview again.
+other accounts' go by the symbol and exchange on each asset's profile, and saving waits when a
+profile can't be read. Choose **Try again**.
 
 Wealthfolio counts units added or removed between two snapshots as money put in or taken out, at
 the later snapshot's prices.
@@ -467,15 +516,16 @@ the later snapshot's prices.
   a fund out forgets the fund confirmed for it, in every folio that holds it; if Wealthfolio can't
   delete it, the add-on says so and it can come back. "Left out" itself isn't kept: the next read
   searches for the fund again, and can confirm it from AMFI again.
-- Also in add-on storage, for summary and depository statements: the account chosen for the
-  statement and for each folio, demat account or NPS account, keyed by a hash of the PAN, email address or investor
+- Also in add-on storage, for summary and depository statements, once you save or finish the Review
+  screen (with its answers, including funds AMFI confirmed): the account chosen for the
+  statement and for each folio, demat account or NPS account, or "Don't save", keyed by a hash of the PAN, email address or investor
   name; the folio number and parsed AMC (summary) or ISIN issuer (depository); the demat account's DP and
   client IDs; or the PRAN as printed. Summary and depository folio account overrides are separate.
   The asset confirmed for a bond is kept under its ISIN, and for an NPS scheme under a hash of its symbol.
   Choosing the statement's prices keeps the fund confirmed for detailed imports beside that choice.
   A detailed import's choices, leaving the fund out included, then change only that fund. A holdings
   import's choice of another search result or leaving the holding out still replaces or forgets both;
-  picking the result that says "Statement prices" is choosing the statement's prices.
+  picking the result that says "the statement's prices" is choosing the statement's prices.
 - Dated records of which holdings each holdings import added, with both their ISIN and
   registrar scheme code when available, or an NPS scheme's symbol, and the Wealthfolio asset's
   symbol, exchange and, when the import knew it, ID, keyed by a hash of the folio,

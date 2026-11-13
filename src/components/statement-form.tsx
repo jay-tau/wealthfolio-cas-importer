@@ -6,12 +6,15 @@ import type { Statement } from "../cas/types";
 import { PASSWORD_SECRET } from "../lib/choices";
 import { useFocusReturn } from "../lib/focus";
 
-export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef }: {
+export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef, reset = 0 }: {
   ctx: AddonContext;
   onClear: () => void;
-  onRead: (data: Statement) => Promise<void>;
+  /** Called with the statement and its file's name. */
+  onRead: (data: Statement, fileName: string) => Promise<void>;
   disabled?: boolean;
   fileRef?: RefCallback<HTMLInputElement>;
+  /** Changed to clear the chosen file, as Use another file does. The password stays. */
+  reset?: number;
 }) {
   const parser = useRef<CasParser | null>(null);
   const [file, setFile] = useState<File | null>(null);
@@ -25,6 +28,14 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef 
   const focusReturn = useFocusReturn(reading);
 
   useEffect(() => () => parser.current?.dispose(), []);
+
+  const fileInput = useRef<HTMLInputElement | null>(null);
+  useEffect(() => {
+    if (!reset) return;
+    setFile(null);
+    setError(null);
+    if (fileInput.current) fileInput.current.value = "";
+  }, [reset]);
 
   useEffect(() => {
     ctx.api.secrets.get(PASSWORD_SECRET).then(
@@ -88,7 +99,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef 
     try {
       const data = await casParser.parse(await file.arrayBuffer(), password);
       await keepPassword();
-      await onRead(data);
+      await onRead(data, file.name);
     } catch (e) {
       setError(e instanceof CasError ? e : new CasError("runtime", String(e)));
     } finally {
@@ -107,7 +118,10 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef 
         <div className="grid gap-2">
           <Label htmlFor="cas-file">Statement PDF</Label>
           <Input
-            ref={locked ? undefined : fileRef}
+            ref={(element) => {
+              fileInput.current = element;
+              if (!locked) fileRef?.(element);
+            }}
             id="cas-file"
             type="file"
             accept="application/pdf,.pdf"

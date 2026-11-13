@@ -53,6 +53,11 @@ export interface Source {
   aliases?: string[];
   kind: "folio" | "demat" | "nps";
   label: string;
+  /**
+   * What the Review screen calls it, in words for people who don't know the terms: "Fictiva Mutual
+   * Fund account (folio 7712045)", "Fictiva Securities demat account". The label where there's none.
+   */
+  title?: string;
   holdings: StatementHolding[];
   /** Holdings printed with zero units: checked against transactions, never put in a snapshot. */
   zero?: StatementHolding[];
@@ -248,7 +253,7 @@ function readSummary(data: CasData): Holdings {
     const label = `${folio.amc}, folio ${folio.folio}`;
     const number = folioNumber(folio.folio);
     const id = `folio|${number}|amc:${folio.amc}`;
-    const source: Source = sources.get(id) ?? { id, kind: "folio", label, holdings: [] };
+    const source: Source = sources.get(id) ?? { id, kind: "folio", label, title: `${folio.amc} account (folio ${folio.folio})`, holdings: [] };
     // casparser keys summary folios by number alone, so funds from several issuers may be two
     // AMCs' folios merged into one. Such a folio isn't linked to depository folios.
     const issuers = new Set([...source.holdings, ...folio.schemes].map((s) => issuerOf(s.isin)).filter(Boolean));
@@ -315,12 +320,16 @@ function readDepository(data: DepositoryData): Holdings {
         lines.push([folio.source, holding]);
       }
       tellApart([...folios.values()]);
+      for (const { source } of folios.values()) source.title = source.label.replace(/^Folio /, "Mutual fund folio ");
       for (const [source, holding] of lines) if (withUnits(leftOut, source.label, source, holding)) source.holdings.push(holding);
       sources.push(...[...folios.values()].map((f) => f.source));
       continue;
     }
     const label = `${account.type} ${++dematNumber}, ${account.name}`.replace(/\s+/g, " ");
-    const source: Source = { id: `demat|${account.dp_id ?? ""}|${account.client_id ?? ""}`, kind: "demat", label, holdings: [] };
+    const source: Source = {
+      id: `demat|${account.dp_id ?? ""}|${account.client_id ?? ""}`, kind: "demat", label, holdings: [],
+      title: readableName(account.name ?? "") ? `${readableName(account.name)} demat account` : label,
+    };
     // Only a CDSL statement's own demat accounts are known to print the fund house first, and to cut
     // a long name short.
     const cdsl = data.file_type === "CDSL" && account.type === "CDSL Demat Account";
@@ -368,6 +377,11 @@ function readDepository(data: DepositoryData): Holdings {
     ].filter((h) => withUnits(leftOut, label, source, h));
     sources.push(source);
   }
+  // Two demat accounts with one broker are told apart by their labels.
+  const demats = sources.filter((s) => s.kind === "demat");
+  for (const source of demats) {
+    if (demats.filter((other) => other.title === source.title).length > 1) source.title = `${source.title} (${source.label})`;
+  }
   const owner = data.accounts.flatMap((a) => a.owners)[0];
   const investor = (owner?.PAN || data.investor_info.name).trim().toUpperCase();
   if (data.nps) {
@@ -375,7 +389,10 @@ function readDepository(data: DepositoryData): Holdings {
     // one, the investor's: a person has one PRAN.
     const pran = data.nps.pran?.trim();
     const label = pran ? `NPS, PRAN ${pran}` : "National Pension System";
-    const source: Source = { id: pran ? `nps|${pran}` : `nps|investor:${investor}`, kind: "nps", label, holdings: [] };
+    const source: Source = {
+      id: pran ? `nps|${pran}` : `nps|investor:${investor}`, kind: "nps", label, holdings: [],
+      title: pran ? `NPS account (PRAN ${pran})` : "NPS account",
+    };
     source.holdings = data.nps.schemes.map(
       (s): StatementHolding => ({
         kind: "nps",
@@ -1175,9 +1192,6 @@ export function costOf(position: PlannedPosition, typed: string | undefined) {
   return position.cost?.total;
 }
 
-/** A typed total cost: a positive amount, or blank for unknown. */
-export const validCost = (typed: string) => typed.trim() === "" || (/^\d+(\.\d+)?$/.test(typed.trim()) && positive(typed.trim()));
-
 export interface Choices {
   /** Preview rows whose default the user flipped, by `key`. */
   flipped: ReadonlySet<string>;
@@ -1632,9 +1646,8 @@ export function checkUnits(holdings: Holdings, input: CheckInput): UnitCheck[] {
 
 export type UnitStatus = "match" | "differ" | "review";
 
-/** `same`: the user confirmed that the accounts compared hold the same units as the statement's lines. */
-export const unitStatus = (check: UnitCheck, same: boolean): UnitStatus =>
-  check.problem || !same ? "review" : sameUnits(check) ? "match" : "differ";
+/** Whether the accounts compared hold the statement's units of a holding, or can't be compared (`problem`). */
+export const unitStatus = (check: UnitCheck): UnitStatus => (check.problem ? "review" : sameUnits(check) ? "match" : "differ");
 
 // Wealthfolio's `BondSpec` (asset metadata `bond`) knows these coupon frequencies; its pricer
 // takes any other as semi-annual, so the rest stay only in the printed details.

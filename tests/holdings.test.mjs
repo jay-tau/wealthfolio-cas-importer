@@ -29,7 +29,6 @@ import {
   unidentified,
   unitStatus,
   unlistedRefs,
-  validCost,
 } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
 import { holdingKey } from "../src/lib/choices.ts";
@@ -509,11 +508,6 @@ test("each source goes to its own account, or is left out", async () => {
       ["pension", ["nps|XXXXXXXX9001"], 3, false],
     ],
   );
-});
-
-test("typed costs must be positive amounts, or blank", () => {
-  for (const ok of ["", "  ", "100", "0.5", "12345.67"]) assert.ok(validCost(ok), ok);
-  for (const bad of ["0", "-5", "1,000", "abc", "1e5", "0.00"]) assert.ok(!validCost(bad), bad);
 });
 
 test("rejects ambiguous existing asset references before they can be lost", async () => {
@@ -2614,9 +2608,7 @@ test("checks each holding's units against accounts that track transactions, each
     [ref("INFZ91T01GL6"), [testbridge], "845.512", [], null, "No account that tracks transactions has posted activities for it on or before 2025-03-31."],
     ["asset-INFZ91T01FT1", [testbridge], "5000", [["account-1", null]], null, "A split or option expiry in Mutual funds needs Wealthfolio's portfolio engine to count its units."],
   ]);
-  // Until the user confirms the accounts compared hold the same units, every row needs review.
-  assert.deepEqual(checks.map((c) => unitStatus(c, true)), ["match", "match", "match", "differ", "review", "review"]);
-  assert.deepEqual(checks.map((c) => unitStatus(c, false)), ["review", "review", "review", "review", "review", "review"]);
+  assert.deepEqual(checks.map((c) => unitStatus(c)), ["match", "match", "match", "differ", "review", "review"]);
   // The printed zero stays out of the snapshot.
   const [snapshot] = plan(holdings);
   assert.deepEqual(snapshot.positions.find((p) => p.ref === ref("INFZ90K01LQ6")).lines.map((l) => [l.source.label, l.holding.units]), [[fictiva, "12.296"]]);
@@ -2635,7 +2627,7 @@ test("a fund conversion's units count for the fund they move into, not the one t
   ];
   const flexiCap = check(holdings, activities).find((c) => c.ref === "asset-INFZ90K01FC8");
   assert.equal(format(flexiCap.held), "2892.104");
-  assert.equal(unitStatus(flexiCap, true), "match");
+  assert.equal(unitStatus(flexiCap), "match");
 });
 
 test("activities count towards the statement's date on their day in Wealthfolio's timezone, whatever the device's", async () => {
@@ -2665,9 +2657,9 @@ test("a depository statement's printed zero and an asset in two demat accounts a
   ];
   const [zero] = check(cdsl, sold).filter((c) => c.ref === "asset-INEZ91B20013");
   assert.deepEqual(summarised([zero]), [["asset-INEZ91B20013", ["CDSL Demat Account 1, FICTIVA SECURITIES LIMITED"], "0", [["account-1", "0"]], "0", null]]);
-  assert.equal(unitStatus(zero, true), "match");
+  assert.equal(unitStatus(zero), "match");
   const stillHeld = check(cdsl, sold.slice(0, 1)).find((c) => c.ref === "asset-INEZ91B20013");
-  assert.equal(unitStatus(stillHeld, true), "differ");
+  assert.equal(unitStatus(stillHeld), "differ");
   // A printed zero is confirmed and checked, but never planned into a snapshot.
   assert.equal(plan(cdsl)[0].positions.some((p) => p.ref === ref("INEZ91B20013")), false);
   // Left out without a confirmed asset, it isn't checked.
@@ -2677,13 +2669,13 @@ test("a depository statement's printed zero and an asset in two demat accounts a
   const shares = check(nsdl, [activity("unset-1", "BUY", "2024-01-01", "INEZ90B01015", "520")]);
   const twice = shares.find((c) => c.ref === "asset-INEZ90B01015");
   assert.deepEqual(twice.lines.map((l) => [l.source.label.replace(/,.*/, ""), l.holding.units]), [["NSDL Demat Account 1", "420"], ["CDSL Demat Account 2", "100.000"]]);
-  assert.equal(unitStatus(twice, true), "match");
+  assert.equal(unitStatus(twice), "match");
   // Holdings nobody bought in an account that tracks transactions need review, not a zero.
-  assert.ok(shares.filter((c) => c !== twice).every((c) => c.held === undefined && unitStatus(c, true) === "review"));
+  assert.ok(shares.filter((c) => c !== twice).every((c) => c.held === undefined && unitStatus(c) === "review"));
 
   const unread = check(nsdl, { error: "Error: offline" });
   assert.equal(unread.length, shares.length);
-  assert.ok(unread.every((c) => c.problem === "Couldn't read Wealthfolio's activities: Error: offline" && unitStatus(c, true) === "review"));
+  assert.ok(unread.every((c) => c.problem === "Couldn't read Wealthfolio's activities: Error: offline" && unitStatus(c) === "review"));
 });
 
 test("the check finds a holding's asset by its ID, or by the symbol and exchange on its Wealthfolio profile", async () => {
@@ -2718,10 +2710,10 @@ test("the check finds a holding's asset by its ID, or by the symbol and exchange
   const identities = new Map([["fund-1", ref(isin)], ["other", { error: "Error: gone" }]]);
   const [unreadRenamed] = check(holdings, partial, { asset: confirmed, identities });
   assert.deepEqual([unreadRenamed.held, unreadRenamed.problem], [undefined, unread.problem]);
-  assert.ok([ambiguous, unread, unreadRenamed].every((c) => unitStatus(c, true) === "review"));
+  assert.ok([ambiguous, unread, unreadRenamed].every((c) => unitStatus(c) === "review"));
   // An explicit ID establishes the asset without reading any profiles.
   const [byId] = check(holdings, partial, { asset: (h) => confirmed(h, { assetId: "fund-1" }), identities });
-  assert.equal(unitStatus(byId, true), "match");
+  assert.equal(unitStatus(byId), "match");
 });
 
 test("distinct assets with the same symbol and exchange are checked separately", async () => {
@@ -2733,7 +2725,7 @@ test("distinct assets with the same symbol and exchange are checked separately",
     activity("account-1", "BUY", "2025-01-01", "SAME", "10", { assetId: share.isin }),
     activity("unset-1", "BUY", "2025-01-01", "SAME", "19", { assetId: other.isin }),
   ], { asset: (h) => ({ ...asset(h), symbol: "SAME", assetId: h.isin }) });
-  assert.deepEqual(checks.map((c) => [c.ref, format(c.statement), format(c.held), unitStatus(c, true)]), [
+  assert.deepEqual(checks.map((c) => [c.ref, format(c.statement), format(c.held), unitStatus(c)]), [
     [share.isin, "10", "10", "match"],
     [other.isin, "20", "19", "differ"],
   ]);
@@ -2888,7 +2880,7 @@ test("a fund in two folios, one misread, keeps the account's units and needs rev
       `${note}, so its units on the statement are unknown. Check it against the PDF.`,
     ]]);
     assert.deepEqual(checked.misread.map((l) => l.source), [unread]);
-    assert.equal(unitStatus(checked, true), "review");
+    assert.equal(unitStatus(checked), "review");
   }
   // A held-back asset's import record survives a renamed display code or a new confirmed symbol: under
   // its row's symbol when the account's position is under the recorded one, else under the recorded one.
@@ -2931,7 +2923,7 @@ test("a fund in two folios, one misread, keeps the account's units and needs rev
   // A misread line with no other: its own check when its asset is confirmed, with other problems after.
   const alone = readHoldings({ ...data, folios: [data.folios[1]] });
   const [own] = check(alone, []);
-  assert.deepEqual([own.ref, own.lines, own.misread.length, format(own.statement), unitStatus(own, true)], [ref(flexi.isin), [], 1, "0", "review"]);
+  assert.deepEqual([own.ref, own.lines, own.misread.length, format(own.statement), unitStatus(own)], [ref(flexi.isin), [], 1, "0", "review"]);
   assert.equal(own.problem, `${note}, so its units on the statement are unknown. Check it against the PDF. No account that tracks transactions has posted activities for it on or before 2025-03-31.`);
   assert.deepEqual(check(alone, [], { asset: () => undefined }), []);
 });
