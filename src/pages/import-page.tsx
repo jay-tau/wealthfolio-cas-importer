@@ -56,7 +56,7 @@ import {
   saveFund,
   sourceKey,
 } from "../lib/choices";
-import { useFocusMove, useFocusReturn } from "../lib/focus";
+import { focusDropped, useFocusMove, useFocusReturn } from "../lib/focus";
 import { readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { plural } from "../lib/plural";
@@ -91,6 +91,11 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   // statement's transactions go to the others. It treats NOT_SET as transactions.
   const transactionAccounts = accounts?.filter((a) => a.trackingMode !== "HOLDINGS") ?? null;
   const [statement, setStatement] = useState<Statement | null>(null);
+  const [fileName, setFileName] = useState("");
+  // Bumped by Use another file, which clears the chosen file.
+  const [resets, setResets] = useState(0);
+  // What the last review ended with, such as "Finished: nothing … was saved."
+  const [notice, setNotice] = useState("");
   // Summary and depository statements: their holdings, saved as snapshots.
   const [holdings, setHoldings] = useState<Holdings | null>(null);
   // Bumped on every read, so a holdings import starts afresh.
@@ -217,7 +222,7 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     setError("");
   };
 
-  const read = async (full: Statement) => {
+  const read = async (full: Statement, name: string) => {
     await choiceWrites.current;
     let keys: string[];
     let fundKeys: string[];
@@ -263,6 +268,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     setUnbalanced(new Set());
     setHoldings(held);
     setStatement(full);
+    setFileName(name);
+    setNotice("");
     setReads((n) => n + 1);
   };
 
@@ -453,6 +460,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     }
   };
 
+  const reviewing = statement && holdings && remembered && accounts ? { statement, holdings, accounts } : null;
+
   const sendCount = preview ? importRows(preview.plan, (t) => importAnyway.has(t), reused).length : 0;
 
   return (
@@ -463,25 +472,42 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
       />
       <PageContent>
         <fieldset disabled={busy !== ""} className="min-w-0 space-y-6">
-          <AmfiBanner amfi={amfi} />
-          <StatementForm ctx={ctx} onClear={clear} onRead={read} disabled={busy !== ""} fileRef={amfi.next} />
+          {/* While a holdings statement is reviewed, its Questions say what AMFI would change. */}
+          {!reviewing && <AmfiBanner amfi={amfi} />}
+          {notice && !reviewing && <p className="text-muted-foreground text-sm">{notice}</p>}
+          <div hidden={!!reviewing}>
+            <StatementForm ctx={ctx} onClear={clear} onRead={read} disabled={busy !== ""} fileRef={amfi.next} reset={resets} />
+          </div>
           {detailed && <StatementSummary data={detailed} />}
-          {statement && holdings && remembered && accounts && (
+          {reviewing && (
             <HoldingsImport
               key={reads}
               ctx={ctx}
-              statement={statement}
-              holdings={holdings}
-              accounts={accounts}
+              statement={reviewing.statement}
+              holdings={reviewing.holdings}
+              fileName={fileName}
+              accounts={reviewing.accounts}
               allAccounts={allAccounts!}
               accountChoices={accountChoices}
               unavailable={unavailable}
-              onAccount={chooseAccount}
               fundChoices={fundChoices}
-              onFund={chooseFund}
               amfi={amfi}
+              visit={location}
               busy={busy}
               setBusy={setBusy}
+              onRemember={({ accounts: picked, funds }) => {
+                for (const [key, value] of picked) chooseAccount(key, value);
+                for (const [key, choice] of funds) chooseFund(key, choice);
+              }}
+              onAnother={(said) => {
+                clear();
+                setResets((n) => n + 1);
+                setNotice(said ?? "");
+                // A focus moved while the form returns stays where the user put it.
+                setTimeout(() => {
+                  if (focusDropped()) document.getElementById("cas-file")?.focus();
+                });
+              }}
             />
           )}
           {data && remembered && transactionAccounts && (

@@ -29,7 +29,7 @@ import type { Amfi } from "./amfi-banner";
 export type FundChoice = { fund: ChosenFund } | { leftOut: true };
 
 /** The import fields the way Wealthfolio's own import builds them from a search result. */
-function toFund(result: SymbolSearchResult): ChosenFund {
+export function toFund(result: SymbolSearchResult): ChosenFund {
   const mode = result as SymbolSearchResult & { pricingMode?: string | null; quoteMode?: string | null };
   return {
     assetId: result.existingAssetId,

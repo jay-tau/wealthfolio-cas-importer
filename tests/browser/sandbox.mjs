@@ -119,7 +119,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // the focus there once the page is unlocked, as it would on Wealthfolio's own pages.
     const clickOutside = async () => {
       const frameBox = await tab.locator("iframe").boundingBox();
-      await tab.mouse.click(frameBox.x + frameBox.width + 20, frameBox.y + 20);
+      // Beside the frame, near the top of the window: the page scrolls when the frame is taller than
+      // the window, and a click above the window is lost.
+      await tab.mouse.click(frameBox.x + frameBox.width + 20, 20);
       assert.equal(await tab.frames()[1].evaluate(() => document.hasFocus()), false);
     };
     const stayedOutside = async (what) => {
@@ -1931,7 +1933,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       Object.assign(window.host, { ...state, storage: new Map(state.storage) });
     }, beforeAmfi);
 
-    // An NSDL statement's holdings go to accounts that track holdings, as snapshots.
+    // A summary or depository statement's holdings go to accounts that track holdings, as snapshots,
+    // on one Review screen: where they're saved, what needs an answer, and what will be saved.
     const unindexedAside = `holdings-imported:${createHash("sha256")
       .update("cas-importer holdings imported folio|1040012345|INFZ91T|holdings-2").digest("hex")}`;
     await hosted((key) => {
@@ -1968,353 +1971,569 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         savedAt: 1, refs: { "GILT@XBOM": ["INFZ91T01CB6"] }, ids: { "GILT@XBOM": "absent-fund" },
       } } }));
     }, unindexedAside);
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 17 holdings.").waitFor({ timeout: 180_000 });
-    await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
-    await frame.getByText("MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail", { exact: true }).waitFor();
-    assert.equal(await frame.getByText("Left out", { exact: true }).count(), 0);
-    // An older remembered choice keeps no provider, so where its prices come from is unknown.
-    await holding("TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH").getByText("Unknown source", { exact: true }).waitFor();
+    // The Review screen shows ready holdings as a table from Tailwind's `sm` width, 40rem of the add-on's
+    // frame, and as a list below it. The test page's frame is otherwise the default 300 by 150.
+    const frameWidth = async (width) => {
+      // The window is taller than the frame, so a select's list opened near the frame's bottom stays in view.
+      await tab.setViewportSize({ width: 1280, height: 1000 });
+      await tab.evaluate((width) => {
+        Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
+      }, width);
+    };
+    await frameWidth(1000);
+    const reviewHeading = frame.getByRole("heading", { name: /^Holdings on / });
+    const anotherFile = frame.getByRole("button", { name: "Use another file", exact: true });
+    const saveHoldings = frame.getByRole("button", { name: /^(Update|Save) holdings$/ });
+    const footer = frame.locator("div.sticky.bottom-0");
+    const said = frame.locator("[role=status]");
+    const escaped = (text) => text.replace(/\s+/g, " ").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // Each holding still to answer is a card in Questions for you, found by the name the statement prints.
+    const question = (name) => frame.locator("section section").filter({ hasText: new RegExp(`On your statement: ${escaped(name)} ·`) });
+    const questions = frame.locator("section section");
+    // A holding that will be saved is a row of Ready to save, with Change named for it.
+    const ready = (text) => frame.getByRole("row").filter({ has: frame.getByRole("button", { name: /^Change: / }) }).filter({ hasText: text });
+    const readyRows = frame.getByRole("row").filter({ has: frame.getByRole("button", { name: /^Change: / }) });
+    // Waits until each holding is looked up and what will be saved is worked out.
+    const settled = async () => {
+      await frame.getByText(/^Looking up \d+ holdings?…$/).waitFor({ state: "detached" });
+      await footer.getByText("Working out what will be saved…").waitFor({ state: "detached" });
+    };
+    let statementFile = "tests/fixtures/made-up-nsdl.pdf";
+    // Leaves the review for the file form, discarding what it changed.
+    const leaveReview = async () => {
+      if (!(await anotherFile.count())) return;
+      await anotherFile.click();
+      const discard = frame.getByRole("button", { name: "Discard and choose another file" });
+      if (await discard.count()) await discard.click();
+      await reviewHeading.waitFor({ state: "detached" });
+    };
+    // Reads a statement, the last one by default; Use another file clears the chosen file.
+    const readHoldings = async (file = statementFile, password = "ABCDE1234F", folded = false) => {
+      statementFile = file;
+      await leaveReview();
+      await frame.locator("#cas-file").setInputFiles(file);
+      await frame.locator("#cas-password").fill(password);
+      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+      await reviewHeading.waitFor({ timeout: 180_000 });
+      await settled();
+      // Every ready row, unless a check is about the folded list.
+      if (!folded) await showAllRows();
+    };
+    const partButton = frame.getByRole("button", { name: "Save part of it to another account", exact: true });
+    const openParts = async () => {
+      if ((await partButton.getAttribute("aria-expanded")) !== "true") await partButton.click();
+    };
+    // The select of a folio, demat account or PRAN, by the start of its title.
+    const sourceSelect = (title) => frame.getByLabel(new RegExp(`^${escaped(title)}`));
+    const investorSelect = frame.getByLabel("ANANYA R TESTWALA's holdings", { exact: true });
     const choose = async (label, option) => {
-      await frame.getByLabel(label).click();
+      const select = label === "investor" ? investorSelect : sourceSelect(label);
+      if (label !== "investor") await openParts();
+      await select.click();
       await frame.getByRole("option", { name: option }).waitFor();
       // Only active, unarchived accounts that track holdings.
       assert.equal(await frame.getByRole("option", { name: "Mutual funds (INR)" }).count(), 0);
       assert.equal(await frame.getByRole("option", { name: /^(Archived funds|Hidden demat|Old demat) / }).count(), 0);
-      await frame.getByRole("option", { name: option }).click();
+      await frame.getByRole("option", { name: option, exact: true }).click();
+      await settled();
     };
-    // A delayed account A write cannot overwrite the later B choice, and a reread waits for both.
-    const statementKey = await frame.getByLabel("All of this statement").getAttribute("id");
-    await pause("set:holdings-1");
-    await choose("All of this statement", "Demat (INR)");
-    await waiting();
-    await choose("All of this statement", "Fund folios (INR)");
-    const parsedAccounts = await hosted(() => window.host.parsed);
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await tab.frames()[1].waitForFunction((previous) => window.host.parsed > previous, parsedAccounts, { timeout: 180_000 });
-    assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
-    await resume();
-    await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
-    assert.equal((await storage())[statementKey], "holdings-2");
-    assert.match(await frame.getByLabel("All of this statement").textContent(), /Fund folios/);
-    await choose(/^NSDL Demat Account 1,/, "Demat (INR)");
-    await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
-    await choose(/^Folio 1040012345/, "Leave out");
-    const preview = frame.getByRole("button", { name: "Preview the snapshots" });
-    // 16 holdings: three confirmed before, the Index fund, Balanced Advantage and Corporate Bond funds, in rows.
-    assert.equal(await frame.locator("section").count(), 13);
-    assert.deepEqual(
-      await rows.evaluateAll((all) => all.map((row) => row.querySelector("button").textContent)),
-      ["TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH", detailed.balanced, detailed.corporate].map((name) => `Change the fund for ${name}`),
-    );
-    // The Holdings card recommends AMFI the same way while a fund's search finds no AMFI result.
-    const holdingsIntro = /^Confirm the Wealthfolio asset for each holding\./;
-    await amfiNoteShown(holdingsIntro);
-    // Only funds have plan and option badges, beside their names and results. A bond's results have
-    // none, even when their names give a plan and option.
-    const headings = await frame.locator("section h3").evaluateAll((all) => all.map((h) =>
-      [h.textContent, [...h.parentElement.querySelectorAll("[data-slot=badge]")].map((b) => `${b.textContent} ${b.dataset.variant}`)]));
-    assert.deepEqual(headings.filter(([, b]) => b.length), [
-      ["Fictiva Flexi Cap Fund - Direct Plan - Growth", ["Direct secondary", "Growth secondary"]],
-      ["Fictiva Liquid Fund - Direct Plan - Growth", ["Direct secondary", "Growth secondary"]],
-    ]);
-    const bondSection = holding("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31");
-    const bondSearch = bondSection.getByRole("textbox", { name: /^Search for / });
+    // Answers a question with its only result, a result picked by position, the statement's price, or Skip.
+    const answer = async (name, how = 0) => {
+      const card = question(name);
+      await card.getByText(/Searching…/).waitFor({ state: "detached" });
+      if (how === "statement") {
+        await card.getByRole("button", { name: /^(None of these: use|Use) the price on the statement for / }).click();
+      } else if (how === "skip") {
+        await card.getByRole("button", { name: /^Skip this holding: / }).click();
+      } else {
+        const single = card.getByRole("button", { name: /^Use this (fund|listing|bond|NPS scheme): / });
+        if (await single.count()) {
+          await single.click();
+        } else {
+          await card.getByRole("radio").nth(how).dispatchEvent("click");
+          await card.getByRole("button", { name: /^Use this (fund|listing|bond|NPS scheme) for / }).click();
+        }
+      }
+      await card.waitFor({ state: "detached" });
+    };
+    // The statement's name in a question card's "On your statement" line.
+    const printedName = async (card) => (await card.locator("p").first().innerText()).replace(/^On your statement:\s*/, "").replace(/\s+·.*$/s, "");
+    // Answers every open question: `how` picks the answer from the statement's name.
+    const answerAll = async (how = () => 0) => {
+      for (let open = await questions.count(); open > 0; open--) {
+        await answer(await printedName(questions.first()), how(await printedName(questions.first())));
+      }
+      await settled();
+    };
+    const sameDay = (account, date = "31 Mar 2025") =>
+      frame.getByRole("checkbox", { name: `Replace the snapshot of ${date} in ${account}`, exact: true });
+    // The read-only snapshot an account gets, under the footer's See … after saving.
+    const snapshotTable = async (account, date = "31 Mar 2025") => {
+      const toggle = frame.getByRole("button", { name: `See ${account}'s holdings on ${date} after saving`, exact: true });
+      if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+      const table = frame.getByRole("table", { name: `${account}'s holdings on ${date} after saving`, exact: true });
+      await table.waitFor();
+      return table;
+    };
+    const statusOf = async (table, text) => (await table.getByRole("row").filter({ hasText: text }).getByRole("cell").last().textContent()).trim();
+    const setCost = async (row, amount) => {
+      await row.getByRole("button", { name: /^(Add cost|Edit): / }).click();
+      const box = frame.getByRole("textbox", { name: /^Total purchase cost of these / });
+      await box.fill(amount);
+      await box.press("Enter");
+      await box.waitFor({ state: "detached" });
+    };
+    const priced = "Priced by hand: saving also saves the statement's price as its price on this date.";
+    // With more than five ready rows for one account, only the first three, those missing a cost and
+    // those just changed show until Show all.
+    const showAll = frame.getByRole("button", { name: /^Show all \d+$/ });
+    const showAllRows = async () => {
+      if (await showAll.count()) await showAll.click();
+    };
+    await readHoldings("tests/fixtures/made-up-nsdl.pdf");
+    // The heading says what's saved, from which statement and file.
+    await frame.getByText("NSDL statement · ANANYA R TESTWALA · made-up-nsdl.pdf", { exact: true }).waitFor();
+    await frame.getByText("Saves what you held on 31 Mar 2025, not your purchases and sales.", { exact: true }).waitFor();
+    assert.equal(await reviewHeading.textContent(), "Holdings on 31 Mar 2025");
+    // While a statement is reviewed, its file form and the page's AMFI banner make way for it.
+    assert.equal(await frame.locator("#cas-file").isVisible(), false);
+    assert.equal(await amfiBanner.count(), 0);
+    await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
+    await frame.getByText("MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail", { exact: true }).waitFor();
+    // 16 holdings: three confirmed before, the Index fund, Balanced Advantage and Corporate Bond funds,
+    // are ready to save once an account is chosen; the others are questions.
+    await frame.getByText("16 holdings", { exact: true }).waitFor();
+    assert.equal(await questions.count(), 13);
+    assert.equal(await frame.getByText("Not included in this save", { exact: true }).count(), 0);
+    await frame.getByText(/^Questions for you · 13 of 13 left$/).waitFor();
+    // An older remembered choice keeps no provider, so where its prices come from is unknown.
+    await ready("TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH").getByText(/^Price source unknown · chosen before ·/).waitFor();
+    // Nothing is chosen for the statement yet, so that's a question too, and saving waits for it.
+    assert.match(await investorSelect.textContent(), /Choose an account/);
+    await frame.getByText("Used again for your next statement.", { exact: true }).waitFor();
+    await footer.getByText("14 questions left before saving.", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
+    // With AMFI not added, the search for a fund's ISIN finds no AMFI result. Questions for you says so
+    // once, above its cards, and offers Market data settings.
+    const amfiQuestionsNote = frame.getByText(/^AMFI (isn't|may not be) added, so \d+ funds? (was|were) only searched on Yahoo Finance and needs? you\. Add AMFI to match (it|them) for you\.$/);
+    await amfiQuestionsNote.waitFor();
+    assert.equal(await amfiQuestionsNote.count(), 1);
+    // Only funds have a plan and option on the statement; a bond's results have no badges, even when
+    // their names give a plan and option.
+    await question("Fictiva Flexi Cap Fund - Direct Plan - Growth").getByText(/ · Direct plan · Growth · 2,892\.104 units$/).waitFor();
+    const bond = "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31";
+    const bondCard = question(bond);
+    assert.equal(await bondCard.getByRole("heading").textContent(), "Which bond is this?");
+    assert.doesNotMatch(await bondCard.locator("p").first().innerText(), /plan/);
+    const bondSearch = bondCard.getByRole("textbox", { name: `Search by ISIN for ${bond}`, exact: true });
     await bondSearch.fill("Fictiva Flexi Cap");
     await bondSearch.press("Enter");
-    await bondSection.getByRole("radio").nth(4).waitFor({ state: "attached" });
-    await namedFor(bondSection, (bond) => [
-      ["textbox", `Search for ${bond}`],
-      ["radiogroup", `Search results for ${bond}`],
+    await bondCard.getByRole("radio").nth(4).waitFor({ state: "attached" });
+    // Typed results get the focus without being picked, and the count is read out.
+    await focused(bondCard.getByRole("radio").first(), "a typed search with results");
+    await said.getByText("5 results found. Choose one to continue.", { exact: true }).waitFor();
+    assert.equal(await bondCard.getByRole("radio", { checked: true }).count(), 0);
+    assert.equal(await bondCard.getByRole("button", { name: `Use this bond for ${bond}`, exact: true }).isDisabled(), true);
+    assert.deepEqual(await badges(bondCard), []);
+    // Each card repeats the same controls, so their names say which holding they're for: each is in
+    // its card, once on the page, and starts with its visible label.
+    for (const [role, name] of [
+      ["textbox", `Search by ISIN for ${bond}`],
+      ["button", `Search for ${bond}`],
+      ["radiogroup", "Results for “Fictiva Flexi Cap”"],
       ["button", `Use this bond for ${bond}`],
-      ["button", `Use the statement's prices for ${bond}`],
-      ["button", `Leave this bond out for ${bond}`],
-    ]);
-    assert.deepEqual(await badges(bondSection), []);
-    await bondSection.getByRole("radio").nth(1).dispatchEvent("click");
-    await bondSection.getByRole("button", { name: "Use this bond" }).click();
-    await bondSection.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(bondSection), ["Confirmed success-subtle"]);
-    await namedFor(bondSection, () => [["button", "Change the bond for FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31"]]);
-    await bondSection.getByRole("button", { name: /^Change the / }).click();
+      ["button", `None of these: use the price on the statement for ${bond}`],
+      ["button", `Skip this holding: ${bond}`],
+    ]) {
+      assert.equal(await bondCard.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
+      assert.equal(await frame.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
+    }
+    // The consequence of the statement's price is tied to its button.
+    const statementButton = bondCard.getByRole("button", { name: `None of these: use the price on the statement for ${bond}`, exact: true });
+    assert.equal(
+      await frame.locator(`#${await statementButton.getAttribute("aria-describedby")}`).textContent(),
+      "With the price on the statement, its price changes only when you import a statement, not with the market.",
+    );
+    await bondCard.getByRole("radio").nth(1).dispatchEvent("click");
+    await bondCard.getByRole("button", { name: `Use this bond for ${bond}`, disabled: false }).press("Enter");
+    await bondCard.waitFor({ state: "detached" });
+    // An answer takes the focus to the next question's heading.
+    await focused(questions.first().getByRole("heading"), "Use this bond");
+    const bondAnswer = frame.getByRole("button", { name: new RegExp(`^Change answer: ${escaped(bond)}: `) });
+    await bondAnswer.waitFor();
+    // Change answer opens the question again, its heading taking the focus.
+    await bondAnswer.press("Enter");
+    await focused(bondCard.getByRole("heading"), "Change answer");
+    // A search that finds nothing keeps the focus in its box, with the message tied to it.
     await bondSearch.fill("INEZ91A07012");
     await bondSearch.press("Enter");
-    await bondSection.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
-    assert.equal(await outcome(bondSection).getAttribute("aria-live"), "polite");
-    assert.match(await outcome(bondSection).textContent(), /^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/);
-    // Each holding chosen for leaves the sections for the rows.
-    for (let open = await frame.locator("section").count(); open > 0; open--) {
-      const section = frame.locator("section").first();
-      const item = holding(await section.locator("h3").textContent());
-      if (await section.getByText("PLACEHOLDER PHARMA LIMITED").count()) {
-        await section.getByRole("button", { name: "Leave this share out" }).click();
-        await item.getByText("Left out", { exact: true }).waitFor();
-        continue;
-      }
-      const use = section.getByRole("button", { name: /^Use this (fund|share|bond) for / });
-      const nothing = section.getByText(/^Nothing found for the ISIN or for ".*"\. Try another name or a ticker, or use the statement's prices\.$/);
-      await section.getByRole("radio").first().or(nothing).first().waitFor();
-      // Bonds the search can't find use the statement's prices; the one it finds is used as found.
-      if (await nothing.count()) {
-        await section.getByRole("button", { name: "Use the statement's prices" }).press("Enter");
-        await focused(item.getByRole("button", { name: /^Change the / }), "Use the statement's prices on the Holdings card");
-      } else {
-        if (await use.isDisabled()) await section.getByRole("radio").first().click();
-        await use.click();
-      }
-      await item.getByText("Confirmed", { exact: true }).waitFor();
-    }
-    await noAmfiNote();
-    // Leaving out the only qualifying Holdings fund removes the note too; restore its choice after.
-    // With the keyboard, each control's replacement in the holding's section takes the focus.
-    const holdingsFund = holding("FICTIVA NIFTY 50 ETF");
-    await holdingsFund.getByRole("button", { name: /^Change the / }).press("Enter");
-    await focused(holdingsFund.getByRole("textbox", { name: /^Search for / }), "Change on the Holdings card");
-    await amfiNoteShown(holdingsIntro);
-    await holdingsFund.getByRole("button", { name: "Leave this fund out" }).press("Enter");
-    await holdingsFund.getByText("Left out", { exact: true }).waitFor();
-    await focused(holdingsFund.getByRole("button", { name: "Choose a fund" }), "Leave this fund out on the Holdings card");
-    await noAmfiNote();
-    await holdingsFund.getByRole("button", { name: "Choose a fund" }).press("Enter");
-    await focused(holdingsFund.getByRole("textbox", { name: /^Search for / }), "Choose a fund on the Holdings card");
-    await amfiNoteShown(holdingsIntro);
-    await holdingsFund.getByRole("button", { name: "Use this fund", disabled: false }).press("Enter");
-    await holdingsFund.getByText("Confirmed", { exact: true }).waitFor();
-    await focused(holdingsFund.getByRole("button", { name: /^Change the / }), "Use this fund on the Holdings card");
-    await noAmfiNote();
-    await statementPriced(bondSection, "INEZ91A07012", "BOND");
-    await holding("DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33").getByText("Democorp Infra 7.60% 2033").waitFor();
+    const nothingFound = bondCard.getByText("Nothing found for “INEZ91A07012”. Check the code.", { exact: true });
+    await nothingFound.waitFor();
+    await focused(bondSearch, "a typed search with no results");
+    assert.equal(await bondSearch.getAttribute("aria-invalid"), "true");
+    assert.ok((await bondSearch.getAttribute("aria-describedby")).split(" ").includes(await nothingFound.getAttribute("id")));
+    await said.getByText("Nothing found for “INEZ91A07012”. Check the code.", { exact: true }).waitFor();
+    // Bonds the search can't find use the statement's prices; the one it finds is used as found.
+    // Placeholder Pharma is skipped, and the rest use their first result.
+    await answerAll((name) => (name === "PLACEHOLDER PHARMA LIMITED" ? "skip" : /\b(NCD|BD)\b/.test(name) && name !== "DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33" ? "statement" : 0));
+    assert.equal(await amfiQuestionsNote.count(), 0);
+    await frame.getByText("All 13 questions answered.", { exact: true }).waitFor();
+    await frame.getByText(/^Skipped \(1\): PLACEHOLDER PHARMA LIMITED, by your answer\.$/).waitFor();
+    // The answers fold away: each is a line under Show answers.
+    await frame.getByRole("button", { name: "Show answers", exact: true }).click();
+    await frame.getByText(`${bond}: priced from the statement`, { exact: true }).waitFor();
+    await frame.getByText("DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33: Democorp Infra 7.60% 2033 (FAKE)", { exact: true }).waitFor();
+    // Change answer, then answering with the keyboard: the last card's answer takes the focus to the
+    // question still open, the statement's account.
+    await frame.getByRole("button", { name: /^Change answer: FICTIVA NIFTY 50 ETF: / }).press("Enter");
+    await focused(question("FICTIVA NIFTY 50 ETF").getByRole("heading"), "Change answer, keyboard");
+    await footer.getByText("2 questions left before saving.", { exact: true }).waitFor();
+    await question("FICTIVA NIFTY 50 ETF").getByRole("button", { name: /^Use this fund: / }).press("Enter");
+    await focused(investorSelect, "the last answer, with an account still to choose");
+    await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
+    assert.equal(await said.getByText("All questions answered. Ready to save.", { exact: true }).count(), 0);
+    // Go to the question goes to the select still to choose, from wherever the focus is.
+    await footer.getByRole("button", { name: "Go to the question", exact: true }).click();
+    await focused(investorSelect, "Go to the question");
+    // With the account chosen, the last answer takes the focus to the footer's summary, and says so.
+    await choose("investor", "Fund folios (INR)");
+    await frame.getByRole("button", { name: /^Change answer: FICTIVA NIFTY 50 ETF: / }).press("Enter");
+    await question("FICTIVA NIFTY 50 ETF").getByRole("button", { name: /^Use this fund: / }).press("Enter");
+    await focused(footer.locator("[tabindex='-1']").first(), "the last answer");
+    await said.getByText("All questions answered. Ready to save.", { exact: true }).waitFor();
+
+    // Choices are remembered when the review is saved, in order, and a new read waits for them, so a
+    // delayed write can't be overtaken. The snapshot this saves is undone after, but the remembered
+    // choices stay, as they would have once they were made.
+    await choose("investor", "Demat (INR)");
+    const statementKey = await investorSelect.getAttribute("id");
+    await choose("investor", "Fund folios (INR)");
+    const beforeFirstSave = await hosted(() => JSON.stringify({
+      snapshots: window.host.snapshots, saves: window.host.saves, assets: window.host.assets, quotes: window.host.quotes,
+      pricingModes: window.host.pricingModes, storage: [...window.host.storage], assetIds: window.host.assetIds,
+    }));
+    await pause("set:holdings-2");
+    await saveHoldings.click();
+    await frame.getByText("Saved 1 snapshot").waitFor();
+    await waiting();
+    await anotherFile.click();
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
+    await frame.locator("#cas-password").fill("ABCDE1234F");
+    const parsedBefore = await hosted(() => window.host.parsed);
+    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await tab.frames()[1].waitForFunction((n) => window.host.parsed > n, parsedBefore, { timeout: 180_000 });
+    assert.equal(await reviewHeading.count(), 0, "the read waits for the remembered choices");
+    await resume();
+    await reviewHeading.waitFor();
+    await settled();
+    assert.equal((await storage())[statementKey], "holdings-2");
+    assert.match(await investorSelect.textContent(), /Fund folios/);
+    await frame.getByText("Chosen last time.", { exact: true }).waitFor();
+    // The answers are remembered too, except a skipped share, which is asked again.
+    assert.equal(await questions.count(), 1);
+    await question("PLACEHOLDER PHARMA LIMITED").waitFor();
+    // Only the remembered choices stay.
+    await hosted((before) => {
+      const { storage, ...saved } = JSON.parse(before);
+      const kept = [...window.host.storage].filter(([key]) => /^(isin|fund|nps|holdings-investor|holdings-source):/.test(key));
+      Object.assign(window.host, saved, { storage: new Map([...storage, ...kept]) });
+    }, beforeFirstSave);
+
+    // Don't save them leaves nothing to save: the footer offers Finish, which saves nothing and
+    // remembers the choice.
+    const savesBeforeFinish = await hosted(() => window.host.saves.length);
+    await choose("investor", "Don't save them");
+    await footer.getByText("Nothing from this statement will be saved.", { exact: true }).waitFor();
+    await frame.getByText(/^Not saved \(\d+\): /).waitFor();
+    assert.equal(await questions.count(), 0);
+    await footer.getByRole("button", { name: "Finish", exact: true }).click();
+    await frame.getByText("Finished: nothing from made-up-nsdl.pdf was saved.", { exact: true }).waitFor();
+    await focused(frame.locator("#cas-file"), "Finish");
+    await tab.frames()[1].waitForFunction((key) => window.host.storage.get(key) === "left-out", statementKey);
+    assert.equal(await hosted(() => window.host.saves.length), savesBeforeFinish);
+    await readHoldings();
+    assert.match(await investorSelect.textContent(), /Don't save them/);
+    await choose("investor", "Fund folios (INR)");
+    assert.equal(await questions.count(), 1);
+
+    // Use another file asks first once something's changed, and Keep reviewing is the main choice.
+    await answer("PLACEHOLDER PHARMA LIMITED", "skip");
+    // The Bond's cost comes from its face value, so it's among the rows Show all shows.
+    assert.equal(await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").count(), 0);
+    const shownBefore = await readyRows.count();
+    const more = Number((await frame.getByText(/^\(\d+ more, nothing to check\)$/).textContent()).match(/\d+/)[0]);
+    await showAll.click();
+    await focused(frame.getByRole("heading", { name: /^Ready to save/ }), "Show all");
+    assert.equal(await readyRows.count(), shownBefore + more);
+    assert.equal(await frame.getByText(/more, nothing to check/).count(), 0);
+    await setCost(ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31"), "45000");
+    const storageBeforeDiscard = await storage();
+    const secretsBeforeDiscard = (await host()).secrets;
+    await anotherFile.click();
+    await frame.getByText("Discard your 3 changes and choose another file?", { exact: true }).waitFor();
+    await focused(frame.getByRole("button", { name: "Keep reviewing", exact: true }), "Use another file");
+    await frame.getByRole("button", { name: "Keep reviewing", exact: true }).press("Enter");
+    await focused(anotherFile, "Keep reviewing");
+    await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").getByText(/^Purchase cost ₹45,000, added by you · /).waitFor();
+    await anotherFile.click();
+    await frame.getByRole("button", { name: "Discard and choose another file", exact: true }).click();
+    await reviewHeading.waitFor({ state: "detached" });
+    await focused(frame.locator("#cas-file"), "Discard and choose another file");
+    // Discarding remembers nothing and clears the file, but keeps the saved password.
+    assert.deepEqual(await storage(), storageBeforeDiscard);
+    assert.deepEqual((await host()).secrets, secretsBeforeDiscard);
+    assert.equal(await frame.locator("#cas-file").inputValue(), "");
+    await readHoldings();
+    assert.match(await investorSelect.textContent(), /Don't save them/);
+    await choose("investor", "Fund folios (INR)");
+    await answer("PLACEHOLDER PHARMA LIMITED", "skip");
+    await showAllRows();
+    await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").getByText(/^Purchase cost ₹50,000, from the face value · /).waitFor();
 
     // A remembered demat account that doesn't track holdings, NOT_SET included, is ignored, and its
     // row says why. It needs choosing again, even to go with the statement's account.
-    const placeholder = frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" });
-    const statementAccount = frame.getByLabel("All of this statement");
-    const nsdlDemat = frame.getByLabel(/^NSDL Demat Account 1,/);
-    const cdslDemat = frame.getByLabel(/^CDSL Demat Account 2,/);
-    const otherFolio = frame.getByLabel(/^Folio 91234567\/12/);
-    const sourceKeys = await Promise.all([nsdlDemat, cdslDemat, otherFolio].map((select) => select.getAttribute("id")));
+    const nsdlTitle = "FICTIVA SECURITIES PRIVATE LIMITED demat account";
+    const cdslTitle = "TESTBRIDGE BROKING LIMITED demat account";
+    const otherFolioTitle = "Mutual fund folio 91234567/12";
+    const leftOutFolioTitle = "Mutual fund folio 1040012345";
+    await openParts();
+    const [nsdlKey, cdslKey, otherFolioKey, leftOutFolioKey] = await Promise.all(
+      [nsdlTitle, cdslTitle, otherFolioTitle, leftOutFolioTitle].map((title) => sourceSelect(title).getAttribute("id")));
+    await saveChoices([[statementKey, "holdings-2"], [leftOutFolioKey, "left-out"]]);
     const beforeIgnored = await storage();
-    await hosted(([nsdl, cdsl]) => {
-      window.host.storage.set(nsdl, "account-1");
-      window.host.storage.set(cdsl, "unset-1");
-    }, sourceKeys);
-    await readAgain();
     const notHoldings = ", which doesn't track holdings. A snapshot saved there wouldn't change its holdings, so choose again.";
+    await saveChoices([[nsdlKey, "account-1"], [cdslKey, "unset-1"]]);
+    const ignoredChoices = await storage();
+    await readHoldings();
+    await answer("PLACEHOLDER PHARMA LIMITED", "skip");
+    await openParts();
     await frame.getByText(`Chosen before: Mutual funds${notHoldings}`, { exact: true }).waitFor();
     await frame.getByText(`Chosen before: Not set${notHoldings}`, { exact: true }).waitFor();
-    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
-    assert.equal(await preview.isDisabled(), true);
-    assert.match(await nsdlDemat.textContent(), /Choose an account/);
-    assert.match(await cdslDemat.textContent(), /Choose an account/);
-    assert.match(await otherFolio.textContent(), /Same as the statement \(Fund folios\)/);
-    await choose(/^NSDL Demat Account 1,/, "Demat (INR)");
+    assert.equal(await saveHoldings.isDisabled(), true);
+    assert.match(await sourceSelect(nsdlTitle).textContent(), /Choose an account/);
+    assert.match(await sourceSelect(cdslTitle).textContent(), /Choose an account/);
+    assert.match(await sourceSelect(otherFolioTitle).textContent(), /Same as above \(Fund folios\)/);
+    // Go to the question opens Save part of it to another account and goes to the first select to choose.
+    await partButton.click();
+    await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
+    await footer.getByRole("button", { name: "Go to the question", exact: true }).click();
+    await focused(sourceSelect(nsdlTitle), "Go to the question, a demat account's account");
+    await choose(nsdlTitle, "Demat (INR)");
     assert.equal(await frame.getByText(/^Chosen before: Mutual funds/).count(), 0);
-    assert.equal(await preview.isDisabled(), true, "the CDSL account's own account needs choosing again");
-    await choose(/^CDSL Demat Account 2,/, "Same as the statement (Fund folios)");
+    assert.equal(await saveHoldings.isDisabled(), true, "the CDSL account's own account needs choosing again");
+    await choose(cdslTitle, "Same as above (Fund folios)");
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.equal(await preview.isDisabled(), false);
-    await tab.frames()[1].waitForFunction((key) => !window.host.storage.has(key), sourceKeys[1]);
-    await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
+    // Nothing is remembered before saving.
+    assert.deepEqual(await storage(), ignoredChoices);
 
     // So is a remembered account for the whole statement, which isn't needed while each folio and
     // demat account has its own account or is left out.
-    await tab.frames()[1].waitForFunction(([nsdl, cdsl]) =>
-      window.host.storage.get(nsdl) === "holdings-1" && window.host.storage.get(cdsl) === "holdings-1", sourceKeys);
-    await hosted((key) => { window.host.storage.set(key, "unset-1"); }, statementKey);
-    await readAgain();
+    await saveChoices([[nsdlKey, "holdings-1"], [cdslKey, "holdings-1"], [statementKey, "unset-1"]]);
+    await readHoldings();
+    await answer("PLACEHOLDER PHARMA LIMITED", "skip");
+    await openParts();
     await frame.getByText(`Chosen before: Not set${notHoldings}`, { exact: true }).waitFor();
-    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
-    assert.match(await statementAccount.textContent(), /Choose an account/);
-    assert.match(await otherFolio.textContent(), /Same as the statement/);
-    assert.doesNotMatch(await otherFolio.textContent(), /Fund folios/);
-    assert.equal(await preview.isDisabled(), true, "the folio goes with the statement, which has no account");
-    await choose(/^Folio 91234567\/12/, "Fund folios (INR)");
-    assert.equal(await preview.isDisabled(), false);
+    assert.match(await investorSelect.textContent(), /Choose an account/);
+    assert.match(await sourceSelect(otherFolioTitle).textContent(), /Same as above/);
+    assert.doesNotMatch(await sourceSelect(otherFolioTitle).textContent(), /Fund folios/);
+    assert.equal(await saveHoldings.isDisabled(), true, "the folio goes with the statement, which has no account");
+    await choose(otherFolioTitle, "Fund folios (INR)");
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await frame.getByText(`Chosen before: Not set${notHoldings}`, { exact: true }).waitFor();
-    await choose(/^Folio 91234567\/12/, "Same as the statement");
-    assert.equal(await preview.isDisabled(), true);
-    await choose("All of this statement", "Fund folios (INR)");
+    await choose(otherFolioTitle, "Same as above");
+    assert.equal(await saveHoldings.isDisabled(), true);
+    await choose("investor", "Fund folios (INR)");
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.equal(await preview.isDisabled(), false);
-    await tab.frames()[1].waitForFunction(([statement, folio]) =>
-      window.host.storage.get(statement) === "holdings-2" && !window.host.storage.has(folio), [statementKey, sourceKeys[2]]);
-    assert.deepEqual(await storage(), beforeIgnored);
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
 
     // So are remembered accounts that are hidden, archived or no longer listed. A folio's or demat
     // account's own choice needs making again unless it's left out, and the snapshots go where chosen.
-    const leftOutFolio = frame.getByLabel(/^Folio 1040012345/);
     const hiddenDemat = unavailable("Hidden demat, which is hidden in Wealthfolio");
     const oldDemat = unavailable("Old demat, which is hidden and archived in Wealthfolio");
+    await hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeIgnored);
     const beforeUnavailableHoldings = await hosted(() => JSON.stringify({
       snapshots: window.host.snapshots, saves: window.host.saves, assets: window.host.assets, quotes: window.host.quotes,
       pricingModes: window.host.pricingModes, storage: [...window.host.storage],
     }));
-    await saveChoices([[sourceKeys[0], "hidden-2"], [sourceKeys[1], "archived-3"], [sourceKeys[2], "gone-1"]]);
-    await readAgain();
-    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
-    await rowOf(nsdlDemat).getByText(hiddenDemat, { exact: true }).waitFor();
-    await rowOf(cdslDemat).getByText(oldDemat, { exact: true }).waitFor();
-    await rowOf(otherFolio).getByText(missing, { exact: true }).waitFor();
+    await saveChoices([[nsdlKey, "hidden-2"], [cdslKey, "archived-3"], [otherFolioKey, "gone-1"]]);
+    await readHoldings();
+    await answer("PLACEHOLDER PHARMA LIMITED", "skip");
+    await openParts();
+    for (const note of [hiddenDemat, oldDemat, missing]) await frame.getByText(note, { exact: true }).waitFor();
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
-    for (const select of [nsdlDemat, cdslDemat, otherFolio]) assert.match(await select.textContent(), /Choose an account/);
-    assert.match(await leftOutFolio.textContent(), /Leave out/);
-    assert.match(await statementAccount.textContent(), /Fund folios/);
-    assert.equal(await preview.isDisabled(), true);
-    await choose(/^NSDL Demat Account 1,/, "Demat (INR)");
-    await choose(/^CDSL Demat Account 2,/, "Same as the statement (Fund folios)");
-    assert.equal(await preview.isDisabled(), true, "the folio's own account needs choosing again");
-    await choose(/^Folio 91234567\/12/, "Leave out");
+    for (const title of [nsdlTitle, cdslTitle, otherFolioTitle]) assert.match(await sourceSelect(title).textContent(), /Choose an account/);
+    assert.match(await sourceSelect(leftOutFolioTitle).textContent(), /Don't save/);
+    assert.match(await investorSelect.textContent(), /Fund folios/);
+    await frame.getByText("Chosen last time.", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
+    await choose(nsdlTitle, "Demat (INR)");
+    await choose(cdslTitle, "Same as above (Fund folios)");
+    assert.equal(await saveHoldings.isDisabled(), true, "the folio's own account needs choosing again");
+    await choose(otherFolioTitle, "Don't save");
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.equal(await preview.isDisabled(), false);
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     const depository = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
     const isins = (type) => depository.accounts.find((a) => a.type === type).equities
       .concat(...["mutual_funds", "bonds"].map((kind) => depository.accounts.find((a) => a.type === type)[kind])).map((h) => h.isin);
     const savesBefore = JSON.parse(beforeUnavailableHoldings).saves.length;
-    const snapshotStatus = preview.locator("xpath=..").getByRole("status");
-    assert.equal(await snapshotStatus.textContent(), "");
-    // Fund folios' Gilt fund can't be read, so the preview fails.
+    // Fund folios' Gilt fund can't be read, so what will be saved can't be worked out, and saving waits.
+    // Opening the page again reads Wealthfolio again.
     await hosted(() => { window.host.failGetProfileIds = ["asset-gilt"]; });
-    await preview.press("Enter");
-    await frame.getByText(/^Couldn't prepare the preview: Error: Couldn't read the Wealthfolio profile of /).waitFor();
-    await focused(preview, "Preview the snapshots, failed");
+    await revisit();
+    await footer.getByText(/^Couldn't work out what will be saved: Error: Couldn't read the Wealthfolio profile of /).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
     await hosted(() => { window.host.failGetProfileIds = []; });
+    await footer.getByRole("button", { name: "Try again", exact: true }).click();
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await pause("holdings");
-    await preview.press("Enter");
+    await revisit();
     await waiting();
-    await snapshotStatus.getByText("Preparing the preview…", { exact: true }).waitFor();
-    assert.equal(await snapshotStatus.textContent(), "Preparing the preview…");
+    await footer.getByText("Working out what will be saved…", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
     await resume();
-    await snapshotStatus.getByText("The preview is ready: 2 snapshots.", { exact: true }).waitFor();
-    await focused(preview, "Preview the snapshots");
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
+    await footer.getByText(/^Save \d+ holdings in Demat on 31 Mar 2025\.$/).waitFor();
+    await footer.getByText(/^Update Fund folios to 31 Mar 2025 with \d+ holdings? from this statement\. Its other holdings and cash stay\.$/).waitFor();
     await pause("snapshot");
-    await frame.getByRole("button", { name: "Save 2 snapshots", disabled: false }).press("Enter");
+    await saveHoldings.press("Enter");
     await waiting();
-    assert.equal(await snapshotStatus.textContent(), "Saving…");
+    assert.equal(await said.textContent(), "Saving…");
+    await footer.getByText(/^Saving Demat…$/).waitFor();
     await resume();
     await frame.getByText("Saved 2 snapshots").waitFor();
-    await focused(frame.getByRole("alert").filter({ hasText: /^Saved 2 snapshots/ }), "Save 2 snapshots");
+    await focused(frame.getByRole("alert").filter({ hasText: /^Saved 2 snapshots/ }), "Update holdings");
     const savedTo = await hosted(() => ({ saves: window.host.saves, snapshots: window.host.snapshots }));
     assert.deepEqual(savedTo.saves.slice(savesBefore).map((s) => [s.accountId, s.date]).sort(), [["holdings-1", "2025-03-31"], ["holdings-2", "2025-03-31"]]);
     for (const [accountId, own] of [["holdings-1", isins("NSDL Demat Account")], ["holdings-2", [...isins("CDSL Demat Account"), "GILT"]]]) {
       const symbols = savedTo.snapshots[accountId]["2025-03-31"].holdings.map((h) => h.symbol);
       assert.ok(symbols.length > 1 && symbols.every((symbol) => own.includes(symbol)), `${accountId}: ${symbols}`);
     }
+    // Saving remembers the choices made: the NSDL account's own account, the CDSL account going with
+    // the statement, and the folio left out.
+    await tab.frames()[1].waitForFunction(([nsdl, cdsl, folio, statement]) => {
+      const s = window.host.storage;
+      return s.get(nsdl) === "holdings-1" && !s.has(cdsl) && s.get(folio) === "left-out" && s.get(statement) === "holdings-2";
+    }, [nsdlKey, cdslKey, otherFolioKey, statementKey]);
     await hosted((state) => {
       const { storage, ...saved } = JSON.parse(state);
       Object.assign(window.host, saved, { storage: new Map(storage) });
     }, beforeUnavailableHoldings);
-    await readAgain();
-    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
+    // After saving, Use another file asks nothing.
+    await readHoldings();
+    await answer("PLACEHOLDER PHARMA LIMITED", "skip");
     assert.deepEqual(await storage(), beforeIgnored);
 
     // The statement's own ignored account is needed only by the rows that go with it.
     await saveChoices([[statementKey, "hidden-2"]]);
-    await hosted((key) => { window.host.storage.delete(key); }, sourceKeys[1]);
-    await readAgain();
-    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
-    await rowOf(statementAccount).getByText(hiddenDemat, { exact: true }).waitFor();
+    await readHoldings();
+    await answer("PLACEHOLDER PHARMA LIMITED", "skip");
+    await frame.getByText(hiddenDemat, { exact: true }).waitFor();
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 1);
-    assert.match(await statementAccount.textContent(), /Choose an account/);
-    for (const select of [cdslDemat, otherFolio]) {
-      assert.match(await select.textContent(), /Same as the statement/);
-      assert.doesNotMatch(await select.textContent(), /\(/, "nothing is chosen for the statement");
+    assert.match(await investorSelect.textContent(), /Choose an account/);
+    await openParts();
+    for (const title of [cdslTitle, otherFolioTitle]) {
+      assert.match(await sourceSelect(title).textContent(), /Same as above/);
+      assert.doesNotMatch(await sourceSelect(title).textContent(), /\(/, "nothing is chosen for the statement");
     }
-    assert.equal(await preview.isDisabled(), true);
-    await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
-    assert.equal(await preview.isDisabled(), true, "the folio still goes with the statement");
-    await choose(/^Folio 91234567\/12/, "Leave out");
-    assert.equal(await preview.isDisabled(), false);
+    assert.equal(await saveHoldings.isDisabled(), true);
+    await choose(cdslTitle, "Demat (INR)");
+    await choose(nsdlTitle, "Demat (INR)");
+    assert.equal(await saveHoldings.isDisabled(), true, "the folio still goes with the statement");
+    await choose(otherFolioTitle, "Don't save");
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeIgnored);
-    await readAgain();
-    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
-    assert.deepEqual(await storage(), beforeIgnored);
 
-    // With no account left that tracks holdings, the card says to add one and read again, and still
+    // With no account left that tracks holdings, Save to says to add one and read again, and still
     // says why each choice is ignored. Each read loads the accounts again, so the next one offers it.
-    const readNsdl = async (text) => {
-      await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
-      await frame.locator("#cas-password").fill("ABCDE1234F");
-      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-      await frame.getByText(text, { exact: true }).waitFor({ timeout: 180_000 });
-    };
+    await saveChoices([[nsdlKey, "holdings-1"], [cdslKey, "holdings-1"]]);
+    const withDemat = await storage();
     const beforeHidden = await accountList();
     await editAccounts({ "holdings-1": { isActive: false }, "holdings-2": { isActive: false } });
-    await readNsdl("No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then choose Read statement again. The check against transactions below works without one.");
-    assert.equal(await statementAccount.count(), 0);
-    const card = await frame.locator("body").innerText();
+    await readHoldings();
+    await frame.getByText("No account can hold these yet", { exact: true }).waitFor();
+    await frame.getByText("No account tracks holdings. To save these holdings, add one in Wealthfolio, set to track holdings, then read the statement again.", { exact: true }).waitFor();
+    assert.equal(await investorSelect.count(), 0);
+    const card = await frame.getByRole("alert").filter({ hasText: /^No account can hold these yet/ }).innerText();
     for (const [label, note] of [
-      ["All of this statement", unavailable("Fund folios, which is hidden in Wealthfolio")],
-      ["NSDL Demat Account 1, FICTIVA SECURITIES PRIVATE LIMITED", unavailable("Demat, which is hidden in Wealthfolio")],
-      ["CDSL Demat Account 2, TESTBRIDGE BROKING LIMITED", unavailable("Demat, which is hidden in Wealthfolio")],
+      ["ANANYA R TESTWALA's holdings", unavailable("Fund folios, which is hidden in Wealthfolio")],
+      [nsdlTitle, unavailable("Demat, which is hidden in Wealthfolio")],
+      [cdslTitle, unavailable("Demat, which is hidden in Wealthfolio")],
     ]) {
       assert.ok(card.includes(`${label}\n${note}`) || card.includes(`${label}\n\n${note}`), `${label}: ${card}`);
     }
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
-    assert.equal(await preview.isDisabled(), true);
+    await footer.getByText("No account can hold these yet.", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
     await editAccounts({ "new-2": { name: "New demat", trackingMode: "HOLDINGS" } });
-    await readNsdl("Accounts");
-    assert.equal(await frame.getByText(/^No account tracks holdings/).count(), 0);
+    await readHoldings();
+    assert.equal(await frame.getByText("No account can hold these yet", { exact: true }).count(), 0);
+    await openParts();
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
-    await statementAccount.click();
+    await investorSelect.click();
     await frame.getByRole("option", { name: "New demat (INR)", exact: true }).waitFor();
-    assert.equal(await frame.getByRole("option").count(), 1);
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New demat (INR)", "Don't save them"]);
     await frame.getByRole("option", { name: "New demat (INR)", exact: true }).click();
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 2);
-    await tab.frames()[1].waitForFunction((key) => window.host.storage.get(key) === "new-2", statementKey);
     // Restored, they're offered again.
     await setAccountList(beforeHidden);
-    await hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeIgnored);
-    await readNsdl("Accounts");
+    await readHoldings();
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.match(await statementAccount.textContent(), /Fund folios/);
-    await placeholder.getByRole("button", { name: "Leave this share out" }).click();
-    assert.equal(await preview.isDisabled(), false);
-    assert.deepEqual(await storage(), beforeIgnored);
+    assert.match(await investorSelect.textContent(), /Fund folios/);
+    await answer("PLACEHOLDER PHARMA LIMITED", "skip");
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
+    assert.deepEqual(await storage(), withDemat);
 
-    // The same share in two snapshot accounts names the account on its checkbox and cost box.
-    await choose(/^CDSL Demat Account 2,/, "Fund folios (INR)");
-    await preview.click();
-    for (const account of ["Demat", "Fund folios"]) {
-      const box = frame.getByRole("checkbox", { name: `Import Fund INEZ90B01015 in ${account}`, exact: true });
-      await box.waitFor({ state: "attached" });
-      assert.equal(await box.count(), 1);
-      assert.equal(await frame.getByRole("textbox", { name: `Total cost of Fund INEZ90B01015 in ${account}`, exact: true }).count(), 1);
-    }
-    await choose(/^CDSL Demat Account 2,/, "Demat (INR)");
+    // The same share in two snapshot accounts has a row in each, grouped by account, and each row's
+    // controls are named apart.
+    await choose(cdslTitle, "Fund folios (INR)");
+    await frame.getByText("To Demat", { exact: true }).waitFor();
+    await frame.getByText("To Fund folios", { exact: true }).waitFor();
+    const shareCosts = frame.getByRole("button", { name: /^Add cost: Fund INEZ90B01015, holding \d+$/ });
+    assert.equal(await shareCosts.count(), 2);
+    const [firstCost, secondCost] = await shareCosts.evaluateAll((all) => all.map((b) => b.getAttribute("aria-label")));
+    assert.notEqual(firstCost, secondCost);
+    await choose(cdslTitle, "Demat (INR)");
+    assert.equal(await frame.getByRole("button", { name: /^Add cost: Fund INEZ90B01015/ }).count(), 1);
 
-    // On the Holdings card too, a result or a confirmed share quoted in another currency has a warning
-    // badge with its currency and a line saying so, and so has its row in the snapshot preview. A result
-    // in rupees, the other holdings and their rows say nothing about currency.
-    const democorpShare = holding("DEMOCORP BANK LIMITED");
-    const democorpSearch = democorpShare.getByRole("textbox", { name: /^Search for / });
-    await democorpShare.getByRole("button", { name: /^Change the / }).click();
-    await democorpSearch.fill("Democorp Bank");
-    await democorpSearch.press("Enter");
-    await democorpShare.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    assert.deepEqual(await democorpShare.locator("label").allTextContents(), usdResults);
-    assert.deepEqual(await resultCodes(democorpShare), usdCodes);
-    assert.deepEqual(await resultBadges(democorpShare), [["USD warning-subtle"], []]);
+    // A result or a chosen share quoted in another currency has a warning badge with its currency
+    // and a line saying so, on its card and its row. A result in rupees, the other holdings and
+    // their rows say nothing about currency.
+    const democorp = ready("DEMOCORP BANK LIMITED");
+    await democorp.getByRole("button", { name: /^Change: / }).click();
+    const changePanel = frame.locator("[data-focus-first]");
+    await changePanel.waitFor();
+    const changeSearch = changePanel.getByRole("textbox", { name: /^Search by ISIN for / });
+    // Change opens the holding's search in place, its box taking the focus.
+    await focused(changeSearch, "Change");
+    await changePanel.getByText("On your statement: DEMOCORP BANK LIMITED", { exact: true }).waitFor();
+    await changeSearch.fill("Democorp Bank");
+    await changeSearch.press("Enter");
+    const usdOptions = changePanel.getByRole("radiogroup", { name: "Results for “Democorp Bank”" }).locator("label");
+    await usdOptions.nth(1).waitFor();
+    const usdTexts = (await usdOptions.allTextContents()).map((t) => t.replace(/\s+/g, " ").trim());
+    assert.deepEqual(usdTexts, [`Democorp Bank ADR USD FAKE · DMCB ${inUsd}`, "National Stock Exchange (NSE) Democorp Bank Ltd · FAKE · DEMOCORPBK.NS"]);
+    assert.deepEqual(await usdOptions.evaluateAll((labels) => labels.map((label) =>
+      [...label.querySelectorAll("[data-slot=badge]")].map((b) => `${b.textContent} ${b.dataset.variant}`))), [["USD warning-subtle"], []]);
     assert.equal(await quotedIn(frame).count(), 1);
-    await democorpShare.getByRole("radio").first().dispatchEvent("click");
-    await democorpShare.getByRole("button", { name: "Use this share", disabled: false }).click();
-    await democorpShare.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(democorpShare), ["Confirmed success-subtle", "USD warning-subtle"]);
-    assert.equal(await democorpShare.getByText(usdCodes[0], { exact: true }).count(), 1);
-    assert.equal(await democorpShare.getByText(inUsd, { exact: true }).count(), 1);
+    // Picked without a pointer: this page has no Wealthfolio CSS, so the label is an inline box broken
+    // over several lines, and a pointer click's hit test misses it. With Wealthfolio's CSS it's a block
+    // that a click lands on, as the desktop check confirms.
+    await usdOptions.first().getByRole("radio").dispatchEvent("click");
+    await changePanel.getByRole("button", { name: /^Use this listing for /, disabled: false }).click();
+    await changePanel.waitFor({ state: "detached" });
+    const usdRow = ready("Democorp Bank ADR");
+    await usdRow.getByText(inUsd, { exact: true }).waitFor();
+    assert.deepEqual(await badges(usdRow.locator("th")), ["USD warning-subtle"]);
+    await usdRow.getByText(/ · chosen by you · /).waitFor();
     assert.equal(await quotedIn(frame).count(), 1);
-    await preview.click();
-    const usdSnapshot = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-03-31" });
-    await usdSnapshot.getByRole("row").filter({ hasText: "Democorp Bank ADR" }).getByText(usdRowNote, { exact: true }).waitFor();
-    assert.equal(await quotedIn(frame.locator("table")).count(), 1);
-    // Back to the share's own listing for the checks that follow: its ISIN's only result, preselected.
-    await democorpShare.getByRole("button", { name: /^Change the / }).click();
-    await democorpShare.getByRole("button", { name: "Use this share", disabled: false }).click();
-    await democorpShare.getByText("Confirmed", { exact: true }).waitFor();
+    // Back to the share's own listing for the checks that follow: its ISIN's only result.
+    await usdRow.getByRole("button", { name: /^Change: / }).click();
+    await changePanel.getByRole("button", { name: /^Use this listing: Fund INEZ90C01021, for / }).click();
+    await changePanel.waitFor({ state: "detached" });
     assert.equal(await quotedIn(frame).count(), 0);
 
     // A known MANUAL asset in an inactive account gets the statement's price, even when the target starts empty.
-    const priced = "Priced by hand: saving also saves the statement's price as its price on this date.";
     await hosted(() => {
       window.host.held["archived-1"] = ["INFZ90K01LQ6"];
       window.host.pricingModes.INFZ90K01LQ6 = "MANUAL";
@@ -2331,69 +2550,96 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         window.host.assets[id] = { ...asset, displayCode: `MY ${asset.symbol}` };
       }
     }, renamed);
-    await preview.click();
-    const demat = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-03-31" });
-    const folios = frame.locator("section").filter({ hasText: "Fund folios: snapshot of 2025-03-31" });
-    await demat.waitFor();
-    await folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" }).getByText(priced, { exact: true }).waitFor();
+    await revisit();
+    await settled();
+    const liquidReady = ready("Fictiva Liquid Fund - Direct Plan - Growth");
+    await liquidReady.getByText(priced, { exact: true }).waitFor();
     await hosted(() => { window.host.pricingModes.INFZ90K01LQ6 = "MARKET"; });
-    await preview.click();
-    await folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" }).getByText(priced, { exact: true }).waitFor({ state: "hidden" });
-    await frame.getByText("PLACEHOLDER PHARMA LIMITED, CDSL Demat Account 2, TESTBRIDGE BROKING LIMITED: You left this share out.").waitFor();
-    await frame.getByText(/^Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout, Folio 1040012345: Its folio, demat account or PRAN is left out\.$/).waitFor();
+    await revisit();
+    await settled();
+    await liquidReady.getByText(priced, { exact: true }).waitFor({ state: "detached" });
+    await frame.getByText(/^Skipped \(1\): PLACEHOLDER PHARMA LIMITED, by your answer\.$/).waitFor();
+    await frame.getByText("Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout. Their account in “Save to” is set to Don't save.", { exact: false }).waitFor();
     const nsdl = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
     const rendered = await frame.locator("body").innerText();
     for (const number of nsdl.accounts.flatMap((a) => [a.dp_id, a.client_id]).filter(Boolean)) {
       assert.equal(rendered.includes(number), false, `A depository identifier is visible: ${number}`);
     }
-    // Shares print no cost: typed, or blank for unknown. A bond's cost defaults to its face value.
+    // Shares print no cost: added, or unknown. A bond's cost defaults to its face value.
+    const demat = await snapshotTable("Demat");
     assert.equal(await demat.getByRole("row").count(), 12);
-    const faceRow = demat.getByRole("row").filter({ hasText: "SAMPLE HOUSING FINANCE LIMITED 7.95 NCD 20JN28" });
-    await faceRow.getByText("From the face value", { exact: true }).waitFor();
-    assert.equal(await demat.getByLabel("Total cost of SAMPLE HOUSING FINANCE LIMITED 7.95 NCD 20JN28").inputValue(), "200000");
+    const faceRow = ready("SAMPLE HOUSING FINANCE LIMITED 7.95 NCD 20JN28");
+    await faceRow.getByText(/^Purchase cost ₹2,00,000, from the face value · /).waitFor();
     await faceRow.getByText(priced, { exact: true }).waitFor();
     // Below the statement's price, so the price saved after the snapshot must win over the average cost.
-    await demat.getByLabel("Total cost of FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").fill("45000");
-    assert.equal(await demat.getByRole("row").filter({ hasText: "INEZ93A08016" }).getByText(priced, { exact: true }).count(), 0);
-    await demat.getByText("150", { exact: true }).waitFor();
-    await demat.getByText("520", { exact: true }).waitFor();
-    const shortRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90B01015" });
+    // Western grouping commas are read as well as Indian ones.
+    await setCost(ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31"), "45,000");
+    await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").getByText(/^Purchase cost ₹45,000, added by you · /).waitFor();
+    assert.equal(await ready("DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33").getByText(priced, { exact: true }).count(), 0);
+    assert.equal((await ready("FICTIVA POWER AND LIGHT LIMITED").locator("td").first().textContent()).trim(), "150");
+    const shortRow = ready("SAMPLEWORKS TECHNOLOGIES LIMITED");
+    assert.equal((await shortRow.locator("td").first().textContent()).trim(), "520");
     await shortRow.getByText("Mutual funds also holds it.", { exact: true }).waitFor();
-    // Each holding's checkbox names it.
-    assert.equal(await frame.getByRole("checkbox", { name: "Import Fund INEZ90B01015 in Demat", exact: true }).isChecked(), true);
-    await demat.getByLabel("Total cost of Fund INEZ90A01017").fill("185175");
-    await demat.getByLabel("Total cost of Fund INEZ90C01021").fill("abc");
-    await demat.getByText("Type an amount like 12345.67, or leave it blank.").waitFor();
-    const save = frame.getByRole("button", { name: "Save 2 snapshots" });
-    assert.equal(await save.isDisabled(), true);
-    const invalidRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90C01021" });
-    const invalidImport = frame.getByRole("checkbox", { name: "Import Fund INEZ90C01021 in Demat", exact: true });
-    await invalidImport.dispatchEvent("click");
-    assert.equal(await save.isDisabled(), false);
-    assert.equal(await invalidRow.getByText("Type an amount like 12345.67, or leave it blank.").count(), 0);
-    await invalidImport.dispatchEvent("click");
-    assert.equal(await save.isDisabled(), true);
-    assert.equal(await demat.getByLabel("Total cost of Fund INEZ90C01021").inputValue(), "abc");
-    await invalidRow.getByText("Type an amount like 12345.67, or leave it blank.").waitFor();
-    await demat.getByLabel("Total cost of Fund INEZ90C01021").fill("");
-    assert.equal(await save.isDisabled(), false);
+    // A cost is the whole input, checked: with a letter it stays open, says how to enter it, and
+    // never saves part of it. Save or Cancel gives the focus back to the row's cost button, and the
+    // Enter that saves doesn't open it again.
+    const powerRow = ready("FICTIVA POWER AND LIGHT LIMITED");
+    await powerRow.getByRole("button", { name: /^Add cost: / }).press("Enter");
+    const costBox = frame.getByRole("textbox", { name: /^Total purchase cost of these 150 shares \(₹\)/ });
+    await focused(costBox, "Add cost");
+    await costBox.fill("₹1,85,175");
+    await costBox.press("Enter");
+    await costBox.waitFor({ state: "detached" });
+    await focused(powerRow.getByRole("button", { name: /^Edit: purchase cost of / }), "Save, with Enter");
+    await powerRow.getByText(/^Purchase cost ₹1,85,175, added by you · /).waitFor();
+    await said.getByText("Purchase cost saved for Fund INEZ90A01017: ₹1,85,175.", { exact: true }).waitFor();
+    const bankRow = ready("DEMOCORP BANK LIMITED");
+    await bankRow.getByRole("button", { name: /^Add cost: / }).click();
+    const bankBox = frame.getByRole("textbox", { name: /^Total purchase cost of these 75 shares \(₹\)/ });
+    await bankBox.fill("40O00");
+    await bankBox.press("Enter");
+    const costHint = bankRow.getByText("Enter the total purchase cost using numbers, for example 40000.", { exact: true });
+    await costHint.waitFor();
+    assert.equal(await bankBox.getAttribute("aria-invalid"), "true");
+    assert.equal(await bankBox.getAttribute("aria-describedby"), await costHint.getAttribute("id"));
+    await focused(bankBox, "an invalid cost");
+    // One edit at a time: the footer says which, Go to it goes back to it, and saving waits.
+    await footer.getByText("Save or cancel your purchase-cost edit for Fund INEZ90C01021 first.", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
+    await ready("FICTIVA NIFTY 50 ETF").getByRole("button", { name: /^Add cost: / }).click();
+    await focused(bankBox, "another Add cost while one is open");
+    assert.equal(await bankBox.inputValue(), "40O00");
+    await bankRow.getByText("Save or cancel this edit first.", { exact: true }).waitFor();
+    await said.getByText("Save or cancel this edit first.", { exact: true }).waitFor();
+    await ready("FICTIVA NIFTY 50 ETF").getByRole("button", { name: /^Change: / }).click();
+    await focused(bankBox, "Change while a cost is open");
+    await footer.getByRole("button", { name: "Go to it", exact: true }).click();
+    await focused(bankBox, "Go to it");
+    await bankRow.getByRole("button", { name: /^Cancel purchase cost: / }).click();
+    await focused(bankRow.getByRole("button", { name: /^Add cost: / }), "Cancel");
+    await bankRow.getByText(/^Purchase cost missing: gains will look too high · /).waitFor();
+    // The footer names the missing costs, and Add costs goes to the first.
+    await footer.getByText(/^Purchase cost missing for \d+ · /).waitFor();
+    await footer.getByRole("button", { name: "Add costs", exact: true }).click();
+    await focused(readyRows.getByRole("button", { name: /^Add cost: / }).first(), "Add costs");
     // The Flexi Cap fund is left out because Mutual funds holds it; the hand-added fund and the cash stay.
-    const flexiRow = folios.getByRole("row").filter({ hasText: "Fund INFZ90K01FC8" });
-    await flexiRow.getByText("Mutual funds already holds this fund, from its transactions. Including it here counts it twice.").waitFor();
-    assert.equal(await flexiRow.getByText("Left out", { exact: true }).count(), 1);
-    assert.equal(await folios.getByRole("row").filter({ hasText: "Gilt fund" }).getByText("Kept", { exact: true }).count(), 1);
-    await folios.getByText("Cash carried over from the snapshot of 2025-01-31: INR 1500.").waitFor();
-    await folios.getByText("Starts from the account's snapshot of 2025-01-31", { exact: false }).waitFor();
-    assert.equal(await frame.getByText("Wealthfolio has later snapshots of this account", { exact: true }).count(), 0);
+    await frame.getByText(/^Already tracked in Mutual funds \(1\)/).waitFor();
+    const folios = await snapshotTable("Fund folios");
+    assert.equal(await statusOf(folios, "Fund INFZ90K01FC8"), "Left out");
+    assert.equal(await statusOf(folios, "Gilt fund"), "Kept");
+    await frame.getByText("Cash carried over from the snapshot of 31 Jan 2025: INR 1500.", { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^This saves holdings history for /).count(), 0);
     await pause("snapshot");
-    await save.press("Enter");
+    await saveHoldings.press("Enter");
     await waiting();
-    // A market-priced asset's profile can fail after preview; the other new assets stay readable.
+    // A market-priced asset's profile can fail after it's worked out; the other new assets stay readable.
     await hosted(() => { window.host.failGetProfileIds = ["asset-INEZ90C01021"]; });
     await clickOutside();
     await resume();
     await frame.getByText("Saved 2 snapshots").waitFor();
-    await stayedOutside("Save 2 snapshots");
+    await stayedOutside("Update holdings");
+    // The funds already tracked elsewhere are named after saving, apart from what was saved.
+    await frame.getByText(/^1 fund already tracked in Mutual funds wasn't saved here too[.;]/).waitFor();
     const snapshot = (id, date) => hosted(([id, date]) => window.host.snapshots[id][date], [id, date]);
     const first = await snapshot("holdings-1", "2025-03-31");
     for (const isin of ["INEZ90A01017", "INEZ90C01021"]) {
@@ -2479,49 +2725,80 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted((renamed) => { for (const id of renamed) window.host.assets[id].displayCode = window.host.assets[id].symbol; }, renamed);
 
     // A fund confirmed to another asset than the one an earlier import of its folio added keeps that
-    // asset, and leaves the new one out, until one choice replaces the old asset with it.
-    const confirmBalanced = async (query, result) => {
-      await balanced.getByRole("button", { name: /^Change the / }).click();
-      await balanced.getByRole("textbox", { name: /^Search for / }).fill(query);
-      await balanced.getByRole("textbox", { name: /^Search for / }).press("Enter");
-      await balanced.getByRole("radio", { name: result }).dispatchEvent("click");
-      await balanced.getByRole("button", { name: "Use this fund" }).click();
-      await balanced.getByText("Confirmed", { exact: true }).waitFor();
+    // asset, and leaves the new one out, until one choice under Before saving replaces the old asset with it.
+    const balancedName = "Fictiva Balanced Advantage Fund - Direct Plan - IDCW Reinvestment";
+    const changePanelOf = () => frame.locator("[data-focus-first]");
+    // Changes a ready holding to a result its Change panel finds for `query`, or to its only result.
+    const changeTo = async (row, query, result) => {
+      await row.getByRole("button", { name: /^Change: / }).click();
+      const panel = changePanelOf();
+      await panel.waitFor();
+      await panel.getByText(/Searching…/).waitFor({ state: "detached" });
+      if (query) {
+        const box = panel.getByRole("textbox", { name: /^Search by / });
+        await box.fill(query);
+        await box.press("Enter");
+        // The automatic search can list the same result: pick it among the typed search's results.
+        await panel.getByRole("radiogroup", { name: `Results for “${query}”` }).getByRole("radio", { name: result }).dispatchEvent("click");
+        await panel.getByRole("button", { name: /^Use this (fund|listing|bond|NPS scheme) for /, disabled: false }).click();
+      } else {
+        const single = panel.getByRole("button", { name: /^Use this (fund|listing|bond|NPS scheme): / });
+        if (await single.count()) await single.click();
+        else {
+          await panel.getByRole("radio").first().dispatchEvent("click");
+          await panel.getByRole("button", { name: /^Use this (fund|listing|bond|NPS scheme) for /, disabled: false }).click();
+        }
+      }
+      await panel.waitFor({ state: "detached" });
+      await settled();
+    };
+    const beforeSaving = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Before saving", exact: true }) });
+    // A decision under Before saving, by the holding's name.
+    const decision = (name) => beforeSaving.locator("div.border-t").filter({ has: frame.locator("span.font-medium", { hasText: new RegExp(`^${escaped(name)}$`) }) });
+    const reread = async () => {
+      await readHoldings();
+      if (await question("PLACEHOLDER PHARMA LIMITED").count()) await answer("PLACEHOLDER PHARMA LIMITED", "skip");
+      await settled();
     };
     const replaceAndSave = async (oldName, newName, oldSymbol, newSymbol) => {
-      await preview.click();
       const [oldAsset, newAsset] = [`${oldName} (${oldSymbol} · XBOM)`, `${newName} (${newSymbol} · XBOM)`];
-      // The other row's note names each asset, so each row goes by the name in its first cell.
-      const row = (name) => folios.getByRole("row").filter({ has: frame.locator("td:first-child > div > span:first-child", { hasText: new RegExp(`^${name}$`) }) });
-      const [oldRow, newRow] = [row(oldName), row(newName)];
-      const replace = newRow.getByRole("checkbox", { name: `Replace ${oldAsset} with ${newAsset} in Fund folios`, exact: true });
+      const [oldEntry, newEntry] = [decision(oldName), decision(newName)];
+      const replace = newEntry.getByRole("checkbox", { name: `Replace ${oldAsset} with ${newAsset} in Fund folios`, exact: true });
       await replace.waitFor({ state: "attached" });
       assert.equal(await replace.getAttribute("aria-checked"), "false");
-      await newRow.getByText(
+      await newEntry.getByText(
         `An earlier import of Folio 91234567/12 added this holding as ${oldAsset}. So that it isn't counted twice, it's left out unless you replace ${oldAsset} with it. ` +
         "Replace it only if all its units came from Folio 91234567/12: imports don't record how many units each folio, demat account or PRAN added.",
         { exact: true },
       ).waitFor();
-      assert.equal(await newRow.getByText("Left out", { exact: true }).count(), 1);
-      await oldRow.getByText(`An earlier import of Folio 91234567/12 added it for a holding that this import lists under ${newAsset}. It's kept unless you replace it with ${newAsset}.`, { exact: true }).waitFor();
-      assert.equal(await oldRow.getByText("Kept", { exact: true }).count(), 1);
+      assert.equal(await newEntry.getByText("Left out", { exact: true }).count(), 1);
+      // Not included says it waits for that choice.
+      await frame.getByText(new RegExp(`^Left out unless you choose otherwise under “Before saving” \\(1\\): ${escaped(newName)}\\.$`)).waitFor();
+      await oldEntry.getByText(`An earlier import of Folio 91234567/12 added it for a holding that this import lists under ${newAsset}. It's kept unless you replace it with ${newAsset}.`, { exact: true }).waitFor();
+      assert.equal(await oldEntry.getByText("Kept", { exact: true }).count(), 1);
       // The old row has no choice of its own.
-      assert.equal(await oldRow.getByRole("checkbox").count(), 0);
+      assert.equal(await oldEntry.getByRole("checkbox").count(), 0);
       await replace.dispatchEvent("click");
-      await oldRow.getByText("Replaced", { exact: true }).waitFor();
-      assert.equal(await newRow.getByText("New", { exact: true }).count(), 1);
-      await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-      await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-      await save.click();
+      await oldEntry.getByText("Replaced", { exact: true }).waitFor();
+      assert.equal(await newEntry.getByText("New", { exact: true }).count(), 1);
+      await sameDay("Demat").dispatchEvent("click");
+      await sameDay("Fund folios").dispatchEvent("click");
+      await saveHoldings.click();
       await frame.getByText("Saved 2 snapshots").waitFor();
       return (await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => [h.symbol, h.quantity]);
     };
-    await confirmBalanced("MULTI", /^Fund A /);
+    await reread();
+    // Both accounts have a snapshot on this date now: replacing each needs a tick, which is a question until it's given.
+    await footer.getByText("2 questions left before saving.", { exact: true }).waitFor();
+    await footer.getByRole("button", { name: "Go to the next question", exact: true }).click();
+    await focused(beforeSaving.getByRole("heading"), "Go to the next question, Before saving");
+    await changeTo(ready(balancedName), "MULTI", /^Fund A /);
     assert.deepEqual(await replaceAndSave("Fund INFZ90K01BA1", "Fund A", "INFZ90K01BA1", "A"), [
       ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["A", "3540.293"],
     ]);
     // The import remembers the replacement, so going back is offered the same way.
-    await confirmBalanced("INFZ90K01BA1", /^Fund INFZ90K01BA1 /);
+    await reread();
+    await changeTo(ready(balancedName), "INFZ90K01BA1", /^Fund INFZ90K01BA1 /);
     assert.deepEqual(await replaceAndSave("Fund A", "Fund INFZ90K01BA1", "A", "INFZ90K01BA1"), [
       ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["INFZ90K01BA1", "3540.293"],
     ]);
@@ -2529,94 +2806,103 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // A fund left out because Mutual funds holds it, but that an earlier import of its folio added
     // here, keeps the account's units or removes them only by the user's choice, and removing them
     // confirms that all of them came from the folio.
-    const replaceBoth = async () => {
-      await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-      await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
+    const flexiName = "Fictiva Flexi Cap Fund - Direct Plan - Growth";
+    const showTracked = frame.getByRole("button", { name: /^Show (it|them)$/ });
+    const saveBoth = async () => {
+      if ((await showTracked.getAttribute("aria-expanded")) !== "true") await showTracked.click();
+      await frame.getByRole("button", { name: /^Save in both accounts: / }).click();
+      await frame.getByText(/^Counted in both accounts: /).waitFor();
+      await settled();
     };
-    const importFlexiHolding = flexiRow.getByRole("checkbox", { name: "Import Fund INFZ90K01FC8 in Fund folios", exact: true });
-    await preview.click();
-    await importFlexiHolding.dispatchEvent("click");
+    const replaceBoth = async () => {
+      await sameDay("Demat").dispatchEvent("click");
+      await sameDay("Fund folios").dispatchEvent("click");
+    };
+    await reread();
+    await saveBoth();
+    await ready(flexiName).waitFor();
     await replaceBoth();
-    await save.click();
+    await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01FC8").quantity, "2892.104");
-    await preview.click();
+    await reread();
     // Each choice names the holding and account after its visible text, for screen readers.
-    const keepFlexi = flexiRow.getByRole("radio", { name: "Keep its 2892.104 units for Fund INFZ90K01FC8 in Fund folios", exact: true });
-    const removeFlexi = flexiRow.getByRole("radio", {
+    const flexiEntry = decision("Fund INFZ90K01FC8");
+    const keepFlexi = flexiEntry.getByRole("radio", { name: "Keep its 2892.104 units for Fund INFZ90K01FC8 in Fund folios", exact: true });
+    const removeFlexi = flexiEntry.getByRole("radio", {
       name: "Remove its 2892.104 units: all of them came from Folio 91234567/12 for Fund INFZ90K01FC8 in Fund folios", exact: true,
     });
     await keepFlexi.waitFor({ state: "attached" });
-    await flexiRow.getByRole("radiogroup", { name: "Keep or remove its 2892.104 units for Fund INFZ90K01FC8 in Fund folios", exact: true }).waitFor();
-    await flexiRow.getByText(
+    await flexiEntry.getByRole("radiogroup", { name: "Keep or remove its 2892.104 units for Fund INFZ90K01FC8 in Fund folios", exact: true }).waitFor();
+    await flexiEntry.getByText(
       "An earlier import of Folio 91234567/12 recorded adding this holding. Leaving this row out keeps the 2892.104 units this account holds unless you remove them. Keeping them counts them here and in Mutual funds. " +
       "Keep them, or remove them only if all of them came from Folio 91234567/12: imports don't record how many units each folio, demat account or PRAN added.",
       { exact: true },
     ).waitFor();
-    assert.equal(await flexiRow.getByText("Needs a choice", { exact: true }).count(), 1);
+    assert.equal(await flexiEntry.getByText("Needs a choice", { exact: true }).count(), 1);
     assert.deepEqual([await keepFlexi.getAttribute("aria-checked"), await removeFlexi.getAttribute("aria-checked")], ["false", "false"]);
     await replaceBoth();
-    assert.equal(await save.isDisabled(), true);
+    // The undecided keep or remove is an open question until it's answered.
+    await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
     await keepFlexi.dispatchEvent("click");
-    await flexiRow.getByText("Kept", { exact: true }).waitFor();
-    assert.equal(await save.isDisabled(), false);
-    // Importing the statement's units replaces the account's, so there's nothing to choose.
-    await importFlexiHolding.dispatchEvent("click");
-    await flexiRow.getByText("Updated", { exact: true }).waitFor();
-    assert.equal(await flexiRow.getByRole("radio").count(), 0);
-    await importFlexiHolding.dispatchEvent("click");
+    await flexiEntry.getByText("Kept", { exact: true }).waitFor();
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
+    // Saving the statement's units in both accounts replaces the account's, so there's nothing to choose.
+    await saveBoth();
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Updated");
+    assert.equal(await flexiEntry.getByRole("radio").count(), 0);
+    await frame.getByRole("button", { name: /^Don't save it here: / }).click();
+    await frame.getByText(/^Counted in both accounts: /).waitFor({ state: "detached" });
     await removeFlexi.dispatchEvent("click");
-    await flexiRow.getByText("Removed", { exact: true }).waitFor();
+    await flexiEntry.getByText("Removed", { exact: true }).waitFor();
     assert.equal(await removeFlexi.getAttribute("aria-checked"), "true");
-    assert.equal(await save.isDisabled(), false);
-    await save.click();
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
+    await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.symbol), ["GILT", "INFZ90K01LQ6", "INFZ90K01BA1"]);
-    // Removed with the earlier import's record, so the next preview has nothing to choose.
-    await preview.click();
-    await flexiRow.getByText("Left out", { exact: true }).waitFor();
-    assert.equal(await flexiRow.getByRole("radio").count(), 0);
-    await flexiRow.getByText("Mutual funds already holds this fund, from its transactions. Including it here counts it twice.", { exact: true }).waitFor();
-    assert.equal(await flexiRow.getByText(/^(An earlier import|Leaving this row out)/).count(), 0);
+    // Removed with the earlier import's record, so the next review has nothing to choose.
+    await reread();
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Left out");
+    assert.equal(await frame.getByRole("radio", { name: /^(Keep|Remove) its / }).count(), 0);
+    await frame.getByText(/^Already tracked in Mutual funds \(1\)/).waitFor();
+    assert.equal(await frame.getByText(/^(An earlier import of Folio 91234567\/12 recorded|Leaving this row out)/).count(), 0);
 
-    // Leaving a still-listed fund out keeps both its units and the earlier import's provenance.
-    await leaveOut(holding(detailed.liquid));
-    await preview.click();
-    await folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" }).getByText("Kept", { exact: true }).waitFor();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-    await save.click();
+    // Skipping a still-listed fund keeps both its units and the earlier import's provenance.
+    await ready("Fictiva Liquid Fund - Direct Plan - Growth").getByRole("button", { name: /^Change: / }).click();
+    await changePanelOf().getByRole("button", { name: /^Skip this holding: / }).click();
+    await changePanelOf().waitFor({ state: "detached" });
+    await focused(frame.getByRole("heading", { name: /^Ready to save/ }), "Skip this holding, in Change");
+    await settled();
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01LQ6"), "Kept");
+    await replaceBoth();
+    await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
 
     // Once that fund is no longer listed, the remembered import still removes it by default, also
     // after its asset's symbol changed in Wealthfolio and its choice was forgotten: the record's
     // asset ID tells its asset. Replacing a snapshot on the same date needs confirming;
-    // Wealthfolio's cost carries over, also to a holding whose display
-    // code was changed.
+    // Wealthfolio's cost carries over, also to a holding whose display code was changed.
     await hosted(() => {
       window.host.soldIsins = ["INFZ90K01LQ6"];
       window.host.assets["asset-INEZ90A01017"].displayCode = "MY SHARE";
       window.host.assets["asset-INFZ90K01LQ6"].instrumentSymbol = "MY-LIQUID";
       window.host.storage.delete("isin:INFZ90K01LQ6");
     });
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 16 holdings.").waitFor({ timeout: 180_000 });
-    await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
-    await preview.click();
-    await demat.waitFor();
-    const sold = folios.getByRole("row").filter({ hasText: "Fund INFZ90K01LQ6" });
+    await reread();
+    await frame.getByText("15 holdings", { exact: true }).waitFor();
+    const sold = decision("Fund INFZ90K01LQ6");
     await sold.getByText("Not on the statement any more. An earlier import of Folio 91234567/12 added it.").waitFor();
     assert.equal(await sold.getByText("Removed", { exact: true }).count(), 1);
     assert.equal(await frame.getByRole("checkbox", { name: "Keep Fund INFZ90K01LQ6 in Fund folios", exact: true }).isChecked(), false);
-    assert.equal(await demat.getByLabel("Total cost of Fund INEZ90A01017").inputValue(), "185175");
-    await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText("From the account's average cost in Wealthfolio").waitFor();
-    assert.equal(await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).count(), 1);
-    assert.equal(await save.isDisabled(), true);
-    // Both accounts have a snapshot on this date; each checkbox names its account.
-    await frame.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-    await frame.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-    await save.click();
+    const powerReady = ready("FICTIVA POWER AND LIGHT LIMITED");
+    await powerReady.getByText(/^Purchase cost ₹1,85,175, from your earlier holdings · /).waitFor();
+    assert.equal(await powerReady.count(), 1);
+    assert.equal(await saveHoldings.isDisabled(), true);
+    // Both accounts have a snapshot on this date; each tick names its account.
+    await replaceBoth();
+    await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.deepEqual(
       (await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.assetId ?? h.symbol),
@@ -2629,18 +2915,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.storage.delete("isin:INFZ90K01LQ6");
     });
     // A resolved choice still supplies its symbol when its profile has none, even when the display
-    // code matches another asset's symbol. Restore the remembered choice before the next read.
+    // code matches another asset's symbol.
     const shareChoiceBefore = (await storage())["isin:INEZ90A01017"];
-    const shareChoice = holding("FICTIVA POWER AND LIGHT LIMITED");
-    await shareChoice.getByRole("button", { name: /^Change the / }).click();
-    await shareChoice.getByRole("button", { name: /^Use this share for / }).click();
+    await reread();
+    await changeTo(ready("FICTIVA POWER AND LIGHT LIMITED"));
     await hosted(() => {
       window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90C01021";
       window.host.assets["asset-INEZ90A01017"].instrumentSymbol = null;
     });
-    await preview.click();
-    assert.equal(await demat.getByLabel("Total cost of Fund INEZ90A01017").inputValue(), "185175");
-    assert.equal(await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).count(), 1);
+    await revisit();
+    await settled();
+    await ready("FICTIVA POWER AND LIGHT LIMITED").getByText(/^Purchase cost ₹1,85,175, from your earlier holdings · /).waitFor();
+    assert.equal(await ready("FICTIVA POWER AND LIGHT LIMITED").count(), 1);
     await hosted((choice) => {
       window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90A01017";
       delete window.host.assets["asset-INEZ90A01017"].instrumentSymbol;
@@ -2680,20 +2966,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ];
     });
     const quotesBeforeSave = await hosted(() => window.host.quotes);
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 9 holdings.").waitFor({ timeout: 180_000 });
-    await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
-    await frame.getByLabel(/^NSDL Demat Account 1,/).getByText("Demat (INR)").waitFor();
-    await preview.click();
-    await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText("Removed", { exact: true }).waitFor();
-    await demat.getByRole("row").filter({ hasText: "Fund INFZ90K01NE8" }).getByText("Removed", { exact: true }).waitFor();
-    await demat.getByRole("row").filter({ hasText: "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31" }).getByText("Removed", { exact: true }).waitFor();
-    await demat.getByRole("row").filter({ hasText: "Fund INEZ92A01013" }).getByText(priced, { exact: true }).waitFor();
-    assert.equal(await folios.getByRole("row").filter({ hasText: "Gilt fund" }).getByText("Kept", { exact: true }).count(), 1);
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-    assert.equal(await save.isDisabled(), false);
-    await save.click();
+    await reread();
+    await frame.getByText("9 holdings", { exact: true }).waitFor();
+    await openParts();
+    assert.match(await sourceSelect(nsdlTitle).textContent(), /Demat/);
+    for (const name of ["Fund INEZ90A01017", "Fund INFZ90K01NE8", "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31"]) {
+      assert.equal(await decision(name).getByText("Removed", { exact: true }).count(), 1, name);
+    }
+    await ready("Fund INEZ92A01013").getByText(priced, { exact: true }).waitFor();
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), "Gilt fund"), "Kept");
+    await replaceBoth();
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
+    await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.deepEqual((await snapshot("holdings-1", "2025-03-31")).holdings.map((h) => h.symbol), ["INEZ92A01013", "INFZ91T01NF4", "INFZ91T01GE1", "INEZ92A07036", "INEZ93A08016"]);
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, "12");
@@ -2725,37 +3009,37 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         holdings: [{ symbol: "INEZ90B01015", quantity: "100", currency: "INR", averageCost: "20" }], cash: {},
       };
     });
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 demat accounts, 2 folios, 11 holdings.").waitFor({ timeout: 180_000 });
-    await frame.locator("section").filter({ hasText: "PLACEHOLDER PHARMA LIMITED" }).getByRole("button", { name: "Leave this share out" }).click();
-    await preview.click();
-    const sharesRow = demat.getByRole("row").filter({ hasText: "Fund INEZ90B01015" });
+    await reread();
+    await frame.getByText("10 holdings", { exact: true }).waitFor();
+    const sharesRow = ready("SAMPLEWORKS TECHNOLOGIES LIMITED");
     await sharesRow.getByText(priced, { exact: true }).waitFor();
-    const manualShare = holding("SAMPLEWORKS TECHNOLOGIES LIMITED");
-    await manualShare.getByRole("button", { name: /^Change the / }).click();
-    await manualShare.getByRole("button", { name: "Use this share" }).click();
-    await manualShare.getByText("Confirmed", { exact: true }).waitFor();
-    assert.equal(JSON.parse((await storage())["isin:INEZ90B01015"]).manual, undefined);
+    // A statement older than the account's latest snapshot saves history: the review and the footer say so.
+    const laterNote = "This saves holdings history for 31 Mar 2025. Demat's current holdings still come from its snapshot of 30 Apr 2025.";
+    await frame.getByRole("heading", { name: /^Ready to save/ }).locator("xpath=..").getByText(laterNote, { exact: true }).waitFor();
+    await footer.getByText(laterNote, { exact: true }).waitFor();
+    await changeTo(sharesRow);
     // With no observed holding left, the current search result still carries its MANUAL mode.
     const laterSnapshot = await snapshot("holdings-1", "2025-04-30");
     await hosted(() => { delete window.host.snapshots["holdings-1"]["2025-04-30"]; });
-    await preview.click();
+    await revisit();
+    await settled();
     await sharesRow.getByText(priced, { exact: true }).waitFor();
     // A live mode change overrides the mode the search result supplied earlier.
     await hosted((later) => {
       window.host.snapshots["holdings-1"]["2025-04-30"] = later;
       window.host.pricingModes.INEZ90B01015 = "MARKET";
     }, laterSnapshot);
-    await preview.click();
+    await revisit();
+    await settled();
     await sharesRow.getByText(priced, { exact: true }).waitFor({ state: "hidden" });
-    await demat.getByLabel("Total cost of Fund INEZ90B01015").fill("1000");
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-    assert.equal(await save.isDisabled(), false);
-    await save.click();
+    await setCost(sharesRow, "1000");
+    await replaceBoth();
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
+    await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-04-30")).holdings[0].averageCost, "20");
     assert.equal(await hosted(() => window.host.quotes["asset-INEZ90B01015"]), undefined);
+    assert.equal(JSON.parse((await storage())["isin:INEZ90B01015"]).manual, undefined);
 
     // Archived accounts are absent from portfolio.getHoldings, but their saved assets still use
     // their global pricing mode. The next read finds the hidden account archived, tracking transactions.
@@ -2767,19 +3051,16 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         "2025-03-31": { holdings: [{ symbol: "INEZ90A01017", quantity: "1", averageCost: "20", currency: "INR" }], cash: {}, source: "CALCULATED" },
       };
     }, nsdl.accounts.flatMap((a) => [...a.equities, ...a.mutual_funds, ...a.bonds].map((h) => h.isin)));
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
-    await frame.locator("#cas-password").fill("ABCDE1234F");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("Confirmed", { exact: true }).waitFor({ timeout: 180_000 });
-    await preview.click();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-    const saveOne = frame.getByRole("button", { name: "Save 1 snapshot", exact: true });
-    assert.equal(await saveOne.isDisabled(), false);
-    await demat.getByRole("row").filter({ hasText: "Fund INEZ90A01017" }).getByText(priced, { exact: true }).waitFor();
+    await readHoldings("tests/fixtures/made-up-nsdl.pdf");
+    await sameDay("Demat").dispatchEvent("click");
+    await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
+    await ready("FICTIVA POWER AND LIGHT LIMITED").getByText(priced, { exact: true }).waitFor();
 
-    // An NPS account's schemes: searched by name first, then priced from the statement, one asset
-    // per scheme. A scheme without units is left out.
+    // An NPS account's schemes: searched by name, then priced from the statement, one asset per
+    // scheme. A scheme without units is left out. A PRAN's remembered account that's archived is
+    // ignored too, though it doesn't track holdings either.
     const scheme = "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME E - TIER I";
+    const pranKey = (pran) => `holdings-source:${createHash("sha256").update(`cas-importer holdings source nps|${pran}`).digest("hex")}`;
     await hosted(() => {
       window.host.onlyNps = [
         { scheme: "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME E - TIER I", units: "40" },
@@ -2791,40 +3072,46 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         symbol: "NPS-TEST-E-TIER-I", exchangeMic: null, instrumentType: "BOND", name: "Different bond",
       };
     });
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I, NPS, PRAN XXXXXXXX9001: No units on the statement.", { exact: true }).waitFor({ timeout: 180_000 });
-    const npsSection = holding(scheme);
-    await npsSection.getByText(/^No ISIN on the statement, and nothing found for ".*"\. Try another name or a ticker, or use the statement's prices\.$/).waitFor();
+    await saveChoices([[pranKey("XXXXXXXX9001"), "archived-2"]]);
+    await readHoldings();
+    await frame.getByText("NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I, NPS account (PRAN XXXXXXXX9001): No units on the statement.", { exact: true }).waitFor();
+    const npsCard = question(scheme);
+    await npsCard.getByText("Nothing found for its name. Search by its name below, or use the price on the statement.", { exact: true }).waitFor();
     // A card without funds never recommends AMFI.
-    await noAmfiNote();
+    assert.equal(await frame.getByText(/^AMFI (isn't|may not be) added/).count(), 0);
+    await openParts();
+    await frame.getByText(oldFunds, { exact: true }).waitFor();
+    assert.match(await sourceSelect("NPS account (PRAN XXXXXXXX9001)").textContent(), /Choose an account/);
     // An NPS scheme's results have no plan or option badges, even when their names give them.
-    await npsSection.getByRole("textbox", { name: /^Search for / }).fill("Fictiva Flexi Cap");
-    await npsSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await npsSection.getByRole("radio").nth(4).waitFor({ state: "attached" });
-    assert.deepEqual(await badges(npsSection), []);
-    await npsSection.getByRole("radio").nth(1).dispatchEvent("click");
-    await npsSection.getByRole("button", { name: "Use this NPS scheme" }).click();
-    await npsSection.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(npsSection), ["Confirmed success-subtle"]);
-    await npsSection.getByRole("button", { name: /^Change the / }).click();
-    await npsSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await statementPriced(npsSection, "NPS-TEST-E-TIER-I", "EQUITY");
-    assert.deepEqual(await badges(npsSection), ["Confirmed success-subtle"]);
-    // A PRAN's remembered account that's archived is ignored too, though it doesn't track holdings either.
-    const pran = frame.getByLabel(/^NPS, PRAN XXXXXXXX9001/);
-    await saveChoices([[await pran.getAttribute("id"), "archived-2"]]);
-    await readAgain();
-    await rowOf(pran).getByText(oldFunds, { exact: true }).waitFor();
-    assert.match(await pran.textContent(), /Choose an account/);
-    assert.equal(await preview.isDisabled(), true);
+    const npsBox = npsCard.getByRole("textbox", { name: /^Search by name for / });
+    await npsBox.fill("Fictiva Flexi Cap");
+    await npsBox.press("Enter");
+    await npsCard.getByRole("radio").nth(4).waitFor({ state: "attached" });
+    assert.deepEqual(await badges(npsCard), []);
+    await npsCard.getByRole("radio").nth(1).dispatchEvent("click");
+    await npsCard.getByRole("button", { name: /^Use this NPS scheme for / }).click();
+    await npsCard.waitFor({ state: "detached" });
+    // Changed to the statement's price from its row.
+    await ready(scheme).getByRole("button", { name: /^Change: / }).click();
+    await changePanelOf().getByRole("button", { name: /^(None of these: use|Use) the price on the statement for / }).click();
+    await ready(scheme).getByText(/^Prices from the statement · chosen by you/).waitFor();
     // Its investor is the statement's name, not the PAN of the earlier statements, so nothing else is remembered.
-    await choose(/^NPS, PRAN XXXXXXXX9001/, "Fund folios (INR)");
-    await preview.click();
-    const npsRow = folios.getByRole("row").filter({ hasText: scheme });
-    await npsRow.getByText(priced, { exact: true }).waitFor();
-    await npsRow.getByText("New", { exact: true }).waitFor();
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-    await saveOne.click();
+    assert.match(await investorSelect.textContent(), /Choose an account/);
+    await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
+    // A Change open on a holding whose account isn't chosen yet stays open on its row once the account
+    // is chosen, with its Cancel, and the bar doesn't keep waiting on it after Cancel.
+    await ready(scheme).getByRole("button", { name: /^Change: / }).click();
+    await changePanelOf().waitFor();
+    await choose("NPS account (PRAN XXXXXXXX9001)", "Fund folios (INR)");
+    await ready(scheme).waitFor();
+    await changePanelOf().getByRole("button", { name: /^Cancel the change to / }).click();
+    await changePanelOf().waitFor({ state: "detached" });
+    assert.equal(await footer.getByText(/^Save or cancel your change/).count(), 0);
+    await ready(scheme).getByText(priced, { exact: true }).waitFor();
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), scheme), "New");
+    await sameDay("Fund folios").dispatchEvent("click");
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     const pension = (await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I");
     assert.deepEqual([pension.quantity, pension.name, pension.instrumentType, pension.dataSource, pension.exchangeMic ?? null], ["40", scheme, "EQUITY", "MANUAL", null]);
@@ -2836,19 +3123,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await hosted(() => window.host.assets["unrelated-bond-013"].instrumentType), "BOND");
     await hosted(() => { delete window.host.assets["unrelated-bond-013"]; });
     assert.ok(Object.keys(await storage()).some((key) => /^nps:[0-9a-f]{64}$/.test(key)));
+    assert.equal((await storage())[pranKey("XXXXXXXX9001")], "holdings-2");
 
-    const readHoldingsAgain = async () => {
-      const previous = await hosted(() => window.host.parsed);
-      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-      await tab.frames()[1].waitForFunction((n) => window.host.parsed > n, previous, { timeout: 180_000 });
-      await frame.getByText("Accounts", { exact: true }).waitFor();
-    };
     // The same date replaces the snapshot and quote, without creating another asset or changing its quote ID.
-    await readHoldingsAgain();
-    await npsSection.getByText("Confirmed", { exact: true }).waitFor();
-    await preview.click();
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-    await saveOne.click();
+    await readHoldings();
+    await ready(scheme).getByText(/^Prices from the statement · chosen before/).waitFor();
+    await sameDay("Fund folios").dispatchEvent("click");
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.deepEqual(await hosted(() => window.host.quotes["pension-created-007"].map((q) => [q.id, q.timestamp, q.close])), npsHost.quotes.map((q) => [q.id, q.timestamp, q.close]));
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").assetId, "pension-created-007");
@@ -2859,13 +3140,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.npsPran = "XXXXXXXX9002";
       window.host.onlyNps = [{ scheme: "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME E - TIER I", units: "50" }];
     });
-    await readHoldingsAgain();
-    await choose(/^NPS, PRAN XXXXXXXX9002/, "Demat (INR)");
-    await preview.click();
-    const laterPension = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-04-30" });
-    await laterPension.getByLabel(`Total cost of ${scheme}`).fill("500");
-    await laterPension.getByRole("checkbox", { name: "Replace the snapshot of 2025-04-30 in Demat", exact: true }).dispatchEvent("click");
-    await saveOne.click();
+    await readHoldings();
+    await choose("NPS account (PRAN XXXXXXXX9002)", "Demat (INR)");
+    await setCost(ready(scheme), "500");
+    await sameDay("Demat", "30 Apr 2025").dispatchEvent("click");
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-04-30")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").assetId, "pension-created-007");
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").quantity, "40");
@@ -2874,12 +3153,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     ]);
     assert.equal(await hosted(() => Object.values(window.host.assets).filter((a) => a.symbol === "NPS-TEST-E-TIER-I").length), 1);
 
-    // Exclusions are visible even when the statement has nothing that could reach a preview.
-    await frame.getByLabel(/^NPS, PRAN XXXXXXXX9002/).click();
-    await frame.getByRole("option", { name: "Leave out" }).click();
-    await frame.getByText(`${scheme}, NPS, PRAN XXXXXXXX9002: Its folio, demat account or PRAN is left out.`, { exact: true }).waitFor();
-    assert.equal(await preview.isDisabled(), true);
-    assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+    // With the only PRAN set to Don't save, Not included says so, and the footer offers Finish.
+    await readHoldings();
+    await choose("NPS account (PRAN XXXXXXXX9002)", "Don't save");
+    await frame.getByText(`Not saved (1): ${scheme}. Their account in “Save to” is set to Don't save.`, { exact: true }).waitFor();
+    await footer.getByText("Nothing from this statement will be saved.", { exact: true }).waitFor();
+    await footer.getByRole("button", { name: "Finish", exact: true }).waitFor();
+    assert.equal(await saveHoldings.count(), 0);
 
     // An unheld remembered fallback that the user switched to MARKET keeps its mode and profile.
     await hosted(() => {
@@ -2894,26 +3174,35 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         metadata: { custom: { keep: true } },
       });
     });
-    await readHoldingsAgain();
-    await choose(/^NPS, PRAN XXXXXXXX9001/, "Demat (INR)");
-    // A failed lookup cannot treat an unheld MARKET asset as a new manual-priced one.
+    // A failed lookup cannot treat an unheld MARKET asset as a new manual-priced one. Opening the page
+    // again reads Wealthfolio again.
+    const cantWorkOut = (pattern) => footer.getByText(new RegExp(`^Couldn't work out what will be saved: Error: ${pattern}`));
     for (const failure of ["search", "profile"]) {
       await hosted((failure) => {
         window.host.failSearchQueries = failure === "search" ? ["NPS-TEST-E-TIER-I"] : [];
         window.host.failGetProfileIds = failure === "profile" ? ["pension-created-007"] : [];
       }, failure);
       const saves = await hosted(() => window.host.saves.length);
-      await preview.click();
-      await frame.getByText(/Couldn't verify pricing for/).waitFor();
-      assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+      if (failure === "search") {
+        // A read whose snapshot can't be worked out at all still shows the holding, with Change.
+        await readHoldings();
+        await choose("NPS account (PRAN XXXXXXXX9001)", "Demat (INR)");
+        await ready(scheme).getByRole("button", { name: /^Change: / }).waitFor();
+      } else {
+        await revisit();
+      }
+      await cantWorkOut("Couldn't verify pricing for ").waitFor();
+      assert.equal(await saveHoldings.isDisabled(), true);
       assert.equal(await hosted(() => window.host.saves.length), saves);
       assert.equal(await hosted(() => window.host.pricingModes["NPS-TEST-E-TIER-I"]), "MARKET");
     }
     await hosted(() => { window.host.failSearchQueries = []; window.host.failGetProfileIds = []; });
-    await preview.click();
-    await demat.getByRole("row").filter({ hasText: scheme }).waitFor();
-    assert.equal(await demat.getByText(priced, { exact: true }).count(), 0);
-    await saveOne.click();
+    // Try again reads Wealthfolio again too.
+    await footer.getByRole("button", { name: "Try again", exact: true }).click();
+    await settled();
+    await ready(scheme).waitFor();
+    assert.equal(await frame.getByText(priced, { exact: true }).count(), 0);
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     const unheld = await hosted(() => ({ asset: window.host.assets["pension-created-007"], mode: window.host.pricingModes["NPS-TEST-E-TIER-I"] }));
     assert.equal(unheld.mode, "MARKET");
@@ -2930,9 +3219,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.assets["pension-created-007"].displayCode = "NPS-TEST-E-TIER-I";
       window.host.failSearchQueries = ["NPS-TEST-E-TIER-I"];
     });
-    await preview.click();
-    await demat.getByRole("row").filter({ hasText: "My pension" }).waitFor();
-    assert.equal(await demat.getByText(priced, { exact: true }).count(), 0);
+    await readHoldings();
+    await ready(scheme).waitFor();
+    assert.equal(await frame.getByText(priced, { exact: true }).count(), 0);
+    assert.equal(await footer.getByText(/^Couldn't work out/).count(), 0);
     await hosted(() => { window.host.failSearchQueries = []; });
 
     // A manual asset held only elsewhere still needs its ID to keep the quote's notes.
@@ -2951,10 +3241,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         window.host.emptySearchQueries = failure === "no match" ? ["NPS-TEST-E-TIER-I"] : [];
       }, failure);
       const saves = await hosted(() => window.host.saves.length);
-      await preview.click();
-      // The other account's holding can't be matched without its profile, so that stops the preview first.
-      await frame.getByText(failure === "profile" ? /Couldn't read the Wealthfolio profile of My pension: .+ Try the preview again\./ : /Couldn't verify pricing for/).waitFor();
-      assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+      await revisit();
+      // The other account's holding can't be matched without its profile, so that stops it first.
+      await cantWorkOut(failure === "profile" ? "Couldn't read the Wealthfolio profile of My pension: .+ Try again\\." : "Couldn't verify pricing for ").waitFor();
+      assert.equal(await saveHoldings.isDisabled(), true);
       assert.equal(await hosted(() => window.host.saves.length), saves);
       assert.equal(await hosted(() => window.host.quotes["pension-created-007"][0].notes), "Keep the other account's quote notes");
     }
@@ -2978,23 +3268,26 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       };
       window.host.pricingModes["NPS-TEST-M-TIER-I"] = "MANUAL";
     }, marketScheme);
-    await readHoldingsAgain();
-    const marketSection = frame.locator("section").filter({ hasText: marketScheme });
-    await marketSection.getByRole("textbox", { name: /^Search for / }).fill("NPS-TEST-M-TIER-I");
-    await marketSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await marketSection.getByRole("button", { name: /^Use this NPS scheme for / }).click();
-    // A fresh search choice's manual mode can go stale before preview, too.
+    await readHoldings();
+    const marketCard = question(marketScheme);
+    const marketBox = marketCard.getByRole("textbox", { name: /^Search by name for / });
+    await marketBox.fill("NPS-TEST-M-TIER-I");
+    await marketBox.press("Enter");
+    await marketCard.getByRole("button", { name: /^Use this NPS scheme: Provider pension, for / }).click();
+    await marketCard.waitFor({ state: "detached" });
+    // A fresh search choice's manual mode can go stale before saving, too.
     await hosted(() => {
       window.host.pricingModes["NPS-TEST-M-TIER-I"] = "MARKET";
       window.host.failGetProfileIds = ["market-profile-011"];
     });
-    await preview.click();
-    await frame.getByText(/Couldn't verify pricing for/).waitFor();
-    assert.equal(await frame.getByText("Preview", { exact: true }).count(), 0);
+    await revisit();
+    await cantWorkOut("Couldn't verify pricing for ").waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
     await hosted(() => { window.host.failGetProfileIds = []; });
-    await preview.click();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-    await saveOne.click();
+    await revisit();
+    await settled();
+    await sameDay("Demat").dispatchEvent("click");
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     const marketProfile = await hosted(() => window.host.assets["market-profile-011"]);
     assert.deepEqual(marketProfile, {
@@ -3017,10 +3310,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
       window.host.failGetProfileIds = ["deleted-profile-012"];
     });
-    await readHoldingsAgain();
-    await preview.click();
-    await demat.getByRole("row").filter({ hasText: "Provider pension" }).waitFor();
-    await saveOne.click();
+    await readHoldings();
+    await ready("Provider pension").waitFor();
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, undefined);
     assert.equal(await hosted(() => window.host.assets["deleted-profile-012"]), undefined);
@@ -3030,48 +3322,33 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.failGetProfileIds = []; });
 
     // ECNQUOTE, like MUTUALFUND above, is an older provider label for a canonical EQUITY asset.
-    await hosted(() => {
+    const relabel = (type, keepId = true) => hosted(([type, keepId]) => {
       for (const [key, value] of window.host.storage) {
         if (!key.startsWith("nps:")) continue;
         const choice = JSON.parse(value);
         if (choice?.symbol !== "NPS-TEST-M-TIER-I") continue;
-        window.host.storage.set(key, JSON.stringify({ ...choice, assetId: undefined, instrumentType: "ECNQUOTE" }));
+        window.host.storage.set(key, JSON.stringify({ ...choice, ...(keepId ? {} : { assetId: undefined }), instrumentType: type }));
       }
-      window.host.pricingModes["NPS-TEST-M-TIER-I"] = "MANUAL";
-    });
-    await readHoldingsAgain();
-    await preview.click();
-    await demat.getByRole("row").filter({ hasText: "Provider pension" }).getByText(priced, { exact: true }).waitFor();
-    await demat.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Demat", exact: true }).dispatchEvent("click");
-    await saveOne.click();
+    }, [type, keepId]);
+    await relabel("ECNQUOTE", false);
+    await hosted(() => { window.host.pricingModes["NPS-TEST-M-TIER-I"] = "MANUAL"; });
+    await readHoldings();
+    await ready("Provider pension").getByText(priced, { exact: true }).waitFor();
+    await sameDay("Demat").dispatchEvent("click");
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, "market-profile-011");
     // A type label the add-on doesn't know still finds the one asset with that symbol and exchange.
-    await hosted(() => {
-      for (const [key, value] of window.host.storage) {
-        if (!key.startsWith("nps:")) continue;
-        const choice = JSON.parse(value);
-        if (choice?.symbol === "NPS-TEST-M-TIER-I") window.host.storage.set(key, JSON.stringify({ ...choice, instrumentType: "SOMETHING_NEW" }));
-      }
-    });
-    await readHoldingsAgain();
-    await preview.click();
-    await demat.getByRole("row").filter({ hasText: "Provider pension" }).getByText(priced, { exact: true }).waitFor();
-    assert.equal(await frame.getByText(/Couldn't verify pricing/).count(), 0);
-
+    await relabel("SOMETHING_NEW");
+    await readHoldings();
+    await ready("Provider pension").getByText(priced, { exact: true }).waitFor();
+    assert.equal(await footer.getByText(/Couldn't verify pricing/).count(), 0);
     // Legacy untyped assets are returned as OTHER; their exact remembered match still wins.
-    await hosted(() => {
-      delete window.host.assets["market-profile-011"].instrumentType;
-      for (const [key, value] of window.host.storage) {
-        if (!key.startsWith("nps:")) continue;
-        const choice = JSON.parse(value);
-        if (choice?.symbol === "NPS-TEST-M-TIER-I") window.host.storage.set(key, JSON.stringify({ ...choice, instrumentType: "OTHER" }));
-      }
-    });
-    await readHoldingsAgain();
-    await preview.click();
-    await demat.getByRole("row").filter({ hasText: "Provider pension" }).getByText(priced, { exact: true }).waitFor();
-    assert.equal(await frame.getByText(/Couldn't verify pricing/).count(), 0);
+    await hosted(() => { delete window.host.assets["market-profile-011"].instrumentType; });
+    await relabel("OTHER");
+    await readHoldings();
+    await ready("Provider pension").getByText(priced, { exact: true }).waitFor();
+    assert.equal(await footer.getByText(/Couldn't verify pricing/).count(), 0);
     await hosted(() => { window.host.assets["market-profile-011"].instrumentType = "EQUITY"; });
 
     // A failed first account can already have written prices. Repair known ones; a new asset the failed
@@ -3096,21 +3373,16 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.failQuoteIds = ["pension-g-009"];
       window.host.failProfileIds = ["pension-g-009"];
     });
-    await readHoldingsAgain();
-    for (let open = await frame.locator("section").count(); open > 0; open--) {
-      await frame.locator("section").first().getByRole("button", { name: /^Use the statement's prices for / }).click();
-      await frame.locator("section").nth(open - 1).waitFor({ state: "detached" });
-    }
-    await choose("All of this statement", "Fund folios (INR)");
-    await choose(/^NSDL Demat Account 1, FAILURE TEST BROKER/, "Demat (INR)");
+    await readHoldings();
+    await answerAll(() => "statement");
+    await choose("investor", "Fund folios (INR)");
+    await choose("FAILURE TEST BROKER demat account", "Demat (INR)");
     // An earlier source override still points at Demat; the new statement's NPS goes to the second account.
-    await choose(/^NPS, PRAN XXXXXXXX9001/, "Fund folios (INR)");
-    await preview.click();
-    const continuedNps = frame.locator("section").filter({ hasText: "Fund folios: snapshot of 2025-05-31" });
-    await continuedNps.getByLabel("Total cost of NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I").fill("100");
-    // A profile can fail after preview; the readable scheme still gets its price and details.
+    await choose("NPS account (PRAN XXXXXXXX9001)", "Fund folios (INR)");
+    await setCost(ready("NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I"), "100");
+    // A profile can fail after it's worked out; the readable scheme still gets its price and details.
     await hosted(() => { window.host.failGetProfileIds = ["pension-g-009"]; });
-    await frame.getByRole("button", { name: "Save 2 snapshots", exact: true }).click();
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     await frame.getByText("Some import history could not be saved", { exact: true }).waitFor();
     await frame.getByText("Wealthfolio didn't save these snapshots", { exact: true }).waitFor();
@@ -3129,10 +3401,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // Re-importing retries each incomplete write and reuses the already-created assets.
     await hosted(() => { window.host.failSnapshotAccounts = []; window.host.failQuoteIds = []; window.host.failProfileIds = []; window.host.failGetProfileIds = []; });
-    await readHoldingsAgain();
-    await preview.click();
-    await continuedNps.getByRole("checkbox", { name: "Replace the snapshot of 2025-05-31 in Fund folios", exact: true }).dispatchEvent("click");
-    await frame.getByRole("button", { name: "Save 2 snapshots", exact: true }).click();
+    await readHoldings();
+    await sameDay("Fund folios", "31 May 2025").dispatchEvent("click");
+    await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
     assert.equal(await hosted(() => window.host.quotes["failed-bond-008"].find((q) => q.timestamp.startsWith("2025-05-31")).close), 15);
@@ -3145,14 +3416,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.depositoryAccounts = undefined;
       window.host.statementDate = "";
     });
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-summary-cams.pdf");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("Check each folio's funds and AMC against the PDF. The parser can merge equal folio numbers across AMCs without a warning.", { exact: true }).waitFor({ timeout: 180_000 });
+    await readHoldings("tests/fixtures/made-up-summary-cams.pdf");
+    await frame.getByText("CAMS summary statement · ANANYA R TESTWALA · made-up-summary-cams.pdf", { exact: true }).waitFor();
     // A folio with funds from two issuers, as the parser returns two AMCs' folios with one number, still reads.
     await hosted(() => { window.host.ambiguousSummary = true; });
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("CAMS summary statement for ANANYA R TESTWALA, as on 31-Mar-2025: 2 folios, 6 holdings.", { exact: true }).waitFor({ timeout: 180_000 });
-    assert.equal(await frame.getByRole("button", { name: "Preview the snapshots" }).count(), 1);
+    await readHoldings();
+    await frame.getByText("6 holdings", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.count(), 1);
     await hosted(() => { window.host.ambiguousSummary = false; });
 
     // Funds and shares that no search result fits can use the statement's prices too: a summary
@@ -3160,6 +3430,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // depository fund and share. The first save can't write one price and one asset's details.
     const corporate = "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout";
     const gilt = "Testbridge Gilt Fund - Direct Plan - Growth";
+    // A row priced from statements goes by the statement's name, without its plan and option.
+    const corporateRow = () => ready("Testbridge Corporate Bond Fund");
+    const giltRow = () => ready("Testbridge Gilt Fund");
     // The Corporate Bond fund, as a detailed import confirmed it, which holdings imports share.
     const corporateFund = {
       symbol: "0P0000TBCB", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", providerId: "FAKE", providerSymbol: "0P0000TBCB.BO",
@@ -3175,28 +3448,28 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.failQuoteIds = ["fund-priced-015"];
       window.host.failProfileIds = ["fund-priced-014"];
     }, corporateFund);
-    await readHoldingsAgain();
-    const corporateSection = holding(corporate);
-    await corporateSection.getByText("Symbol 0P0000TBCB · Exchange XBOM · Type MUTUALFUND · Currency INR", { exact: true }).waitFor({ state: "attached" });
-    await corporateSection.getByText("FAKE", { exact: true }).waitFor();
-    await corporateSection.getByRole("button", { name: /^Change the / }).click();
-    await corporateSection.getByText(`Nothing found for the ISIN; showing results for "Testbridge Corporate Bond". These results can be other funds. Pick one with the statement's fund name, plan and option, use the statement's prices, or leave this fund out.`, { exact: true }).waitFor();
-    await corporateSection.getByRole("radio").first().waitFor({ state: "attached" });
-    await corporateSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
-    const giltSection = holding(gilt);
-    await giltSection.getByText("No ISIN printed", { exact: true }).waitFor();
-    await giltSection.getByText(`No ISIN on the statement, and nothing found for "Testbridge Gilt". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
-    await giltSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await statementPriced(giltSection, "MF-KFINTECH-TGLDG", "MUTUALFUND");
-    await useFirstResults();
-    await choose("All of this statement", "Fund folios (INR)");
-    await preview.click();
-    await folios.getByRole("row").filter({ hasText: corporate }).getByText(priced, { exact: true }).waitFor();
-    await folios.getByRole("row").filter({ hasText: gilt }).getByText(priced, { exact: true }).waitFor();
+    await readHoldings();
+    await showAllRows();
+    await choose("investor", "Fund folios (INR)");
+    await showAllRows();
+    await ready("Fund 0P0000TBCB").getByText(/^Prices from FAKE · chosen before/).waitFor();
+    await ready("Fund 0P0000TBCB").getByText(`On your statement: ${corporate}`, { exact: true }).waitFor();
+    // Its ISIN finds nothing, so its name's results are listed; none fits, so it's priced from the statement.
+    await ready("Fund 0P0000TBCB").getByRole("button", { name: /^Change: / }).click();
+    await changePanelOf().getByRole("button", { name: /^Use this fund: Fund 0P0000TBCB, for / }).waitFor();
+    await changePanelOf().getByRole("button", { name: /^None of these: use the price on the statement for / }).click();
+    await corporateRow().getByText(/^Prices from the statement · chosen by you/).waitFor();
+    const giltCard = question(gilt);
+    await giltCard.getByText("The statement prints no ISIN for it, so Yahoo Finance searched its name. AMFI can't search by name.", { exact: true }).waitFor();
+    await giltCard.getByText("Nothing found for its name. Search by its fund code below, or use the price on the statement.", { exact: true }).waitFor();
+    await answer(gilt, "statement");
+    await answerAll();
+    await settled();
+    await corporateRow().getByText(priced, { exact: true }).waitFor();
+    await giltRow().getByText(priced, { exact: true }).waitFor();
     // The Gilt fund prints no cost: one below its price, so the price saved afterwards must win.
-    await folios.getByLabel(`Total cost of ${gilt}`).fill("40000");
-    await saveOne.click();
+    await setCost(giltRow(), "40000");
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     await frame.getByText("Some prices or details weren't saved", { exact: true }).waitFor();
     await frame.getByText(`Fund folios, ${gilt}: Wealthfolio may value it at its average cost on 2025-03-31. Enter its price for 2025-03-31 on its asset page.`, { exact: true }).waitFor();
@@ -3234,22 +3507,26 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }
     // Remembered for the next holdings import: by ISIN, or by registrar and scheme code. The fund
     // the detailed import confirmed stays beside it for detailed imports.
-    assert.deepEqual(JSON.parse(firstFunds.storage["isin:INFZ91T01CB6"]), {
+    const corporatePriced = {
       symbol: "INFZ91T01CB6", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: corporate, statementPrices: true, transactions: corporateFund,
-    });
+    };
+    assert.deepEqual(JSON.parse(firstFunds.storage["isin:INFZ91T01CB6"]), corporatePriced);
     assert.ok(Object.entries(firstFunds.storage).some(([key, value]) =>
       /^fund:[0-9a-f]{64}$/.test(key) && JSON.parse(value).symbol === "MF-KFINTECH-TGLDG" && JSON.parse(value).statementPrices));
 
     // The next import finds both choices and assets again, and finishes the incomplete writes.
     await hosted(() => { window.host.failQuoteIds = []; window.host.failProfileIds = []; });
-    await readHoldingsAgain();
-    await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
-    await statementPriced(giltSection, "MF-KFINTECH-TGLDG", "MUTUALFUND");
-    await preview.click();
-    await folios.getByRole("row").filter({ hasText: gilt }).getByText("From the account's average cost in Wealthfolio").waitFor();
-    await folios.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-    await saveOne.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    const saveFolios = async (saved = "Saved 1 snapshot") => {
+      await sameDay("Fund folios").dispatchEvent("click");
+      await saveHoldings.click();
+      await frame.getByText(saved, { exact: true }).waitFor();
+    };
+    await readHoldings();
+    await showAllRows();
+    await corporateRow().getByText(/^Prices from the statement · chosen before/).waitFor();
+    await giltRow().getByText(/^Prices from the statement · chosen before/).waitFor();
+    await giltRow().getByText(/^Purchase cost ₹40,000, from your earlier holdings · Edit$/).waitFor();
+    await saveFolios();
     assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
     const againFunds = await statementFunds();
     assert.deepEqual(["INFZ91T01CB6", "MF-KFINTECH-TGLDG"].map((symbol) => againFunds.holdings.find((h) => h.symbol === symbol).assetId), ["fund-priced-014", "fund-priced-015"]);
@@ -3264,64 +3541,59 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // prices: the fund the detailed import confirmed stays beside it, as the detailed statement below
     // shows. Another search result still replaces both choices.
     const corporateStored = async () => JSON.parse((await storage())["isin:INFZ91T01CB6"]);
-    const corporatePriced = {
-      symbol: "INFZ91T01CB6", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: corporate, statementPrices: true, transactions: corporateFund,
-    };
-    await corporateSection.getByRole("button", { name: /^Change the / }).click();
-    await corporateSection.getByRole("radio", { checked: true }).waitFor({ state: "attached" });
-    assert.equal(await corporateSection.getByRole("radio").count(), 1);
-    // The result is shown as that choice: the statement's name, and the statement's prices.
-    const ownResult = await corporateSection.getByRole("radiogroup").locator("label").textContent();
-    assert.ok(ownResult.startsWith(corporate) && ownResult.endsWith(" Statement prices"), ownResult);
-    assert.deepEqual(await resultCodes(corporateSection), ["Symbol INFZ91T01CB6 · Type MUTUALFUND · Currency INR"]);
-    await corporateSection.getByRole("button", { name: "Use this fund" }).click();
-    await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
-    await readHoldingsAgain();
-    await statementPriced(corporateSection, "INFZ91T01CB6", "MUTUALFUND");
+    await readHoldings();
+    await showAllRows();
+    await corporateRow().getByRole("button", { name: /^Change: / }).click();
+    // The result is shown as that choice: the statement's name, and the statement's prices. As the only
+    // result, it has its own button.
+    const ownResult = changePanelOf().getByRole("button", { name: `Use this fund: ${corporate}, for ${corporate}`, exact: true });
+    await ownResult.waitFor();
+    assert.equal(await changePanelOf().getByRole("radio").count(), 0);
+    await changePanelOf().getByText(/^the statement's prices · INFZ91T01CB6$/).waitFor();
+    await ownResult.click();
+    await corporateRow().getByText(/^Prices from the statement · chosen by you/).waitFor();
+    await saveFolios();
     assert.deepEqual(await corporateStored(), corporatePriced);
     // The same symbol with another type or currency is still that search result, with its ID and warning.
     for (const [type, currency] of [["BOND", "INR"], ["EQUITY", "USD"]]) {
       await hosted(([type, currency]) => {
         Object.assign(window.host.assets["fund-priced-014"], { instrumentType: type, quoteCcy: currency });
       }, [type, currency]);
-      await corporateSection.getByRole("button", { name: /^Change the / }).click();
-      const description = `Symbol INFZ91T01CB6 · Type ${type} · Currency ${currency}`;
-      await corporateSection.getByText(description, { exact: true }).waitFor({ state: "attached" });
-      await corporateSection.getByText("Priced by hand", { exact: true }).waitFor();
+      await readHoldings();
+      await showAllRows();
+      await corporateRow().getByRole("button", { name: /^Change: / }).click();
+      const result = changePanelOf().getByRole("button", { name: /^Use this fund: / });
+      await result.waitFor();
+      await changePanelOf().getByText(/^Priced by hand · /).waitFor();
       if (currency === "USD") {
-        await corporateSection.getByText("USD", { exact: true }).waitFor();
-        await corporateSection.getByText(inUsd, { exact: true }).waitFor();
+        await changePanelOf().getByText("USD", { exact: true }).waitFor();
+        await changePanelOf().getByText(inUsd, { exact: true }).waitFor();
       }
-      await corporateSection.getByRole("button", { name: "Use this fund" }).click();
-      await corporateSection.getByText("Confirmed", { exact: true }).waitFor();
-      await corporateSection.getByText(description, { exact: true }).waitFor({ state: "attached" });
-      await corporateSection.getByText("Priced by hand", { exact: true }).waitFor();
+      await result.click();
+      const row = ready(/^Fund INFZ91T01CB6|^Testbridge Corporate Bond Fund/);
+      await row.getByText(/^Prices entered by hand · chosen by you/).waitFor();
       if (currency === "USD") {
-        await corporateSection.getByText("USD", { exact: true }).waitFor();
-        await corporateSection.getByText(inUsd, { exact: true }).waitFor();
+        await row.getByText("USD", { exact: true }).waitFor();
+        await row.getByText(inUsd, { exact: true }).waitFor();
       }
-      await tab.frames()[1].waitForFunction(([type, currency]) => {
-        const fund = JSON.parse(window.host.storage.get("isin:INFZ91T01CB6"));
-        return fund.assetId === "fund-priced-014" && fund.instrumentType === type && fund.quoteCcy === currency;
-      }, [type, currency]);
+      await saveFolios();
       const stored = await corporateStored();
-      assert.deepEqual([stored.statementPrices, stored.transactions], [undefined, undefined]);
+      assert.deepEqual([stored.assetId, stored.instrumentType, stored.quoteCcy, stored.statementPrices, stored.transactions], ["fund-priced-014", type, currency, undefined, undefined]);
     }
     await hosted(() => {
       Object.assign(window.host.assets["fund-priced-014"], { instrumentType: "EQUITY", quoteCcy: "INR" });
     });
-    await corporateSection.getByRole("button", { name: /^Change the / }).click();
-    await corporateSection.getByRole("textbox", { name: /^Search for / }).fill("0P0000TBCB");
-    await corporateSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await corporateSection.getByText("Symbol 0P0000TBCB · Exchange XBOM · Type MUTUALFUND · Currency INR", { exact: true }).waitFor({ state: "attached" });
-    await corporateSection.getByRole("radio", { checked: true }).waitFor({ state: "attached" });
-    await corporateSection.getByRole("button", { name: "Use this fund" }).click();
-    await corporateSection.getByText("Confirmed", { exact: true }).waitFor();
-    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ91T01CB6")).symbol === "0P0000TBCB");
+    await readHoldings();
+    await showAllRows();
+    await changeTo(corporateRow(), "0P0000TBCB", /^Fund 0P0000TBCB /);
+    await saveFolios();
     assert.deepEqual(await corporateStored(), corporateFund);
-    await corporateSection.getByRole("button", { name: /^Change the / }).click();
-    await corporateSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ91T01CB6")).statementPrices);
+    await readHoldings();
+    // Confirmed to another asset than the one the earlier import added, it's left out until that
+    // asset is replaced with it, and its Change is under Before saving.
+    await decision("Fund 0P0000TBCB").getByRole("button", { name: "Change: Fund 0P0000TBCB in Fund folios", exact: true }).click();
+    await changePanelOf().getByRole("button", { name: /^(None of these: use|Use) the price on the statement for / }).click();
+    await saveFolios();
     assert.deepEqual(await corporateStored(), corporatePriced);
 
     // A depository statement's share and fund: the share's ISIN finds only another fund, the fund's nothing.
@@ -3342,65 +3614,64 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         bonds: [],
       }];
     }, [textiles, smallCap]);
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
-    await frame.locator("#cas-password").fill("ABCDE1234F");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("NSDL statement for ANANYA R TESTWALA, as on 30-Apr-2025: 1 demat account, 0 folios, 2 holdings.").waitFor({ timeout: 180_000 });
+    await readHoldings("tests/fixtures/made-up-nsdl.pdf");
+    await frame.getByText("Holdings on 30 Apr 2025", { exact: true }).waitFor();
+    await frame.getByText("2 holdings", { exact: true }).waitFor();
+    const resultBadgesOf = (card) => card.getByRole("radiogroup").locator("label").evaluateAll((labels) =>
+      labels.map((label) => [...label.querySelectorAll("[data-slot=badge]")].map((b) => `${b.textContent} ${b.dataset.variant}`)));
+    const searchIn = async (card, text) => {
+      const box = card.getByRole("textbox", { name: /^Search by / });
+      await box.fill(text);
+      await box.press("Enter");
+      await card.getByRole("radio").nth(1).waitFor({ state: "attached" });
+    };
     // With an option but no plan on the statement, only the differing option warns.
-    const optionOnlySection = holding("PRETEND SMALL CAP FUND - GROWTH");
-    assert.deepEqual(await nameBadges(optionOnlySection), ["Growth secondary"]);
-    await optionOnlySection.getByRole("textbox", { name: /^Search for / }).fill("Pretend Small Cap");
-    await optionOnlySection.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await optionOnlySection.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    assert.deepEqual(await resultBadges(optionOnlySection), [["Direct secondary", "Growth secondary"], ["Regular secondary", "IDCW warning-subtle"]]);
-    await optionOnlySection.getByRole("radio").nth(1).dispatchEvent("click");
-    await optionOnlySection.getByRole("button", { name: "Use this fund" }).click();
-    await optionOnlySection.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(optionOnlySection), ["Confirmed success-subtle", "Regular secondary", "IDCW warning-subtle"]);
-    // Forget this temporary choice, then restore the plan-only statement for the snapshot checks.
-    await optionOnlySection.getByRole("button", { name: /^Change the / }).click();
-    await optionOnlySection.getByRole("button", { name: "Leave this fund out" }).click();
-    await optionOnlySection.getByText("Left out", { exact: true }).waitFor();
+    const optionOnly = question("PRETEND SMALL CAP FUND - GROWTH");
+    await optionOnly.getByText(/^On your statement: PRETEND SMALL CAP FUND - GROWTH · Growth · 100\.000 units$/).waitFor();
+    await searchIn(optionOnly, "Pretend Small Cap");
+    assert.deepEqual(await resultBadgesOf(optionOnly), [["Direct secondary", "Growth secondary"], ["Regular secondary", "IDCW warning-subtle"]]);
+    await optionOnly.getByRole("radio").nth(1).dispatchEvent("click");
+    await optionOnly.getByRole("button", { name: /^Use this fund for / }).click();
+    // Its name, shortened as the statement's is, is the statement's, so the row gives only one.
+    const optionRow = ready("Pretend Small Cap Fund");
+    assert.deepEqual(await badges(optionRow.getByRole("rowheader")), ["Regular secondary", "IDCW warning-subtle"]);
+    await optionRow.getByText("Statement: Growth. Chosen: Regular · IDCW. Different option.", { exact: true }).waitFor();
+    // Back to the plan-only statement for the checks that follow; nothing was remembered.
     await hosted((smallCap) => { window.host.depositoryAccounts[0].mutual_funds[0].name = smallCap; }, smallCap);
-    await readAgain();
-    const textilesSection = holding(textiles);
-    await textilesSection.getByText("Fund INEZ94A01017").waitFor();
-    assert.equal(await textilesSection.getByRole("button", { name: "Use this share" }).isDisabled(), false);
+    await readHoldings();
+    const textilesCard = question(textiles);
+    await textilesCard.getByRole("button", { name: /^Use this listing: Fund INEZ94A01017, for / }).waitFor();
     // A share's results have no plan or option badges, even when their names give them.
-    await textilesSection.getByRole("textbox", { name: /^Search for / }).fill("Pretend Small Cap");
-    await textilesSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await textilesSection.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    assert.deepEqual(await badges(textilesSection), []);
-    await textilesSection.getByRole("radio").nth(1).dispatchEvent("click");
-    await textilesSection.getByRole("button", { name: "Use this share" }).click();
-    await textilesSection.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(textilesSection), ["Confirmed success-subtle"]);
-    await textilesSection.getByRole("button", { name: /^Change the / }).click();
-    await textilesSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await statementPriced(textilesSection, "INEZ94A01017", "EQUITY");
-    const smallCapSection = holding(smallCap);
-    await smallCapSection.getByText(`Nothing found for the ISIN or for "PRETEND SMALL CAP". Try another name or a ticker, or use the statement's prices.`, { exact: true }).waitFor();
+    await searchIn(textilesCard, "Pretend Small Cap");
+    assert.deepEqual(await badges(textilesCard), []);
+    await textilesCard.getByRole("radiogroup", { name: "Results for “Pretend Small Cap”" }).getByRole("radio").nth(1).dispatchEvent("click");
+    await textilesCard.getByRole("button", { name: /^Use this listing for / }).click();
+    await textilesCard.waitFor({ state: "detached" });
+    const textilesRow = ready(`On your statement: ${textiles}`);
+    assert.deepEqual(await badges(textilesRow.getByRole("rowheader")), []);
+    await textilesRow.getByRole("button", { name: /^Change: / }).click();
+    await changePanelOf().getByRole("button", { name: /^(None of these: use|Use) the price on the statement for / }).click();
+    await ready(textiles).getByText(/^Prices from the statement · chosen by you/).waitFor();
+    const smallCapCard = question(smallCap);
+    await smallCapCard.getByText("Nothing found for the ISIN printed for it or its name. Search by its fund code below, or use the price on the statement.", { exact: true }).waitFor();
     // With no option on the statement, a result's option is no warning; another plan is.
-    assert.deepEqual(await nameBadges(smallCapSection), ["Direct secondary"]);
-    await smallCapSection.getByRole("textbox", { name: /^Search for / }).fill("Pretend Small Cap");
-    await smallCapSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await smallCapSection.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    assert.deepEqual(await resultBadges(smallCapSection), [["Direct secondary", "Growth secondary"], ["Regular warning-subtle", "IDCW secondary"]]);
-    await smallCapSection.getByRole("radio").nth(1).dispatchEvent("click");
-    await smallCapSection.getByRole("button", { name: "Use this fund" }).click();
-    await smallCapSection.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(smallCapSection), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW secondary"]);
-    await smallCapSection.getByRole("button", { name: /^Change the / }).click();
-    await smallCapSection.getByRole("button", { name: "Use the statement's prices" }).click();
-    await statementPriced(smallCapSection, "INFZ92P01SC5", "MUTUALFUND");
-    assert.deepEqual(await choiceBadges(smallCapSection), ["Confirmed success-subtle", "Direct secondary"]);
-    await choose(/^CDSL Demat Account 1, PRETEND BROKING LIMITED/, "Demat (INR)");
-    await preview.click();
-    const pretendDemat = frame.locator("section").filter({ hasText: "Demat: snapshot of 2025-04-30" });
-    await pretendDemat.getByRole("row").filter({ hasText: textiles }).getByText(priced, { exact: true }).waitFor();
-    await pretendDemat.getByRole("row").filter({ hasText: smallCap }).getByText(priced, { exact: true }).waitFor();
-    await pretendDemat.getByLabel(`Total cost of ${textiles}`).fill("4000");
-    await saveOne.click();
+    await smallCapCard.getByText(/^On your statement: PRETEND SMALL CAP FUND - DIRECT PLAN · Direct plan · 100\.000 units$/).waitFor();
+    await searchIn(smallCapCard, "Pretend Small Cap");
+    assert.deepEqual(await resultBadgesOf(smallCapCard), [["Direct secondary", "Growth secondary"], ["Regular warning-subtle", "IDCW secondary"]]);
+    await smallCapCard.getByRole("radio").nth(1).dispatchEvent("click");
+    await smallCapCard.getByRole("button", { name: /^Use this fund for / }).click();
+    const smallCapRow = ready("Pretend Small Cap Fund");
+    assert.deepEqual(await badges(smallCapRow.getByRole("rowheader")), ["Regular warning-subtle", "IDCW secondary"]);
+    await smallCapRow.getByRole("button", { name: /^Change: / }).click();
+    await changePanelOf().getByRole("button", { name: /^(None of these: use|Use) the price on the statement for / }).click();
+    const smallCapPriced = ready("PRETEND SMALL CAP FUND");
+    await smallCapPriced.getByText(/^Prices from the statement · chosen by you/).waitFor();
+    assert.deepEqual(await badges(smallCapPriced.getByRole("rowheader")), ["Direct secondary"]);
+    await choose("PRETEND BROKING LIMITED demat account", "Demat (INR)");
+    await ready(textiles).getByText(priced, { exact: true }).waitFor();
+    await smallCapPriced.getByText(priced, { exact: true }).waitFor();
+    await setCost(ready(textiles), "4000");
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
     const pretend = await hosted(() => ({
@@ -3418,47 +3689,38 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       [pretend.modes[symbol], pretend.assets[id].instrumentType, pretend.assets[id].quoteCcy]), [["MANUAL", "EQUITY", "INR"], ["MANUAL", "EQUITY", "INR"]]);
 
     // A CDSL statement's CDSL demat fund whose name is cut short partway through its option, in
-    // "- DIRECT GROW", gets Direct and Growth badges beside its name without the fund house, and a
-    // result or choice on another plan and option warns.
-    const pretendStatement = await hosted(() => {
-      const kept = { accounts: window.host.depositoryAccounts, date: window.host.statementDate };
+    // "- DIRECT GROW", gets Direct and Growth beside its name without the fund house, and a result or
+    // choice on another plan and option warns.
+    await hosted(() => {
       window.host.depositoryAccounts = undefined;
       window.host.statementDate = "";
-      return kept;
+      window.host.amfi = false;
     });
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cdsl.pdf");
-    await frame.locator("#cas-password").fill("ABCDE1234F");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("CDSL statement for ANANYA R TESTWALA, as on 31-Mar-2026: 2 demat accounts, 2 folios, 1 NPS account, 15 holdings.").waitFor({ timeout: 180_000 });
+    await readHoldings("tests/fixtures/made-up-cdsl.pdf");
+    await frame.getByText("CDSL statement · ANANYA R TESTWALA · made-up-cdsl.pdf", { exact: true }).waitFor();
+    await frame.getByText("16 holdings", { exact: true }).waitFor();
     // Funds printed as a real CDSL statement prints them, after the fund house, "#", its short name
     // and U+0002 or "-", show their scheme names alone, without control characters.
-    const cdslBalanced = frame.locator("section").filter({ hasText: "ISIN INFZ90K01BG8" });
-    assert.equal(await cdslBalanced.locator("h3").textContent(), "FICTIVA BALANCED ADVANTAGE FUND-DIRECT PLAN-GROWTH");
-    assert.deepEqual(await nameBadges(cdslBalanced), ["Direct secondary", "Growth secondary"]);
-    assert.equal(await frame.locator("section").filter({ hasText: "ISIN INFZ91T01GR3" }).locator("h3").textContent(), "TESTBRIDGE GILT FUND");
-    const cdslHeadings = await frame.locator("section h3").allTextContents();
-    assert.ok(cdslHeadings.includes("TESTBRIDGE GILT FUND") && cdslHeadings.every((h) => !/[\x00-\x1f\x7f#]/.test(h)), cdslHeadings.join(" | "));
-    const cutSection = holding("FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW");
-    assert.equal(
-      await cutSection.locator("h3").textContent(),
-      "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW",
-    );
-    assert.deepEqual(await nameBadges(cutSection), ["Direct secondary", "Growth secondary"]);
-    await cutSection.getByRole("textbox", { name: /^Search for / }).fill("Fictiva Testbridge Global");
-    await cutSection.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await cutSection.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    assert.deepEqual(await resultBadges(cutSection), [["Direct secondary", "Growth secondary"], ["Regular warning-subtle", "IDCW warning-subtle"]]);
-    await cutSection.getByRole("radio").nth(1).dispatchEvent("click");
-    await cutSection.getByRole("button", { name: "Use this fund" }).click();
-    await cutSection.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(cutSection), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW warning-subtle"]);
-    await hosted((kept) => {
-      window.host.depositoryAccounts = kept.accounts;
-      window.host.statementDate = kept.date;
-    }, pretendStatement);
+    await question("FICTIVA BALANCED ADVANTAGE FUND-DIRECT PLAN-GROWTH")
+      .getByText(/^On your statement: FICTIVA BALANCED ADVANTAGE FUND-DIRECT PLAN-GROWTH · Direct plan · Growth · /).waitFor();
+    await question("TESTBRIDGE GILT FUND").waitFor();
+    const cdslNames = await questions.evaluateAll((cards) => cards.map((card) => card.querySelector("p").textContent));
+    assert.ok(cdslNames.some((n) => n.includes("TESTBRIDGE GILT FUND")) && cdslNames.every((n) => !/[\x00-\x1f\x7f#]/.test(n)), cdslNames.join(" | "));
+    const cutName = "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW";
+    const cutCard = question(cutName);
+    await cutCard.getByText(new RegExp(`^On your statement: ${escaped(cutName)} · Direct plan · Growth · `)).waitFor();
+    await searchIn(cutCard, "Fictiva Testbridge Global");
+    const cutTyped = cutCard.getByRole("radiogroup", { name: "Results for “Fictiva Testbridge Global”" });
+    assert.deepEqual((await resultBadgesOf(cutCard)).slice(-2), [["Direct secondary", "Growth secondary"], ["Regular warning-subtle", "IDCW warning-subtle"]]);
+    await cutTyped.getByRole("radio").nth(1).dispatchEvent("click");
+    await cutCard.getByRole("button", { name: /^Use this fund for / }).click();
+    const cutRow = ready(`On your statement: ${cutName}`);
+    assert.deepEqual(await badges(cutRow.getByRole("rowheader")), ["Regular warning-subtle", "IDCW warning-subtle"]);
+    await cutRow.getByText("Statement: Direct · Growth. Chosen: Regular · IDCW. Different plan and option.", { exact: true }).waitFor();
 
     // A detailed statement keeps the fund confirmed for it instead of using the asset priced from statements.
     // This copy has no password, so it reads with the box empty, and Remember the password keeps the saved one.
+    await leaveReview();
     assert.equal(await remember.getAttribute("aria-checked"), "true");
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-no-password.pdf");
@@ -3507,13 +3769,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.statementDate = "";
     });
 
-    // With no account that tracks holdings, a summary statement is still checked against the
-    // accounts that track transactions, and the check saves nothing.
-    const flexiName = "Fictiva Flexi Cap Fund - Direct Plan - Growth";
-    const balancedName = "Fictiva Balanced Advantage Fund - Direct Plan - Income Distribution cum Capital Withdrawal Option - Reinvestment";
+    // With no account that tracks holdings, a summary statement's funds that accounts tracking
+    // transactions already hold are still compared with them, by themselves, and nothing is saved.
+    // Hidden accounts that track transactions are compared too, like Not set here.
+    const camsBalanced = "Fictiva Balanced Advantage Fund - Direct Plan - Income Distribution cum Capital Withdrawal Option - Reinvestment";
     const liquidName = "Fictiva Liquid Fund - Direct Plan - Growth";
     const beforeCheck = await accountList();
-    // Hidden accounts that track transactions are still compared, like Not set here.
     await editAccounts({ "holdings-1": { isActive: false }, "holdings-2": { isActive: false }, "unset-1": { isActive: false } });
     await hosted(() => {
       // Activities show an asset's display code; the Balanced Advantage fund's was changed.
@@ -3524,6 +3785,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       for (const symbol of ["INFZ90K01FC8", "INFZ90K01BA1"]) {
         window.host.assets[`asset-${symbol}`] = { symbol, exchangeMic: "XBOM", instrumentType: "EQUITY", name: `Fund ${symbol}` };
       }
+      window.host.held = { "account-1": ["INFZ90K01FC8", "INFZ90K01BA1"], "unset-1": ["INFZ90K01BA1"] };
       window.host.activities = [
         posted("account-1", "BUY", "2024-04-01", "INFZ90K01FC8", "2892.104"),
         // After the statement's date: not counted. One entered in Wealthfolio's form at 02:00 on
@@ -3534,101 +3796,47 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         posted("unset-1", "BUY", "2024-04-01", "INFZ90K01BA1", "400", "MY-BALANCED"),
       ];
     });
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-summary-cams.pdf");
-    await frame.locator("#cas-password").fill("ABCDE1234F");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText(/^No account tracks holdings\. To save snapshots,/).waitFor({ timeout: 180_000 });
-    // Confirmed before, so it's a row, without the statement name's badges (tests/fund-name.test.mjs reads them).
-    await holding(balancedName).getByText("Confirmed", { exact: true }).waitFor();
-    await useFirstResults();
-    assert.equal(await preview.isDisabled(), true);
-    await frame.getByText("No account tracks holdings, so there's nowhere to save a snapshot.", { exact: true }).waitFor();
+    await readHoldings("tests/fixtures/made-up-summary-cams.pdf");
+    await frame.getByText("No account can hold these yet", { exact: true }).waitFor();
+    await answerAll();
     const accountData = () => hosted(() => JSON.stringify({
-      saves: window.host.saves, snapshots: window.host.snapshots, storage: [...window.host.storage], activities: window.host.activities,
+      saves: window.host.saves, snapshots: window.host.snapshots, activities: window.host.activities,
       quotes: window.host.quotes, assets: window.host.assets, modes: window.host.pricingModes, links: window.host.links,
     }));
-    const before = await accountData();
-    const checkButton = frame.getByRole("button", { name: "Check units", exact: true });
-    const checkStatus = checkButton.locator("xpath=..").getByRole("status");
-    assert.equal(await checkStatus.textContent(), "");
-    await pause("history");
-    await checkButton.press("Enter");
-    await waiting();
-    await checkStatus.getByText("Checking the units…", { exact: true }).waitFor();
-    assert.equal(await checkStatus.textContent(), "Checking the units…");
-    await clickOutside();
-    await resume();
-    const checkRow = (name) => frame.getByRole("row").filter({ hasText: name });
-    await checkRow(flexiName).getByText("Needs review", { exact: true }).waitFor();
-    assert.equal(await checkStatus.textContent(), "Compared the units of 2 of 6 holdings.");
-    await stayedOutside("Check units");
-    await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
-    assert.deepEqual(await checkRow(flexiName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "2892.104", "2892.104"]);
-    // Each holding's Same holdings names it.
-    await frame.getByRole("checkbox", { name: `Same holdings for ${flexiName}`, exact: true }).dispatchEvent("click");
-    await checkRow(flexiName).getByText("Match", { exact: true }).waitFor();
-    // A fund in two accounts is summed once, and a gap shows once its accounts are confirmed.
-    assert.deepEqual(await checkRow(balancedName).getByRole("cell").allTextContents().then((cells) => cells.slice(2, 4).map((c) => c.trim())), ["3443.91", "3400"]);
-    await checkRow(balancedName).getByText("Mutual funds · 3000").waitFor();
-    await checkRow(balancedName).getByText("Not set · 400").waitFor();
-    await frame.getByRole("checkbox", { name: `Same holdings for ${balancedName}`, exact: true }).dispatchEvent("click");
-    await checkRow(balancedName).getByText("Differ", { exact: true }).waitFor();
-    await checkRow(liquidName).getByText("No account that tracks transactions has posted activities for it on or before 2025-03-31.", { exact: true }).waitFor();
-    assert.equal(await checkRow(liquidName).getByRole("checkbox").count(), 0);
-    assert.equal(await accountData(), before);
-    // A check that can't read Wealthfolio's activities compares none, and says so.
-    await tab.frames()[1].evaluate(() => { window.host.failHistory = true; });
-    await checkButton.press("Enter");
-    await checkStatus.getByText("Compared the units of 0 of 6 holdings.", { exact: true }).waitFor();
-    await focused(checkButton, "Check units");
-    await checkRow(flexiName).getByText("Couldn't read Wealthfolio's activities: Error: History unavailable", { exact: true }).waitFor();
-    await tab.frames()[1].evaluate(() => { window.host.failHistory = false; });
-    // A check that fails gives the focus back too.
-    await hosted(() => { window.host.failSettings = true; });
-    await checkButton.press("Enter");
-    await frame.getByText("Couldn't check the units: Error: Settings unavailable", { exact: true }).waitFor();
-    await focused(checkButton, "Check units, failed");
-    await hosted(() => { window.host.failSettings = false; });
-    // The next read finds Not set archived, so it isn't compared.
+    const beforeComparing = await accountData();
+    const trackedIn = (accounts) => frame.locator("div.rounded-lg").filter({ hasText: new RegExp(`^Already tracked in ${escaped(accounts)} \\(`) });
+    // The Flexi Cap fund's units match; the Balanced Advantage fund's are summed over both accounts, and differ.
+    await trackedIn("Mutual funds").getByText("✓ It matches this statement.", { exact: true }).waitFor();
+    const balancedGroup = trackedIn("Mutual funds, Not set");
+    await balancedGroup.getByText(/^Fund INFZ90K01BA1 differs: Mutual funds, Not set has 3,400\.000 units, this statement 3,443\.910\. A transaction may be missing from Mutual funds, Not set\./).waitFor();
+    // Without an account to save in, Save in both accounts isn't offered.
+    await balancedGroup.getByRole("button", { name: "Show it", exact: true }).click();
+    await balancedGroup.getByText("Choose an account in “Save to” above first.", { exact: true }).waitFor();
+    // Review its transactions opens each account in Wealthfolio.
+    await balancedGroup.getByRole("button", { name: "Review its transactions in Mutual funds", exact: true }).click();
+    await tab.frames()[1].waitForFunction(() => window.host.navigations.at(-1) === "/accounts/account-1");
+    await balancedGroup.getByRole("button", { name: "Review its transactions in Not set", exact: true }).click();
+    await tab.frames()[1].waitForFunction(() => window.host.navigations.at(-1) === "/accounts/unset-1");
+    // The Liquid fund, which no such account holds, isn't compared.
+    assert.equal(await frame.getByText(/^Fund INFZ90K01LQ6 differs/).count(), 0);
+    assert.equal(await footer.getByText("No account can hold these yet.", { exact: true }).count(), 1);
+    assert.equal(await accountData(), beforeComparing);
+    // A comparison that can't read Wealthfolio's activities says so; opening the page again compares again.
+    await hosted(() => { window.host.failHistory = true; });
+    await revisit();
+    await balancedGroup.getByText("Fund INFZ90K01BA1: couldn't compare. Couldn't read Wealthfolio's activities: Error: History unavailable", { exact: true }).waitFor();
+    await hosted(() => { window.host.failHistory = false; });
+    // The next read finds Not set archived, so it isn't compared: Wealthfolio shows add-ons none of its activities.
     await editAccounts({ "unset-1": { isArchived: true } });
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText(/^No account tracks holdings\. To save snapshots,/).waitFor({ timeout: 180_000 });
-    await frame.getByRole("button", { name: "Check units", exact: true }).click();
-    await frame.getByText("Wealthfolio doesn't show add-ons the activities of archived accounts, so Not set, Archived funds, Old funds aren't compared.", { exact: true }).waitFor();
-    assert.deepEqual(await checkRow(balancedName).getByRole("cell").allTextContents().then((cells) => cells.slice(1, 4).map((c) => c.trim())), ["Mutual funds", "3443.91", "3000"]);
-    assert.equal(await accountData(), before);
-    // The check shows only while an account it compares exists: an unarchived one that tracks
-    // transactions, Not set and hidden ones included. Each read finds the accounts again.
-    const only = async (...ids) => {
-      await setAccountList(beforeCheck.filter((a) => ids.includes(a.id)));
-      await readHoldingsAgain();
-    };
-    const noHoldingsAccount = "No account tracks holdings. To save snapshots, add one in Wealthfolio, set to track holdings, then choose Read statement again.";
-    const checkShown = async (shown, what) => {
-      assert.equal(await frame.getByText("Check against transactions", { exact: true }).count(), shown ? 1 : 0, what);
-      assert.equal(await frame.getByRole("button", { name: "Check units", exact: true }).count(), shown ? 1 : 0, what);
-    };
-    await only("holdings-1", "holdings-2");
-    await checkShown(false, "only accounts that track holdings");
-    await only("archived-2", "unset-1");
-    await editAccounts({ "unset-1": { isArchived: true } });
-    await readHoldingsAgain();
-    await checkShown(false, "only archived accounts that track transactions");
-    // Nor does the Accounts card point to it.
-    await frame.getByText(noHoldingsAccount, { exact: true }).waitFor();
-    await editAccounts({ "new-3": { name: "New transactions", trackingMode: "TRANSACTIONS" } });
-    await readHoldingsAgain();
-    await checkShown(true, "a new account that tracks transactions");
-    await frame.getByText(`${noHoldingsAccount} The check against transactions below works without one.`, { exact: true }).waitFor();
-    await only("unset-1");
-    await checkShown(true, "a Not set account");
-    await only("hidden-1");
-    await checkShown(true, "a hidden account that tracks transactions");
+    await readHoldings();
+    await answerAll();
+    await frame.getByText(/^Fund INFZ90K01BA1 differs: Mutual funds has 3,000\.000 units, this statement 3,443\.910\./).waitFor();
+    assert.equal(await accountData(), beforeComparing);
     await setAccountList(beforeCheck);
 
-    // A summary import creates an AMFI fund without an exchange. Searching its ISIN then finds
-    // that asset, even if automatic updates have since been turned off. Every fund's ISIN finds one
-    // AMFI scheme, so each is confirmed without a click, on the Holdings card too.
+    // A summary import creates an AMFI fund without an exchange. Searching its ISIN then finds that
+    // asset, even if automatic updates have since been turned off. Every fund's ISIN finds one AMFI
+    // scheme, so once AMFI is added, each is confirmed without a click.
     await hosted(() => {
       window.host.providers = "";
       window.host.storage.clear();
@@ -3638,36 +3846,45 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.activities = [];
       window.host.pricingModes = {};
       window.host.quotes = {};
+      window.host.navigations = [];
     });
+    // Opening the page again checks AMFI again: Wealthfolio now says it's off.
     await revisit();
-    await amfiBanner.waitFor();
-    await readHoldingsAgain();
-    await choose("All of this statement", "Fund folios (INR)");
-    // With AMFI off, the banner says so, and the Holdings card doesn't. Once Check again finds AMFI
-    // on, the card's funds are searched again, find AMFI's schemes and are confirmed without a click.
-    for (const section of await frame.locator("section").all()) await section.getByRole("radio").first().waitFor({ state: "attached" });
-    await noAmfiNote();
-    assert.equal(await frame.locator("section").getByText("AMFI", { exact: true }).count(), 0);
-    assert.equal(await frame.getByText(/ matched from AMFI /).count(), 0);
+    await readHoldings();
+    await choose("investor", "Fund folios (INR)");
+    // With AMFI off, Questions for you says so above its cards, and offers Market data settings. Once
+    // that's opened, I've added AMFI: check looks again; AMFI on, the funds are searched again, find
+    // AMFI's schemes and are confirmed without a click.
+    await frame.getByText(/^AMFI isn't added, so 6 funds were only searched on Yahoo Finance and need you\. Add AMFI to match them for you\.$/).waitFor();
+    assert.equal(await frame.getByText(/found automatically on AMFI/).count(), 0);
+    assert.equal(await frame.getByRole("button", { name: "I've added AMFI: check" }).count(), 0);
+    await frame.getByRole("button", { name: "Open Market data settings", exact: true }).click();
+    assert.deepEqual(await hosted(() => window.host.navigations), ["/settings/market-data"]);
     await hosted(() => { window.host.amfi = true; });
-    await checkAgain.click();
-    await amfiBanner.waitFor({ state: "detached" });
-    const summaryLiquid = holding(liquidName);
-    const summaryOthers = [flexiName, balancedName, corporate, gilt, "Testbridge Fixed Term Plan - Series 12 - Direct Plan - Growth"];
-    await frame.getByText("6 funds matched from AMFI by their ISIN. Change any that look wrong.", { exact: true }).waitFor();
-    assert.equal(await frame.locator("section").count(), 0);
-    const schemeCodes = await rows.evaluateAll((all) => all.map((row) => row.textContent.match(/Scheme (\d{6})/)[1]));
+    await frame.getByRole("button", { name: "I've added AMFI: check", exact: true }).press("Enter");
+    await said.getByText("AMFI added: 6 funds matched. No questions remain.", { exact: true }).waitFor();
+    await focused(footer.locator("[tabindex='-1']").first(), "AMFI added, no questions left");
+    await frame.getByText("6 funds found automatically on AMFI. Change any that look wrong.", { exact: true }).waitFor();
+    assert.equal(await questions.count(), 0);
+    await showAllRows();
+    const schemeCodes = await readyRows.evaluateAll((all) => all.map((row) => row.textContent.match(/Scheme (\d{6})/)[1]));
     assert.equal(schemeCodes.length, 6);
     assert.equal(new Set(schemeCodes).size, schemeCodes.length, "different funds have different AMFI scheme codes");
-    const leaveOutOthersThanLiquid = async () => {
-      for (const name of summaryOthers) await leaveOut(holding(name));
+    // Skips every fund but the Liquid fund, from their rows.
+    const skipOthersThanLiquid = async () => {
+      await showAllRows();
+      while (await readyRows.filter({ hasNotText: liquidName }).count()) {
+        await readyRows.filter({ hasNotText: liquidName }).first().getByRole("button", { name: /^Change: / }).click();
+        await changePanelOf().getByRole("button", { name: /^Skip this holding: / }).click();
+        await changePanelOf().waitFor({ state: "detached" });
+      }
+      await settled();
     };
-    await leaveOutOthersThanLiquid();
-    await frame.getByText("1 fund matched from AMFI by its ISIN. Change it if it looks wrong.", { exact: true }).waitFor();
-    const summaryAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
-    await preview.click();
-    await frame.getByRole("button", { name: "Save 1 snapshot", exact: true }).click();
+    await skipOthersThanLiquid();
+    await frame.getByText("1 fund found automatically on AMFI. Change any that look wrong.", { exact: true }).waitFor();
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    const summaryAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     const amfiSnapshot = await snapshot("holdings-2", "2025-03-31");
     assert.equal(amfiSnapshot.holdings.length, 1);
     assert.deepEqual(
@@ -3677,57 +3894,56 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     );
     assert.equal(await hosted((code) => window.host.assets[`asset-${code}`].providerId, summaryAmfi.symbol), "AMFI");
     await hosted((code) => { window.host.pricingModes[code] = "MANUAL"; }, summaryAmfi.symbol);
-    await readHoldingsAgain();
-    await summaryLiquid.getByRole("button", { name: /^Change the / }).click();
-    const summaryResults = summaryLiquid.getByRole("radio");
+    await readHoldings();
+    const summaryLiquid = () => readyRows.filter({ hasText: liquidName });
+    await summaryLiquid().getByRole("button", { name: /^Change: / }).click();
+    const summaryResults = changePanelOf().getByRole("radio");
     await summaryResults.nth(1).waitFor({ state: "attached" });
     assert.equal(await summaryResults.count(), 2);
-    assert.equal(await summaryResults.first().getAttribute("aria-checked"), "true");
+    // Nothing is picked for you.
+    assert.deepEqual(await summaryResults.evaluateAll((all) => all.map((r) => r.getAttribute("aria-checked"))), ["false", "false"]);
     // Wealthfolio has the fund with AMFI preferred, but priced by hand.
-    assert.match(await summaryLiquid.locator("label").first().textContent(), /Priced by hand$/);
-    assert.equal(await summaryLiquid.getByText(/priced from AMFI/).count(), 0);
-    await summaryLiquid.getByRole("button", { name: /^Use this fund for / }).click();
+    const handPriced = changePanelOf().locator("label").filter({ hasText: "Priced by hand" });
+    assert.equal(await handPriced.count(), 1);
+    await handPriced.getByRole("radio").dispatchEvent("click");
+    await changePanelOf().getByRole("button", { name: /^Use this fund for / }).click();
+    await skipOthersThanLiquid();
+    await sameDay("Fund folios").dispatchEvent("click");
+    await saveHoldings.click();
+    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
     const summaryExisting = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     assert.equal(summaryExisting.assetId, `asset-${summaryAmfi.symbol}`);
     assert.equal(summaryExisting.providerSymbol, undefined);
-    await readHoldingsAgain();
+    await readHoldings();
     // Remembered, it's read again: a remembered choice doesn't keep the pricing mode.
-    await summaryLiquid.getByText("Priced by hand", { exact: true }).waitFor();
-    assert.equal(await summaryLiquid.getByText("AMFI", { exact: true }).count(), 0);
-    await leaveOutOthersThanLiquid();
-    await preview.click();
-    await frame.getByText("Priced by hand: saving also saves the statement's price as its price on this date.", { exact: true }).waitFor();
+    await summaryLiquid().getByText(/^Prices entered by hand · chosen before/).waitFor();
+    await skipOthersThanLiquid();
+    await summaryLiquid().getByText(priced, { exact: true }).waitFor();
+    // Below Tailwind's `sm` width, 320 px here, the ready rows are a stacked list, and nothing is wider
+    // than the frame.
+    await frameWidth(320);
+    const stacked = frame.getByRole("list", { name: "Holdings ready to save", exact: true });
+    await stacked.waitFor();
+    await stacked.getByText(/^Units: .+ · Value on 31 Mar: ₹/).waitFor();
+    assert.equal(await readyRows.count(), 0);
+    assert.ok(await hosted(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "nothing past 320 px");
+    await frameWidth(1000);
+    await summaryLiquid().waitFor();
 
-    // A line whose units can't be read leaves the account's fund as it is, and its units can't be checked.
+    // A line whose units can't be read leaves the account's fund as it is, and isn't saved.
     await hosted(() => { window.host.summaryMisread = ["INFZ90K01LQ6"]; });
-    await readHoldingsAgain();
-    const liquidFolio = "Fictiva Mutual Fund, folio 91234567 / 12";
-    await frame.getByRole("alert").filter({ hasText: /^Left out/ }).getByText(
+    await readHoldings();
+    const liquidFolio = "Fictiva Mutual Fund account (folio 91234567 / 12)";
+    await frame.getByText(
       `${liquidName}, ${liquidFolio}: It has no units but a value of ₹35799.22, so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.`,
       { exact: true },
     ).waitFor();
-    // Its row says so, as its section does.
-    await summaryLiquid.getByText(/(^|· )[Aa] line may have been misread, so the import leaves its holding as it is$/).waitFor();
-    await leaveOutOthersThanLiquid();
-    await preview.click();
-    // The account's AMFI asset, under its own name.
-    const heldBackNote = `Its line in ${liquidFolio} may have been misread, so this import leaves it as it is: its units, cost and price stay. Check it against the PDF.`;
-    const heldBack = frame.getByRole("table").filter({ hasText: "Total cost" }).getByRole("row").filter({ hasText: heldBackNote });
-    await heldBack.getByText(heldBackNote, { exact: true }).waitFor();
+    await skipOthersThanLiquid();
+    assert.equal(await summaryLiquid().count(), 0);
+    // The account's AMFI asset stays, under its own name.
+    const heldBack = (await snapshotTable("Fund folios")).getByRole("row").filter({ hasText: liquidFolio });
     assert.equal(await heldBack.count(), 1);
-    await heldBack.getByText(liquidFolio, { exact: true }).waitFor();
     await heldBack.getByText("Kept", { exact: true }).waitFor();
-    assert.equal(await heldBack.getByRole("checkbox").count(), 0);
-    await frame.getByRole("button", { name: "Check units", exact: true }).click();
-    const unknownUnits = frame.getByRole("table").filter({ hasText: "Units in the statement" }).getByRole("row").filter({ hasText: liquidName });
-    await unknownUnits.getByText("Needs review", { exact: true }).waitFor();
-    assert.deepEqual(await unknownUnits.getByRole("cell").allTextContents().then((cells) => cells.slice(2, 4).map((c) => c.trim())), ["Unknown", ""]);
-    await unknownUnits.getByText(`${liquidFolio} (may be misread)`, { exact: true }).waitFor();
-    await unknownUnits.getByText(
-      `Its line in ${liquidFolio} may have been misread, so its units on the statement are unknown. Check it against the PDF. No account that tracks transactions has posted activities for it on or before 2025-03-31.`,
-      { exact: true },
-    ).waitFor();
-    assert.equal(await unknownUnits.getByRole("checkbox").count(), 0);
     const preservedSnapshot = { holdings: [{
       assetId: `asset-${summaryAmfi.symbol}`, symbol: summaryAmfi.symbol, quantity: "100", currency: "INR", averageCost: "10",
     }], cash: { INR: "25" } };
@@ -3738,9 +3954,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       open: 6, high: 8, low: 5, close: 7, adjclose: 7, volume: 123, currency: "INR", notes: "Kept quote",
     }];
     await hosted(([code, quotes]) => { window.host.quotes[`asset-${code}`] = quotes; }, [summaryAmfi.symbol, liquidQuotes]);
-    await preview.click();
-    await frame.getByRole("checkbox", { name: "Replace the snapshot of 2025-03-31 in Fund folios", exact: true }).dispatchEvent("click");
-    await frame.getByRole("button", { name: "Save 1 snapshot", exact: true }).click();
+    await revisit();
+    await settled();
+    await sameDay("Fund folios").dispatchEvent("click");
+    await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
     const keptSnapshot = await snapshot("holdings-2", "2025-03-31");
     assert.deepEqual(keptSnapshot.holdings, preservedSnapshot.holdings);
@@ -3748,6 +3965,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await hosted((code) => window.host.quotes[`asset-${code}`], summaryAmfi.symbol), liquidQuotes);
     await hosted(() => { window.host.summaryMisread = []; });
     await hosted(() => { window.host.amfi = false; });
+
+    await leaveReview();
 
     await frame.getByRole("button", { name: "Forget the saved password" }).click();
     await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });
