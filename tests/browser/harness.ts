@@ -14,8 +14,10 @@ import type {
   ActivityUpdate,
   AddonAssets,
   AddonContext,
+  CashActivitySearchRequest,
   Quote,
   SnapshotHoldingInput,
+  SpendCategoryKind,
   SymbolSearchResult,
 } from "@wealthfolio/addon-sdk";
 import { createElement } from "react";
@@ -150,6 +152,24 @@ const host = {
   // Transfers already in a pair, and the pairs the add-on linked.
   linked: [] as string[],
   links: [] as [string, string][],
+  // The activity updates the add-on sent.
+  updates: [] as ActivityUpdate[],
+  // Wealthfolio's Spending: whether it's on, the accounts in it, each activity's splits and
+  // categories by ID, and the categories the add-on removed. Its calls cover only accounts in it.
+  spending: {
+    enabled: false,
+    accountIds: [] as string[],
+    splits: {} as Record<string, { taxonomyId: string; categoryId: string }[]>,
+    assignments: {} as Record<string, { taxonomyId: string; categoryId: string; source?: string }[]>,
+    unassigned: [] as [string, SpendCategoryKind][],
+    failContext: false,
+    failSearch: false,
+    // Activities whose categories can't be removed.
+    failUnassign: [] as string[],
+    // Results a page when the request sets none: 50, as in Wealthfolio.
+    pageSize: 50,
+    searches: [] as CashActivitySearchRequest[],
+  },
   // Wealthfolio's timezone setting. Rows the add-on imports are stored at UTC midnight, on their day there too.
   timezone: "Asia/Kolkata",
   failSettings: false,
@@ -548,7 +568,8 @@ const api = {
     getAll: async (accountId?: string) => {
       await wait("history");
       if (host.failHistory) throw new Error("History unavailable");
-      return host.activities.filter((a) => accountId === undefined || a.accountId === accountId);
+      // Copies, as Wealthfolio's answers are: a test's later change to a row doesn't reach what the add-on read.
+      return host.activities.filter((a) => accountId === undefined || a.accountId === accountId).map((a) => ({ ...a }));
     },
     checkImport: async (rows: ActivityImport[]) => {
       await wait("check");
@@ -599,17 +620,65 @@ const api = {
       host.activities.push(row);
       return row;
     },
-    // Only what the add-on changes.
+    // Only what the add-on changes. Like Wealthfolio 3.13.0, a change of type, account or amount
+    // deletes the activity's spending splits, and any update marks it as edited by the user.
     update: async (activity: ActivityUpdate) => {
+      host.updates.push(activity);
       const row = host.activities.find((a) => a.id === activity.id)!;
-      Object.assign(row, { activityType: activity.activityType, comment: activity.comment ?? undefined });
+      const amount = activity.amount === undefined ? row.amount : String(activity.amount);
+      if (row.activityType !== activity.activityType || row.accountId !== activity.accountId || row.amount !== amount) {
+        delete host.spending.splits[row.id];
+      }
+      Object.assign(row, { activityType: activity.activityType, comment: activity.comment ?? undefined, isUserModified: true });
       return row;
     },
     getTransferPair: async (id: string) => (host.linked.includes(id) ? {} : null),
+    // Linking marks both legs as edited by the user.
     linkTransfer: async (a: string, b: string) => {
       host.links.push([a, b]);
       host.linked.push(a, b);
+      for (const row of host.activities) if (row.id === a || row.id === b) row.isUserModified = true;
       return [];
+    },
+  },
+  spending: {
+    getContext: async () => {
+      if (host.spending.failContext) throw new Error("Spending unavailable");
+      return { enabled: host.spending.enabled, accountIds: [...host.spending.accountIds], excludedCategoryIds: [] };
+    },
+    // Like Wealthfolio 3.13.0: nothing outside Spending; types, inclusive dates and absolute amounts
+    // as asked; newest first; a page at the offset.
+    searchCashActivities: async (request: CashActivitySearchRequest) => {
+      host.spending.searches.push(request);
+      if (host.spending.failSearch) throw new Error("Search unavailable");
+      const scope = host.spending.enabled ? host.spending.accountIds : [];
+      const time = (date: Date | string) => new Date(date).getTime();
+      const types: string[] = request.activityTypes ?? ["DEPOSIT", "WITHDRAWAL", "TRANSFER_IN", "TRANSFER_OUT", "FEE", "TAX", "INTEREST", "CREDIT"];
+      const found = host.activities
+        .filter((a) => scope.includes(a.accountId) && (request.accountIds ?? scope).includes(a.accountId) && types.includes(a.activityType) &&
+          (!request.startDate || time(a.date) >= time(request.startDate)) && (!request.endDate || time(a.date) <= time(request.endDate)) &&
+          (request.minAmount === undefined || Math.abs(Number(a.amount)) >= request.minAmount) &&
+          (request.maxAmount === undefined || Math.abs(Number(a.amount)) <= request.maxAmount))
+        .sort((a, b) => time(b.date) - time(a.date));
+      const offset = request.offset ?? 0;
+      return {
+        items: found.slice(offset, offset + (request.limit ?? host.spending.pageSize)).map((a) => ({
+          ...a,
+          splits: (host.spending.splits[a.id] ?? []).map((split, i) => ({ id: `${a.id}-split-${i}`, activityId: a.id, amount: "1", sortOrder: i, ...split })),
+          assignments: (host.spending.assignments[a.id] ?? []).map((assignment, i) => ({ id: `${a.id}-category-${i}`, activityId: a.id, weight: 1, source: "manual", ...assignment })),
+        })),
+        totalCount: found.length,
+      };
+    },
+    unassignCategory: async (activityId: string, kind: SpendCategoryKind) => {
+      const row = host.activities.find((a) => a.id === activityId);
+      if (!host.spending.enabled || !row || !host.spending.accountIds.includes(row.accountId)) {
+        throw new Error("Activity account is not opted into spending tracking");
+      }
+      if (host.spending.failUnassign.includes(activityId)) throw new Error("Category unavailable");
+      const taxonomy = { expense: "spending_categories", income: "income_sources", saving: "savings_categories" }[kind];
+      host.spending.assignments[activityId] = (host.spending.assignments[activityId] ?? []).filter((a) => a.taxonomyId !== taxonomy);
+      host.spending.unassigned.push([activityId, kind]);
     },
   },
   market: { getProviders: async () => {

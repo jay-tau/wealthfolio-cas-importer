@@ -868,6 +868,119 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(count("account-1", "DEPOSIT"), 1, "the switch's purchase keeps its deposit");
     await frame.getByRole("button", { name: "Preview the import" }).click();
     await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+
+    // Before a bank row is ticked, the preview says what reusing it changes besides its type and
+    // link: its spending split and category, and corrections from a synced account. Right before
+    // importing, the rows ticked are read again, and one that changed stops the import.
+    const resetBank = (spending = {}) => hosted(([rows, spending]) => {
+      window.host.activities = structuredClone(rows);
+      window.host.links = [];
+      window.host.linked = ["bank-linked"];
+      window.host.updates = [];
+      Object.assign(window.host.spending, { enabled: false, accountIds: [], splits: {}, assignments: {}, unassigned: [], failUnassign: [], searches: [] }, spending);
+    }, [bankRows, spending]);
+    const previewBank = async (counts = /^13 new transactions, 0 already in Wealthfolio/) => {
+      await frame.getByRole("button", { name: "Preview the import" }).click();
+      await frame.getByText(counts).waitFor({ timeout: 30_000 });
+      await reuseBankRow.waitFor({ state: "attached" });
+    };
+    const outsideSpending = "Changing a withdrawal or deposit into a transfer deletes any split across spending categories, also one saved before Spending was turned off for its account.";
+    const syncedNote = "Savings is synced. Once linked, later corrections to this entry from the sync won't change it.";
+    const splitNote = "This entry is split across 2 spending categories. Changing it into a transfer deletes the split.";
+    const categoryNote = "Its spending category is removed: a transfer isn't spending.";
+    const liquidPurchase = "the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth";
+    // Spending off, in an account synced through Wealthfolio Connect: one note above the matches, and the synced one on the row.
+    await editAccounts({ "bank-1": { provider: "SNAPTRADE", providerAccountId: "connect-1" } });
+    await resetBank();
+    await previewBank();
+    await frame.getByText(outsideSpending, { exact: true }).waitFor();
+    await frame.getByText(syncedNote, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^This entry is split|category is removed|^Couldn't check/).count(), 0);
+    assert.deepEqual(await hosted(() => window.host.spending.searches), []);
+    // In Spending, a split and a category added after the preview stop the import; a comment edited is kept.
+    await resetBank({ enabled: true, accountIds: ["bank-1"] });
+    await previewBank();
+    assert.equal(await frame.getByText(outsideSpending).count(), 0);
+    assert.equal(await frame.getByText(splitNote).count(), 0);
+    await frame.getByText(syncedNote, { exact: true }).waitFor();
+    await reuseBankRow.dispatchEvent("click");
+    await hosted(() => {
+      window.host.spending.splits["bank-neft"] = [{ taxonomyId: "spending_categories", categoryId: "food" }, { taxonomyId: "spending_categories", categoryId: "rent" }];
+      window.host.spending.assignments["bank-neft"] = [{ taxonomyId: "spending_categories", categoryId: "investing" }, { taxonomyId: "savings_categories", categoryId: "sip" }];
+      window.host.activities.find((a) => a.id === "bank-neft").comment = "NEFT FICTIVA MF SIP";
+    });
+    const rowsBefore = await hosted(() => window.host.activities.length);
+    await frame.getByRole("button", { name: "Import 30 activities" }).click();
+    await frame.getByText("Nothing was imported: bank entries you chose changed").waitFor();
+    await frame.getByText(
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), chosen for ${liquidPurchase}, changed: ${splitNote} ${categoryNote}`,
+      { exact: true },
+    ).waitFor();
+    assert.deepEqual(await hosted(() => [window.host.activities.length, window.host.updates, window.host.links]), [rowsBefore, [], []]);
+    // The preview shows the row as it is now, still ticked; the next Import goes ahead.
+    await frame.getByText("Savings has a withdrawal of 25000.00 on 2023-05-04 (NEFT FICTIVA MF SIP).", { exact: false }).waitFor();
+    await frame.getByText(splitNote, { exact: true }).waitFor();
+    await frame.getByText(categoryNote, { exact: true }).waitFor();
+    assert.equal(await reuseBankRow.isChecked(), true);
+    await frame.getByRole("button", { name: "Import 30 activities" }).click();
+    await frame.getByText("Imported 30 of 30 activities").waitFor();
+    await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
+    await frame.getByText(
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF SIP), for ${liquidPurchase}: Its split across 2 spending categories was deleted. Its spending category was removed. Later corrections to it from the sync won't change it.`,
+      { exact: true },
+    ).waitFor();
+    const reusedRow = await hosted(() => ({
+      row: window.host.activities.find((a) => a.id === "bank-neft"),
+      splits: window.host.spending.splits["bank-neft"],
+      assignments: window.host.spending.assignments["bank-neft"],
+      unassigned: window.host.spending.unassigned,
+      updates: window.host.updates.map((u) => [u.id, u.activityType, u.comment]),
+    }));
+    assert.deepEqual(
+      [reusedRow.row.activityType, reusedRow.row.comment, reusedRow.row.isUserModified, reusedRow.splits, reusedRow.assignments, reusedRow.unassigned, reusedRow.updates],
+      ["TRANSFER_OUT", "NEFT FICTIVA MF SIP", true, undefined, [{ taxonomyId: "savings_categories", categoryId: "sip" }], [["bank-neft", "expense"]], [["bank-neft", "TRANSFER_OUT", "NEFT FICTIVA MF SIP"]]],
+    );
+    // A row deleted after the preview stops the import too, and its transaction then gets a new transfer.
+    await resetBank({ enabled: true, accountIds: ["bank-1"] });
+    await previewBank();
+    await reuseBankRow.dispatchEvent("click");
+    await hosted(() => { window.host.activities = window.host.activities.filter((a) => a.id !== "bank-neft"); });
+    await frame.getByRole("button", { name: "Import 30 activities" }).click();
+    await frame.getByText(
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), chosen for ${liquidPurchase}, is no longer in Wealthfolio, so the transaction now comes with a new transfer out.`,
+      { exact: true },
+    ).waitFor();
+    assert.equal(await reuseBankRow.count(), 0);
+    await frame.getByRole("button", { name: "Import 32 activities" }).click();
+    await frame.getByText("Imported 32 of 32 activities").waitFor();
+    // A category Wealthfolio won't remove leaves the row linked, with a warning.
+    await resetBank({ enabled: true, accountIds: ["bank-1"], failUnassign: ["bank-neft"] });
+    await hosted(() => { window.host.spending.assignments["bank-neft"] = [{ taxonomyId: "spending_categories", categoryId: "investing" }]; });
+    await previewBank();
+    await frame.getByText(categoryNote, { exact: true }).waitFor();
+    await reuseBankRow.dispatchEvent("click");
+    await frame.getByRole("button", { name: "Import 30 activities" }).click();
+    await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
+    await frame.getByText(
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), for ${liquidPurchase}: Later corrections to it from the sync won't change it. Couldn't remove its spending category: Error: Category unavailable. A transfer isn't spending: remove it in Wealthfolio.`,
+      { exact: true },
+    ).waitFor();
+    // A row ticked for a possible duplicate that isn't imported isn't read again.
+    const earlierTrade = banked.activities.find((a) => a.accountId === "account-1" && a.activityType === "BUY" && a.date.startsWith("2023-05-05"));
+    await resetBank({ enabled: true, accountIds: ["bank-1"] });
+    await hosted((trade) => { window.host.activities.push(trade); }, earlierTrade);
+    await previewBank(/^12 new transactions, 0 already in Wealthfolio, 1 possible duplicate/);
+    await reuseBankRow.dispatchEvent("click");
+    const searched = await hosted(() => window.host.spending.searches.length);
+    await hosted(() => { window.host.activities = window.host.activities.filter((a) => a.id !== "bank-neft"); });
+    await frame.getByRole("button", { name: "Import 29 activities" }).click();
+    await frame.getByText("Imported 29 of 29 activities").waitFor();
+    assert.equal(await hosted(() => window.host.spending.searches.length), searched);
+    await editAccounts({ "bank-1": { provider: undefined, providerAccountId: undefined } });
+    await resetBank();
+    await hosted((rows) => { window.host.activities = rows; }, banked.activities);
+    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
     // Back to outside Wealthfolio, which forgets the choice.
     await bankChoice.click();
     await frame.getByRole("option", { name: "Outside Wealthfolio" }).click();

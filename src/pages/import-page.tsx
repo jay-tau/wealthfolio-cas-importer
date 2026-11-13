@@ -9,6 +9,7 @@ import type {
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Button, Page, PageContent, PageHeader, Spinner } from "@wealthfolio/ui";
 import { useMemo, useRef, useState } from "react";
+import { type EntryFacts, readEntryFacts, recheckEntries, reuseBankEntry, type StaleEntry } from "../cas/bank-entries";
 import { type Holdings, readHoldings } from "../cas/holdings";
 import { closedScheme, type Mapping, mapStatement, withoutClosed, withReadableNames } from "../cas/mapping";
 import { CasError } from "../cas/parser";
@@ -23,7 +24,6 @@ import {
   giftEntries,
   importRows,
   indexActivities,
-  linkBankRow,
   openingUnits,
   planImport,
   type PlannedTransaction,
@@ -67,6 +67,10 @@ interface Previewed {
   plan: PlannedTransaction[];
   /** The bank row each new transaction could use instead of a new one. */
   matches: Map<PlannedTransaction, ActivityDetails>;
+  /** What reusing each of those changes, by its ID. */
+  facts: Map<string, EntryFacts>;
+  /** Ticked bank rows that changed since the preview, which stopped the last Import. */
+  stale?: StaleEntry[];
 }
 
 interface Imported {
@@ -362,7 +366,9 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
           if (await api.activities.getTransferPair(id)) linked.add(id);
         }),
       );
-      setPreview({ mapping, plan, matches: bankMatches(plan, existing, linked) });
+      const matches = bankMatches(plan, existing, linked);
+      const facts = await readEntryFacts(api, [...matches.values()]);
+      setPreview({ mapping, plan, matches, facts });
       setImportAnyway(new Set());
       setReuse(new Set());
     } catch (e) {
@@ -374,20 +380,46 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
 
   const reused = (t: PlannedTransaction) => reuse.has(t) && !!preview?.matches.has(t);
 
+  const accountName = (id: string) => allAccounts?.find((a) => a.id === id)?.name ?? "the bank account";
+
   const runImport = async () => {
     if (!data || !preview) return;
-    const sent = importRows(preview.plan, (t) => importAnyway.has(t), reused);
     focusReturn.hold();
     setBusy("import");
     setError("");
     try {
+      // The bank rows ticked for transactions about to be imported, as they are now. Any that
+      // changed stop the import, and the preview shows them as they are.
+      const chosen = preview.plan
+        .filter((t) => reused(t) && (t.status === "new" || importAnyway.has(t)))
+        .map((t): [PlannedTransaction, ActivityDetails] => [t, preview.matches.get(t)!]);
+      let checked: Awaited<ReturnType<typeof recheckEntries>>;
+      try {
+        checked = await recheckEntries(api, chosen, preview.facts, accountName);
+      } catch (e) {
+        setError(`Couldn't read the bank rows you chose again, so nothing was imported: ${String(e)}. Choose Import to try again.`);
+        return;
+      }
+      if (checked.stale.length) {
+        const matches = new Map(preview.matches);
+        const facts = new Map(preview.facts);
+        for (const s of checked.stale) if (!checked.current.has(s.transaction)) matches.delete(s.transaction);
+        for (const [t, row] of checked.current) {
+          matches.set(t, row);
+          facts.set(row.id, checked.facts.get(row.id)!);
+        }
+        setPreview({ ...preview, matches, facts, stale: checked.stale });
+        return;
+      }
+      if (preview.stale) setPreview({ ...preview, stale: undefined });
+      const sent = importRows(preview.plan, (t) => importAnyway.has(t), reused);
       const result = await api.activities.import(sent);
       setPreview(null);
       setImported({ result, sent, closing: [], links: [] });
       // Each reused bank row, once its transaction's trade is in.
       const links: BankLink[] = [];
-      for (const t of preview.plan.filter((t) => reused(t) && (t.status === "new" || importAnyway.has(t)))) {
-        const bankRow = preview.matches.get(t)!;
+      for (const [t] of chosen) {
+        const bankRow = checked.current.get(t)!;
         const line = t.transaction.activity.lineNumber;
         const trade = result.activities.find((a) => a.lineNumber === line);
         const forced = sent.some((r) => r.lineNumber === line && r.forceImport);
@@ -399,9 +431,9 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
         links.push({
           transaction: t,
           bankRow,
-          error: imported
-            ? await linkBankRow(api.activities, t, bankRow)
-            : "The trade wasn't imported, so the bank's row was left as it is.",
+          ...(imported
+            ? await reuseBankEntry(api, t, bankRow, checked.facts.get(bankRow.id)!)
+            : { error: "The trade wasn't imported, so the bank's row was left as it is.", changes: [], warnings: [] }),
         });
       }
       setImported({ result, sent, closing: [], links });
@@ -488,13 +520,13 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
                   </span>
                 )}
                 {/* Read out while the page is locked, and when the preview is ready. A failed import keeps
-                    the preview, and its alert says why. */}
+                    the preview, and its alert says why, as does an import stopped by changed bank rows. */}
                 <p role="status" className="sr-only">
                   {busy === "preview"
                     ? "Preparing the preview…"
                     : busy === "import"
                       ? "Importing…"
-                      : preview && !error
+                      : preview && !error && !preview.stale
                         ? `The preview is ready: ${previewCounts(preview.plan)}.`
                         : ""}
                 </p>
@@ -521,6 +553,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
               }}
               unbalancedRef={(w) => focus.target(schemeKey(w.folio, w.scheme))}
               matches={preview.matches}
+              facts={preview.facts}
+              stale={preview.stale}
               reuse={reuse}
               onReuse={(t, yes) => setReuse((set) => toggle(set, t, yes))}
               accounts={allAccounts!}
@@ -530,7 +564,13 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
             />
           )}
           {imported && (
-            <ImportResult result={imported.result} sent={imported.sent} closing={imported.closing} links={imported.links} />
+            <ImportResult
+              result={imported.result}
+              sent={imported.sent}
+              closing={imported.closing}
+              links={imported.links}
+              accounts={allAccounts!}
+            />
           )}
         </fieldset>
       </PageContent>

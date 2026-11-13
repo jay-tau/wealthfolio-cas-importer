@@ -561,9 +561,14 @@ type LinkApi = Pick<AddonContext["api"]["activities"], "create" | "update" | "li
 /**
  * After the import sent a transaction's trade, records its cash against the bank row the user chose
  * to reuse: adds the fund account's transfer, changes a bank deposit or withdrawal into the
- * matching transfer, and links the two. Returns what went wrong, if anything.
+ * matching transfer, and links the two. Returns what went wrong, if anything, and whether the bank
+ * row was changed into a transfer and linked.
  */
-export async function linkBankRow(activities: LinkApi, t: PlannedTransaction, bankRow: ActivityDetails) {
+export async function linkBankRow(
+  activities: LinkApi,
+  t: PlannedTransaction,
+  bankRow: ActivityDetails,
+): Promise<{ error?: string; converted: boolean; linked: boolean }> {
   const cash = t.transaction.cash!;
   const type = t.transaction.bank!.activityType;
   const when = `on ${day(bankRow.date)}`;
@@ -585,9 +590,10 @@ export async function linkBankRow(activities: LinkApi, t: PlannedTransaction, ba
     };
     ({ id: fundId } = await activities.create(transfer));
   } catch (e) {
-    return `Couldn't add the fund account's transfer: ${String(e)}. The trade is in Wealthfolio without its cash.`;
+    return { error: `Couldn't add the fund account's transfer: ${String(e)}. The trade is in Wealthfolio without its cash.`, converted: false, linked: false };
   }
-  if (bankRow.activityType !== type) {
+  const converted = bankRow.activityType !== type;
+  if (converted) {
     try {
       // Fields left out keep their values.
       await activities.update({
@@ -599,15 +605,23 @@ export async function linkBankRow(activities: LinkApi, t: PlannedTransaction, ba
         comment: bankRow.comment ?? null,
       });
     } catch (e) {
-      return `Added the fund account's transfer, but couldn't change the bank's row ${when} into a transfer: ${String(e)}. Change it and link the two in Wealthfolio.`;
+      return {
+        error: `Added the fund account's transfer, but couldn't change the bank's row ${when} into a transfer: ${String(e)}. Change it and link the two in Wealthfolio.`,
+        converted: false,
+        linked: false,
+      };
     }
   }
   try {
     await activities.linkTransfer(bankRow.id, fundId);
   } catch (e) {
-    return `Added the fund account's transfer, but couldn't link it with the bank's row ${when}: ${String(e)}. Link the two in Wealthfolio.`;
+    return {
+      error: `Added the fund account's transfer, but couldn't link it with the bank's row ${when}: ${String(e)}. Link the two in Wealthfolio.`,
+      converted,
+      linked: false,
+    };
   }
-  return undefined;
+  return { converted, linked: true };
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

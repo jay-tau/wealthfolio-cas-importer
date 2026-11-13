@@ -145,6 +145,24 @@ add-on imports the trade, adds the funds' account's side of the transfer, change
 withdrawal or deposit into a transfer and links the two. Transactions imported earlier with a deposit
 or withdrawal count as already in Wealthfolio, and the add-on leaves those rows as they are.
 
+Wealthfolio changes such an entry in other ways too, and the preview says so on it before you tick
+it:
+
+- In a bank account in Wealthfolio's **Spending**, changing a withdrawal or deposit into a transfer
+  deletes its split across spending categories. Wealthfolio's own screens ask before deleting it.
+  Once it's linked, the add-on removes its spending or income category, as Wealthfolio
+  does when it changes one into a linked transfer; a savings category stays. An entry that's already
+  a transfer keeps its split and categories.
+- Outside Spending, the add-on can't read an entry's split, and changing it into a transfer deletes
+  any it has, also one saved before Spending was turned off for its account.
+- In a bank account synced through Wealthfolio Connect, changing or linking an entry marks it as
+  edited by you, so later corrections to it from the sync no longer change it.
+
+Right before importing, the add-on reads the entries you ticked again. If one is gone, changed, or now
+needs a note the preview didn't give, nothing is imported: the preview shows the entries as they are
+now, and you choose Import again. The result names each entry whose split was deleted, whose category
+was removed or couldn't be, or that the sync no longer corrects, so you can check it in Wealthfolio.
+
 ### Mergers
 
 When a fund house merges one fund into another, the statement shows the units leaving one fund and
@@ -488,6 +506,13 @@ Download `wealthfolio-cas-importer-<version>.zip` from
 [Releases](https://github.com/jay-tau/wealthfolio-cas-importer/releases). In Wealthfolio's desktop
 app or its web app, 3.13.0 or newer, open **Settings** → **Add-ons**, choose **Install from file**,
 pick the zip and allow the permissions it asks for.
+
+To update it, install the new version's zip the same way. When it asks for permissions the installed
+version didn't, Wealthfolio lists them for you to allow, and the release notes say which and why;
+Wealthfolio's own add-on updates don't install such a version. Spending's `getContext` and the
+activities functions `searchCashActivities` and `unassignCategory` are such permissions: the add-on
+uses them to say what reusing a bank entry changes, and to remove a linked entry's spending or income
+category (see [Bank account](#bank-account)).
 
 Older versions refuse to install it. Wealthfolio 3.12.0's desktop app shows no message: after
 **Approve & install**, the dialog closes and the add-on isn't installed.

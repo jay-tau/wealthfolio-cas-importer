@@ -1210,7 +1210,7 @@ describe("bank account", () => {
       linkTransfer: async (a, b) => void calls.push(["link", a, b]),
     };
     const withdrawal = bankRow("WITHDRAWAL", "5000.00", "2023-04-08");
-    assert.equal(await linkBankRow(api, t, withdrawal), undefined);
+    assert.deepEqual(await linkBankRow(api, t, withdrawal), { converted: true, linked: true });
     const sourceRecordId = `${RECORD_PREFIX}${t.transaction.cash.sourceRecordId}`;
     assert.deepEqual(calls, [
       ["create", {
@@ -1232,13 +1232,19 @@ describe("bank account", () => {
     assert.deepEqual(importRows(again, () => false), []);
     // A transfer keeps its type.
     calls.length = 0;
-    assert.equal(await linkBankRow(api, t, bankRow("TRANSFER_OUT", "5000.00", "2023-04-08")), undefined);
+    assert.deepEqual(await linkBankRow(api, t, bankRow("TRANSFER_OUT", "5000.00", "2023-04-08")), { converted: false, linked: true });
     assert.deepEqual(calls.map(([step]) => step), ["create", "link"]);
-    // Each step's failure says what's left to do.
+    // Each step's failure says what's left to do, and which steps changed the bank's row.
     const failing = (step) => ({ ...api, [step]: async () => { throw new Error("nope"); } });
-    assert.match(await linkBankRow(failing("create"), t, withdrawal), /^Couldn't add the fund account's transfer: Error: nope\. The trade is in Wealthfolio without its cash\.$/);
-    assert.match(await linkBankRow(failing("update"), t, withdrawal), /couldn't change the bank's row on 2023-04-08 into a transfer: Error: nope\. Change it and link the two in Wealthfolio\.$/);
-    assert.match(await linkBankRow(failing("linkTransfer"), t, withdrawal), /couldn't link it with the bank's row on 2023-04-08: Error: nope\. Link the two in Wealthfolio\.$/);
+    const notCreated = await linkBankRow(failing("create"), t, withdrawal);
+    assert.match(notCreated.error, /^Couldn't add the fund account's transfer: Error: nope\. The trade is in Wealthfolio without its cash\.$/);
+    assert.deepEqual([notCreated.converted, notCreated.linked], [false, false]);
+    const updated = await linkBankRow(failing("update"), t, withdrawal);
+    assert.match(updated.error, /couldn't change the bank's row on 2023-04-08 into a transfer: Error: nope\. Change it and link the two in Wealthfolio\.$/);
+    assert.deepEqual([updated.converted, updated.linked], [false, false]);
+    const linked = await linkBankRow(failing("linkTransfer"), t, withdrawal);
+    assert.match(linked.error, /couldn't link it with the bank's row on 2023-04-08: Error: nope\. Link the two in Wealthfolio\.$/);
+    assert.deepEqual([linked.converted, linked.linked], [true, false]);
   });
 
   test("equal confirmed bank rows get distinct cash, including Import anyway, but retries cannot create it twice", async () => {
@@ -1257,12 +1263,12 @@ describe("bank account", () => {
     };
     const first = bankRow("WITHDRAWAL", "5000.00", "2023-04-10");
     const second = bankRow("WITHDRAWAL", "5000.00", "2023-04-10");
-    assert.equal(await linkBankRow(api, t, first), undefined);
+    assert.equal((await linkBankRow(api, t, first)).error, undefined);
     const duplicate = { ...t, status: "duplicate" };
     assert.deepEqual(importRows([duplicate], () => true, () => true), [{ ...t.transaction.activity, forceImport: true }]);
-    assert.equal(await linkBankRow(api, duplicate, second), undefined);
+    assert.equal((await linkBankRow(api, duplicate, second)).error, undefined);
     assert.equal(keys.size, 2);
-    assert.match(await linkBankRow(api, t, first), /Duplicate activity/);
+    assert.match((await linkBankRow(api, t, first)).error, /Duplicate activity/);
     assert.equal(keys.size, 2);
   });
 });
