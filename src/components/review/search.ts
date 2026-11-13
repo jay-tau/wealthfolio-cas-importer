@@ -54,6 +54,13 @@ export function choiceFor(item: FundItem, result: SymbolSearchResult): ChosenFun
     : toFund(result);
 }
 
+/**
+ * The results a holding is offered: for a detailed statement's fund, not the asset holdings imports
+ * price from statements, which detailed imports don't use.
+ */
+const offered = (item: FundItem, found: SymbolSearchResult[]) =>
+  item.statementSymbol ? found.filter((r) => !isStatementAsset(r, item.statementSymbol!)) : found;
+
 /** The results on screen, auto first, as `[id, fund]`; a running or failed search has none. */
 export function shown(search: ItemSearch) {
   const list: [string, ChosenFund][] = [];
@@ -133,12 +140,14 @@ export function useHoldingSearches(
     const name = noun === "fund" ? fundQuery(item.name) : fundName(item.name);
     try {
       let byName = isin ? undefined : name;
-      let found = await ctx.api.market.searchTicker(isin ?? name);
+      const results = await ctx.api.market.searchTicker(isin ?? name);
+      let found = offered(item, results);
+      const withheld = found.length !== results.length;
       if (stale()) return;
       // Yahoo doesn't list every fund under its ISIN.
       if (found.length === 0 && isin && name) {
         byName = name;
-        found = await ctx.api.market.searchTicker(name);
+        found = offered(item, await ctx.api.market.searchTicker(name));
         if (stale()) return;
       }
       const search = done(item, found);
@@ -146,7 +155,7 @@ export function useHoldingSearches(
       // AMFI's scheme for the printed ISIN is confirmed without a click when nothing contradicts it,
       // unless the holding was answered or changed, or the user has started on it.
       const own = current.current[key];
-      if (noun !== "fund" || !isin || byName || handledRef.current.has(key) || interacted.current.has(key) || own?.text.trim() || own?.typed || own?.picked) return;
+      if (noun !== "fund" || !isin || byName || withheld || handledRef.current.has(key) || interacted.current.has(key) || own?.text.trim() || own?.typed || own?.picked) return;
       const plan = statementPlan(item);
       const match = certain(found, (r) => {
         // As the result shows it: a listing its provider didn't name has its plan and option unknown.
@@ -169,7 +178,7 @@ export function useHoldingSearches(
     // Starting a search clears a pending selection.
     update(key, (s) => ({ ...s, typed: { status: "searching", text }, picked: undefined }));
     try {
-      const found = await ctx.api.market.searchTicker(text);
+      const found = offered(item, await ctx.api.market.searchTicker(text));
       if (!mounted.current || latest.current.get(`typed:${key}`) !== id) return;
       update(key, (s) => ({ ...s, typed: { ...done(item, found), text } }));
       const auto = current.current[key]?.auto;

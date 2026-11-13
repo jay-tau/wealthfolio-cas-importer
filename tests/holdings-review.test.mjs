@@ -29,7 +29,7 @@ before(async () => {
           `export const ${name} = (...args) => globalThis.reviewHooks.${name}(...args);`).join("\n");
       },
       transform(code, id) {
-        if (/src\/(pages\/holdings-import\.tsx|components\/review\/(search\.ts|parts\.tsx))$/.test(id)) {
+        if (/src\/(pages\/(holdings|detailed)-import\.tsx|components\/review\/(search\.ts|parts\.tsx|focus\.ts|footer\.tsx))$/.test(id)) {
           return code.replaceAll('from "react"', 'from "review-hooks"');
         }
       },
@@ -177,13 +177,28 @@ for (const [position, observe] of [["sticky", true], ["static", true], [undefine
       disconnect() { disconnected = true; }
     };
     else delete globalThis.ResizeObserver;
-    active = controller(footer.props, (props) => {
+    active = controller({ ...footer.props }, (props) => {
       const tree = footer.type(props);
       tree.props.ref.current = bar;
       return tree;
     });
     await active.flush();
     assert.deepEqual(style, { scrollPaddingTop: position === "sticky" ? "101px" : "8px", scrollPaddingBottom: "79px" });
+    let retried = 0;
+    active.update({ go: { label: "Try again", busy: true, onClick() { retried++; } } });
+    await active.flush();
+    const retry = () => nodes(active.tree).find((node) => node.type?.name === "WrapButton" && node.props.variant === "outline").props;
+    assert.equal(retry()["aria-disabled"], true);
+    assert.ok(retry().children[0], "the busy retry shows its spinner");
+    assert.notEqual(retry().disabled, true, "the busy retry stays focusable");
+    retry().onClick();
+    assert.equal(retried, 0);
+    active.update({ go: { label: "Try again", onClick() { retried++; } } });
+    await active.flush();
+    assert.equal(retry()["aria-disabled"], undefined);
+    assert.ok(!retry().children[0], "the idle retry has no spinner");
+    retry().onClick();
+    assert.equal(retried, 1);
     if (observe) {
       assert.deepEqual(observed, header ? [bar, header] : [bar]);
       headerHeight = 99.2;
@@ -195,6 +210,40 @@ for (const [position, observe] of [["sticky", true], ["static", true], [undefine
     active = undefined;
     assert.equal(disconnected, observe);
     assert.deepEqual(style, { scrollPaddingTop: "", scrollPaddingBottom: "" });
+  });
+}
+
+for (const moved of ["stayed", "another control", "host"]) {
+  test(`holdings retry stays busy through a deferred read and respects focus (${moved})`, async () => {
+    const { run, api } = setup([source("X", [holding("ISINX")])]);
+    api.snapshots.getAll = async () => { throw new Error("made-up read failure"); };
+    await run.flush();
+    const origin = document.activeElement;
+    const focused = [];
+    document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+    for (const failed of [true, false]) {
+      let finish;
+      api.snapshots.getAll = () => new Promise((resolve, reject) => { finish = failed ? reject : resolve; });
+      find(run, "Footer").go.onClick();
+      await run.flush();
+      assert.equal(find(run, "Footer").go.label, "Try again");
+      assert.equal(find(run, "Footer").go.busy, true);
+      assert.equal(find(run, "Footer").action.disabled, true);
+      assert.deepEqual(focused, []);
+      if (!failed && moved === "another control") document.activeElement = {};
+      if (!failed && moved === "host") document.hasFocus = () => false;
+      finish(failed ? new Error("made-up retry failure") : []);
+      await run.flush();
+      if (failed) {
+        assert.equal(find(run, "Footer").go.label, "Try again");
+        assert.equal(find(run, "Footer").go.busy, false);
+        assert.deepEqual(focused, []);
+        assert.equal(document.activeElement, origin);
+      }
+    }
+    assert.deepEqual(focused, moved === "stayed" ? ["review-summary"] : []);
+    assert.equal(find(run, "Footer").action.disabled, false);
+    assert.equal(find(run, "Footer").go, undefined);
   });
 }
 
@@ -1077,12 +1126,17 @@ test("Use another file asks to discard a radio choice that has not been used yet
   question.searches.pick(question.item.key, "auto:0");
   await run.flush();
   assert.equal(find(run, "QuestionCard").search.picked, "auto:0");
-  nodes(run.tree).find((node) => node.props?.children === "Use another file").props.onClick();
+  // The header has no hooks of its own, so it renders here as it would on the page.
+  const header = () => {
+    const node = nodes(run.tree).find((n) => n.type?.name === "ReviewHeader");
+    return node.type(node.props);
+  };
+  nodes(header()).find((node) => node.props?.children === "Use another file").props.onClick();
   await run.flush();
   assert.equal(departures, 0);
-  assert.ok(nodes(run.tree).some((node) => node.props?.children === "Keep reviewing"));
+  assert.ok(nodes(header()).some((node) => node.props?.children === "Keep reviewing"));
   const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
-  assert.match(textOf(run.tree), /Discard your 1 change and choose another file\?/);
+  assert.match(textOf(header()), /Discard your 1 change and choose another file\?/);
 });
 
 test("Cancel keeps a reordered ready row visible so focus can return to its Change button", async () => {

@@ -82,6 +82,8 @@ const host = {
   sharedIsin: "",
   // A detailed statement's folio printed without a PAN.
   noPanFolio: "",
+  // A family statement: this folio belongs to another investor, with a PAN of their own.
+  otherInvestorFolio: "",
   // An invented fund house merger in the first folio, added to what the parser reads.
   merger: false,
   // Invented gifts: one received in the first folio, and one between two new folios of the same fund house.
@@ -317,6 +319,9 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
     return { ...data, folios: [{ ...first, schemes: [...first.schemes, ...third.schemes] }, second, ...rest] };
   }
   if (host.noPanFolio) data.folios = data.folios.map((f) => (f.folio === host.noPanFolio ? { ...f, PAN: null } : f));
+  if (host.otherInvestorFolio) {
+    data.folios = data.folios.map((f) => (f.folio === host.otherInvestorFolio ? { ...f, PAN: "FGHIJ5678K", name: "BHAVYA R TESTWALA" } : f));
+  }
   if (host.merger) data.folios[0].schemes.push(...mergedSchemes());
   if (host.gifts) {
     const [first] = data.folios;

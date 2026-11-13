@@ -250,10 +250,13 @@ export function QuestionCard({
   base,
   amfiOn,
   headingId,
+  skip = "holding",
   onAnswer,
 }: {
   item: FundItem;
   label: string;
+  /** What Skip calls it: "Skip this holding", "Skip this fund". */
+  skip?: string;
   /** The statement's units, already grouped, with their noun: "1,000.000 units", "40 shares". */
   units: string;
   search: ItemSearch;
@@ -288,8 +291,8 @@ export function QuestionCard({
         onUse={(fund) => onAnswer({ fund })}
         onStatementPrice={() => item.statementAsset && onAnswer({ fund: item.statementAsset })}
       >
-        <WrapButton type="button" variant="outline" aria-label={`Skip this holding: ${label}`} onClick={() => onAnswer({ leftOut: true })}>
-          Skip this holding
+        <WrapButton type="button" variant="outline" aria-label={`Skip this ${skip}: ${label}`} onClick={() => onAnswer({ leftOut: true })}>
+          Skip this {skip}
         </WrapButton>
       </Picker>
     </section>

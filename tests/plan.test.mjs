@@ -1336,7 +1336,7 @@ describe("display codes", () => {
     const profiles = new Map([["uuid-1", fundRef("a", "XBOM")], ["uuid-2", fundRef(" A", "XBOM")], ["uuid-3", fundRef("A", "XNSE")]]);
     assert.throws(
       () => fundRefs([fund], profiles),
-      /Several Wealthfolio assets have the symbol and exchange of Fictiva Flexi Cap Fund \(A on XBOM\)\. Under Funds, choose Change, search for A and pick the asset to import into\./,
+      /Several Wealthfolio assets have the symbol and exchange of Fictiva Flexi Cap Fund \(A on XBOM\)\. Choose Change beside the fund, search for A and pick the asset to import into\./,
     );
     assert.deepEqual(fundRefs([{ ...fund, assetId: "uuid-2" }], profiles), new Map([["uuid-2", "A@XBOM"]]));
     assert.deepEqual(fundRefs([fund], new Map([...profiles].slice(1))), new Map([["uuid-2", "A@XBOM"]]));

@@ -1,6 +1,5 @@
 // Counts of one read in the singular, and other counts in the plural, in the detailed import's
-// preview and result, the detailed statement line and the holdings Review screen, and the names the
-// Review screen shows. Renders the components with Vite's SSR loader and made-up data.
+// result and Review screen and the holdings Review screen, and the names the Review screens show. Renders the components with Vite's SSR loader and made-up data.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { after, before, test } from "node:test";
@@ -32,6 +31,11 @@ before(async () => {
     ...(await server.ssrLoadModule("/src/cas/holdings.ts")),
     ...(await server.ssrLoadModule("/src/pages/import-page.tsx")),
     ...(await server.ssrLoadModule("/src/pages/holdings-import.tsx")),
+    ...(await server.ssrLoadModule("/src/pages/detailed-import.tsx")),
+    ...(await server.ssrLoadModule("/src/components/review/detailed-parts.tsx")),
+    ...(await server.ssrLoadModule("/src/components/review/bank-check.tsx")),
+    ...(await server.ssrLoadModule("/src/components/review/save-to-detailed.tsx")),
+    ...(await server.ssrLoadModule("/src/components/review/funds-ready.tsx")),
   };
 });
 after(() => server?.close());
@@ -52,40 +56,158 @@ test("plural keeps a count of one singular", () => {
   assert.equal(plural(2, "activity", "activities"), "2 activities");
 });
 
-test("the preview counts transactions and activities", () => {
-  const transaction = (status) => ({
-    status,
-    rows: [],
-    transaction: {
-      folio: "12345",
-      scheme: "Made-up Flexi Cap Fund",
-      activity: { date: "2024-01-01", activityType: "BUY", quantity: "10", unitPrice: "10", amount: "100" },
-      rows: [],
-    },
+test("the transactions in a statement count each part only when it isn't zero, one in the singular", () => {
+  const none = { total: 0, toImport: 0, before: 0, duplicates: 0, answers: 0, earlier: 0, skipped: 0, notImported: 0, unbalanced: 0, leftOut: [] };
+  const reversal = (type) => ({ kind: "reversal", reason: "reversed", row: { row: { type } } });
+  const parts = (b) => components.breakdownParts({ ...none, ...b });
+  assert.deepEqual(parts({ total: 142, toImport: 128, answers: 8, earlier: 4, leftOut: [reversal("PURCHASE"), reversal("REVERSAL")] }), [
+    "128 to import", "8 waiting for your answers", "4 waiting for earlier purchases", "2 left out: a reversed purchase and its reversal",
+  ]);
+  assert.deepEqual(parts({ before: 21, duplicates: 1, skipped: 6, notImported: 3, unbalanced: 2 }), [
+    "21 imported before, skipped",
+    "1 possible duplicate, skipped unless chosen under “Before importing”",
+    "6 in skipped funds",
+    "3 in folios not imported",
+    "2 in funds whose rows don't add up, left out unless chosen under “Before importing”",
+  ]);
+  assert.deepEqual(parts({ duplicates: 2, leftOut: [reversal("REDEMPTION"), reversal("PURCHASE"), { kind: "row", reason: "x", row: { row: { type: "MISC" } } }] }), [
+    "2 possible duplicates, skipped unless chosen under “Before importing”",
+    "3 left out: a sale and a later row that may reverse it, and 1 more listed under “Not included”",
+  ]);
+  assert.deepEqual(parts({ leftOut: [{ kind: "row", reason: "x", row: { row: { type: "MISC" } } }] }), ["1 left out, listed under “Not included”"]);
+  const summary = (b) => text("TransactionsSummary", { breakdown: { ...none, ...b }, range: "Apr 2019 to Jun 2026", partId: "t" });
+  assert.match(summary({ total: 1, toImport: 1 }), / 1 transaction , Apr 2019 to Jun 2026 1 to import $/);
+  assert.equal(components.nothingWords({ ...none, total: 21, before: 21 }), "Nothing new: every transaction on this statement is already in Wealthfolio.");
+  assert.equal(components.nothingWords({ ...none, total: 5, before: 3, earlier: 2 }), "Nothing is ready to import. See the transactions left out or waiting above.");
+});
+
+test("Before importing says what each choice does, naming what it imports", () => {
+  const shown = (checked) => text("BeforeImporting", {
+    duplicates: [{ key: "d", title: "Fictiva Midcap Fund · Purchase · 3 Jul 2026 · ₹5000", reason: "Wealthfolio already has this purchase.", label: "Fictiva Midcap Fund · Purchase", noun: "purchase", checked }],
+    unbalanced: [{ key: "u", title: "Fictiva Credit Risk Fund, folio 1", gap: "The rows don't add up.", checked }],
+    onDuplicate() {}, onUnbalanced() {}, disabled: false, headingId: "before",
   });
-  const preview = (statuses, rowCount) =>
-    text("Preview", {
-      mapping: { warnings: [] },
-      plan: statuses.map(transaction),
-      importAnyway: new Set(),
-      onImportAnyway() {},
-      onImportUnbalanced() {},
-      onImport() {},
-      importing: false,
-      rowCount,
-      matches: new Map(),
-      reuse: new Set(),
-      onReuse() {},
-      accounts: [],
+  assert.match(shown(false), /Import it anyway : Fictiva Midcap Fund · Purchase Skipped unless you tick it\. Two equal purchases on one day can both be real\./);
+  assert.match(shown(false), /Import this fund anyway : Fictiva Credit Risk Fund, folio 1 Its rows are left out unless you tick it\./);
+  assert.match(shown(true), /It's imported as a second purchase\./);
+});
+
+/** Made-up bank matches for checking the words and names rendered by a bank question. */
+const bankPair = (type, key) => {
+  const purchase = type === "PURCHASE";
+  return {
+    key, exact: true, strong: true, reason: "Same day · names the fund house",
+    t: { transaction: { rows: [{ type }], bank: { date: "2026-01-05", amount: "5000", activityType: purchase ? "TRANSFER_OUT" : "TRANSFER_IN" } } },
+    entry: { id: key, date: "2026-01-05T00:00:00Z", amount: "5000", activityType: purchase ? "WITHDRAWAL" : "DEPOSIT", comment: "FICTIVA MF" },
+  };
+};
+const bankProps = (pairs, label = "A. Investor's funds · Savings account") => ({
+  check: { id: label, bankName: "Savings account", label, pairs }, ticked: new Set(pairs.map((p) => p.key)), facts: new Map(),
+  fundName: () => "Fictiva Fund", headingId: "bank-heading", changeId: "bank-change", pairId: (pair) => pair.key,
+  onTick() {}, onLink() {}, onNone() {}, onChange() {},
+});
+
+test("bank questions describe payout-only and mixed transfers, then the answer's receipt", () => {
+  const sale = bankPair("REDEMPTION", "sale");
+  const dividend = bankPair("DIVIDEND_PAYOUT", "dividend");
+  const payout = bankProps([sale, dividend]);
+  const shown = text("BankCheck", payout);
+  assert.ok(shown.includes("2 entries already in Savings account look like these payouts"));
+  assert.ok(shown.includes("Sale · 5 Jan 2026 · ₹5,000, to Savings account"));
+  assert.ok(shown.includes("Cash dividend · 5 Jan 2026 · ₹5,000, to Savings account"));
+  assert.ok(shown.includes("Unlinked sales and cash dividends get new transfers to Savings account. If an entry above is that payout, the new transfer would count it twice."));
+  assert.equal(components.checkReceipt(payout.check, 0), "Not linked: all 2 payouts get new transfers to Savings account");
+  assert.equal(components.checkReceipt(payout.check, 1), "1 of 2 payouts linked to entries already in Savings account; the rest get new transfers");
+  const mixed = bankProps([bankPair("PURCHASE", "purchase"), sale, dividend]);
+  const both = text("BankCheck", mixed);
+  assert.ok(both.includes("3 entries already in Savings account look like these purchases and payouts"));
+  assert.ok(both.includes("Purchase · 5 Jan 2026 · ₹5,000, from Savings account"));
+  assert.ok(both.includes("Unlinked purchases get new transfers from Savings account; unlinked sales and cash dividends get new transfers back to it. If an entry above is that payment or payout, the new transfer would count it twice."));
+  assert.equal(components.checkReceipt(mixed.check, 1), "1 of 3 payments and payouts linked to entries already in Savings account; the rest get new transfers");
+  assert.ok(text("BankCheck", { ...mixed, answered: 3 }).includes("All 3 payments and payouts linked to entries already in Savings account"));
+});
+
+test("bank actions and receipts name their investor even when two checks use the same bank", () => {
+  for (const investor of ["A", "B"]) {
+    const label = `${investor}. Investor's funds · Savings account`;
+    const props = bankProps([bankPair("DIVIDEND_PAYOUT", investor)], label);
+    const markup = (extra = {}) => renderToStaticMarkup(createElement(components.BankCheck, { ...props, ...extra })).replaceAll("&#x27;", "'");
+    assert.ok(markup().includes(`aria-label="Link 1 selected: ${label}"`));
+    assert.ok(markup().includes(`aria-label="Create new transfers instead: ${label}"`));
+    const receiptName = markup({ answered: 1 }).match(/aria-label="(Change answer:[^"]+)"/)?.[1];
+    assert.ok(receiptName?.includes(label), receiptName);
+  }
+});
+
+test("equal bank pairs keep their visible labels and distinct names within and across checks", () => {
+  const contexts = [];
+  for (const investor of ["A", "B"]) {
+    const label = `${investor}. Investor's funds · Savings account`;
+    const pairs = [1, 2].map((n) => bankPair("DIVIDEND_PAYOUT", `${investor}-${n}`));
+    const markup = renderToStaticMarkup(createElement(components.BankCheck, bankProps(pairs, label))).replaceAll("&#x27;", "'").replaceAll("<!-- -->", "");
+    pairs.forEach((pair, i) => {
+      assert.ok(markup.includes(`aria-labelledby="${pair.key}-fund ${pair.key}-movement ${pair.key}-entry ${pair.key}-context"`));
+      const context = markup.match(new RegExp(`id="${pair.key}-context"[^>]*>([^<]+)</span>`))?.[1];
+      assert.equal(context, `Pair ${i + 1}: ${label}`);
+      contexts.push(context);
     });
-  const one = preview(["new", "duplicate"], 1);
-  assert.match(one, / 1 new transaction, 0 already in Wealthfolio, 1 possible duplicate and 0 Wealthfolio can't import\. /);
-  assert.match(one, / Import 1 activity $/);
-  const two = preview(["new", "new", "duplicate", "duplicate"], 2);
-  assert.match(two, / 2 new transactions, 0 already in Wealthfolio, 2 possible duplicates and 0 Wealthfolio can't import\. /);
-  assert.match(two, / Import 2 activities $/);
-  for (const row of [3, 4]) {
-    assert.ok(two.includes(`Import anyway for the 2024-01-01 purchase of Made-up Flexi Cap Fund, 100, folio 12345, transaction ${row}`));
+  }
+  assert.equal(new Set(contexts).size, 4);
+});
+
+test("earlier-purchase help and Change distinguish equal funds and their separate reasons", () => {
+  const earlier = [1, 2].map((n) => ({ key: String(n), name: "Fictiva Fund", units: "10.000 units", waiting: 1 }));
+  const props = {
+    earlier, defaulted: earlier.map((fund, i) => ({ key: fund.key, name: fund.name, label: `${fund.name}, fund ${i + 1}` })),
+    skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: {}, setOpen() {},
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+  };
+  const markup = renderToStaticMarkup(createElement(components.NotIncludedDetailed, props));
+  for (const n of [1, 2]) {
+    assert.ok(markup.includes(`aria-label="How to fix: Fictiva Fund, fund ${n}"`));
+    assert.ok(markup.includes(`aria-label="Change: Fictiva Fund, fund ${n}, earlier purchases needed"`));
+    assert.ok(markup.replaceAll("&#x27;", "'").includes(`aria-label="Change: Fictiva Fund, fund ${n}, rows don't add up"`));
+  }
+  const shown = text("NotIncludedDetailed", props);
+  assert.ok(shown.includes("Earlier purchases needed : Fictiva Fund starts with 10.000 units bought before this statement, so its 1 transaction waits. Change How to fix"));
+  assert.ok(shown.includes("Left out unless you choose otherwise under “Before importing” (2) Fictiva Fund · Change Fictiva Fund · Change"));
+});
+
+test("one fund's Ready and Not included Change controls have distinct names", () => {
+  const item = { key: "fund", name: "Fictiva Fund", noun: "fund" };
+  const ready = createElement(components.FundsReadyTable, {
+    ctx: {}, rows: [{ id: "mf|fund", item, items: [item], name: item.name, label: item.name, by: "before",
+      fund: { symbol: "123456", name: item.name, quoteCcy: "INR", providerId: "AMFI" },
+      group: { sent: 1, before: 0 }, groupTitle: "To Mutual funds", unitsAfter: "10.000", touched: false }],
+    wide: true, showAll: false, onShowAll() {}, showAllId: "all",
+    handlers: { ids: () => ({ change: "ready-change" }), label: () => item.name, nag: false, onChange() {}, changePanel: () => null },
+  });
+  const leftOut = {
+    earlier: [], skipped: [], notImported: [], defaulted: [],
+    leftOut: [{ key: item.key, name: item.name, label: item.name, canChange: true, lines: [{ when: "5 Jan 2026", reason: "This row isn't supported." }] }],
+    registrar: "CAMS", open: {}, setOpen() {}, partId: "not-included", changeId: () => "left-change",
+    onChange() {}, onReopen() {}, changePanel: () => null,
+  };
+  const markup = renderToStaticMarkup(createElement("div", null, ready, createElement(components.NotIncludedDetailed, leftOut)));
+  const names = [...markup.matchAll(/aria-label="(Change:[^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(names, ["Change: Fictiva Fund", "Change: Fictiva Fund, not included"]);
+  assert.ok(text("NotIncludedDetailed", leftOut).includes("Fictiva Fund · Change"));
+});
+
+test("bank choices and folio disclosures distinguish PAN boxes whose investors have the same name", () => {
+  const boxes = ["ABCDE1234F", "PQRST5678G"].map((pan) => ({
+    key: pan, name: "A. Investor", title: `A. Investor (PAN ${pan})'s funds`, pan: true, folios: [],
+  }));
+  const props = {
+    boxes, targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }],
+    values: Object.fromEntries(boxes.flatMap((box) => [[box.key, "mf"], [`bank-${box.key}`, ""]])),
+    ignored: {}, conflicts: new Set(), remembered: "none", open: {}, onOpen() {}, onChange() {}, checks: () => null, partId: "save-to",
+  };
+  const shown = text("SaveToDetailed", props);
+  const markup = renderToStaticMarkup(createElement(components.SaveToDetailed, props)).replaceAll("&#x27;", "'");
+  for (const box of boxes) {
+    assert.ok(shown.includes(`Bank account for purchases and payouts (optional) : ${box.title}`));
+    assert.ok(markup.includes(`aria-label="Save part of it to another account: ${box.title}"`));
   }
 });
 
@@ -315,25 +437,29 @@ test("the import result names each bank row the add-on changed, and how", () => 
   assert.ok(!shown.includes("transfer out of 25000.00"), "a bank row with nothing else changed isn't listed");
 });
 
-test("the detailed statement line counts folios, schemes, rows and closed schemes", () => {
-  const row = { date: "01-Jan-2024", description: "Purchase", amount: "100", units: "10", nav: "10", balance: "10", type: "PURCHASE", dividend_rate: null, gift_folio: null };
-  // A closed scheme has no units and no rows.
-  const scheme = (rows) => ({ scheme: "Made-up Fund", open: rows ? "10" : "0", close: rows ? "10" : "0", transactions: Array(rows).fill(row) });
-  const line = (...folios) =>
-    text("StatementSummary", {
-      data: {
-        file_type: "CAMS",
-        investor_info: { name: "A MADE-UP INVESTOR" },
-        statement_period: { from: "01-Apr-2023", to: "31-Mar-2024" },
-        folios: folios.map((schemes) => ({ schemes })),
-        parse_warnings: [],
-      },
-    }).trim();
-  const start = "CAMS detailed statement for A MADE-UP INVESTOR, 01-Apr-2023 to 31-Mar-2024:";
-  const skipping = "with no units and nothing to import.";
-  assert.equal(line([scheme(1)]), `${start} 1 folio, 1 scheme, 1 row.`);
-  assert.equal(line([scheme(2), scheme(0)]), `${start} 1 folio, 2 schemes, 2 rows. Skipping 1 closed scheme, ${skipping}`);
-  assert.equal(line([scheme(1)], [scheme(0), scheme(0)]), `${start} 2 folios, 3 schemes, 1 row. Skipping 2 closed schemes, ${skipping}`);
+/** The detailed Review screen as first shown, before any search answers. */
+const detailedReview = (statement, extra = {}) => ({
+  ctx: { api: {} }, statement, data: withoutClosed(withReadableNames(statement)), fileName: "made-up.pdf", accounts: [], allAccounts: [],
+  accountChoices: {}, unavailable: {}, fundChoices: {},
+  amfi: { status: "unknown", searches: 0, checking: false, outcome: "", check() {}, openSettings() {} },
+  visit: {}, busy: "", setBusy() {}, onRemember() {}, onAnother() {}, ...extra,
+});
+
+test("the detailed Review screen's heading names the period, statement, investor and file, and counts its funds", async () => {
+  const cams = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
+  const shown = text("DetailedImport", detailedReview(cams));
+  assert.ok(shown.includes(" Transactions, 1 Apr 2023 to 31 Mar 2025 "), shown.slice(0, 200));
+  assert.ok(shown.includes(" CAMS statement · ANANYA R TESTWALA · made-up.pdf "));
+  // Closed schemes are left out: 7 schemes, 2 of them closed.
+  assert.ok(shown.includes(" 5 funds "));
+  // With no account that tracks transactions, Save to says so.
+  assert.ok(shown.includes(" No account can take these transactions yet "));
+  const accounts = [{ id: "mf", name: "Mutual funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false }];
+  const one = text("DetailedImport", detailedReview(cams, { accounts, allAccounts: accounts }));
+  assert.ok(one.includes(" ANANYA R TESTWALA's funds "));
+  assert.ok(one.includes(" Bank account for purchases and payouts (optional) : ANANYA R TESTWALA's funds "));
+  assert.ok(one.includes(" Purchases transfer from this account; sales and cash dividends transfer back to it. "));
+  assert.ok(one.includes(" Used again for your next statement. "));
 });
 
 /** The Review screen as first shown, before any search answers. */
@@ -363,7 +489,7 @@ test("parser warnings show scheme names without control characters on both state
   const [warning] = data.parse_warnings;
   data.parse_warnings = [warning.replace("Fictiva Flexi Cap Fund", "Fictiva\u0002 Flexi Cap Fund\u007f")];
   for (const [component, props] of [
-    ["StatementSummary", { data }],
+    ["DetailedImport", detailedReview(data)],
     ["HoldingsImport", review(data)],
   ]) {
     const rendered = renderToStaticMarkup(createElement(components[component], props));
@@ -407,16 +533,13 @@ test("the Review screen names CDSL demat funds without their fund house, short n
   assert.equal(components.pricesFrom(fund, listed), "Price source unknown");
 });
 
-test("the Funds card names a detailed statement's schemes without control characters", async () => {
+test("a detailed statement's funds are named without control characters", async () => {
   const data = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
   const [scheme] = data.folios[0].schemes;
   const name = scheme.scheme;
   scheme.scheme = `\u0002${name.replace(" - ", "\u0002 - ")}\u0002`;
   const items = components.fundItems(withoutClosed(withReadableNames(data)));
   assert.equal(items[0].name, name);
-  const props = { ctx: {}, items, choices: {}, amfi: { status: "unknown", searches: 0 } };
-  assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.FundChoicesCard, props))));
-  assert.ok(text("FundChoicesCard", props).includes(` ${name} `));
 });
 
 test("a result says in words whether its plan and option match the statement's", () => {

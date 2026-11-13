@@ -866,7 +866,7 @@ describe("mergers", () => {
     const noUnits = map(statement(scheme("A", [out]), scheme("B", [{ ...into, units: "0" }])));
     for (const [mapping, message] of [
       [stamped, "This merger lists stamp duty, which a fund conversion in Wealthfolio can't carry, so neither half is imported."],
-      [sameFund, "Both funds of this merger are confirmed as the same Wealthfolio asset, so neither half is imported. Confirm each scheme's own fund under Funds."],
+      [sameFund, "Both funds of this merger are confirmed as the same Wealthfolio asset, so neither half is imported. Choose Change beside each and confirm each scheme's own fund."],
       [twoAccounts, "This merger's funds go to different Wealthfolio accounts, and a fund conversion stays in one, so neither half is imported."],
       [noUnits, "This row has no units, or units with the wrong sign."],
     ]) {
@@ -1167,7 +1167,7 @@ describe("gifts", () => {
   });
 
   test("both sides confirmed as different Wealthfolio funds are left out", () => {
-    const message = "The two sides of this gift are confirmed as different Wealthfolio assets, so neither side is imported. Confirm the same fund for both under Funds.";
+    const message = "The two sides of this gift are confirmed as different Wealthfolio assets, so neither side is imported. Choose Change beside each and confirm the same fund for both.";
     for (const oneAccount of [false, true]) {
       const mapping = map(twoFolios([purchase, giftOut()], [giftIn()]), {
         target: (f, s) => {
@@ -1214,7 +1214,7 @@ describe("segregated portfolios", () => {
     target: (folio, s) => ({ ...input().target(folio, s), asset: { ...input().target(folio, s).asset, symbol: "INF-M" } }),
   });
   const confirmedAs = (main) =>
-    `This segregated portfolio is confirmed as the same Wealthfolio asset as ${main}, so its transactions are left out. Under Funds, confirm the segregated portfolio's own fund: search its ISIN or AMFI scheme code.`;
+    `This segregated portfolio is confirmed as the same Wealthfolio asset as ${main}, so its transactions are left out. Choose Change on its fund and confirm the segregated portfolio's own fund: search its ISIN or AMFI scheme code.`;
   /** A made-up name as printed, in upper case and in lower case. */
   const cases = (name) => [name, name.toUpperCase(), name.toLowerCase()];
 
@@ -1487,7 +1487,7 @@ test("explicitly rejected instructions without unit movement are skipped", () =>
     const mapping = map(statement(scheme("A", descriptions.map((description) =>
       tx("2024-01-10", type, "1000", units, null, { description }),
     ))));
-    assert.deepEqual(mapping, { transactions: [], warnings: [] });
+    assert.deepEqual(mapping, { transactions: [], warnings: [], outcomes: [] });
   }
 });
 
@@ -1717,7 +1717,7 @@ describe("rows that don't add up to the closing balance", async () => {
         [],
         true,
         true,
-        `${gap} None of this fund's rows are imported. Tick "Import this fund anyway" to list them below and check them against the PDF.`,
+        `${gap} None of this fund's rows are imported unless you choose to import it anyway, under Before importing: then check them against the PDF.`,
       ]],
     );
   });

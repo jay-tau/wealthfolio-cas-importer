@@ -1,7 +1,7 @@
 import type { Account, ActivityDetails, AddonContext, Asset, Holding, Quote, UpdateAssetProfile } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Badge, Button, Spinner } from "@wealthfolio/ui";
-import { type ReactNode, type RefObject, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { abs, add, dec, format, sub } from "../cas/decimal";
 import {
   type AccountPlan,
@@ -37,6 +37,9 @@ import type { Ignored } from "../components/account-choices";
 import type { AmfiCheck } from "../components/amfi-banner";
 import type { FundChoice, FundItem } from "../components/fund-choices";
 import { HoldingsResult, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
+import { useReviewFocus } from "../components/review/focus";
+import { Footer } from "../components/review/footer";
+import { ReviewHeader } from "../components/review/header";
 import { type Comparison, NotIncluded, type TrackedFund, type TrackedGroup, unitsText } from "../components/review/not-included";
 import { Disclosure, LinkButton, PlanBadges, shownName, useWide, WrapButton } from "../components/review/parts";
 import { BeforeSaving, blockers, decisions, SnapshotTable } from "../components/review/plan-parts";
@@ -58,7 +61,6 @@ import {
   securityKey,
   sourceKey,
 } from "../lib/choices";
-import { focusDropped } from "../lib/focus";
 import { readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
@@ -450,44 +452,12 @@ export function HoldingsImport({
   const [result, setResult] = useState<{ saved: SavedSnapshots; tracked?: TrackedSummary; conflicts: { accountId: string; name: string; warning: string }[] } | null>(null);
   const [saving, setSaving] = useState<Record<string, "saving" | "saved" | "failed">>({});
   const [error, setError] = useState("");
-  const [said, setSaid] = useState("");
   // Bumped when the page is opened again or Try again is pressed: Wealthfolio may have changed meanwhile.
   const [generation, setGeneration] = useState(0);
   const wide = useWide();
 
-  // One status region says what changed.
-  const sayTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
-  const announce = (text: string) => {
-    setSaid("");
-    clearTimeout(sayTimer.current);
-    sayTimer.current = setTimeout(() => setSaid(text), 60);
-  };
-  useEffect(() => () => clearTimeout(sayTimer.current), []);
-
-  // Moves the focus once the element is on screen: always for `force`, else only when the control
-  // pressed went away (`focusDropped`) or still holds focus while its request completes. Only Go uses force.
-  const pendingFocus = useRef<{ id: string; force: boolean; origin?: Element | null; until: number } | null>(null);
-  // A render runs the effect below even when nothing else changes, as for Go to the question.
-  const [, focusRender] = useState(0);
-  const focusSoon = (target: string, force = false, origin?: Element | null) => {
-    pendingFocus.current = { id: target, force, origin, until: Date.now() + 5000 };
-    focusRender((n) => n + 1);
-  };
-  useLayoutEffect(() => {
-    const pending = pendingFocus.current;
-    if (!pending) return;
-    if (Date.now() > pending.until) {
-      pendingFocus.current = null;
-      return;
-    }
-    const element = document.getElementById(pending.id);
-    if (!element) return;
-    pendingFocus.current = null;
-    if (!pending.force && !focusDropped() && !(document.hasFocus() && pending.origin === document.activeElement)) return;
-    const first = element.dataset.focusFirst ? element.querySelector<HTMLElement>("[role=radio], button, input") : null;
-    (first ?? element).focus();
-    (first ?? element).scrollIntoView?.({ block: "nearest" });
-  });
+  // One status region says what changed, and the focus moves with the answers.
+  const { said, announce, focusSoon } = useReviewFocus();
 
   // Each choice as the select shows it: an account ID, `LEFT_OUT`, "" for Same as above, null for none yet.
   const valueOf = (key: string): string | null =>
@@ -578,6 +548,16 @@ export function HoldingsImport({
 
   const destinations = holdings.sources.map((s) => accountOf(s) ?? "");
   const signature = JSON.stringify([generation, destinations, items.map((item) => fundOf(item.key) ?? null)]);
+  // Try again stays, busy, while the plan is worked out again, so its focus does too; once it's worked
+  // out, the focus goes to the bar's summary, unless the user moved it meanwhile.
+  const [retrying, setRetrying] = useState(false);
+  const retryFrom = useRef<Element | null>(null);
+  const settleRetry = (ok: boolean) => {
+    const from = retryFrom.current;
+    retryFrom.current = null;
+    setRetrying(false);
+    if (ok && from) focusSoon(id("summary"), false, from);
+  };
   const latestPrepare = useRef(0);
   useEffect(() => {
     if (result) return;
@@ -585,10 +565,14 @@ export function HoldingsImport({
     setPrepareError("");
     prepare(signature).then(
       (next) => {
-        if (run === latestPrepare.current) setPrepared(next);
+        if (run !== latestPrepare.current) return;
+        setPrepared(next);
+        settleRetry(true);
       },
       (e) => {
-        if (run === latestPrepare.current) setPrepareError(`Couldn't work out what will be saved: ${String(e)}`);
+        if (run !== latestPrepare.current) return;
+        setPrepareError(`Couldn't work out what will be saved: ${String(e)}`);
+        settleRetry(false);
       },
     );
   }, [signature]);
@@ -1352,53 +1336,22 @@ export function HoldingsImport({
   };
 
   const header = (
-    <div className="grid gap-1">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <h2 id={ids.heading} tabIndex={-1} className="text-xl font-semibold">
-          Holdings on {date}
-        </h2>
-        <LinkButton
-          id={ids.another}
-          type="button"
-          onClick={() => {
-            if (changes > 0 && !result) {
-              setDiscard(true);
-              focusSoon(ids.keep, false, document.activeElement);
-            } else {
-              onAnother();
-            }
-          }}
-        >
-          Use another file
-        </LinkButton>
-      </div>
-      <p className="text-muted-foreground text-sm">
-        {kind} · {investorName} · {fileName}
-      </p>
-      <p className="text-muted-foreground text-sm">Saves what you held on {date}, not your purchases and sales.</p>
-      {discard && (
-        <Alert variant="warning" role="group" aria-labelledby={id("discard")}>
-          <AlertTitle id={id("discard")}>Discard your {plural(changes, "change")} and choose another file?</AlertTitle>
-          <AlertDescription>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                id={ids.keep}
-                type="button"
-                onClick={() => {
-                  setDiscard(false);
-                  focusSoon(ids.another, false, document.activeElement);
-                }}
-              >
-                Keep reviewing
-              </Button>
-              <WrapButton type="button" variant="outline" onClick={() => onAnother()}>
-                Discard and choose another file
-              </WrapButton>
-            </div>
-          </AlertDescription>
-        </Alert>
-      )}
-    </div>
+    <ReviewHeader
+      ids={{ heading: ids.heading, another: ids.another, keep: ids.keep, discard: id("discard") }}
+      title={`Holdings on ${date}`}
+      lines={[`${kind} · ${investorName} · ${fileName}`, `Saves what you held on ${date}, not your purchases and sales.`]}
+      changes={result ? 0 : changes}
+      discard={discard}
+      onAnother={() => onAnother()}
+      onDiscard={() => {
+        setDiscard(true);
+        focusSoon(ids.keep, false, document.activeElement);
+      }}
+      onKeep={() => {
+        setDiscard(false);
+        focusSoon(ids.another, false, document.activeElement);
+      }}
+    />
   );
 
   const status = (
@@ -1801,10 +1754,14 @@ export function HoldingsImport({
                 }
         }
         go={
-          prepareError && !nothing
+          (prepareError || (retrying && !editor)) && !nothing
             ? {
                 label: "Try again",
+                busy: retrying,
                 onClick: () => {
+                  // With an edit open, the button becomes its Go to it and keeps the focus.
+                  retryFrom.current = editor ? null : document.activeElement;
+                  setRetrying(true);
                   cache.current = { reads: new Map(), profileOf: profiles(api) };
                   setGeneration((n) => n + 1);
                 },
@@ -1824,68 +1781,4 @@ interface TrackedSummary {
   count: number;
   accounts: string;
   differ?: { name: string; by: string; accounts: { id: string; name: string }[] };
-}
-
-/**
- * The bar at the bottom of the add-on's frame: what's left before saving, or what will be saved, and
- * the one button.
- */
-/**
- * Keeps what's scrolled into view, such as the focus or a result being clicked, clear of the page's
- * sticky header and this sticky bar, which would otherwise cover it at the frame's top or bottom
- * (WCAG 2.4.11). The frame's own document scrolls, so its root gets the bars' heights as scroll
- * padding while the bar is shown, kept up to date as they change size.
- */
-function useClearOfStickyBars(bar: RefObject<HTMLElement | null>) {
-  useLayoutEffect(() => {
-    const root = document.documentElement;
-    const header = document.querySelector("header");
-    const update = () => {
-      const top = header && getComputedStyle(header).position === "sticky" ? header.getBoundingClientRect().height : 0;
-      root.style.scrollPaddingTop = `${Math.ceil(top) + 8}px`;
-      root.style.scrollPaddingBottom = `${Math.ceil(bar.current?.getBoundingClientRect().height ?? 0) + 8}px`;
-    };
-    update();
-    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(update);
-    if (bar.current) observer?.observe(bar.current);
-    if (header) observer?.observe(header);
-    return () => {
-      observer?.disconnect();
-      root.style.scrollPaddingTop = "";
-      root.style.scrollPaddingBottom = "";
-    };
-  }, []);
-}
-
-function Footer({
-  summaryId,
-  lines,
-  action,
-  go,
-}: {
-  summaryId: string;
-  lines: ReactNode[];
-  action: { label: string; disabled: boolean; busy?: boolean; onClick?: () => void };
-  go?: { label: string; onClick: () => void };
-}) {
-  const bar = useRef<HTMLDivElement>(null);
-  useClearOfStickyBars(bar);
-  return (
-    <div ref={bar} className="bg-background sticky bottom-0 z-10 grid gap-3 border-t py-3">
-      <div id={summaryId} tabIndex={-1} className="grid gap-1 text-sm">
-        {lines}
-      </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <WrapButton type="button" disabled={action.disabled} onClick={action.onClick}>
-          {action.busy && <Spinner />}
-          {action.label}
-        </WrapButton>
-        {go && (
-          <WrapButton type="button" variant="outline" onClick={go.onClick}>
-            {go.label}
-          </WrapButton>
-        )}
-      </div>
-    </div>
-  );
 }

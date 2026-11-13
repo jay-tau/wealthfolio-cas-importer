@@ -194,7 +194,7 @@ export function fundRefs(funds: (FundAsset & { assetId?: string; name?: string }
     if (found.has(ref) && found.get(ref) !== id) {
       const symbol = [fund.symbol, fund.exchangeMic].filter(Boolean).join(" on ");
       throw new Error(
-        `Several Wealthfolio assets have the symbol and exchange of ${fund.name ?? symbol} (${symbol}). Under Funds, choose Change, search for ${fund.symbol} and pick the asset to import into.`,
+        `Several Wealthfolio assets have the symbol and exchange of ${fund.name ?? symbol} (${symbol}). Choose Change beside the fund, search for ${fund.symbol} and pick the asset to import into.`,
       );
     }
     found.set(ref, id);
@@ -505,8 +505,22 @@ export function importRows(
 
 /** How many days before or after a transaction the bank's side of it may be. */
 export const BANK_DAYS = 7;
-const PAISA = (value: string) => format(div(abs(dec(value)), dec("1"), 2));
 const days = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / 86_400_000;
+
+/**
+ * The amounts, to the paisa, a transaction's bank side can have in the bank's own record: the
+ * transfer's, or the statement's printed amount with or without its charges, whichever way the
+ * statement prints it.
+ */
+export function bankAmounts({ transaction: { bank, rows } }: PlannedTransaction) {
+  const paid = bank!.activityType === "TRANSFER_OUT";
+  const printed = abs(dec(rows[0].amount ?? "0"));
+  const charges = rows.slice(1).reduce((total, charge) => add(total, dec(charge.amount ?? "0")), dec("0"));
+  return new Set([String(bank!.amount), format(printed), format(paid ? add(printed, charges) : add(printed, neg(charges)))].map(PAISA));
+}
+
+/** An amount to the paisa, without its sign. */
+export const PAISA = (value: string) => format(div(abs(dec(value)), dec("1"), 2));
 
 /**
  * Rows in the bank account that may be a new transaction's bank side, already in Wealthfolio: cash
@@ -516,15 +530,11 @@ const days = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) /
  * finds which those are.
  */
 export function bankCandidates(t: PlannedTransaction, existing: ActivityDetails[]) {
-  const { bank, rows } = t.transaction;
+  const { bank } = t.transaction;
   if (!bank || t.status === "existing" || t.status === "invalid") return [];
   const paid = bank.activityType === "TRANSFER_OUT";
   const types: string[] = paid ? ["WITHDRAWAL", "TRANSFER_OUT"] : ["DEPOSIT", "TRANSFER_IN"];
-  const printed = abs(dec(rows[0].amount ?? "0"));
-  const charges = rows.slice(1).reduce((total, charge) => add(total, dec(charge.amount ?? "0")), dec("0"));
-  const amounts = new Set(
-    [String(bank.amount), format(printed), format(paid ? add(printed, charges) : add(printed, neg(charges)))].map(PAISA),
-  );
+  const amounts = bankAmounts(t);
   return existing.filter(
     (a) =>
       a.accountId === bank.accountId &&
