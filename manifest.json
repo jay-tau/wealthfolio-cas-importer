@@ -50,8 +50,13 @@
     },
     {
       "category": "activities",
-      "functions": ["getAll", "checkImport", "import", "create", "update", "getTransferPair", "linkTransfer"],
-      "purpose": "Check transactions before importing activities, a summary or depository statement's units against accounts that track transactions, and stock splits before carrying holdings into a snapshot. When you choose to use a bank account's deposit or withdrawal for a fund's cash, add the fund's transfer, change the bank's row into a transfer if it isn't one, and link the two; transfers already linked aren't offered"
+      "functions": ["getAll", "checkImport", "import", "create", "update", "getTransferPair", "linkTransfer", "searchCashActivities", "unassignCategory"],
+      "purpose": "Check transactions before importing activities, a summary or depository statement's units against accounts that track transactions, and stock splits before carrying holdings into a snapshot. When you choose to use a bank account's deposit or withdrawal for a fund's cash, add the fund's transfer, change the bank's row into a transfer if it isn't one, and link the two; transfers already linked aren't offered. Before you choose one, check whether it's split across spending categories, which changing it into a transfer deletes, and once it's linked, remove its spending or income category, as Wealthfolio does"
+    },
+    {
+      "category": "spending",
+      "functions": ["getContext"],
+      "purpose": "Check whether a bank account is in Spending, before saying what reusing its entry changes"
     },
     {
       "category": "settings",

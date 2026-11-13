@@ -142,9 +142,9 @@ test("controls distinguish equal holding names and overlap contributions", () =>
 });
 
 test("the import result counts activities, duplicates, funds and bank rows", () => {
-  const link = (id) => ({ transaction: {}, bankRow: { id } });
+  const link = (id) => ({ transaction: {}, bankRow: { id }, changes: [], warnings: [] });
   const result = (summary, links) =>
-    text("ImportResult", { result: { activities: [], summary: { success: true, ...summary } }, sent: [], closing: [], links });
+    text("ImportResult", { result: { activities: [], summary: { success: true, ...summary } }, sent: [], closing: [], links, accounts: [] });
   const one = result({ total: 1, imported: 1, duplicates: 0, assetsCreated: 1 }, [link("bank-1")]);
   assert.match(one, / Imported 1 of 1 activity Wealthfolio skipped 0 as duplicates and created 1 fund\. /);
   assert.match(one, / Linked 1 of 1 bank row you chose with its transaction\. /);
@@ -153,6 +153,28 @@ test("the import result counts activities, duplicates, funds and bank rows", () 
   assert.match(some, / Linked 2 of 2 bank rows you chose with their transactions\. /);
   const two = result({ total: 4, imported: 2, duplicates: 2, assetsCreated: 2 }, []);
   assert.match(two, / Imported 2 of 4 activities Wealthfolio skipped 2 as duplicates and created 2 funds\. /);
+});
+
+test("the import result names each bank row the add-on changed, and how", () => {
+  const transaction = { transaction: { activity: { date: "2023-05-05", activityType: "BUY" }, scheme: "Fictiva Liquid Fund" } };
+  const bankRow = (id, activityType, comment) =>
+    ({ id, accountId: "bank-1", activityType, amount: "25000.00", date: "2023-05-04T00:00:00+00:00", comment });
+  const links = [
+    { transaction, bankRow: bankRow("a", "WITHDRAWAL", "NEFT"), changes: ["Its split across 2 spending categories was deleted."], warnings: ["Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio."] },
+    { transaction, bankRow: bankRow("b", "TRANSFER_OUT"), changes: [], warnings: [] },
+    { transaction, bankRow: bankRow("c", "WITHDRAWAL"), error: "Added the fund account's transfer, but couldn't link it.", changes: ["Later corrections to it from the sync won't change it."], warnings: [] },
+  ];
+  const shown = text("ImportResult", {
+    result: { activities: [], summary: { success: true, total: 3, imported: 3, duplicates: 0, assetsCreated: 0 } },
+    sent: [], closing: [], links, accounts: [{ id: "bank-1", name: "Savings" }],
+  });
+  assert.match(shown, / Linked 2 of 3 bank rows you chose with their transactions\. /);
+  assert.ok(shown.includes(
+    "What changed in the bank rows you chose Check these in Wealthfolio: " +
+      "The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT), for the 2023-05-05 purchase of Fictiva Liquid Fund: Its split across 2 spending categories was deleted. Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio. " +
+      "The withdrawal of 25000.00 on 2023-05-04 in Savings, for the 2023-05-05 purchase of Fictiva Liquid Fund: Later corrections to it from the sync won't change it.",
+  ), shown);
+  assert.ok(!shown.includes("transfer out of 25000.00"), "a bank row with nothing else changed isn't listed");
 });
 
 test("the detailed statement line counts folios, schemes, rows and closed schemes", () => {

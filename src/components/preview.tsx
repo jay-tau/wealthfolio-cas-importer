@@ -20,6 +20,7 @@ import {
   TableRow,
 } from "@wealthfolio/ui";
 import { type RefCallback, useEffect, useRef } from "react";
+import { type EntryFacts, entryNotes, OUTSIDE_SPENDING, outsideSpending, type Reused, type StaleEntry } from "../cas/bank-entries";
 import { format } from "../cas/decimal";
 import type { Mapping, MappingWarning } from "../cas/mapping";
 import {
@@ -53,6 +54,12 @@ const label = (row: { activityType: string; subtype?: string | null }) => {
 /** Hidden text that tells a transaction's checkboxes apart for screen readers. */
 const which = ({ transaction: { activity, scheme, folio } }: PlannedTransaction, number: number) =>
   `${String(activity.date)} ${label(activity)} of ${scheme}${activity.amount ? `, ${activity.amount}` : ""}, folio ${folio}, transaction ${number}`;
+/** "the 2023-05-05 purchase of Fictiva Liquid Fund" */
+const transactionName = ({ transaction: { activity, scheme } }: PlannedTransaction) =>
+  `the ${String(activity.date)} ${label(activity)} of ${scheme}`;
+/** "The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF)" */
+const entryName = (entry: ActivityDetails, accountName: string) =>
+  `The ${label(entry)} of ${entry.amount} on ${day(entry.date)} in ${accountName}${entry.comment ? ` (${entry.comment})` : ""}`;
 const list = (names: string[]) =>
   names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "";
 
@@ -79,11 +86,25 @@ const currencyNotes = ({ transaction: { activity, arriving, receiving } }: Plann
   ),
 ];
 
-/** A transaction whose cash went to a bank row already in Wealthfolio, and what went wrong. */
-export interface BankLink {
+/** A transaction whose cash went to a bank row already in Wealthfolio, what went wrong and what changed in it. */
+export interface BankLink extends Reused {
   transaction: PlannedTransaction;
+  /** As read right before the import. */
   bankRow: ActivityDetails;
-  error?: string;
+}
+
+/** What changed in an entry the user ticked, between the preview and Import. */
+function staleText(s: StaleEntry, accountName: (id: string) => string) {
+  const then = `${entryName(s.before, accountName(s.before.accountId))}, chosen for ${transactionName(s.transaction)},`;
+  const now = s.after && `a ${label(s.after)} of ${s.after.amount} on ${day(s.after.date)}`;
+  const instead = `so the transaction now comes with a new ${label(s.transaction.transaction.bank!)}.`;
+  const why = {
+    gone: `is no longer in Wealthfolio, ${instead}`,
+    unmatched: `is now ${now}, which doesn't match the transaction, ${instead}`,
+    linked: `is now linked with another transfer, ${instead}`,
+    changed: `is now ${now}.`,
+  };
+  return [s.reason ? `${then} ${why[s.reason]}` : `${then} changed:`, ...s.notes].join(" ");
 }
 
 const STATUS: Record<Status, { badge: string; variant: "success-subtle" | "secondary" | "warning-subtle" | "destructive-subtle" }> = {
@@ -161,6 +182,8 @@ export function Preview({
   importing,
   rowCount,
   matches,
+  facts,
+  stale,
   reuse,
   onReuse,
   accounts,
@@ -178,6 +201,10 @@ export function Preview({
   rowCount: number;
   /** The bank row each new transaction could use instead of a new one. */
   matches: Map<PlannedTransaction, ActivityDetails>;
+  /** What reusing each of those changes, by its ID. */
+  facts: Map<string, EntryFacts>;
+  /** Ticked entries that changed since the preview, which stopped the last Import. */
+  stale?: StaleEntry[];
   reuse: Set<PlannedTransaction>;
   onReuse: (t: PlannedTransaction, yes: boolean) => void;
   accounts: Account[];
@@ -227,6 +254,7 @@ export function Preview({
             one per merger.
           </p>
         )}
+        {[...matches.values()].some((m) => outsideSpending(facts.get(m.id))) && <p className="text-sm">{OUTSIDE_SPENDING}</p>}
         {/* Narrow padding and wrapping Cash keep Status visible with Extra large text in a 1440 px window. */}
         <Table>
           <TableHeader>
@@ -311,6 +339,11 @@ export function Preview({
                             {match.activityType !== bank?.activityType &&
                               ` If you use it, the add-on changes it into a ${label(bank!)} and links it with this ${label(cash!)}.`}
                           </span>
+                          {entryNotes(facts.get(match.id), accountName(match.accountId)).map((note, j) => (
+                            <span key={`entry-${j}`} className="text-muted-foreground text-xs">
+                              {note}
+                            </span>
+                          ))}
                           <Label className="flex items-center gap-2 text-xs font-normal">
                             <Checkbox disabled={importing} checked={reuse.has(t)} onCheckedChange={(yes) => onReuse(t, yes)} />
                             Use it instead of a new {label(bank!)}
@@ -333,6 +366,19 @@ export function Preview({
             })}
           </TableBody>
         </Table>
+        {stale && stale.length > 0 && (
+          <Alert variant="warning">
+            <AlertTitle>Nothing was imported: bank entries you chose changed</AlertTitle>
+            <AlertDescription>
+              The preview now shows them as Wealthfolio has them. Check them, then import again.
+              <ul className="list-disc ps-4">
+                {stale.map((s) => (
+                  <li key={s.before.id}>{staleText(s, accountName)}</li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
         <Button type="button" disabled={importing || rowCount === 0} onClick={onImport}>
           {importing && <Spinner />}
           {importing ? "Importing…" : `Import ${plural(rowCount, "activity", "activities")}`}
@@ -347,12 +393,14 @@ export function ImportResult({
   sent,
   closing,
   links,
+  accounts,
 }: {
   result: ImportActivitiesResult;
   /** The rows sent, to tell Wealthfolio's surprises apart. */
   sent: ActivityImport[];
   closing: FundUnits[];
   links: BankLink[];
+  accounts: Account[];
 }) {
   // Shown in place of the preview and its Import button, which had the focus: the summary takes it,
   // unless the user moved it while the import ran.
@@ -361,6 +409,8 @@ export function ImportResult({
     if (focusDropped()) summaryRef.current?.focus();
   }, []);
   const failedLinks = links.filter((l) => l.error);
+  const changedLinks = links.filter((l) => l.changes.length || l.warnings.length);
+  const accountName = (id: string) => accounts.find((a) => a.id === id)?.name ?? "the bank account";
   const { summary } = result;
   const failed = result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0);
   // Rows Wealthfolio skipped that the preview didn't expect to be duplicates.
@@ -422,6 +472,22 @@ export function ImportResult({
                   <li key={l.bankRow.id}>
                     {String(l.transaction.transaction.activity.date)} {label(l.transaction.transaction.activity)}{" "}
                     {l.transaction.transaction.scheme}, bank row of {l.bankRow.amount} on {day(l.bankRow.date)}: {l.error}
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+        {changedLinks.length > 0 && (
+          <Alert variant={changedLinks.some((l) => l.warnings.length) ? "warning" : "default"}>
+            <AlertTitle>What changed in the bank rows you chose</AlertTitle>
+            <AlertDescription>
+              Check these in Wealthfolio:
+              <ul className="list-disc ps-4">
+                {changedLinks.map((l) => (
+                  <li key={l.bankRow.id}>
+                    {entryName(l.bankRow, accountName(l.bankRow.accountId))}, for {transactionName(l.transaction)}:{" "}
+                    {[...l.changes, ...l.warnings].join(" ")}
                   </li>
                 ))}
               </ul>
