@@ -198,6 +198,223 @@ for (const [position, observe] of [["sticky", true], ["static", true], [undefine
   });
 }
 
+for (const failed of [false, true]) {
+  test(`an unplanned Change follows its holding after ${failed ? "retrying a failed plan" : "choosing an account"}`, async () => {
+    const x = source("X", [holding("ISINX")]);
+    const { run, props, api } = setup([x]);
+    if (!failed) props.accountChoices = {};
+    else api.snapshots.getAll = async () => { throw new Error("made-up read failure"); };
+    await run.flush();
+    let ready = find(run, "ReadyTable");
+    const old = ready.rows[0];
+    document.getElementById = () => ({ dataset: {}, focus() {}, scrollIntoView() {} });
+    ready.handlers.onChange(old);
+    await run.flush();
+    ready = find(run, "ReadyTable");
+    const picker = nodes(ready.handlers.changePanel(old)).find((node) => node.type?.name === "Picker").props;
+    picker.searches.setText(picker.item.key, "typed draft");
+    ready.handlers.onCost(old);
+    await run.flush();
+    assert.equal(find(run, "ReadyTable").handlers.nag, true);
+    let focused = false;
+    document.getElementById = () => ({ dataset: {}, focus() { focused = true; }, scrollIntoView() {} });
+    let resolve;
+    api.snapshots.getAll = () => new Promise((done) => { resolve = done; });
+    if (failed) find(run, "Footer").go.onClick();
+    else find(run, "SaveTo").onChange(sourceKey(x), "A");
+    await run.flush();
+    assert.equal(find(run, "Footer").go.label, "Go to it", "the pending plan preserves the edit");
+    resolve([]);
+    await run.flush();
+    ready = find(run, "ReadyTable");
+    const row = ready.rows[0];
+    assert.notEqual(row.id, old.id);
+    assert.equal(ready.handlers.changing, row.id);
+    assert.equal(ready.handlers.nag, true);
+    const panel = ready.handlers.changePanel(row);
+    assert.equal(nodes(panel).find((node) => node.type?.name === "Picker").props.search.text, "typed draft");
+    assert.equal(focused, false, "reconciliation does not move focus");
+    nodes(panel).find((node) => node.props?.children === "Cancel").props.onClick();
+    await run.flush();
+    ready = find(run, "ReadyTable");
+    assert.equal(ready.handlers.changing, undefined);
+    assert.equal(ready.handlers.nag, false);
+    assert.equal(find(run, "Footer").action.disabled, false);
+    ready.handlers.onCost(ready.rows[0]);
+    await run.flush();
+    assert.equal(find(run, "ReadyTable").handlers.nag, false);
+  });
+}
+
+test("an earlier plan failure does not close Change while a new destination's plan starts", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const { run, props, api } = setup([x, y]);
+  props.accountChoices = { [sourceKey(y)]: "A" };
+  await run.flush();
+  let ready = find(run, "ReadyTable");
+  ready.handlers.onChange(ready.rows.find((row) => row.item.isin === "ISINX"));
+  await run.flush();
+  api.snapshots.getAll = async () => { throw new Error("made-up refresh failure"); };
+  run.update({ visit: {} });
+  await run.flush();
+  ready = find(run, "ReadyTable");
+  assert.equal(ready.handlers.changing, "|ISINX@XBOM");
+  assert.equal(find(run, "Footer").go.label, "Try again");
+  let resolve;
+  api.snapshots.getAll = (id) => id === "B" ? new Promise((done) => { resolve = done; }) : Promise.resolve([]);
+  find(run, "SaveTo").onChange(sourceKey(x), "B");
+  await run.flush();
+  assert.equal(find(run, "Footer").go?.label, "Go to it", "the next plan keeps the edit while pending");
+  resolve([]);
+  await run.flush();
+  ready = find(run, "ReadyTable");
+  const moved = ready.rows.find((row) => row.accountId === "B");
+  assert.equal(ready.handlers.changing, moved.id);
+  assert.ok(ready.handlers.changePanel(moved));
+});
+
+test("a merged unplanned Change follows its selected holding when the old row survives without it", async () => {
+  const one = holding("ISINX");
+  const two = holding("ISINY");
+  const x = source("X", [one]);
+  const y = source("Y", [two]);
+  const { run: initial, props } = setup([x, y]);
+  props.accountChoices = {};
+  for (const choice of Object.values(props.fundChoices)) choice.fund.symbol = "SHARED";
+  initial.dispose();
+  // Render the open child panel before effects, as React does, to catch a stale merged-row crash.
+  const run = active = controller(props, (p) => {
+    const tree = HoldingsImport(p);
+    const ready = find({ tree }, "ReadyTable");
+    for (const row of ready?.rows ?? []) {
+      if (row.id === ready.handlers.changing) ready.handlers.changePanel(row);
+    }
+    return tree;
+  });
+  await run.flush();
+  let ready = find(run, "ReadyTable");
+  const old = ready.rows[0];
+  const selected = old.items.find((item) => item.key === holdingKey(two));
+  ready.handlers.onChange(old, selected);
+  await run.flush();
+  find(run, "SaveTo").onChange(sourceKey(y), "A");
+  await run.flush();
+  ready = find(run, "ReadyTable");
+  assert.ok(ready.rows.some((row) => row.id === old.id));
+  const moved = ready.rows.find((row) => row.accountId === "A");
+  assert.equal(ready.handlers.changing, moved.id);
+  assert.equal(ready.handlers.changingItem, selected.key);
+  const panel = ready.handlers.changePanel(moved);
+  assert.equal(nodes(panel).find((node) => node.type?.name === "Picker").props.item.key, selected.key);
+  nodes(panel).find((node) => node.props?.children === "Cancel").props.onClick();
+  await run.flush();
+  assert.equal(find(run, "ReadyTable").handlers.changing, undefined);
+});
+
+for (const hidden of [false, true]) {
+  test(`an unplanned Change ${hidden ? "closes when Before saving is hidden" : "follows an excluded row into Before saving"}`, async () => {
+    const b = source("selected", [holding("ISINB")]);
+    const ignored = source("ignored", [holding("ISINB")]);
+    const unassigned = source("unassigned", [holding("ISINA")]);
+    const { run, props, api } = setup([b, ignored, ...(hidden ? [unassigned] : [])]);
+    props.accountChoices = { [sourceKey(ignored)]: LEFT_OUT };
+    api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+    api.snapshots.getByDate = async () => [{ holdingType: "security", quantity: "10", costBasis: null, localCurrency: "INR", instrument: { id: "old", name: "Example ISINB", symbol: "ISINB", quoteMode: "MARKET" } }];
+    api.assets.getProfile = async () => ({ instrumentSymbol: "ISINB", instrumentExchangeMic: "XBOM" });
+    const stored = new Map();
+    api.storage.get = async (key) => stored.get(key) ?? null;
+    api.storage.set = async (key, value) => stored.set(key, value);
+    const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+    await saveImported(api.storage, ignored, "A", "2025-02-28", { "ISINB@XBOM": ["ISINB"] });
+    await run.flush();
+    let ready = find(run, "ReadyTable");
+    document.getElementById = () => ({ dataset: {}, focus() {}, scrollIntoView() {} });
+    ready.handlers.onChange(ready.rows.find((row) => row.item.isin === "ISINB"));
+    await run.flush();
+    ready = find(run, "ReadyTable");
+    ready.handlers.onCost(ready.rows[0]);
+    await run.flush();
+    let focused = false;
+    document.getElementById = () => ({ dataset: {}, focus() { focused = true; }, scrollIntoView() {} });
+    find(run, "SaveTo").onChange(sourceKey(b), "A");
+    await run.flush();
+    const before = find(run, "BeforeSaving");
+    assert.equal(focused, false);
+    if (hidden) {
+      assert.equal(before, undefined);
+      ready = find(run, "ReadyTable");
+      assert.equal(ready.handlers.changing, undefined);
+      assert.equal(ready.handlers.nag, false);
+      assert.notEqual(find(run, "Footer").go?.label, "Go to it");
+    } else {
+      const position = before.plan.positions.find((p) => p.lines.length);
+      const panel = before.change(position);
+      assert.ok(nodes(panel).some((node) => node.type?.name === "Picker"));
+      nodes(panel).find((node) => node.props?.children === "Cancel").props.onClick();
+      await run.flush();
+      assert.notEqual(find(run, "Footer").go?.label, "Go to it");
+    }
+  });
+}
+
+for (const reason of ["overlap", "misread"]) {
+  test(`an unplanned Change closes when its holding is left out for ${reason}`, async () => {
+    const h = holding("ISINX");
+    const x = { ...source("X", [h]), kind: "folio" };
+    const y = source("Y", [holding("ISINY")]);
+    const misread = { ...source("misread", []), misread: [h] };
+    const { run, props, api } = setup([x, y, ...(reason === "misread" ? [misread] : [])]);
+    props.accountChoices = {};
+    if (reason === "overlap") {
+      props.allAccounts = [...props.allAccounts, { id: "T", name: "Transactions", trackingMode: "TRANSACTIONS", isArchived: false }];
+      api.portfolio.getHoldings = async (id) => id === "T" ? [{ holdingType: "security", quantity: "10", localCurrency: "INR", instrument: { id: "tracked", symbol: h.isin, quoteMode: "MARKET" } }] : [];
+      api.assets.getProfile = async () => ({ instrumentSymbol: h.isin, instrumentExchangeMic: "XBOM" });
+    }
+    await run.flush();
+    let ready = find(run, "ReadyTable");
+    document.getElementById = () => ({ dataset: {}, focus() {}, scrollIntoView() {} });
+    ready.handlers.onChange(ready.rows.find((row) => row.item.isin === h.isin));
+    await run.flush();
+    ready = find(run, "ReadyTable");
+    ready.handlers.onCost(ready.rows[0]);
+    await run.flush();
+    assert.equal(find(run, "ReadyTable").handlers.nag, true);
+    let focused = false;
+    document.getElementById = () => ({ dataset: {}, focus() { focused = true; }, scrollIntoView() {} });
+    find(run, "SaveTo").onChange(investorKey("TEST"), "A");
+    await run.flush();
+    ready = find(run, "ReadyTable");
+    assert.equal(ready.rows.some((row) => row.item.isin === h.isin), false);
+    assert.equal(ready.handlers.changing, undefined);
+    assert.equal(ready.handlers.nag, false);
+    assert.equal(focused, false, "closing a vanished editor does not move focus");
+    ready.handlers.onCost(ready.rows[0]);
+    await run.flush();
+    assert.equal(find(run, "ReadyTable").handlers.nag, false);
+  });
+}
+
+test("an open Change follows a resolved asset's new position key after a host refresh", async () => {
+  const h = holding("ISINX");
+  const { run, props, api } = setup([source("X", [h])]);
+  props.fundChoices[holdingKey(h)].fund.assetId = "asset";
+  let symbol = "ISINX";
+  api.assets.getProfile = async () => ({ instrumentSymbol: symbol, instrumentExchangeMic: "XBOM", quoteMode: "MARKET" });
+  await run.flush();
+  let ready = find(run, "ReadyTable");
+  const old = ready.rows[0];
+  ready.handlers.onChange(old);
+  await run.flush();
+  symbol = "RENAMED";
+  run.update({ visit: {} });
+  await run.flush();
+  ready = find(run, "ReadyTable");
+  assert.notEqual(ready.rows[0].id, old.id);
+  assert.equal(ready.handlers.changing, ready.rows[0].id);
+  assert.ok(ready.handlers.changePanel(ready.rows[0]));
+});
+
 test("moving one source closes its vanished cost editor while the old account still has another source", async () => {
   const x = source("X", [holding("ISINX")]);
   const { run } = setup([x, source("Y", [holding("ISINY")])]);

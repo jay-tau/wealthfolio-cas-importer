@@ -3099,7 +3099,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.match(await investorSelect.textContent(), /Choose an account/);
     await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
+    // A Change open on a holding whose account isn't chosen yet stays open on its row once the account
+    // is chosen, with its Cancel, and the bar doesn't keep waiting on it after Cancel.
+    await ready(scheme).getByRole("button", { name: /^Change: / }).click();
+    await changePanelOf().waitFor();
     await choose("NPS account (PRAN XXXXXXXX9001)", "Fund folios (INR)");
+    await ready(scheme).waitFor();
+    await changePanelOf().getByRole("button", { name: /^Cancel the change to / }).click();
+    await changePanelOf().waitFor({ state: "detached" });
+    assert.equal(await footer.getByText(/^Save or cancel your change/).count(), 0);
     await ready(scheme).getByText(priced, { exact: true }).waitFor();
     assert.equal(await statusOf(await snapshotTable("Fund folios"), scheme), "New");
     await sameDay("Fund folios").dispatchEvent("click");

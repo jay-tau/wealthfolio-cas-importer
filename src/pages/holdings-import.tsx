@@ -1123,7 +1123,8 @@ export function HoldingsImport({
     onCancelCost: () => editor && closeEditor(id(`cost-${editor.rowId}`)),
     changePanel: (row) => {
       const item = itemOf.get(editor?.kind === "change" ? editor.itemKey : row.item.key)!;
-      const holding = row.position.lines.find((l) => holdingKey(l.holding) === item.key)!.holding;
+      const holding = row.position.lines.find((l) => holdingKey(l.holding) === item.key)?.holding;
+      if (!holding) return null; // A merged row can split before the effect moves this Change.
       const label = item.key === row.item.key ? row.label : handlers.label(row, item);
       return (
         <div id={ids.changePanel(row.id)} data-focus-first="true" tabIndex={-1} className="grid gap-3 rounded-lg border p-4">
@@ -1150,6 +1151,20 @@ export function HoldingsImport({
       );
     },
   };
+  // Keep Change on its holding's shown row after planning settles, or close it if none remains.
+  // Only a failed first plan shows every active holding as unplanned; later failures wait for retry.
+  useEffect(() => {
+    if (editor?.kind !== "change" || (!current && (!prepareError || prepared))) return;
+    const shown = [
+      ...rows,
+      ...decisionPlans.flatMap((plan) => decisions(plan).filter((p) => p.lines.length && !p.misread)
+        .map((p) => toRow(plan, p, choicesFor(plan.accountId, plan)))),
+    ].filter((row) => row.position.lines.some((l) => holdingKey(l.holding) === editor.itemKey));
+    if (shown.some((row) => row.id === editor.rowId)) return;
+    const moved = shown[0];
+    if (moved) setEditor({ ...editor, rowId: moved.id });
+    else closeEditor();
+  });
   const change = (row: ReadyRow, item: FundItem, choice: FundChoice) => {
     clearAssetWrites(item.key, choice);
     setAnswers((all) => ({ ...all, [item.key]: choice }));
