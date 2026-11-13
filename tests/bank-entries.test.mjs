@@ -291,6 +291,20 @@ describe("linking a ticked entry", () => {
     assert.match(unlinked.result.error, /couldn't link it with the bank's row on 2023-04-10/);
     assert.deepEqual(unlinked.unassigned, []);
     assert.deepEqual(unlinked.result.changes, ["Its split across 1 spending category was deleted.", "Later corrections to it from the sync won't change it."]);
+    const retained = (word, unknown = false) =>
+      `Its ${word} category${unknown ? ", if it has one," : ""} wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio.`;
+    assert.deepEqual(unlinked.result.warnings, [retained("spending")]);
+    // A category alone is still reported, including income and unreadable categories.
+    const deposit = entry("DEPOSIT", "3000.00", "2023-06-01");
+    for (const [row, t, spending, warnings] of [
+      [withdrawal, purchase, { assignments: options.assignments }, [retained("spending")]],
+      [deposit, sale, { assignments: [assignment(deposit.id, "income_sources")] }, [retained("income")]],
+      [withdrawal, purchase, { fail: { search: true } }, [retained("spending", true), retained("income", true)]],
+    ]) {
+      const kept = await reuse({ row, t, spending, fail: "linkTransfer" });
+      assert.deepEqual(kept.unassigned, []);
+      assert.deepEqual(kept.result.warnings, warnings);
+    }
     // Not changed: nothing to say.
     for (const fail of ["create", "update"]) {
       const { result } = await reuse({ row: withdrawal, spending: options, list: synced, fail });

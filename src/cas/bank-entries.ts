@@ -12,7 +12,7 @@ import { bankCandidates, day, linkBankRow, type PlannedTransaction } from "./pla
 
 // What reusing a bank account's entry for a fund's cash changes in it besides its link, in
 // Wealthfolio 3.13.0. Changing a withdrawal or deposit into a transfer deletes its spending splits,
-// and the add-on's update can't keep them, as Wealthfolio's own screens can after a review. When
+// and Wealthfolio's own screens ask before deleting them. When
 // Wealthfolio itself changes one into a linked transfer, it removes both legs' spending and income
 // categories and keeps savings ones; the add-on's update and link don't, so it removes them after
 // linking. Updating or linking an entry marks it as edited by the user, so the sync of an account
@@ -258,10 +258,16 @@ export async function reuseBankEntry(
     if (!known) changes.push("Any split it had across spending categories was deleted.");
     else if (known.splitCategories) changes.push(`Its split across ${splitText(known)} was deleted.`);
   }
-  if (converted && linked && facts.inSpending !== false) {
+  if (converted && facts.inSpending !== false) {
     const kinds = known ? REMOVED.filter((kind) => known.kinds.includes(kind)) : REMOVED;
     const removed: SpendCategoryKind[] = [];
     for (const kind of kinds) {
+      if (!linked) {
+        warnings.push(
+          `Its ${WORDS[kind]} category${known ? "" : ", if it has one,"} wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio.`,
+        );
+        continue;
+      }
       try {
         await api.spending.unassignCategory(entry.id, kind);
         removed.push(kind);

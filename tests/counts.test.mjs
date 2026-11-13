@@ -162,7 +162,7 @@ test("the import result names each bank row the add-on changed, and how", () => 
   const links = [
     { transaction, bankRow: bankRow("a", "WITHDRAWAL", "NEFT"), changes: ["Its split across 2 spending categories was deleted."], warnings: ["Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio."] },
     { transaction, bankRow: bankRow("b", "TRANSFER_OUT"), changes: [], warnings: [] },
-    { transaction, bankRow: bankRow("c", "WITHDRAWAL"), error: "Added the fund account's transfer, but couldn't link it.", changes: ["Later corrections to it from the sync won't change it."], warnings: [] },
+    { transaction, bankRow: bankRow("c", "WITHDRAWAL"), error: "Added the fund account's transfer, but couldn't link it.", changes: [], warnings: ["Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio."] },
   ];
   const shown = text("ImportResult", {
     result: { activities: [], summary: { success: true, total: 3, imported: 3, duplicates: 0, assetsCreated: 0 } },
@@ -172,7 +172,7 @@ test("the import result names each bank row the add-on changed, and how", () => 
   assert.ok(shown.includes(
     "What changed in the bank rows you chose Check these in Wealthfolio: " +
       "The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT), for the 2023-05-05 purchase of Fictiva Liquid Fund: Its split across 2 spending categories was deleted. Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio. " +
-      "The withdrawal of 25000.00 on 2023-05-04 in Savings, for the 2023-05-05 purchase of Fictiva Liquid Fund: Later corrections to it from the sync won't change it.",
+      "The withdrawal of 25000.00 on 2023-05-04 in Savings, for the 2023-05-05 purchase of Fictiva Liquid Fund: Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio.",
   ), shown);
   assert.ok(!shown.includes("transfer out of 25000.00"), "a bank row with nothing else changed isn't listed");
 });

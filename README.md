@@ -149,8 +149,8 @@ Wealthfolio changes such an entry in other ways too, and the preview says so on 
 it:
 
 - In a bank account in Wealthfolio's **Spending**, changing a withdrawal or deposit into a transfer
-  deletes its split across spending categories, and the add-on can't keep it, as Wealthfolio's own
-  screens can. Once it's linked, the add-on removes its spending or income category, as Wealthfolio
+  deletes its split across spending categories. Wealthfolio's own screens ask before deleting it.
+  Once it's linked, the add-on removes its spending or income category, as Wealthfolio
   does when it changes one into a linked transfer; a savings category stays. An entry that's already
   a transfer keeps its split and categories.
 - Outside Spending, the add-on can't read an entry's split, and changing it into a transfer deletes
