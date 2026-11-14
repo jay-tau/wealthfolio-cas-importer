@@ -400,8 +400,11 @@ test("merges onto the account's snapshot: replaces listed holdings, keeps others
   assert.deepEqual(byRef(ref("INFZ91T01GL6")).cost, { total: "42275.6", from: "wealthfolio" });
   assert.deepEqual(byRef(ref("INFZ90K01FC8")).cost, { total: "154554", from: "statement" });
   assert.equal(byRef(ref("GILT")).include, true);
-  assert.equal(byRef(ref("OLD")).include, false);
-  assert.match(byRef(ref("OLD")).notes[0], /Not on the statement any more\. An earlier import of Testbridge Mutual Fund, folio 1040012345 added it\./);
+  // Not on the statement any more: asked, never removed by default.
+  assert.deepEqual(byRef(ref("OLD")).ask, { kind: "missing" });
+  assert.deepEqual(byRef(ref("OLD")).removable.map((s) => s.label), ["Testbridge Mutual Fund, folio 1040012345"]);
+  assert.deepEqual(byRef(ref("OLD")).notes, []);
+  assert.equal(undecided(byRef(ref("OLD")), noChoices), true);
   assert.equal(byRef(ref("INFZ91T01CB6")).include, true);
   assert.deepEqual(byRef(ref("INFZ91T01CB6")).notes, []);
 
@@ -418,20 +421,24 @@ test("merges onto the account's snapshot: replaces listed holdings, keeps others
   assert.equal(savedBy("INFZ90K01FC8").assetId, "a-flexi");
   assert.deepEqual(savedBy("GILT"), { assetId: "a-gilt", symbol: "GILT", quantity: "10", currency: "INR" });
   assert.deepEqual(savedBy("INFZ91T01CB6"), { assetId: "a-bond", symbol: "INFZ91T01CB6", quantity: "9000", currency: "INR", averageCost: "10" });
-  assert.equal(savedBy("OLD"), undefined);
+  // Set to zero by the user's answer.
+  const zero = { ...noChoices, keep: new Map([[ref("OLD"), false]]) };
+  assert.equal(undecided(byRef(ref("OLD")), zero), false);
+  assert.equal(snapshotOf(account, zero).holdings.find((h) => h.symbol === "OLD"), undefined);
 
-  // Flipping both: keep the sold one, drop the hand-added one; a typed cost replaces Wealthfolio's, blank means unknown.
-  const flipped = new Set([ref("OLD"), ref("GILT")]);
-  const choices = { flipped, costs: new Map([[ref("INFZ91T01GL6"), ""]]) };
+  // Keeping the sold one by the user's answer; flipping the hand-added one drops it; a typed cost replaces Wealthfolio's, blank means unknown.
+  const flipped = new Set([ref("GILT")]);
+  const keep = new Map([[ref("OLD"), true]]);
+  const choices = { flipped, keep, costs: new Map([[ref("INFZ91T01GL6"), ""]]) };
   const after = snapshotOf(account, choices).holdings;
   assert.equal(after.find((h) => h.symbol === "GILT"), undefined);
   assert.deepEqual(after.find((h) => h.symbol === "OLD"), { assetId: "a-old", symbol: "OLD", quantity: "5", currency: "INR", averageCost: "10" });
   assert.equal(after.find((h) => h.symbol === "INFZ91T01GL6").averageCost, undefined);
-  const typed = snapshotOf(account, { flipped, costs: new Map([[ref("INFZ91T01GL6"), "42275.60"]]) }).holdings;
+  const typed = snapshotOf(account, { flipped, keep, costs: new Map([[ref("INFZ91T01GL6"), "42275.60"]]) }).holdings;
   assert.equal(typed.find((h) => h.symbol === "INFZ91T01GL6").averageCost, "50");
 
   assert.deepEqual(
-    importedRefs(account, noChoices).map(({ source, refs }) => [source.id, refs]),
+    importedRefs(account, zero).map(({ source, refs }) => [source.id, refs]),
     [
       ["folio|91234567/12|amc:Fictiva Mutual Fund", { [ref("INFZ90K01FC8")]: ["INFZ90K01FC8", "CAMS|FFCDG"], [ref("INFZ90K01LQ6")]: ["INFZ90K01LQ6", "CAMS|FLQDG"] }],
       ["folio|91234570/0|amc:Fictiva Mutual Fund", { [ref("INFZ90K01BA1")]: ["INFZ90K01BA1", "CAMS|FBADR"] }],
@@ -558,7 +565,7 @@ test("manual-priced holdings get the statement's price, and kept ones the price 
   assert.deepEqual(pricesToSave(market, noChoices), []);
 });
 
-test("explicit empty sources remove their last imported holding, preserving cash", async () => {
+test("a source that lists nothing asks about each holding its earlier import added, never emptying the account", async () => {
   for (const name of ["made-up-summary-cams", "made-up-nsdl"]) {
     const data = await fixture(name);
     const first = readHoldings(data).sources[0];
@@ -581,8 +588,12 @@ test("explicit empty sources remove their last imported holding, preserving cash
       }] }),
       remembered: () => new Map([[ref(holding.isin), [holding.isin]]]),
     });
-    assert.equal(account.positions[0].include, false);
-    assert.deepEqual(snapshotOf(account, noChoices), { holdings: [], cash: { INR: "1500" } });
+    // Asked, with Keep as the safe answer: undecided keeps it, and saving waits for the answer.
+    assert.deepEqual([account.positions[0].ask, account.positions[0].removable.map((s) => s.id)], [{ kind: "missing" }, [first.id]]);
+    assert.equal(undecided(account.positions[0], noChoices), true);
+    assert.deepEqual(snapshotOf(account, keeping(account.positions[0].key, true)).holdings.map((h) => h.assetId), ["old"]);
+    // Set to zero: the account's other holdings and cash stay.
+    assert.deepEqual(snapshotOf(account, keeping(account.positions[0].key, false)), { holdings: [], cash: { INR: "1500" } });
   }
 });
 
@@ -600,7 +611,9 @@ test("a left-out holding keeps its provenance until a later statement sells it",
   assert.deepEqual(next.get(holdings.sources[0].id).get(ref(holding.isin)), [holding.isin, "CAMS|FFCDG"]);
   holdings.sources[0].holdings = holdings.sources[0].holdings.slice(1);
   const [sold] = plan(holdings, { existing: () => existing, remembered: (s) => next.get(s.id) });
-  assert.ok(!snapshotOf(sold, noChoices).holdings.some((h) => h.assetId === "earlier"));
+  const gone = sold.positions.find((p) => p.existing?.assetId === "earlier");
+  assert.deepEqual(gone.ask, { kind: "missing" });
+  assert.ok(!snapshotOf(sold, keeping(gone.key, false)).holdings.some((h) => h.assetId === "earlier"));
 });
 
 // A fund in a folio, confirmed to Yahoo's result on the first import and to AMFI's on the next.
@@ -625,7 +638,12 @@ const heldBefore = (asset, units, more = {}) => ({
 /** Mutual funds tracks transactions and holds AMFI's asset. */
 const tracking = (r) => (r === fundRef("119551") ? [{ name: "Mutual funds", tracksTransactions: true }] : []);
 const savedOf = (account, choices = noChoices) => snapshotOf(account, choices).holdings.map((h) => [h.assetId ?? h.symbol, h.quantity]);
-const replacing = (key) => ({ flipped: new Set([key]), costs: new Map() });
+/** The user's answer to replace the asset an earlier import added with the statement row (true), or keep it (false). */
+const replacing = (key, replace = true) => ({ flipped: new Set(), costs: new Map(), replace: new Map([[key, replace]]) });
+/** A position's question: its `fundRef`, what it asks, the sources it asks about, and its notes. */
+const asking = (p) => [p.ref, p.ask?.kind, p.removable?.map((s) => s.label), p.notes];
+/** A replace question, with the labels of the sources whose earlier import added the old asset. */
+const replaceAsk = (p) => p.ask && { ...p.ask, recorded: p.ask.recorded?.map((s) => s.label) };
 /** The user's choice to keep (true) or remove (false) the account's units of a row. */
 const keeping = (key, keep, flipped = []) => ({ flipped: new Set(flipped), costs: new Map(), keep: new Map([[key, keep]]) });
 
@@ -638,17 +656,18 @@ test("a fund confirmed to another asset keeps the one an earlier import of its f
   const [listed, old] = next.positions;
   assert.equal(listed.ref, fundRef("119551"));
   assert.equal(old.existing.assetId, "yahoo-asset");
-  // Left out by default: the account keeps the old asset's 100 units and doesn't add the statement's 110.
+  // Asked, on the statement row: until it's answered, the account keeps the old asset's 100 units and doesn't add the statement's 110.
   assert.equal(listed.include, false);
   assert.deepEqual(listed.replaces, [old.key]);
-  assert.deepEqual(listed.notes, [
-    `An earlier import of ${FOLIO} added this holding as ${YAHOO}. So that it isn't counted twice, it's left out unless you replace ${YAHOO} with it. ` +
-    `Replace it only if all its units came from ${FOLIO}: imports don't record how many units each folio, demat account or PRAN added.`,
-  ]);
+  assert.deepEqual([replaceAsk(listed), listed.notes], [{ kind: "replace", recorded: ["Fictiva Mutual Fund, folio 91234567 / 12"] }, []]);
+  assert.equal(undecided(listed, noChoices), true);
   assert.equal(old.include, true);
   assert.equal(old.replacedBy, listed.key);
-  assert.deepEqual(old.notes, [`An earlier import of ${FOLIO} added it for a holding that this import lists under ${AMFI}. It's kept unless you replace it with ${AMFI}.`]);
+  assert.deepEqual([old.ask, old.notes], [undefined, []]);
   assert.deepEqual(savedOf(next), [["yahoo-asset", "100"]]);
+  // Keeping the old asset answers it the same way.
+  assert.equal(undecided(listed, replacing(listed.key, false)), false);
+  assert.deepEqual(savedOf(next, replacing(listed.key, false)), [["yahoo-asset", "100"]]);
   assert.deepEqual([...recordsOf(next).values()].map((refs) => [...refs.keys()]), [[old.ref]]);
   // One choice replaces it: the old asset goes, and the statement's units come in under the new one.
   const replace = replacing(listed.key);
@@ -682,7 +701,7 @@ const CHOSEN = [{ ...yahoo, assetId: "yahoo-asset" }];
 /** A record without asset IDs, as versions before them saved it, reconciled by remembered choices. */
 const byChoices = (remembered, existing, choices) => reconcileRecord({ remembered }, existing, choices).remembered;
 
-test("a kept asset's import record follows it to its current symbol, so a later statement without it removes it by default", () => {
+test("a kept asset's import record follows it to its current symbol, so a later statement without it asks about it", () => {
   const records = march();
   assert.deepEqual(entriesOf(records), [[[OLD, FLEXI]]]);
   const april = statementOf("2025-04-30", folioOf("91234567 / 12", flexi("110")));
@@ -703,20 +722,20 @@ test("a kept asset's import record follows it to its current symbol, so a later 
     assert.deepEqual(savedOf(account, leftOut), [["yahoo-asset", "100"]]);
     const kept = recordsOf(account, leftOut);
     assert.deepEqual(entriesOf(kept), [[[RENAMED, FLEXI]]]);
-    // The folio's next statement lists no holdings: the asset is removed by default, with the note.
+    // The folio's next statement lists no holdings: the user is asked whether to keep the asset or set it to zero.
     const [may] = plan(statementOf("2025-05-31", folioOf("91234567 / 12")), {
       asset: () => renamed, existing: () => ({ ...heldBefore(renamed, "100"), date: "2025-04-30" }), remembered: (s) => kept.get(s.id),
     });
-    assert.deepEqual(may.positions.map((p) => [p.ref, p.include, p.notes]), [[RENAMED, false, [`Not on the statement any more. An earlier import of ${FOLIO} added it.`]]]);
-    assert.deepEqual(savedOf(may), []);
+    assert.deepEqual(may.positions.map(asking), [[RENAMED, "missing", [FOLIO], []]]);
+    assert.deepEqual(savedOf(may, keeping(may.positions[0].key, false)), []);
   }
   // A statement without the holding right after the rename: its remembered choice still tells the asset.
   const sold = heldBefore(renamed, "100");
   const [next] = plan(statementOf("2025-04-30", folioOf("91234567 / 12")), {
     existing: () => sold, remembered: (s) => byChoices(records.get(s.id), sold, CHOSEN),
   });
-  assert.deepEqual(next.positions.map((p) => [p.ref, p.include, p.notes]), [[RENAMED, false, [`Not on the statement any more. An earlier import of ${FOLIO} added it.`]]]);
-  assert.deepEqual(entriesOf(recordsOf(next, replacing(next.positions[0].key))), [[[RENAMED, FLEXI]]]);
+  assert.deepEqual(next.positions.map(asking), [[RENAMED, "missing", [FOLIO], []]]);
+  assert.deepEqual(entriesOf(recordsOf(next, keeping(next.positions[0].key, true))), [[[RENAMED, FLEXI]]]);
 });
 
 test("an import record stays with its own asset when its symbol is unchanged, has no record, or the holding is confirmed to another asset", () => {
@@ -771,7 +790,9 @@ const marchWithIds = () => {
   const [{ refs, ids }] = importedRefs(first, noChoices, new Map([[OLD, "yahoo-asset"]]));
   return { remembered: new Map(Object.entries(refs)), ids: new Map(Object.entries(ids)) };
 };
-const NOT_LISTED = `Not on the statement any more. An earlier import of ${FOLIO} added it.`;
+/** A position the statement no longer lists, asked about: its ref, `include`, question and notes. */
+const NOT_LISTED = [true, "missing", []];
+const notListed = (p) => [p.ref, p.include, p.ask?.kind, p.notes];
 /** A plan of `holdings` from the reconciled record of each source. */
 const planReconciled = (holdings, existing, reconciled, more = {}) => plan(holdings, {
   existing: () => existing, remembered: (s) => reconciled(s)?.remembered ?? new Map(), recorded: (s) => reconciled(s) ?? {}, ...more,
@@ -790,11 +811,12 @@ test("an import record follows its asset by the asset ID it recorded, whatever t
       const reconciled = reconcileRecord(record, current, choices);
       assert.deepEqual([[...reconciled.remembered], [...reconciled.ids], [...reconciled.aside]], [[[now, FLEXI]], [[now, "yahoo-asset"]], []]);
       const [account] = planReconciled(april, current, () => reconciled);
-      assert.deepEqual(account.positions.map((p) => [p.ref, p.include, p.notes]), [[now, false, [NOT_LISTED]]]);
-      assert.deepEqual(savedOf(account), []);
-      assert.deepEqual(entriesAndIds(account), [[{}, {}]]);
+      assert.deepEqual(account.positions.map(notListed), [[now, ...NOT_LISTED]]);
+      const zero = keeping(account.positions[0].key, false);
+      assert.deepEqual(savedOf(account, zero), []);
+      assert.deepEqual(entriesAndIds(account, zero), [[{}, {}]]);
       // Kept, it stays in the folio's record under its current symbol and exchange, with its ID.
-      const kept = replacing(account.positions[0].key);
+      const kept = keeping(account.positions[0].key, true);
       assert.deepEqual(savedOf(account, kept), [["yahoo-asset", "100"]]);
       assert.deepEqual(entriesAndIds(account, kept), [[{ [now]: FLEXI }, { [now]: "yahoo-asset" }]]);
     }
@@ -820,8 +842,8 @@ test("an asset's recorded ID wins over another asset that now has its symbol, or
     const followed = reconcileRecord(record, both, choices);
     assert.deepEqual([[...followed.remembered], [...followed.ids], [...followed.aside]], [[[RENAMED, FLEXI]], [[RENAMED, "yahoo-asset"]], []]);
     const [account] = planReconciled(april, both, () => followed);
-    assert.deepEqual(account.positions.map((p) => [p.ref, p.existing.assetId, p.include, p.notes]), [
-      [RENAMED, "yahoo-asset", false, [NOT_LISTED]], [OLD, "another-asset", true, []],
+    assert.deepEqual(account.positions.map((p) => [p.existing.assetId, ...notListed(p)]), [
+      ["yahoo-asset", RENAMED, ...NOT_LISTED], ["another-asset", OLD, true, undefined, []],
     ]);
   }
   // Without it, the record's holding is set aside: the other asset is kept with no note, and the folio's record
@@ -830,11 +852,11 @@ test("an asset's recorded ID wins over another asset that now has its symbol, or
   const aside = reconcileRecord(record, alone, CHOSEN);
   assert.deepEqual([[...aside.remembered], [...aside.ids], [...aside.aside]], [[], [[OLD, "yahoo-asset"]], [[OLD, FLEXI]]]);
   const [account] = planReconciled(april, alone, () => aside);
-  assert.deepEqual(account.positions.map((p) => [p.ref, p.include, p.notes]), [[OLD, true, []]]);
+  assert.deepEqual(account.positions.map(notListed), [[OLD, true, undefined, []]]);
   assert.deepEqual(entriesAndIds(account), [[{}, {}]]);
   // Without the ID, it would be the other asset's.
   const [legacy] = plan(april, { existing: () => alone, remembered: () => byChoices(record.remembered, alone, CHOSEN) });
-  assert.deepEqual(legacy.positions.map((p) => [p.ref, p.include, p.notes]), [[OLD, false, [NOT_LISTED]]]);
+  assert.deepEqual(legacy.positions.map(notListed), [[OLD, ...NOT_LISTED]]);
   // A line that may have been misread and may be either asset holds the other asset back, and keeps the record.
   const misread = statementOf("2025-04-30", { ...folioOf("91234567 / 12"), misread: [flexi("100")] });
   const [heldBack] = planReconciled(misread, alone, () => aside, { asset: () => yahoo });
@@ -852,10 +874,8 @@ test("a holding confirmed to another asset doesn't take the record of the asset 
   const reconciled = reconcileRecord(record, current, [amfi]);
   const [account] = planReconciled(statementOf("2025-04-30", folioOf("91234567 / 12", flexi("110"))), current, () => reconciled, { asset: () => amfi });
   const [listed, old] = account.positions;
-  assert.deepEqual([listed.ref, listed.include, listed.replaces], [fundRef("119551"), false, [old.key]]);
-  assert.deepEqual([old.ref, old.existing.assetId, old.replacedBy, old.notes], [
-    RENAMED, "yahoo-asset", listed.key, [`An earlier import of ${FOLIO} added it for a holding that this import lists under ${AMFI}. It's kept unless you replace it with ${AMFI}.`],
-  ]);
+  assert.deepEqual([listed.ref, listed.include, listed.replaces, listed.ask?.kind], [fundRef("119551"), false, [old.key], "replace"]);
+  assert.deepEqual([old.ref, old.existing.assetId, old.replacedBy, old.notes], [RENAMED, "yahoo-asset", listed.key, []]);
   // Kept, the old asset's record keeps its ID; replaced, the new asset's record has the ID its save gave it.
   assert.deepEqual(entriesAndIds(account), [[{ [RENAMED]: FLEXI }, { [RENAMED]: "yahoo-asset" }]]);
   assert.deepEqual(unidentified(account, replacing(listed.key)), [fundRef("119551")]);
@@ -903,8 +923,7 @@ test("replacement names distinguish the same symbol on different exchanges", () 
   assert.equal(assetName(old), "Example Share (EXAMPLE · XBOM)");
   assert.equal(assetName(listed), "Example Share (EXAMPLE · XNSE)");
   assert.equal(assetNames([old, listed]), "Example Share (EXAMPLE · XBOM) and Example Share (EXAMPLE · XNSE)");
-  assert.match(old.notes[0], /Example Share \(EXAMPLE · XNSE\)/);
-  assert.match(listed.notes[0], /Example Share \(EXAMPLE · XBOM\)/);
+  assert.deepEqual([listed.ask?.kind, listed.notes, old.notes], ["replace", [], []]);
   assert.deepEqual(savedOf(next), [["yahoo-asset", "100"]]);
   assert.deepEqual(savedOf(next, replacing(listed.key)), [["EXAMPLE", "110"]]);
 });
@@ -927,7 +946,7 @@ test("a summary fund that now prints its ISIN can replace the asset priced from 
   const [listed, old] = next.positions;
   assert.equal(listed.ref, ref("INFZ91T01ON3"));
   assert.deepEqual([listed.include, listed.replaces, old.include, old.replacedBy], [false, [old.key], true, listed.key]);
-  assert.match(listed.notes[0], /^An earlier import of Testbridge Mutual Fund, folio 1040012345 added this holding as Testbridge Overnight Fund \(MF-KFINTECH-TONDG\)\./);
+  assert.deepEqual([listed.ask?.kind, listed.notes], ["replace", []]);
   assert.deepEqual(savedOf(next), [["statement-priced", "12.5"]]);
   assert.deepEqual(savedOf(next, replacing(listed.key)), [["INFZ91T01ON3", "13"]]);
   // Kept, it gets the price it had; replaced, the new asset isn't priced by hand, so nothing is saved.
@@ -944,8 +963,7 @@ test("an asset several folios added is replaced whole; one that may hold other u
   const [shared] = plan(later, { asset: () => amfi, existing: () => heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id) ?? new Map() });
   const [listed, old] = shared.positions;
   assert.deepEqual(listed.replaces, [old.key]);
-  assert.match(listed.notes[0], new RegExp(`^An earlier import of ${both} added this holding as .*Replace it only if all its units came from ${both}:`));
-  assert.equal(old.notes[0], `An earlier import of ${both} added it for holdings that this import lists under ${AMFI}. It's kept unless you replace it with ${AMFI}.`);
+  assert.deepEqual([listed.ask?.kind, listed.notes, old.notes], ["replace", [], []]);
   assert.deepEqual(savedOf(shared), [["yahoo-asset", "100"]]);
   assert.deepEqual(savedOf(shared, replacing(listed.key)), [["119551", "120"]]);
 
@@ -955,20 +973,20 @@ test("an asset several folios added is replaced whole; one that may hold other u
   const [twoFunds] = plan(statementOf("2025-03-31", folioOf("1", flexi("60"), other)), { asset: () => yahoo });
   const twoRecords = recordsOf(twoFunds);
   const mixedNote = `An earlier import of Fictiva Mutual Fund, folio 1 added it for a holding that this import lists under ${AMFI}. ` +
-    `The add-on can't tell how many of its units that holding accounts for, so it's kept and ${AMFI} is left out by default. ` +
-    "If you keep both, correct this holding's units in Wealthfolio so that they aren't counted twice.";
+    `The add-on can't tell how many of its units that holding accounts for, so it's kept and ${AMFI} is left out, so that they aren't counted twice.`;
   const [mixed] = plan(statementOf("2025-04-30", folioOf("1", flexi("66"), other)), {
     asset: (h) => (h.isin === "INFZ90K01FC8" ? amfi : undefined), existing: () => heldBefore(yahoo, "65"), remembered: (s) => twoRecords.get(s.id),
   });
   const [mixedListed, mixedOld] = mixed.positions;
   assert.deepEqual([mixedListed.include, mixedListed.replaces, mixedOld.include, mixedOld.replacedBy], [false, undefined, true, undefined]);
   assert.deepEqual(mixedListed.notes, [
-    `An earlier import of Fictiva Mutual Fund, folio 1 added this holding as ${YAHOO}, which may also hold other units, so it's left out by default. ` +
-    `If you keep both, correct the units of ${YAHOO} in Wealthfolio so that they aren't counted twice.`,
+    `An earlier import of Fictiva Mutual Fund, folio 1 added this holding as ${YAHOO}, which may also hold other units, so this row is left out and the account keeps ${YAHOO} as it is, so that its units aren't counted twice.`,
   ]);
   assert.deepEqual(mixedOld.notes, [mixedNote]);
+  // Neither is asked about: it's kept with the notes.
+  assert.deepEqual([mixedListed.ask, mixedOld.ask, mixedOld.removable], [undefined, undefined, undefined]);
   assert.deepEqual(savedOf(mixed), [["yahoo-asset", "65"]]);
-  // Each row has its own choice: importing the statement's units keeps the old asset too, as the notes warn.
+  // The planner keeps each row's own default: turning the statement row around keeps the old asset too.
   assert.deepEqual(savedOf(mixed, replacing(mixedListed.key)), [["yahoo-asset", "65"], ["119551", "66"]]);
   assert.deepEqual(savedOf(mixed, replacing(mixedOld.key)), []);
 
@@ -1038,11 +1056,8 @@ test("an asset is only replaced by a holding an earlier import of the same folio
     "Mutual funds already holds this fund, from its transactions. Including it here counts it twice.",
     `An earlier import of Fictiva Mutual Fund, folio 1 added this holding as ${YAHOO}.`,
   ]);
-  assert.deepEqual(old.notes, [
-    `An earlier import of Fictiva Mutual Fund, folio 1 added it for a holding that this import lists under ${AMFI}. ` +
-    "Mutual funds already holds that holding, so keeping this one counts its units in both accounts. " +
-    "Keep it, or remove it only if all its units came from Fictiva Mutual Fund, folio 1: imports don't record how many units each folio, demat account or PRAN added.",
-  ]);
+  // Asked as an overlap of the statement row it was added for.
+  assert.deepEqual([old.ask, old.notes], [{ kind: "overlap", tracked: [{ name: "Mutual funds", tracksTransactions: true }], row: listed.key }, []]);
   assert.deepEqual([undecided(old, noChoices), undecided(listed, noChoices), undecided(old, keeping(old.key, true))], [true, false, false]);
   assert.deepEqual(savedOf(overlap, keeping(old.key, true)), [["yahoo-asset", "100"]]);
   assert.deepEqual(savedOf(overlap, keeping(old.key, false)), []);
@@ -1107,11 +1122,8 @@ test("a fund left out for overlap that an earlier import of its folio added need
   assert.equal(account.positions.length, 1);
   const [row] = account.positions;
   assert.deepEqual([row.include, row.existing.assetId, row.removable.map((s) => s.label)], [false, "flexi-asset", [FOLIO]]);
-  assert.deepEqual(row.notes, [
-    OVERLAP,
-    `An earlier import of ${FOLIO} recorded adding this holding. Leaving this row out keeps the 100 units this account holds unless you remove them. Keeping them counts them here and in Mutual funds. ` +
-    `Keep them, or remove them only if all of them came from ${FOLIO}: imports don't record how many units each folio, demat account or PRAN added.`,
-  ]);
+  assert.deepEqual(row.notes, [OVERLAP]);
+  assert.deepEqual(row.ask, { kind: "overlap", tracked: [{ name: "Mutual funds", tracksTransactions: true }], row: row.key });
   // Saving waits for the choice.
   assert.equal(undecided(row, noChoices), true);
   assert.equal(undecided(row, keeping(row.key, true)), false);
@@ -1153,7 +1165,7 @@ test("a fund left out for overlap that an earlier import of its folio added need
     asset: () => amfi, existing: () => flexiAsset("100"), remembered: (s) => twoRecords.get(s.id), heldElsewhere: tracking,
   });
   assert.deepEqual(two.positions.map((p) => p.removable?.map((s) => s.label)), [["Fictiva Mutual Fund, folio 1", "Fictiva Mutual Fund, folio 2"]]);
-  assert.match(two.positions[0].notes[1], new RegExp(`^An earlier import of ${both} recorded adding this holding\\. Leaving this row out keeps the 100 units .* came from ${both}:`));
+  assert.deepEqual(two.positions[0].notes, [OVERLAP]);
   assert.deepEqual(savedOf(two, keeping(two.positions[0].key, false)), []);
 });
 
@@ -1212,7 +1224,7 @@ const sharesHeld = (...held) => ({
 const recorded = (...isins) => new Map(isins.map((isin) => [ref(isin), [isin]]));
 const withoutDemat2 = (s) => (s.id === "demat|2|2" ? undefined : "holdings-1");
 
-test("a holding that a left-out source's earlier import added keeps its units unless the user imports the statement's", () => {
+test("a holding that a left-out source's earlier import added keeps its units, with a note", () => {
   const next = statementOf("2025-04-30", demat(1, share(S, "100")), demat(2, share(S, "50"), share(T, "10")));
   const records = new Map([["demat|1|1", recorded(S)], ["demat|2|2", recorded(S, T)]]);
   const [account] = plan(next, {
@@ -1220,17 +1232,17 @@ test("a holding that a left-out source's earlier import added keeps its units un
   });
   const [shared, unshared] = account.positions;
   assert.deepEqual([shared.ref, shared.units, shared.include], [ref(S), "100", false]);
-  assert.deepEqual(shared.notes, [
+  assert.deepEqual([shared.notes, shared.ask], [[
     "An earlier import of Demat account 2, which this import leaves out, recorded adding this holding. " +
-    "Importing this row replaces the 150 units this account holds with the statement's 100, which don't count any that Demat account 2 holds, so it's left out by default. " +
-    "Import it only if Demat account 2 no longer holds any.",
-  ]);
+    "Importing this row would replace the 150 units this account holds with the statement's 100, which don't count any that Demat account 2 holds, so it's left out and the account keeps its units. " +
+    "To update them, save Demat account 2 too.",
+  ], undefined]);
   // T is only Demat account 2's, so it stays as before, with no note.
   assert.deepEqual([unshared.ref, unshared.include, unshared.notes], [ref(T), true, []]);
   assert.deepEqual(savedOf(account), [[`asset-${S}`, "150"], [`asset-${T}`, "10"]]);
   // Demat account 1 still recorded adding S, whose units stay.
   assert.deepEqual([...recordsOf(account)].map(([id, refs]) => [id, [...refs.keys()]]), [["demat|1|1", [ref(S)]]]);
-  // The user can still import the statement's units.
+  // The planner still imports the statement's units when the row is turned around.
   assert.deepEqual(savedOf(account, replacing(shared.key)), [[`asset-${T}`, "10"], [`asset-${S}`, "100"]]);
 
   // Without Demat account 2's record of S, the statement's units replace the account's, as before.
@@ -1279,16 +1291,16 @@ test("a holding that a left-out source's earlier import added is kept when the a
   const account = sold(new Map([["demat|1|1", recorded(S, U)], ["demat|2|2", recorded(S, U)]]));
   const row = account.positions.find((p) => p.ref === ref(U));
   assert.equal(row.include, true);
-  assert.deepEqual(row.notes, [
+  assert.deepEqual([row.notes, row.ask], [[
     "An earlier import of Demat account 1 added it, and Demat account 1 no longer lists it. " +
     "An earlier import of Demat account 2, which this import leaves out, added it too, so it's kept. " +
-    "Remove it only if Demat account 2 no longer holds any. If you keep it, correct its units in Wealthfolio: they may include some that came from Demat account 1.",
-  ]);
+    "Correct its units in Wealthfolio after saving: they may include some that came from Demat account 1, and none are left if Demat account 2 no longer holds any.",
+  ], undefined]);
   assert.deepEqual(savedOf(account), [[`asset-${S}`, "150"], [`asset-${U}`, "30"]]);
   assert.deepEqual(savedOf(account, replacing(row.key)), [[`asset-${S}`, "150"]]);
-  // Only Demat account 1 added it: it's removed by default, as before.
+  // Only Demat account 1 added it: it's asked about.
   const own = sold(new Map([["demat|1|1", recorded(S, U)], ["demat|2|2", recorded(S)]])).positions.find((p) => p.ref === ref(U));
-  assert.deepEqual([own.include, own.notes], [false, ["Not on the statement any more. An earlier import of Demat account 1 added it."]]);
+  assert.deepEqual(asking(own), [ref(U), "missing", ["Demat account 1"], []]);
 });
 
 test("an asset that a left-out source's earlier import added isn't offered for replacement or removal", () => {
@@ -1301,13 +1313,11 @@ test("an asset that a left-out source's earlier import added isn't offered for r
   const [listed, old] = moved.positions;
   assert.deepEqual([listed.include, listed.replaces, old.include, old.replacedBy], [false, undefined, true, undefined]);
   assert.deepEqual(listed.notes, [
-    `An earlier import of Fictiva Mutual Fund, folio 1 added this holding as ${YAHOO}, which may also hold other units, so it's left out by default. ` +
-    `If you keep both, correct the units of ${YAHOO} in Wealthfolio so that they aren't counted twice.`,
+    `An earlier import of Fictiva Mutual Fund, folio 1 added this holding as ${YAHOO}, which may also hold other units, so this row is left out and the account keeps ${YAHOO} as it is, so that its units aren't counted twice.`,
   ]);
   assert.deepEqual(old.notes, [
     `An earlier import of Fictiva Mutual Fund, folio 1 added it for a holding that this import lists under ${AMFI}. ` +
-    `The add-on can't tell how many of its units that holding accounts for, so it's kept and ${AMFI} is left out by default. ` +
-    "If you keep both, correct this holding's units in Wealthfolio so that they aren't counted twice.",
+    `The add-on can't tell how many of its units that holding accounts for, so it's kept and ${AMFI} is left out, so that they aren't counted twice.`,
     LEFT_OUT,
   ]);
   assert.deepEqual(savedOf(moved), [["yahoo-asset", "100"]]);
@@ -1328,7 +1338,7 @@ test("an asset that a left-out source's earlier import added isn't offered for r
   assert.deepEqual(row.notes, [
     OVERLAP,
     "An earlier import of Fictiva Mutual Fund, folio 2, which this import leaves out, recorded adding this holding. " +
-    "Importing this row replaces the 100 units this account holds with the statement's 66, which don't count any that Fictiva Mutual Fund, folio 2 holds.",
+    "Importing this row would replace the 100 units this account holds with the statement's 66, which don't count any that Fictiva Mutual Fund, folio 2 holds.",
     "Leaving this row out keeps this account's 100 units of it, so Mutual funds may count them too. " +
     "An earlier import of Fictiva Mutual Fund, folio 1 recorded adding this holding, but its units may also include others. Check them in Wealthfolio.",
   ]);
@@ -1351,7 +1361,7 @@ test("importing a shared row clears it from the left-out source's record, so the
   });
   const [shared, unshared] = account.positions;
   assert.deepEqual([shared.ref, shared.include, unshared.ref, unshared.include, unshared.notes], [ref(S), false, ref(T), true, []]);
-  assert.match(shared.notes[0], /^An earlier import of Demat account 2, which this import leaves out, recorded adding this holding\. .* Import it only if Demat account 2 no longer holds any\.$/);
+  assert.match(shared.notes[0], /^An earlier import of Demat account 2, which this import leaves out, recorded adding this holding\. .* To update them, save Demat account 2 too\.$/);
   // Left out, the account keeps its units, and Demat account 2 its record.
   assert.deepEqual(savedOf(account), [[`asset-${S}`, "150"], [`asset-${T}`, "10"]]);
   assert.deepEqual(recordedRefs(account), [["demat|1|1", [ref(S)]]]);
@@ -1449,8 +1459,8 @@ test("replacing an old asset, or removing a fund left out for overlap, clears on
   assert.deepEqual(recordedRefs(overlap, keeping(row.key, false)), [["folio|1|amc:Fictiva Mutual Fund", []]]);
 });
 
-const UNLISTED_NOTE = "An earlier import added it from a folio, demat account or PRAN that this statement doesn't list. " +
-  "Check whether it was redeemed, sold or moved, and untick Keep if so.";
+const UNLISTED_NOTE = "An earlier import added it from a folio, demat account or PRAN that this statement doesn't list, so it's kept. " +
+  "Check whether it was redeemed, sold or moved, and if so, correct its units in Wealthfolio after saving.";
 const UNLISTED_TOO = "An earlier import of a folio, demat account or PRAN that this statement doesn't list added it too.";
 /** The account's snapshot after `account`'s import, as a later import reads it. */
 const heldAfter = (account, date, choices = noChoices) => ({
@@ -1485,7 +1495,7 @@ test("a fund that an earlier import of a folio the statement doesn't list added 
     existing: () => heldAfter(account, "2025-04-30"), remembered: (s) => records.get(s.id), unlisted: omitted,
   });
   assert.deepEqual(may.positions.find((p) => p.ref === ref("INFZ90K01BA1")).notes, [UNLISTED_NOTE]);
-  // Unticked, it's removed, and so is it from its folio's record.
+  // Turned around in the planner, it's removed, and so is it from its folio's record.
   const removed = replacing(row("INFZ90K01BA1").key);
   assert.ok(!snapshotOf(account, removed).holdings.some((h) => h.assetId === "asset-INFZ90K01BA1"));
   assert.deepEqual(unlistedRefs(account, removed), [{ keys: [`key of ${balancedFolio}`], refs: {}, ids: {} }]);
@@ -1502,7 +1512,7 @@ test("a fund that an earlier import of a folio the statement doesn't list added 
     existing: () => heldAfter(account, "2025-04-30"), remembered: (s) => records.get(s.id), unlisted: unlistedOf(records, otherFolio),
   });
   const without = gone.positions.find((p) => p.ref === ref("INFZ90K01BA1"));
-  assert.deepEqual([without.include, without.notes], [false, ["Not on the statement any more. An earlier import of Fictiva Mutual Fund, folio 91234570/0 added it."]]);
+  assert.deepEqual(asking(without), [ref("INFZ90K01BA1"), "missing", ["Fictiva Mutual Fund, folio 91234570/0"], []]);
 
   // Without a record of the folio, such as an unindexed one, its fund is kept with no note, as before.
   const [unindexed] = plan(april, { existing: () => heldAfter(first, "2025-03-31"), remembered: (s) => records.get(s.id) });
@@ -1613,7 +1623,7 @@ test("a holding a listed source no longer lists is kept when an unlisted source 
   assert.deepEqual(kept.notes, [
     "An earlier import of Demat account 1 added it, and Demat account 1 no longer lists it. " +
     "An earlier import of Demat account 3, which this import leaves out, added it too, so it's kept. " +
-    "Remove it only if Demat account 3 no longer holds any. If you keep it, correct its units in Wealthfolio: they may include some that came from Demat account 1.",
+    "Correct its units in Wealthfolio after saving: they may include some that came from Demat account 1, and none are left if Demat account 3 no longer holds any.",
     UNLISTED_TOO,
   ]);
   const [account] = plan(statementOf("2025-04-30", demat(1, share(S, "100"))), {
@@ -1624,11 +1634,10 @@ test("a holding a listed source no longer lists is kept when an unlisted source 
   assert.deepEqual(row.notes, [
     "An earlier import of Demat account 1 added it, and Demat account 1 no longer lists it. " +
     "An earlier import of a folio, demat account or PRAN that this statement doesn't list added it too, so it's kept. " +
-    "Check whether it was redeemed, sold or moved from there too, and untick Keep if so. " +
-    "If you keep it, correct its units in Wealthfolio: they may include some that came from Demat account 1.",
+    "Check whether it was redeemed, sold or moved from there too, and correct its units in Wealthfolio after saving: they may include some that came from Demat account 1.",
   ]);
   assert.deepEqual(savedOf(account), [[`asset-${U}`, "30"], [`asset-${S}`, "100"]]);
-  // Removing it clears it from every record that has it.
+  // Turned around in the planner, removing it clears it from every record that has it.
   assert.deepEqual(unlistedRefs(account, replacing(row.key)), [{ keys: ["key of demat|2|2"], refs: {}, ids: {} }]);
   assert.deepEqual(recordedRefs(account, replacing(row.key)), [["demat|1|1", [ref(S)]]]);
   // A left-out source's record as well as an unlisted one's, and no listed source's.
@@ -1639,7 +1648,7 @@ test("a holding a listed source no longer lists is kept when an unlisted source 
   })[0].positions.find((p) => p.ref === ref(U));
   assert.deepEqual([both.include, both.notes], [true, [
     UNLISTED_NOTE,
-    "An earlier import of Demat account 3, which this import leaves out, added it too: untick Keep only if Demat account 3 no longer holds any.",
+    "An earlier import of Demat account 3, which this import leaves out, added it too.",
   ]]);
 });
 
@@ -1676,7 +1685,7 @@ const sharesPlan = (holdings, held, records, more = {}) => plan(holdings, {
   account: toOtherShares, accountName, existing: (id) => (id === "holdings-1" ? held : none),
   remembered: (s, id) => (id === "holdings-1" && records.get(s.id)) || new Map(), ...more,
 })[0];
-const UNSURE = "A listed holding lacks a comparable identifier. Check whether to keep this earlier imported holding.";
+const UNSURE = "A listed holding lacks a comparable identifier, so this earlier imported holding is kept. Check it in Wealthfolio after saving.";
 /** A share the statement prints without an ISIN, and that's left out of the import. */
 const unnamed = { ...share(null, "1"), name: "Share without an ISIN" };
 const withIsin = (h) => (h.isin ? asset(h) : undefined);
@@ -1688,14 +1697,10 @@ test("units that a moved demat account's earlier import added are never removed 
   assert.deepEqual(account.reassigned.map((r) => [r.source.id, r.to]), [["demat|2|2", "holdings-2"]]);
   const row = account.positions.find((p) => p.ref === ref(T));
   assert.deepEqual([row.include, row.removable.map((s) => s.label), undecided(row, noChoices)], [true, ["Demat account 2"], true]);
-  assert.deepEqual(row.notes, [
-    "An earlier import of Demat account 2 recorded adding this holding here. Demat account 2 now goes to Other shares and still lists it. " +
-    "Keeping this account's 15 units may count them here and in Other shares. " +
-    "Keep them, or remove them only if all of them came from Demat account 2: imports don't record how many units each folio, demat account or PRAN added.",
-  ]);
+  assert.deepEqual([row.ask, row.notes], [{ kind: "moved", moved: [{ source: account.reassigned[0].source, account: "Other shares" }] }, []]);
   assert.deepEqual(savedOf(account, keeping(row.key, true)), [[`asset-${T}`, "15"], [`asset-${S}`, "150"]]);
   assert.deepEqual(savedOf(account, keeping(row.key, false)), [[`asset-${S}`, "150"]]);
-  // Only the user's choice removes them: unticking a box doesn't.
+  // Only the user's answer removes them: turning the row around doesn't.
   assert.deepEqual(savedOf(account, replacing(row.key)), [[`asset-${T}`, "15"], [`asset-${S}`, "150"]]);
   // Its record in another account doesn't count, nor does one of a holding the account doesn't have.
   const elsewhere = plan(statementOf("2025-04-30", demat(1, share(S, "150")), demat(2, share(T, "10"))), {
@@ -1710,17 +1715,15 @@ test("a holding a moved demat account's earlier import added with others' is kep
   const held = sharesHeld([S, "150"], [T, "15"]);
   const rowOf = (account) => account.positions.find((p) => p.ref === ref(T));
   const MOVED = "Demat account 2 now goes to Other shares and still lists it.";
-  const KEEP = "If you keep it, correct its units in Wealthfolio: those that came from Demat account 2 may be counted in Other shares too.";
+  const KEEP = "Correct its units in Wealthfolio after saving: those that came from Demat account 2 may be counted in Other shares too.";
   // Demat account 1 recorded it too, and no longer lists it: removing it is still the user's choice, naming both.
   const both = rowOf(sharesPlan(april, held, new Map([["demat|1|1", recorded(S, T)], ["demat|2|2", recorded(T)]])));
-  assert.deepEqual([both.include, both.removable.map((s) => s.label), both.notes], [true, ["Demat account 1", "Demat account 2"], [
-    `An earlier import of Demat account 1 and Demat account 2 recorded adding this holding here. Demat account 1 no longer lists it. ${MOVED} ` +
-    "Keeping this account's 15 units may count them here and in Other shares. Keep them, or remove them only if all of them came from Demat account 1 and Demat account 2: " +
-    "imports don't record how many units each folio, demat account or PRAN added.",
-  ]]);
-  // Without demat account 2's record, demat account 1's alone removes it by default, as before.
+  assert.deepEqual([both.include, both.removable.map((s) => s.label), both.ask.kind, both.ask.moved.map((m) => [m.source.label, m.account]), both.notes], [
+    true, ["Demat account 1", "Demat account 2"], "moved", [["Demat account 2", "Other shares"]], [],
+  ]);
+  // Without demat account 2's record, demat account 1's alone asks whether it's still held.
   const own = rowOf(sharesPlan(april, held, new Map([["demat|1|1", recorded(S, T)]])));
-  assert.deepEqual([own.include, own.removable, own.notes], [false, undefined, ["Not on the statement any more. An earlier import of Demat account 1 added it."]]);
+  assert.deepEqual([own.include, ...asking(own)], [true, ref(T), "missing", ["Demat account 1"], []]);
   // Demat account 3, left out, recorded it too.
   const leftOut = rowOf(sharesPlan(april, held, new Map([["demat|1|1", recorded(S)], ["demat|2|2", recorded(T)], ["demat|3|3", recorded(T)]])));
   assert.deepEqual([leftOut.include, leftOut.removable, leftOut.notes], [true, undefined, [
@@ -2953,4 +2956,20 @@ test("a statement's price that isn't positive is never saved", () => {
     }
   }
   assert.deepEqual(pricesToSave(held, keep, new Map([[ref("INEZ1"), "11"]])).map((p) => [p.price, p.from]), [["11", "statement"]]);
+});
+
+test("a holding one source no longer lists is kept with a note, not asked about, when another's line may be it", () => {
+  const U = "INEZ90U01013";
+  // Demat account 1 no longer lists U; demat account 2, which recorded it too, lists a share without an ISIN that may be it.
+  const next = statementOf("2025-04-30", demat(1, share(S, "100")), demat(2, unnamed));
+  const records = new Map([["demat|1|1", recorded(S, U)], ["demat|2|2", recorded(U)]]);
+  const [account] = plan(next, { asset: withIsin, existing: () => sharesHeld([S, "100"], [U, "30"]), remembered: (s) => records.get(s.id) ?? new Map() });
+  const row = account.positions.find((p) => p.ref === ref(U));
+  assert.deepEqual([row.include, row.ask, row.removable, undecided(row, noChoices)], [true, undefined, undefined, false]);
+  assert.deepEqual(row.notes, [
+    "An earlier import of Demat account 1 added it, and Demat account 1 no longer lists it, but its units may also include others, so it's kept. " +
+    "Correct its units in Wealthfolio after saving: they may include some that came from Demat account 1.",
+    UNSURE,
+  ]);
+  assert.deepEqual(savedOf(account), [[`asset-${U}`, "30"], [`asset-${S}`, "100"]]);
 });

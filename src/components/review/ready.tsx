@@ -205,7 +205,9 @@ function RowHead({ ctx, row, handlers }: { ctx: AddonContext; row: ReadyRow; han
   const currency = otherCurrency(row.fund.quoteCcy);
   const listed = row.fund.statementPrices ? undefined : listingName(row.fund);
   return (
-    <div className="grid gap-1">
+    // A long name with no spaces wraps in the stacked list; break-word, unlike anywhere, leaves the
+    // table's column widths as they are.
+    <div className="grid gap-1" style={{ overflowWrap: "break-word" }}>
       <span>
         <span className="font-semibold">{row.name}</span>
         {own && <PlanBadges own={own} statement={statement} />}

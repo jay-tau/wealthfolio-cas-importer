@@ -363,7 +363,7 @@ test("a merged unplanned Change follows its selected holding when the old row su
 });
 
 for (const hidden of [false, true]) {
-  test(`an unplanned Change ${hidden ? "closes when Before saving is hidden" : "follows an excluded row into Before saving"}`, async () => {
+  test(`an unplanned Change follows an excluded row into Not included${hidden ? ", while another account question is open" : ""}`, async () => {
     const b = source("selected", [holding("ISINB")]);
     const ignored = source("ignored", [holding("ISINB")]);
     const unassigned = source("unassigned", [holding("ISINA")]);
@@ -389,22 +389,14 @@ for (const hidden of [false, true]) {
     document.getElementById = () => ({ dataset: {}, focus() { focused = true; }, scrollIntoView() {} });
     find(run, "SaveTo").onChange(sourceKey(b), "A");
     await run.flush();
-    const before = find(run, "BeforeSaving");
+    // Left out so that units aren't counted twice, with its note, and its Change stays open there.
+    const [row] = find(run, "NotIncluded").defaulted;
     assert.equal(focused, false);
-    if (hidden) {
-      assert.equal(before, undefined);
-      ready = find(run, "ReadyTable");
-      assert.equal(ready.handlers.changing, undefined);
-      assert.equal(ready.handlers.nag, false);
-      assert.notEqual(find(run, "Footer").go?.label, "Go to it");
-    } else {
-      const position = before.plan.positions.find((p) => p.lines.length);
-      const panel = before.change(position);
-      assert.ok(nodes(panel).some((node) => node.type?.name === "Picker"));
-      nodes(panel).find((node) => node.props?.children === "Cancel").props.onClick();
-      await run.flush();
-      assert.notEqual(find(run, "Footer").go?.label, "Go to it");
-    }
+    assert.match(row.notes[0], /^An earlier import of selected?|^An earlier import of ignored/);
+    assert.ok(nodes(row.panel).some((node) => node.type?.name === "Picker"));
+    nodes(row.panel).find((node) => node.props?.children === "Cancel").props.onClick();
+    await run.flush();
+    assert.notEqual(find(run, "Footer").go?.label, "Go to it");
   });
 }
 
@@ -803,41 +795,53 @@ test("answering a holding as an existing row clears that row's old total and ope
   assert.equal(ready.rows[0].cost, undefined, "reopening the answer changes the aggregate too");
 });
 
-test("removing a statement row under Before saving clears its cost and closes its cost editor", async () => {
+test("a replacement asked about waits for its answer, and changing it back clears the row's cost and closes its cost editor", async () => {
   const x = holding("ISINX");
   const first = source("X", [x]);
-  const ignored = source("Y", [{ ...x }]);
-  const { run, props, api } = setup([first, ignored]);
-  props.accountChoices[sourceKey(ignored)] = LEFT_OUT;
+  const { run, api } = setup([first]);
+  // An earlier import of X added the holding as another listing, OLD.
   api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
-  api.snapshots.getByDate = async () => [{ holdingType: "security", quantity: "10", costBasis: null, localCurrency: "INR", instrument: { id: "old", name: x.name, symbol: x.isin, quoteMode: "MARKET" } }];
-  api.assets.getProfile = async () => ({ instrumentSymbol: x.isin, instrumentExchangeMic: "XBOM" });
+  api.snapshots.getByDate = async () => [{ holdingType: "security", quantity: "10", costBasis: null, localCurrency: "INR", instrument: { id: "old", name: "Old listing", symbol: "OLD", quoteMode: "MARKET" } }];
+  api.assets.getProfile = async () => ({ instrumentSymbol: "OLD", instrumentExchangeMic: "XBOM" });
   const stored = new Map();
   api.storage.get = async (key) => stored.get(key) ?? null;
   api.storage.set = async (key, value) => stored.set(key, value);
   const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
-  await saveImported(api.storage, ignored, "A", "2025-02-28", { "ISINX@XBOM": [x.isin] });
+  await saveImported(api.storage, first, "A", "2025-02-28", { "OLD@XBOM": [x.isin] });
   await run.flush();
-  let before = find(run, "BeforeSaving");
-  const position = before.plan.positions.find((p) => p.lines.length);
-  assert.equal(position.include, false);
-  before.onFlip(position.key);
+  let card = find(run, "AskCard");
+  assert.equal(card.title, "Example ISINX is now matched to Example ISINX (ISINX · XBOM)");
+  assert.equal(card.main.label, "Keep Old listing for now");
+  assert.equal(card.other.name, "Replace Old listing with Example ISINX: Example ISINX in A");
+  assert.equal(find(run, "ReadyTable"), undefined);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  card.other.onClick();
   await run.flush();
+  assert.equal(find(run, "AskAnswered").text, "Example ISINX: Old listing replaced with Example ISINX");
+  assert.equal(find(run, "Footer").action.disabled, false);
   await saveCost(run, x.isin, "100");
   let ready = find(run, "ReadyTable");
+  assert.equal(ready.rows[0].cost.total, "100");
   ready.handlers.onCost(ready.rows[0]);
   await run.flush();
   find(run, "ReadyTable").handlers.onDraft("200");
   await run.flush();
-  find(run, "BeforeSaving").onFlip(position.key);
+  // Changing the answer leaves the row out again: its cost and open edit go.
+  find(run, "AskAnswered").onChange();
   await run.flush();
   assert.equal(find(run, "ReadyTable"), undefined);
-  assert.equal(find(run, "Footer").action.disabled, false);
-  find(run, "BeforeSaving").onFlip(position.key);
+  card = find(run, "AskCard");
+  card.other.onClick();
   await run.flush();
   ready = find(run, "ReadyTable");
   assert.equal(ready.rows[0].cost, undefined);
   assert.equal(ready.handlers.editing, undefined);
+  // Keeping the old listing leaves the row out, saying why, with its Change.
+  find(run, "AskAnswered").onChange();
+  await run.flush();
+  find(run, "AskCard").main.onClick();
+  await run.flush();
+  assert.deepEqual(find(run, "NotIncluded").defaulted.map((r) => [r.name, r.notes]), [["Example ISINX", ["A keeps Old listing (OLD · XBOM) for now, by your answer above."]]]);
 });
 
 test("saving a shared overlap includes every contributing holding and either warning can exclude it", async () => {
@@ -1042,7 +1046,8 @@ test("a resolved statement-price choice shows the asset's current market pricing
   assert.equal(profiles, reads + 1, "the source hook checks the resolved asset's current provider");
 });
 
-async function beforeSavingEditor(mode) {
+/** A Change open on a statement row left out so that units aren't counted twice, under Not included, with a typed draft. */
+async function leftOutEditor(mode) {
   const a = source("A", [holding("ISINA")]);
   const b = source("B", [holding("ISINB")]);
   const ignored = source("ignored", [holding("ISINB")]);
@@ -1065,16 +1070,13 @@ async function beforeSavingEditor(mode) {
     find(run, "QuestionCard").onAnswer(answer);
     await run.flush();
   }
-  const before = find(run, "BeforeSaving");
-  const position = before.plan.positions.find((p) => p.lines.some((line) => line.holding.isin === "ISINB"));
-  assert.equal(position.include, false);
-  nodes(before.change(position)).find((node) => node.type?.name === "LinkButton").props.onClick();
+  const row = () => find(run, "NotIncluded").defaulted.find((r) => r.name.startsWith("Example ISINB"));
+  assert.ok(row(), "left out so that units aren't counted twice");
+  nodes(row().change).find((node) => node.type?.name === "LinkButton").props.onClick();
   await run.flush();
   const picker = () => {
-    const current = find(run, "BeforeSaving");
-    const p = current.plan.positions.find((p) => p.lines.some((line) => line.holding.isin === "ISINB"));
-    const panel = current.change(p);
-    return { panel, props: nodes(panel).find((node) => node.type?.name === "Picker").props };
+    const panel = row()?.panel;
+    return { panel, props: nodes(panel).find((node) => node.type?.name === "Picker")?.props };
   };
   const opened = picker().props;
   opened.searches.setText(opened.item.key, "typed B draft");
@@ -1082,8 +1084,8 @@ async function beforeSavingEditor(mode) {
   return { run, a, b, picker };
 }
 
-test("reopening an answer keeps an excluded holding's Before saving Change editor visible", async () => {
-  const { run, picker } = await beforeSavingEditor("answer");
+test("reopening an answer keeps an excluded holding's Change editor visible", async () => {
+  const { run, picker } = await leftOutEditor("answer");
   find(run, "AnsweredLine").onChange();
   await run.flush();
   assert.equal(find(run, "QuestionCard"), undefined);
@@ -1093,22 +1095,23 @@ test("reopening an answer keeps an excluded holding's Before saving Change edito
   assert.ok(JSON.stringify(kept.panel).includes("Save or cancel this edit first."));
 });
 
-test("account changes cannot hide an applicable Before saving editor behind new holding or account questions", async () => {
+test("account changes that add holding or account questions leave a Change on a left-out row open, with its draft", async () => {
   for (const mode of ["holding", "account"]) {
-    const { run, a, b, picker } = await beforeSavingEditor(mode);
-    const before = find(run, "SaveTo").values[sourceKey(a)];
+    const { run, a, b, picker } = await leftOutEditor(mode);
     find(run, "SaveTo").onChange(sourceKey(a), mode === "holding" ? "A" : "");
     await run.flush();
-    assert.equal(find(run, "SaveTo").values[sourceKey(a)], before);
-    assert.equal(find(run, "QuestionCard"), undefined);
+    assert.equal(find(run, "SaveTo").values[sourceKey(a)], mode === "holding" ? "A" : "");
+    if (mode === "holding") assert.ok(find(run, "QuestionCard"), "the holding is asked about");
     const kept = picker();
     assert.equal(kept.props.item.key, "isin:ISINB");
     assert.equal(kept.props.search.text, "typed B draft");
-    assert.ok(JSON.stringify(kept.panel).includes("Save or cancel this edit first."));
+    assert.ok(!JSON.stringify(kept.panel).includes("Save or cancel this edit first."));
+    // Moving the edited holding to another account takes its Change with it to its ready row there.
     find(run, "SaveTo").onChange(sourceKey(b), "B");
     await run.flush();
-    assert.equal(find(run, "SaveTo").values[sourceKey(b)], "B", "moving the edited holding still applies");
-    assert.equal(find(run, "ReadyTable").handlers.changing, undefined);
+    assert.equal(find(run, "SaveTo").values[sourceKey(b)], "B", "moving the edited holding applies");
+    const ready = find(run, "ReadyTable");
+    if (ready?.handlers.changing) assert.ok(ready.rows.some((row) => row.id === ready.handlers.changing && row.accountId === "B"));
     run.dispose();
   }
 });
@@ -1696,4 +1699,426 @@ test("the creation retry and planning retry have different accessible names", as
   assert.equal(find(run, "Footer").go.label, "Try again");
   assert.equal(retry.props["aria-label"], "Try again saving holdings");
   assert.deepEqual(saved, []);
+});
+
+/** A holdings account `A` that already has a snapshot saved for the statement's date, 31 Mar 2025. */
+function sameDate(sources, held = [["ISINX", "10"], ["ISINOLD", "5"]]) {
+  const run = setup(sources);
+  const { api } = run;
+  api.snapshots.getAll = async (id) => (id === "A" ? [{ snapshotDate: "2025-03-31", source: "MANUAL" }] : []);
+  api.snapshots.getByDate = async (id) => (id === "A"
+    ? held.map(([isin, quantity]) => ({ holdingType: "security", quantity, costBasis: null, localCurrency: "INR", instrument: { id: `asset-${isin}`, name: `Example ${isin}`, symbol: isin, quoteMode: "MARKET" } }))
+    : []);
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+  const saved = [];
+  api.snapshots.save = async (accountId, positions) => saved.push([accountId, positions.map((p) => [p.assetId ?? p.symbol, p.quantity])]);
+  api.storage.set = async () => {};
+  api.query = { invalidateQueries() {} };
+  return { ...run, saved };
+}
+const said = (run) => nodes(run.tree).find((node) => node.props?.role === "status").props.children;
+const settle = async (run) => {
+  await run.flush();
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  await run.flush();
+};
+
+test("excluding every source after a failed refresh drops obsolete questions and allows Finish", async () => {
+  const { run, api, saved } = sameDate([source("X", [holding("ISINX")])]);
+  await run.flush();
+  assert.ok(find(run, "AskCard"));
+  api.portfolio.getHoldings = async () => { throw new Error("made-up failed refresh"); };
+  run.update({ visit: {} });
+  await run.flush();
+  find(run, "SaveTo").onChange(investorKey("TEST"), LEFT_OUT);
+  await run.flush();
+  assert.equal(find(run, "AskCard"), undefined);
+  const footer = find(run, "Footer");
+  assert.equal(footer.action.label, "Finish");
+  assert.equal(footer.action.disabled, false);
+  assert.equal(footer.go, undefined);
+  const notices = [];
+  run.update({ onAnother: (notice) => notices.push(notice) });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  assert.deepEqual(notices, ["Finished: nothing from made-up.pdf was saved."]);
+  assert.deepEqual(saved, []);
+});
+
+test("refreshing saved holdings reopens the same-date and holding questions", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const { run, api } = sameDate([x]);
+  const stored = new Map();
+  api.storage.get = async (key) => stored.get(key) ?? null;
+  api.storage.set = async (key, value) => stored.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, x, "A", "2025-02-28", { "ISINOLD@XBOM": ["ISINOLD"] });
+  await run.flush();
+  const cards = nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
+  assert.equal(cards.length, 2);
+  cards[0].other.onClick();
+  cards[1].other.onClick();
+  await run.flush();
+  assert.equal(find(run, "Footer").action.disabled, false);
+  const refreshed = ["ISINX", "ISINOLD"].map((isin) => ({
+    holdingType: "security", quantity: "123", costBasis: null, localCurrency: "INR",
+    instrument: { id: `asset-${isin}`, name: `Example ${isin}`, symbol: isin, quoteMode: "MARKET" },
+  }));
+  let finish;
+  api.snapshots.getByDate = () => new Promise((resolve) => { finish = () => resolve(refreshed); });
+  run.update({ visit: {} });
+  await run.flush();
+  const oldCards = nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
+  assert.ok(oldCards.every((c) => c.disabled));
+  oldCards.forEach((c) => c.other.onClick());
+  await run.flush();
+  finish();
+  await run.flush();
+  const reopened = nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
+  assert.equal(reopened.length, 2);
+  assert.match(reopened[1].main.label, /Keep 123\.000 units/);
+  assert.equal(find(run, "AskAnswered"), undefined);
+  assert.equal(find(run, "Footer").action.disabled, true);
+});
+
+test("the first announcement counts the questions about saved holdings", async () => {
+  // The same-date question and the question about ISINOLD, which the statement no longer lists.
+  const x = source("X", [holding("ISINX")]);
+  const { run, api } = sameDate([x]);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  const stored = new Map();
+  await saveImported({ get: async (key) => stored.get(key) ?? null, set: async (key, value) => stored.set(key, value) }, x, "A", "2025-02-28", { "ISINOLD@XBOM": ["ISINOLD"] });
+  api.storage.get = async (key) => stored.get(key) ?? null;
+  await settle(run);
+  assert.equal(nodes(run.tree).filter((node) => node.type?.name === "AskCard").length, 2);
+  assert.equal(said(run), "2 questions for you.");
+});
+
+test("holdings saved for the statement's date are asked about first, and keeping them saves nothing there", async () => {
+  const x = { ...holding("ISINX"), units: "12" };
+  const { run, props, saved } = sameDate([source("X", [x, holding("ISINNEW"), holding("ISINASK")])]);
+  delete props.fundChoices[holdingKey(holding("ISINASK"))];
+  await run.flush();
+  const [card] = nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
+  assert.equal(card.title, "A already has holdings saved for 31 Mar 2025");
+  const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("|") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
+  assert.equal(textOf(card.children), "Replacing them with this statement changes:|" + [
+    "Example ISINX: 10.000 units now, 12.000 on this statement", "Example ISINNEW: added, 10.000 units",
+    "Example ISINASK: 10.000 units on this statement, still to be matched", "1 other holding: same units",
+  ].join("|"));
+  assert.deepEqual([card.main.name, card.other.name], ["Keep the saved ones: A's holdings for 31 Mar 2025", "Replace them with this statement: A's holdings for 31 Mar 2025"]);
+  assert.ok(find(run, "QuestionCard"), "the holding to match is asked about too");
+  assert.equal(find(run, "Footer").action.disabled, true);
+  document.activeElement = document.body;
+  const focused = [];
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  card.main.onClick();
+  await settle(run);
+  // Its holdings and their question go; nothing is saved, and Finish says so.
+  assert.equal(find(run, "QuestionCard"), undefined);
+  assert.equal(find(run, "ReadyTable"), undefined);
+  assert.equal(find(run, "AskAnswered").text, "A: keep the holdings already saved for 31 Mar 2025");
+  assert.ok(nodes(run.tree).some((node) => node.type?.name === "Badge" && node.props.children?.join?.("") === "A kept as saved"));
+  assert.deepEqual(find(run, "Footer").lines.map(textOf), ["Nothing will change: you kept the holdings already saved in A for 31 Mar 2025."]);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+  assert.deepEqual(focused, ["review-summary"]);
+  assert.equal(said(run), "Nothing will be saved. A's holdings for 31 Mar 2025 are kept.");
+  const notices = [];
+  run.update({ onAnother: (notice) => notices.push(notice) });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  assert.deepEqual(notices, ["Finished: nothing from made-up.pdf was saved. A's holdings for 31 Mar 2025 are kept."]);
+  assert.deepEqual(saved, []);
+  // Change answer brings the question back, focused.
+  find(run, "AskAnswered").onChange();
+  await run.flush();
+  assert.equal(focused.at(-1), card.headingId);
+  assert.ok(find(run, "QuestionCard"));
+});
+
+test("keeping one account's saved holdings still saves another's, and warns when the kept one still holds what goes elsewhere", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const { run, props, saved } = sameDate([x, y], [["ISINX", "10"], ["ISINY", "4"]]);
+  props.accountChoices[sourceKey(y)] = "B";
+  await run.flush();
+  const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
+  find(run, "AskCard").main.onClick();
+  await run.flush();
+  // B still saves Y's holding, which A holds too.
+  const ready = find(run, "ReadyTable");
+  assert.deepEqual(ready.rows.map((r) => [r.accountId, r.item.isin]), [["B", "ISINY"]]);
+  const warning = "A will still hold Example ISINY. Saving it in B too would count its units twice.";
+  assert.ok(textOf(run.tree).includes(warning));
+  const lines = find(run, "Footer").lines.map(textOf);
+  assert.ok(lines.includes("A: existing holdings kept for 31 Mar 2025."), lines.join("\n"));
+  assert.ok(lines.includes(warning));
+  // Saving: only B, and the result repeats the warning.
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(saved.map(([accountId]) => accountId), ["B"]);
+  assert.ok(textOf(run.tree).includes("A: the holdings already saved for 31 Mar 2025 were kept; nothing changed there."));
+  assert.ok(textOf(run.tree).includes(warning));
+});
+
+test("Keep … in the kept account assigns it there itself, and with nothing left to save the focus goes to the summary", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const { run, props, saved } = sameDate([x, y], [["ISINX", "10"], ["ISINY", "4"]]);
+  // The main destination is B; only X goes to A, which has holdings saved for the date.
+  props.accountChoices = { [investorKey("TEST")]: "B", [sourceKey(x)]: "A" };
+  await run.flush();
+  const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
+  find(run, "AskCard").main.onClick();
+  await run.flush();
+  const keep = nodes(run.tree).find((node) => node.type?.name === "WrapButton" && textOf(node) === "Keep the Y demat account in A");
+  assert.ok(keep, textOf(run.tree));
+  document.activeElement = document.body;
+  const focused = [];
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  keep.props.onClick();
+  await settle(run);
+  // Y now goes to A itself, not "Same as above", which is B.
+  assert.equal(find(run, "SaveTo").values[sourceKey(y)], "A");
+  assert.deepEqual(focused, ["review-summary"]);
+  assert.equal(said(run), "Nothing will be saved. A's holdings for 31 Mar 2025 are kept.");
+  assert.equal(find(run, "Footer").action.label, "Finish");
+  assert.deepEqual(saved, []);
+});
+
+test("keeping a snapshot drops its overlap controls but preserves another source's overlap", async () => {
+  const fund = { ...holding("INFTEST"), kind: "fund" };
+  const x = { ...source("X", [fund]), kind: "folio" };
+  const y = { ...source("Y", [{ ...fund, units: "20", value: "40" }]), kind: "folio" };
+  const { run, props, api } = sameDate([x, y], [["INFTEST", "10"]]);
+  props.accountChoices[sourceKey(y)] = "B";
+  props.allAccounts = [...props.allAccounts, { id: "T", name: "Transactions", trackingMode: "TRANSACTIONS", isArchived: false }];
+  api.portfolio.getHoldings = async (id) => id !== "T" ? [] : [{
+    holdingType: "security", quantity: "10", localCurrency: "INR", instrument: { id: "asset-INFTEST", symbol: "INFTEST", quoteMode: "MARKET" },
+  }];
+  await run.flush();
+  find(run, "AskCard").main.onClick();
+  await run.flush();
+  const tracked = find(run, "NotIncluded").tracked[0].funds[0];
+  assert.equal(tracked.canSave, true);
+  assert.equal(tracked.units, "20.000 units", "only the source still saving is compared");
+  find(run, "SaveTo").onChange(sourceKey(y), "A");
+  await run.flush();
+  assert.deepEqual(find(run, "NotIncluded").tracked, []);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("open holding answers keep numbered account names when two accounts have the same name", async () => {
+  const fund = { ...holding("INFTEST"), kind: "fund" };
+  const x = { ...source("X", [fund]), kind: "folio" };
+  const y = { ...source("Y", [fund]), kind: "folio" };
+  const { run, props, api } = setup([x, y]);
+  props.accounts.forEach((a) => { a.name = "Funds"; });
+  props.accountChoices[sourceKey(y)] = "B";
+  props.allAccounts = [...props.allAccounts, { id: "T", name: "Transactions", trackingMode: "TRANSACTIONS", isArchived: false }];
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => [{
+    holdingType: "security", quantity: "10", costBasis: null, localCurrency: "INR",
+    instrument: { id: "asset-INFTEST", symbol: "INFTEST", name: "Example INFTEST", quoteMode: "MARKET" },
+  }];
+  api.portfolio.getHoldings = async (id) => id !== "T" ? [] : [{
+    holdingType: "security", quantity: "10", localCurrency: "INR", instrument: { id: "asset-INFTEST", symbol: "INFTEST", quoteMode: "MARKET" },
+  }];
+  api.assets.getProfile = async () => ({ instrumentSymbol: "INFTEST", instrumentExchangeMic: "XBOM" });
+  const store = new Map();
+  api.storage.get = async (key) => store.get(key) ?? null;
+  api.storage.set = async (key, value) => store.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, x, "A", "2025-02-28", { "INFTEST@XBOM": ["INFTEST"] });
+  await saveImported(api.storage, y, "B", "2025-02-28", { "INFTEST@XBOM": ["INFTEST"] });
+  await run.flush();
+  const cards = nodes(run.tree).filter((n) => n.type?.name === "AskCard").map((n) => n.props);
+  assert.equal(cards.length, 2);
+  assert.deepEqual(cards.map((c) => c.main.name), cards.map((c, i) => `Keep them in Funds: Example INFTEST in Funds, account ${i + 1}`));
+  assert.deepEqual(cards.map((c) => c.other.name), cards.map((c, i) => `Remove them from Funds: Example INFTEST in Funds, account ${i + 1}`));
+});
+
+for (const existingIds of [false, true]) {
+  test(`one kept fund saved in two other accounts is counted once while both sources can be kept (existing IDs ${existingIds})`, async () => {
+    const fund = { ...holding("INFTEST"), kind: "fund" };
+    const x = source("X", [fund]);
+    const y = source("Y", [fund]);
+    const z = source("Z", [fund]);
+    const { run, props, api, saved } = sameDate([x, y, z], [["INFTEST", "10"]]);
+    props.accounts.push({ id: "C", name: "C", trackingMode: "HOLDINGS", isActive: true, isArchived: false });
+    props.accountChoices[sourceKey(y)] = "B";
+    props.accountChoices[sourceKey(z)] = "C";
+    if (existingIds) {
+      api.snapshots.getAll = async (id) => [{ snapshotDate: id === "A" ? "2025-03-31" : "2025-02-28", source: "MANUAL" }];
+      api.snapshots.getByDate = async (id) => [{
+        holdingType: "security", quantity: "10", costBasis: null, localCurrency: "INR",
+        instrument: { id: `asset-${id}`, symbol: "INFTEST", name: "Example INFTEST", quoteMode: "MARKET" },
+      }];
+      api.assets.getProfile = async () => ({ instrumentSymbol: "INFTEST", instrumentExchangeMic: "XBOM" });
+    }
+    await run.flush();
+    find(run, "AskCard").main.onClick();
+    await run.flush();
+    const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
+    const warnings = find(run, "Footer").lines.map(textOf).filter((s) => s.includes("will still hold"));
+    assert.deepEqual(warnings, ["A will still hold Example INFTEST. Saving it in B and C too would count its units twice."]);
+    const keep = nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Keep these 2 statement sections in A");
+    keep.props.onClick();
+    await run.flush();
+    const values = find(run, "SaveTo").values;
+    assert.equal(values[sourceKey(y)], "A");
+    assert.equal(values[sourceKey(z)], "A");
+    assert.equal(find(run, "Footer").action.label, "Finish");
+    assert.deepEqual(saved, []);
+  });
+}
+
+for (const keptAccount of ["A", "B"]) {
+  test(`same-named kept accounts have distinct rerouting controls, selecting ${keptAccount}`, async () => {
+    const fund = { ...holding("INFTEST"), kind: "fund" };
+    const x = source("X", [fund]);
+    const y = source("Y", [fund]);
+    const z = source("Z", [fund]);
+    const { run, props, api, saved } = sameDate([x, y, z], [["INFTEST", "10"]]);
+    props.accounts.forEach((a) => { a.name = "Funds"; });
+    props.accounts.push({ id: "C", name: "C", trackingMode: "HOLDINGS", isActive: true, isArchived: false });
+    props.accountChoices[sourceKey(y)] = "B";
+    props.accountChoices[sourceKey(z)] = "C";
+    api.snapshots.getAll = async (id) => id === "A" || id === "B" ? [{ snapshotDate: "2025-03-31", source: "MANUAL" }] : [];
+    api.snapshots.getByDate = async (id) => id === "A" || id === "B" ? [{
+      holdingType: "security", quantity: "10", costBasis: null, localCurrency: "INR",
+      instrument: { id: "asset-INFTEST", symbol: "INFTEST", name: "Example INFTEST", quoteMode: "MARKET" },
+    }] : [];
+    await run.flush();
+    nodes(run.tree).filter((n) => n.type?.name === "AskCard").forEach((n) => n.props.main.onClick());
+    await run.flush();
+    const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
+    const buttons = nodes(run.tree).filter((n) => n.type?.name === "WrapButton" && textOf(n) === "Keep the Z demat account in Funds");
+    assert.deepEqual(buttons.map((b) => b.props["aria-label"]), [
+      "Keep the Z demat account in Funds, account 1", "Keep the Z demat account in Funds, account 2",
+    ]);
+    buttons[keptAccount === "A" ? 0 : 1].props.onClick();
+    await run.flush();
+    assert.equal(find(run, "SaveTo").values[sourceKey(z)], keptAccount);
+    assert.equal(find(run, "Footer").action.label, "Finish");
+    assert.deepEqual(saved, []);
+  });
+}
+
+test("different recorded references have distinct question and answer IDs, and Change focuses the reopened holding", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const { run, api } = setup([x]);
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => ["OLD.A", "OLD_A"].map((symbol) => ({
+    holdingType: "security", quantity: "5", costBasis: null, localCurrency: "INR",
+    instrument: { id: `asset-${symbol}`, symbol, name: `Example ${symbol}`, quoteMode: "MARKET" },
+  }));
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+  const store = new Map();
+  api.storage.get = async (key) => store.get(key) ?? null;
+  api.storage.set = async (key, value) => store.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, x, "A", "2025-02-28", { "OLD.A@XBOM": ["OLDISIN1"], "OLD_A@XBOM": ["OLDISIN2"] });
+  await run.flush();
+  const cards = nodes(run.tree).filter((n) => n.type?.name === "AskCard").map((n) => n.props);
+  assert.equal(cards.length, 2);
+  assert.equal(new Set(cards.map((c) => c.headingId)).size, 2);
+  const focused = [];
+  document.activeElement = document.body;
+  document.getElementById = (id) => {
+    const card = nodes(run.tree).find((n) => n.type?.name === "AskCard" && n.props.headingId === id)?.props;
+    return { dataset: {}, focus() { focused.push(card?.title ?? "summary"); }, scrollIntoView() {} };
+  };
+  for (const card of cards) {
+    card.main.onClick();
+    await run.flush();
+  }
+  const answers = nodes(run.tree).filter((n) => n.type?.name === "AskAnswered").map((n) => n.props);
+  assert.equal(new Set(answers.map((a) => a.buttonId)).size, 2);
+  answers[0].onChange();
+  await run.flush();
+  assert.equal(focused.at(-1), cards[0].title);
+  answers[1].onChange();
+  await run.flush();
+  assert.equal(focused.at(-1), cards[1].title);
+});
+
+test("a changed fund's new replacement question gets focus without leaving a stale Change request", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", []);
+  const { run, api } = setup([x, y]);
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => ["ISINX", "BETA"].map((symbol) => ({
+    holdingType: "security", quantity: "5", costBasis: null, localCurrency: "INR",
+    instrument: { id: `asset-${symbol}`, symbol, name: `Example ${symbol}`, quoteMode: "MARKET" },
+  }));
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+  const store = new Map();
+  api.storage.get = async (key) => store.get(key) ?? null;
+  api.storage.set = async (key, value) => store.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, x, "A", "2025-02-28", { "ISINX@XBOM": ["ISINX"] });
+  await saveImported(api.storage, y, "A", "2025-02-28", { "BETA@XBOM": ["ISINBETA"] });
+  await run.flush();
+  const cards = () => nodes(run.tree).filter((n) => n.type?.name === "AskCard").map((n) => n.props);
+  let ready = find(run, "ReadyTable");
+  const row = ready.rows.find((r) => r.item.isin === "ISINX");
+  document.activeElement = document.body;
+  document.getElementById = (id) => {
+    const rendered = new Set(cards().map((c) => c.headingId));
+    const current = find(run, "ReadyTable");
+    for (const r of current?.rows ?? []) {
+      rendered.add(current.handlers.ids(r).change);
+      if (current.handlers.changing === r.id) rendered.add(current.handlers.changePanel(r).props.id);
+    }
+    rendered.add(find(run, "Footer").summaryId);
+    if (document.activeElement?.id && !rendered.has(document.activeElement.id)) document.activeElement = document.body;
+    if (!rendered.has(id)) return null;
+    const element = { id, dataset: {}, focus() { document.activeElement = element; }, scrollIntoView() {} };
+    return element;
+  };
+  ready.handlers.onChange(row);
+  await run.flush();
+  ready = find(run, "ReadyTable");
+  const picker = nodes(ready.handlers.changePanel(ready.rows[0])).find((n) => n.type?.name === "Picker").props;
+  document.activeElement = document.body;
+  picker.onUse({ symbol: "NEW", name: "New listing", exchangeMic: "XBOM", quoteCcy: "INR", providerId: "YAHOO", instrumentType: "EQUITY" });
+  await run.flush();
+  const replacement = cards().find((c) => c.title.includes("now matched"));
+  const beta = cards().find((c) => c.title.includes("BETA"));
+  assert.equal(document.activeElement?.id, replacement.headingId);
+  document.activeElement = document.body;
+  replacement.other.onClick();
+  await run.flush();
+  assert.equal(document.activeElement?.id, beta.headingId);
+});
+
+test("a holding the statement no longer lists waits for an answer, with nothing preselected", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const { run, api } = setup([x]);
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => ["ISINX", "ISINOLD"].map((isin) => ({ holdingType: "security", quantity: "5", costBasis: null, localCurrency: "INR", instrument: { id: `asset-${isin}`, name: `Example ${isin}`, symbol: isin, quoteMode: "MARKET" } }));
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+  const stored = new Map();
+  api.storage.get = async (key) => stored.get(key) ?? null;
+  api.storage.set = async (key, value) => stored.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, x, "A", "2025-02-28", { "ISINX@XBOM": ["ISINX"], "ISINOLD@XBOM": ["ISINOLD"] });
+  const saved = [];
+  api.snapshots.save = async (accountId, positions) => saved.push(positions.map((p) => [p.assetId ?? p.symbol, p.quantity]));
+  api.query = { invalidateQueries() {} };
+  await run.flush();
+  const card = find(run, "AskCard");
+  assert.deepEqual([card.title, card.main.label, card.other.label], ["Example ISINOLD isn't on this statement", "Keep 5.000 units", "Set it to zero on 31 Mar"]);
+  assert.equal(card.why.open, false);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  assert.equal(find(run, "Footer").go.label, "Go to the question");
+  card.other.onClick();
+  await run.flush();
+  assert.equal(find(run, "AskAnswered").text, "Example ISINOLD: set to zero on 31 Mar");
+  const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
+  assert.match(textOf(find(run, "Footer").lines[0]), /^Update A to 31 Mar 2025 with 1 holding from this statement\. Its other holdings and cash stay\.Example ISINOLD set to zero\./);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(saved, [[["asset-ISINX", "10"]]]);
 });

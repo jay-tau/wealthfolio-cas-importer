@@ -5,7 +5,9 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { abs, add, dec, format, sub } from "../cas/decimal";
 import {
   type AccountPlan,
+  asked,
   assetDetails,
+  assetNames,
   checkUnits,
   type Choices,
   existingCost,
@@ -27,6 +29,7 @@ import {
   statementAsset,
   type StatementHolding,
   type UnitCheck,
+  undecided,
   unidentified,
   unitStatus,
   unlistedRefs,
@@ -41,8 +44,9 @@ import { useReviewFocus } from "../components/review/focus";
 import { Footer } from "../components/review/footer";
 import { ReviewHeader } from "../components/review/header";
 import { type Comparison, NotIncluded, type TrackedFund, type TrackedGroup, unitsText } from "../components/review/not-included";
-import { Disclosure, LinkButton, PlanBadges, shownName, useWide, WrapButton } from "../components/review/parts";
-import { BeforeSaving, blockers, decisions, SnapshotTable } from "../components/review/plan-parts";
+import { Disclosure, LinkButton, PlanBadges, providerName, shownName, useWide, WrapButton } from "../components/review/parts";
+import { AskAnswered, AskCard } from "../components/review/asks";
+import { SnapshotTable } from "../components/review/plan-parts";
 import { AnsweredLine, answerWords, Picker, pickerIds, QuestionCard } from "../components/review/question";
 import { OtherChanges, type ReadyHandlers, type ReadyRow, ReadyTable, planWarnings } from "../components/review/ready";
 import { SaveTo } from "../components/review/save-to";
@@ -61,12 +65,14 @@ import {
   securityKey,
   sourceKey,
 } from "../lib/choices";
-import { readableName } from "../lib/fund-name";
+import { type AskWords, holdingAskWords, list, sameDateChanges, sameDateWords } from "../lib/asks";
+import { fundName, readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
 import { holdingsBase, isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames, sourceBase } from "../lib/new-accounts";
 import { plural } from "../lib/plural";
 import { grouped, longDate, parseCost, rupees, units } from "../lib/review-format";
+import { sha256 } from "../lib/sha256";
 
 /** Remembered or chosen: investor key or source key → account ID, or `LEFT_OUT`. */
 export type HoldingsAccountChoices = Record<string, string>;
@@ -348,9 +354,28 @@ export interface Remembered {
   funds: [string, FundChoice][];
 }
 
+/** A question only some imports ask, on the Review screen. */
+interface Ask {
+  id: string;
+  accountId: string;
+  words: AskWords;
+  /** What replacing the account's saved holdings changes, for the same-date question. */
+  changes?: string[];
+  /** What its buttons act on, after their visible labels, with the numbered account when names repeat. */
+  target: string;
+  /** True for the main (safe) answer, false for the other; undefined until answered. */
+  answer: boolean | undefined;
+  set: (answer: boolean | undefined) => void;
+}
+
 const KINDS: Record<string, string> = { CAMS: "CAMS", KFINTECH: "KFintech", NSDL: "NSDL", CDSL: "CDSL" };
+/** The order of an account's rare questions. */
+const ASK_ORDER = ["missing", "moved", "overlap", "replace"];
+/** A mutual fund's symbol: its ISIN (INF…), an AMFI scheme code, a Yahoo fund listing (0P…) or the statement's price. */
+const FUND_SYMBOL = /^(INF|\d+$|0P|MF-)/i;
 const OVERLAP_NOTE = "from its transactions. Including it here counts it twice.";
 
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 const unitWords = (item: FundItem, value: string) =>
   item.noun === "share" ? `${grouped(value)} ${value === "1" ? "share" : "shares"}`
   : item.noun === "bond" ? `${grouped(value)} ${value === "1" ? "bond" : "bonds"}`
@@ -430,6 +455,7 @@ export function HoldingsImport({
   const itemOf = new Map(items.map((item) => [item.key, item]));
   const labelOf = new Map(items.map((item, i) => [item.key, `${item.name.trim()}${nameNumber(items, i, item.noun)}`]));
   const investor = investorKey(holdings.investor);
+  const date = longDate(holdings.date);
   // Printed zeros never go in a snapshot; misread lines hold back their asset, so they need one.
   const snapshotKeys = new Set(holdings.sources.flatMap((s) => [...s.holdings, ...(s.misread ?? [])].map(holdingKey)));
 
@@ -456,9 +482,11 @@ export function HoldingsImport({
   const [matched, setMatched] = useState<Record<string, ChosenFund>>({});
   const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
   const [costs, setCosts] = useState<ReadonlyMap<string, ReadonlyMap<string, string>>>(new Map());
-  const [flips, setFlips] = useState<ReadonlyMap<string, ReadonlySet<string>>>(new Map());
+  // Answers to the rare questions, by account: keep (true) or remove an account's units of a
+  // position, replace (true) or keep an old asset, and keep (true) or replace the holdings saved for the date.
   const [keeps, setKeeps] = useState<ReadonlyMap<string, ReadonlyMap<string, boolean>>>(new Map());
-  const [confirmed, setConfirmed] = useState<ReadonlySet<string>>(new Set());
+  const [replaced, setReplaced] = useState<ReadonlyMap<string, ReadonlyMap<string, boolean>>>(new Map());
+  const [sameDate, setSameDate] = useState<ReadonlyMap<string, boolean>>(new Map());
   const [alsoSave, setAlsoSave] = useState<ReadonlySet<string>>(new Set());
   const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
   const [showAll, setShowAll] = useState(false);
@@ -479,6 +507,12 @@ export function HoldingsImport({
   const [error, setError] = useState("");
   // Bumped when the page is opened again or Try again is pressed: Wealthfolio may have changed meanwhile.
   const [generation, setGeneration] = useState(0);
+  // Refreshed holdings can change the evidence for every snapshot and holding question.
+  useEffect(() => {
+    setSameDate(new Map());
+    setKeeps(new Map());
+    setReplaced(new Map());
+  }, [generation]);
   const wide = useWide();
 
   // One status region says what changed, and the focus moves with the answers.
@@ -512,11 +546,15 @@ export function HoldingsImport({
   };
   const sourcesOf = (key: string) => holdings.sources.filter((s) => [...s.holdings, ...(s.misread ?? [])].some((h) => holdingKey(h) === key));
   const savedSource = (s: Source) => destination(s) !== LEFT_OUT;
+  // Accounts whose holdings already saved for the statement's date the user chose to keep: nothing is
+  // saved there, so what goes there needs no answers.
+  const keptSaved = new Set((prepared?.plans ?? []).filter((plan) => replacesSnapshot(plan) && sameDate.get(plan.accountId) === true).map((p) => p.accountId));
+  const savingSource = (s: Source) => savedSource(s) && !keptSaved.has(accountOf(s) ?? "");
 
   // Holdings that need an answer: on the statement with units or a misread line, in a folio, demat
   // account or PRAN that's saved, and with no asset confirmed.
   const questionKeys = items
-    .filter((item) => snapshotKeys.has(item.key) && sourcesOf(item.key).some(savedSource) && !choiceOf(item.key))
+    .filter((item) => snapshotKeys.has(item.key) && sourcesOf(item.key).some(savingSource) && !choiceOf(item.key))
     .map((item) => item.key);
   const changing = editor?.kind === "change" ? editor.itemKey : undefined;
   const searches = useHoldingSearches(ctx, items, {
@@ -777,19 +815,22 @@ export function HoldingsImport({
       ? plan.positions.filter((p) => p.heldBy && p.lines.some((l) => alsoSave.has(holdingKey(l.holding)))).map((p) => p.key)
       : [];
     return {
-      flipped: new Set([...(flips.get(accountId) ?? []), ...overlap]),
+      flipped: new Set(overlap),
       costs: costs.get(accountId) ?? new Map(),
       keep: keeps.get(accountId) ?? new Map(),
+      replace: replaced.get(accountId) ?? new Map(),
     };
   };
-  const plans = current?.plans ?? [];
-  const clearPositionWrites = (affected: (plan: AccountPlan, position: PlannedPosition) => boolean, preserveFlip = false) => {
+  // The plans of the accounts this import saves: not those whose saved holdings the user keeps.
+  const allPlans = current?.plans ?? [];
+  const plans = allPlans.filter((plan) => !keptSaved.has(plan.accountId));
+  const clearPositionWrites = (affected: (plan: AccountPlan, position: PlannedPosition) => boolean) => {
     const removed = new Set((current?.plans ?? prepared?.plans ?? []).flatMap((plan) => plan.positions.filter((p) => affected(plan, p)).map((p) => `${plan.accountId}|${p.key}`)));
     const clean = <T,>(all: ReadonlyMap<string, ReadonlyMap<string, T>>) => new Map([...all].map(([account, values]) =>
       [account, new Map([...values].filter(([key]) => !removed.has(`${account}|${key}`)))]));
     setCosts(clean);
     setKeeps(clean);
-    if (!preserveFlip) setFlips((all) => new Map([...all].map(([account, values]) => [account, new Set([...values].filter((key) => !removed.has(`${account}|${key}`)))])));
+    setReplaced(clean);
     setEditor((e) => e && removed.has(e.rowId) ? null : e);
   };
   const clearAssetWrites = (key: string, choice?: FundChoice) => {
@@ -918,7 +959,7 @@ export function HoldingsImport({
   };
   const trackedFunds = (prepared ? items : []).flatMap((item) => {
     const fund = fundOf(item.key);
-    const folios = sourcesOf(item.key).filter((s) => s.kind === "folio");
+    const folios = sourcesOf(item.key).filter((s) => s.kind === "folio" && !keptSaved.has(accountOf(s) ?? ""));
     if (!fund || !folios.length) return [];
     const inPlans = plans.flatMap((plan) => plan.positions.filter((p) => p.heldBy && p.lines.some((l) => holdingKey(l.holding) === item.key)));
     const by = (prepared!.held.get(inPlans[0]?.ref ?? fundRef(fund.symbol, fund.exchangeMic)) ?? []).filter((o) => o.tracksTransactions);
@@ -939,6 +980,7 @@ export function HoldingsImport({
         comparison: comparison(item.key),
         canSave,
         included: savedHere,
+        notes: inPlans.flatMap((p) => p.notes.filter((note) => !note.endsWith(OVERLAP_NOTE))),
       } satisfies TrackedFund,
     }];
   });
@@ -954,16 +996,24 @@ export function HoldingsImport({
   const counted = trackedFunds.filter((t) => t.fund.included).map((t) => ({ key: t.fund.key, name: t.fund.name, label: t.fund.label }));
   const skipped = items.filter((item) => {
     const choice = choiceOf(item.key);
-    return snapshotKeys.has(item.key) && choice && !("fund" in choice) && sourcesOf(item.key).some(savedSource);
+    return snapshotKeys.has(item.key) && choice && !("fund" in choice) && sourcesOf(item.key).some(savingSource);
   });
-  // Funds already tracked elsewhere are listed as such, wherever their folios go.
+  // Funds already tracked elsewhere stay listed unless their account's saved snapshot is kept.
   const unsaved = items.filter((item) => {
     const lines = holdings.sources.filter((s) => s.holdings.some((h) => holdingKey(h) === item.key));
     return lines.length > 0 && lines.every((s) => !savedSource(s)) && !trackedKeys.has(item.key);
   });
+  // Statement rows left out so that units aren't counted twice, or by an answer; not one still asked about.
   const defaulted = plans.flatMap((plan) => {
     const chosen = choicesFor(plan.accountId, plan);
-    return plan.positions.filter((p) => p.lines.length && !p.misread && !p.heldBy && !included(p, chosen));
+    return plan.positions.filter((p) => p.lines.length && !p.misread && !p.heldBy && !included(p, chosen) && !undecided(p, chosen))
+      .map((position) => ({ plan, position }));
+  });
+  // The account's own holdings that it keeps as they are, each with a note to check.
+  const keptAsIs = plans.flatMap((plan) => {
+    const chosen = choicesFor(plan.accountId, plan);
+    return plan.positions.filter((p) => !p.lines.length && !p.misread && p.existing && !p.ask && p.notes.length && included(p, chosen))
+      .map((position) => ({ plan, position }));
   });
   const sourceTitle = new Map(holdings.sources.map((s) => [s.label, s.title ?? s.label]));
   const leftOutLines = holdings.leftOut.map((line) => ({ name: line.name, where: sourceTitle.get(line.source) ?? line.source, reason: line.reason }));
@@ -971,18 +1021,123 @@ export function HoldingsImport({
     ...[...trackedKeys].filter((k) => !readyKeys.has(k)),
     ...skipped.map((i) => i.key),
     ...unsaved.map((i) => i.key),
-    ...defaulted.flatMap((p) => p.lines.map((l) => holdingKey(l.holding))).filter((k) => !readyKeys.has(k)),
+    ...defaulted.flatMap(({ position }) => position.lines.map((l) => holdingKey(l.holding))).filter((k) => !readyKeys.has(k)),
     ...holdings.sources.flatMap((s) => [...(s.zero ?? []), ...(s.misread ?? [])].map(holdingKey)).filter((k) => !readyKeys.has(k)),
   ].filter((k) => !questionKeys.includes(k)));
 
-  // Today's other preview decisions show once the questions are answered, as do their blockers.
+  // The questions only some imports ask, from the plan as last worked out: an account's holdings
+  // already saved for the statement's date first, then each holding the user must decide on.
+  const askPlans = ((current ?? prepared)?.plans ?? []).filter((plan) => destinations.includes(plan.accountId));
+  /** A position's name, as the Review screen shows it: a fund's without its plan and option. */
+  const nameOf = (p: PlannedPosition) => {
+    if (!p.lines.length) return FUND_SYMBOL.test(p.existing?.symbol ?? p.asset?.symbol ?? "") ? fundName(p.name) || p.name : p.name;
+    const key = holdingKey(p.lines[0].holding);
+    return shownName(itemOf.get(key)!, fundOf(key) ?? p.asset);
+  };
+  const setIn = <T,>(all: ReadonlyMap<string, ReadonlyMap<string, T>>, accountId: string, key: string, value: T | undefined) => {
+    const next = new Map(all.get(accountId) ?? []);
+    if (value === undefined) next.delete(key);
+    else next.set(key, value);
+    return new Map(all).set(accountId, next);
+  };
+  const sameAsks: Ask[] = askPlans.filter(replacesSnapshot).map((plan) => {
+    const account = accountName(plan.accountId);
+    const words = sameDateWords(account, holdings.date);
+    // Holdings still waiting for an answer to which fund they are.
+    const waitingHere = holdings.sources.filter((s) => accountOf(s) === plan.accountId)
+      .flatMap((s) => s.holdings.filter((h) => !choiceOf(holdingKey(h))).map((h) => ({ name: h.name, units: h.units })));
+    return {
+      id: `same|${plan.accountId}`,
+      accountId: plan.accountId,
+      words: { ...words, line: "Replacing them with this statement changes:" },
+      changes: sameDateChanges(plan, choicesFor(plan.accountId, plan), nameOf, waitingHere),
+      target: `${accountLabel(plan.accountId)}'s holdings for ${date}`,
+      answer: sameDate.get(plan.accountId),
+      set: (answer) => setSameDate((all) => {
+        const next = new Map(all);
+        if (answer === undefined) next.delete(plan.accountId);
+        else next.set(plan.accountId, answer);
+        return next;
+      }),
+    };
+  });
+  const holdingAsks: Ask[] = askPlans.filter((plan) => !keptSaved.has(plan.accountId)).flatMap((plan) => {
+    const chosen = choicesFor(plan.accountId, plan);
+    const account = accountName(plan.accountId);
+    // A kind of question at a time, in the statement's order, so a source's questions stay together.
+    const asks = asked(plan, chosen).sort((a, b) => ASK_ORDER.indexOf(a.ask!.kind) - ASK_ORDER.indexOf(b.ask!.kind));
+    return asks.map((position): Ask => {
+      const replace = position.ask!.kind === "replace";
+      const answer = replace
+        ? (chosen.replace?.has(position.key) ? !chosen.replace.get(position.key) : undefined)
+        : chosen.keep?.get(position.key);
+      const row = position.ask!.kind === "overlap" ? plan.positions.find((p) => p.key === (position.ask as { row: string }).row) ?? position : position;
+      return {
+        id: `${plan.accountId}|${position.key}`,
+        accountId: plan.accountId,
+        words: holdingAskWords(plan, position, {
+          account, name: nameOf, provider: (p) => (p.asset ? providerName(p.asset as ChosenFund) : undefined),
+          // A statement row's name as printed, not its chosen asset's.
+          statement: (p) => {
+            const item = itemOf.get(holdingKey(p.lines[0].holding))!;
+            return shownName(item);
+          },
+        }),
+        target: `${nameOf(row)} in ${accountLabel(plan.accountId)}`,
+        answer,
+        set: replace
+          ? (main) => {
+              // Its row's cost and open edit go with it whenever it stops being saved.
+              if (main !== false) clearPositionWrites((p, q) => p.accountId === plan.accountId && q.key === position.key);
+              setReplaced((all) => setIn(all, plan.accountId, position.key, main === undefined ? undefined : !main));
+            }
+          : (main) => setKeeps((all) => setIn(all, plan.accountId, position.key, main)),
+      };
+    });
+  });
+  // Equal names in one account are told apart by number, as elsewhere.
+  const targets0 = holdingAsks.map((a) => ({ name: a.target }));
+  holdingAsks.forEach((a, i) => {
+    const n = nameNumber(targets0, i, "holding");
+    a.target += n;
+  });
+  const asks = [...sameAsks, ...holdingAsks];
+  const openAsks = asks.filter((a) => a.answer === undefined);
+  // Only the rare questions are left: the snapshots they decide can be seen already.
   const answeredAll = openKeys.length === 0 && lookingUp.length === 0 && !accountQuestion;
-  const decisionPlans = answeredAll && current ? current.plans.filter((plan) => decisions(plan).length > 0 || replacesSnapshot(plan)) : [];
-  const blocking = answeredAll && current
-    ? current.plans.reduce((n, plan) => n + blockers(plan, choicesFor(plan.accountId, plan), confirmed.has(plan.accountId)), 0)
-    : 0;
-  const questionCount = openKeys.length + (accountQuestion ? 1 : 0) + blocking;
-  const nothing = !accountQuestion && holdings.sources.every((s) => destination(s) === LEFT_OUT);
+  const questionCount = openKeys.length + (accountQuestion ? 1 : 0) + openAsks.length;
+  // Nothing to save: every folio, demat account and PRAN is set to Don't save or goes to an account
+  // whose saved holdings are kept.
+  const nothing = !accountQuestion &&
+    holdings.sources.every((s) => destination(s) === LEFT_OUT || keptSaved.has(accountOf(s) ?? ""));
+  const keptPlans = askPlans.filter((plan) => keptSaved.has(plan.accountId));
+  const keptWords = (plan: AccountPlan) => `${accountName(plan.accountId)}'s holdings for ${date} are kept`;
+
+  // A kept account that still holds funds this statement saves in another account would count them twice.
+  const doubles = keptPlans.flatMap((kept) => {
+    const held = new Map(kept.existing.positions.flatMap((p) => [[p.ref, p.assetId], [p.assetId, p.assetId]]));
+    const found = plans.flatMap((plan) => {
+      const chosen = choicesFor(plan.accountId, plan);
+      return plan.positions.filter((p) => p.lines.length && !p.misread && included(p, chosen) &&
+        (held.has(p.ref) || (!!p.asset?.assetId && held.has(p.asset.assetId)) || (!!p.existing && held.has(p.existing.assetId))))
+        .map((position) => ({ plan, position }));
+    });
+    if (!found.length) return [];
+    const account = accountName(kept.accountId);
+    const sources = [...new Set(found.flatMap(({ position }) => position.lines.map((l) => l.source)))];
+    const names = [...new Map(found.map(({ position }) => [
+      held.get(position.ref) ?? held.get(position.asset?.assetId ?? "") ?? held.get(position.existing?.assetId ?? ""), nameOf(position),
+    ])).values()];
+    const funds = found.every(({ position }) => position.lines.every((l) => l.holding.kind === "fund"));
+    const to = list([...new Set(found.map(({ plan }) => accountName(plan.accountId)))]);
+    const text = names.length === 1
+      ? `${account} will still hold ${names[0]}. Saving it in ${to} too would count its units twice.`
+      : `${account} will still hold ${names.length} of these ${funds ? "funds" : "holdings"} (${list(names)}). Saving them in ${to} too would count their units twice.`;
+    const button = sources.length === 1
+      ? `Keep the ${(sources[0].title ?? sources[0].label).replace(/\s*\([^)]*\)$/, "")} in ${account}`
+      : `Keep these ${sources.length} statement sections in ${account}`;
+    return [{ accountId: kept.accountId, account, sources, text, button }];
+  });
 
   // Ids the focus moves to.
   const ids = {
@@ -991,9 +1146,10 @@ export function HoldingsImport({
     keep: id("keep-reviewing"),
     summary: id("summary"),
     ready: id("ready"),
-    before: id("before"),
     questions: id("questions"),
     question: (key: string) => id(`q-${key}`),
+    ask: (askId: string) => id(`ask-${sha256(askId)}`),
+    askAnswer: (askId: string) => id(`ask-answer-${sha256(askId)}`),
     answerButton: (key: string) => id(`answer-${key}`),
     picker: (key: string) => id(`picker-${key}`),
     changePanel: (rowId: string) => id(`change-panel-${rowId}`),
@@ -1001,20 +1157,35 @@ export function HoldingsImport({
     showAll: id("show-all"),
     notCreated: id("not-created"),
   };
+  /** The open questions' headings, in the order they're shown: saved holdings for the date, holdings to match, then the others. */
+  const openHeadings = () => [
+    ...openAsks.filter((a) => sameAsks.includes(a)).map((a) => ids.ask(a.id)),
+    ...openKeys.map(ids.question),
+    ...openAsks.filter((a) => !sameAsks.includes(a)).map((a) => ids.ask(a.id)),
+  ];
+  /** Focuses the first account question, opening Save part of it to another account when it's there. */
+  const focusAccountQuestion = (force = false, origin?: Element | null) => {
+    const source = undecidedSources.find((s) => valueOf(sourceKey(s)) === null);
+    if (source) setOpen("part", true);
+    focusSoon(source ? sourceKey(source) : investor, force, origin);
+  };
+  const nothingWords = () =>
+    keptPlans.length ? `Nothing will be saved. ${keptPlans.map(keptWords).join(". ")}.` : "Nothing from this statement will be saved.";
   // The accounts the last save couldn't create, while something still goes to them.
   const missingNow = notCreated.filter((n) => holdings.sources.some((s) => accountOf(s) === n.accountId));
   // Whether the review can be saved as it stands: the save button's checks, which Try again shares.
   const canSave = !questionCount && !lookingUp.length && !nothing && !!current && !editor && !renaming && busy === "" &&
-    !prepareError && current.plans.length > 0;
+    !prepareError && plans.length > 0;
 
-  // Says what the first searches found, once they're all done.
+  // Says what the first searches found, once they're all done and the plan is worked out, so the count
+  // includes the questions about saved holdings.
   const initial = useRef<readonly string[] | null>(questionKeys);
   useEffect(() => {
     const keys = initial.current;
-    if (!keys || keys.some((key) => !searched.current.has(key))) return;
+    if (!keys || !current || keys.some((key) => !searched.current.has(key))) return;
     initial.current = null;
     const found = keys.filter((key) => matched[key]).length;
-    const left = questionKeys.length;
+    const left = questionCount;
     announce(`${found ? `${plural(found, "fund")} found automatically on AMFI. ` : ""}${left ? `${plural(left, "question")} for you.` : "No questions for you."}`);
   });
   // Once AMFI is turned on, the open questions are searched again: says how many it matched.
@@ -1042,14 +1213,12 @@ export function HoldingsImport({
     const found = batch.keys.filter((key) => matched[key]).length;
     const left = questionCount;
     announce(`AMFI added: ${plural(found, "fund")} matched. ${left ? `${plural(left, "question")} ${left === 1 ? "remains" : "remain"}.` : "No questions remain."}`);
-    if (accountQuestion) {
-      const source = undecidedSources.find((s) => valueOf(sourceKey(s)) === null);
-      if (source) setOpen("part", true);
-      focusSoon(source ? sourceKey(source) : investor, false, batch.origin);
-    } else focusSoon(openKeys.length ? ids.question(openKeys[0]) : blocking ? ids.before : ids.summary, false, batch.origin);
+    if (accountQuestion) focusAccountQuestion(false, batch.origin);
+    else focusSoon(openHeadings()[0] ?? ids.summary, false, batch.origin);
   });
 
   const afterAnswer = useRef(false);
+  const afterAsk = useRef(false);
   const afterChange = useRef<{ key: string; accountId: string } | null>(null);
   useEffect(() => {
     if (!current) return;
@@ -1059,22 +1228,49 @@ export function HoldingsImport({
       const row = rows.find((r) => r.accountId === changed.accountId && r.position.lines.some((l) => holdingKey(l.holding) === changed.key));
       const plan = current.plans.find((p) => p.accountId === changed.accountId);
       const position = plan?.positions.find((p) => p.lines.some((l) => holdingKey(l.holding) === changed.key));
-      const target = row ?? (plan && position ? toRow(plan, position, choicesFor(plan.accountId, plan)) : undefined);
-      focusSoon(target ? ids.row(target, itemOf.get(changed.key)!).change : rows.length ? ids.ready : ids.summary);
+      if (plan && position?.ask && undecided(position, choicesFor(plan.accountId, plan))) {
+        // Its Change button doesn't exist until the new question is answered.
+        focusSoon(ids.ask(`${plan.accountId}|${position.key}`));
+      } else {
+        const target = row ?? (plan && position ? toRow(plan, position, choicesFor(plan.accountId, plan)) : undefined);
+        focusSoon(target ? ids.row(target, itemOf.get(changed.key)!).change : rows.length ? ids.ready : ids.summary);
+      }
     }
-    if (!afterAnswer.current || questionKeys.length) return;
+    if ((!afterAnswer.current || questionKeys.length) && !afterAsk.current) return;
+    if (afterAsk.current && lookingUp.length) {
+      afterAsk.current = false;
+      return focusSoon(ids.questions);
+    }
+    if (afterAsk.current && questionKeys.length) {
+      // A rare question answered while fund questions are open: on to the next open one.
+      afterAsk.current = false;
+      return focusSoon(openHeadings()[0] ?? ids.questions);
+    }
     afterAnswer.current = false;
+    afterAsk.current = false;
     if (questionCount) {
-      if (accountQuestion) {
-        const source = undecidedSources.find((s) => valueOf(sourceKey(s)) === null);
-        if (source) setOpen("part", true);
-        focusSoon(source ? sourceKey(source) : investor);
-      } else focusSoon(ids.before);
+      if (accountQuestion) focusAccountQuestion();
+      else focusSoon(openHeadings()[0] ?? ids.summary);
     } else {
       focusSoon(ids.summary);
-      announce("All questions answered. Ready to save.");
+      announce(nothing ? nothingWords() : "All questions answered. Ready to save.");
     }
   });
+  /** A rare question's answer: the focus goes on to the next open question, or to the bar's summary. */
+  const answerAsk = (ask: Ask, main: boolean) => {
+    if (!current) return;
+    ask.set(main);
+    afterAsk.current = true;
+    // Keeping an account's saved holdings closes the edits of what it would have saved.
+    if (ask.id.startsWith("same|") && main && editor) {
+      const inAccount = editor.kind === "cost" ? editor.accountId === ask.accountId : editor.rowId.startsWith(`${ask.accountId}|`);
+      if (inAccount) closeEditor();
+    }
+  };
+  const reopenAsk = (ask: Ask) => {
+    ask.set(undefined);
+    focusSoon(ids.ask(ask.id));
+  };
 
   const answer = (key: string, choice: FundChoice) => {
     clearAssetWrites(key, choice);
@@ -1180,8 +1376,7 @@ export function HoldingsImport({
     if (editor?.kind !== "change" || (!current && (!prepareError || prepared))) return;
     const shown = [
       ...rows,
-      ...decisionPlans.flatMap((plan) => decisions(plan).filter((p) => p.lines.length && !p.misread)
-        .map((p) => toRow(plan, p, choicesFor(plan.accountId, plan)))),
+      ...defaulted.map(({ plan, position }) => toRow(plan, position, choicesFor(plan.accountId, plan))),
     ].filter((row) => row.position.lines.some((l) => holdingKey(l.holding) === editor.itemKey));
     if (shown.some((row) => row.id === editor.rowId)) return;
     const moved = shown[0];
@@ -1201,26 +1396,17 @@ export function HoldingsImport({
   };
 
   // Account choices: a change of where something goes clears what only it needed.
-  const chooseAccount = (key: string, value: string) => {
-    // Where each folio, demat account or PRAN goes after this choice: an account, `LEFT_OUT`, or undecided.
+  const chooseAccounts = (chosen: Record<string, string>) => {
+    const value = (key: string) => (key in chosen ? chosen[key] : valueOf(key));
+    // Where each folio, demat account or PRAN goes after these choices: an account, `LEFT_OUT`, or undecided.
     const after = (source: Source) => {
-      const own = sourceKey(source) === key ? value : valueOf(sourceKey(source));
+      const own = value(sourceKey(source));
       if (own === null) return undefined;
-      return own || (key === investor ? value : valueOf(investor)) || undefined;
+      return own || value(investor) || undefined;
     };
-    const questionsAfter = holdings.sources.some((s) => after(s) === undefined) || items.some((item) =>
-      snapshotKeys.has(item.key) && !choiceOf(item.key) && sourcesOf(item.key).some((s) => after(s) !== LEFT_OUT));
-    const editedPosition = editor?.kind === "change"
-      ? (current?.plans ?? prepared?.plans ?? []).flatMap((plan) => plan.positions.filter((position) => `${plan.accountId}|${position.key}` === editor.rowId))[0]
-      : undefined;
-    if (editor?.kind === "change" && !rows.some((r) => r.id === editor.rowId) &&
-      editedPosition?.lines.every((l) => destination(l.source) === after(l.source)) && questionsAfter) {
-      busyEditor(`account-${key}`);
-      return;
-    }
-    setPicks((all) => ({ ...all, [key]: value }));
+    setPicks((all) => ({ ...all, ...chosen }));
     // A rename goes with its new account.
-    if (renaming?.key === key && value !== proposedId(key)) setRenaming(null);
+    if (renaming && renaming.key in chosen && chosen[renaming.key] !== proposedId(renaming.key)) setRenaming(null);
     const used = new Set(holdings.sources.map(after).filter((to) => to && to !== LEFT_OUT));
     // Answers and typed searches of holdings no longer saved go, and so do the costs and choices of
     // accounts nothing goes to any more. Saving a fund in both accounts stays for when it's saved again.
@@ -1241,16 +1427,17 @@ export function HoldingsImport({
       })));
     const keepUsed = <T,>(map: ReadonlyMap<string, T>) => new Map([...map].filter(([accountId]) => used.has(accountId)));
     setCosts(keepUsed);
-    setFlips(keepUsed);
     setKeeps(keepUsed);
-    setConfirmed((all) => new Set([...all].filter((accountId) => used.has(accountId))));
+    setReplaced(keepUsed);
+    setSameDate(keepUsed);
     if (editor) {
       const stillSaved = editor.kind === "cost"
-        ? used.has(editor.accountId)
-        : sourcesOf(editor.itemKey).some((s) => after(s) && after(s) !== LEFT_OUT);
+        ? used.has(editor.accountId) && !keptSaved.has(editor.accountId)
+        : sourcesOf(editor.itemKey).some((s) => after(s) && after(s) !== LEFT_OUT && !keptSaved.has(after(s)!));
       if (!stillSaved) closeEditor();
     }
   };
+  const chooseAccount = (key: string, value: string) => void chooseAccounts({ [key]: value });
 
   // Rename edits a new account's name in place; its field and Rename button take the focus in turn.
   const renameIds = (key: string) => ({ rename: id(`rename-${key}`), field: id(`rename-field-${key}`) });
@@ -1301,7 +1488,7 @@ export function HoldingsImport({
   }).length;
   const sizes = (map: ReadonlyMap<string, ReadonlySet<string> | ReadonlyMap<string, unknown>>) => [...map.values()].reduce((n, v) => n + v.size, 0);
   const changes = Object.entries(picks).filter(([key, value]) => value !== (accountChoices[key] ?? (key === investor ? null : ""))).length +
-    Object.keys(answers).length + sizes(costs) + sizes(flips) + sizes(keeps) + confirmed.size + alsoSave.size + searchChanges + (editor ? 1 : 0) +
+    Object.keys(answers).length + sizes(costs) + sizes(keeps) + sizes(replaced) + sameDate.size + alsoSave.size + searchChanges + (editor ? 1 : 0) +
     Object.keys(renamed).length + (renaming ? 1 : 0);
 
   const remember = () => {
@@ -1335,14 +1522,17 @@ export function HoldingsImport({
    * it saves into without creating another.
    */
   const runSave = async (again?: Pending) => {
-    const run = again ?? (current && {
-      plans: current.plans,
+    // An account whose saved holdings are kept isn't saved.
+    const run: Pending | null = again ?? (current && {
+      plans,
       // The statement's price for each manual-priced asset any account's snapshot lists.
-      listed: new Map(current.plans.flatMap((plan) =>
+      listed: new Map(plans.flatMap((plan) =>
         pricesToSave(plan, choicesFor(plan.accountId, plan)).filter((p) => p.from === "statement").map((p) => [p.ref, p.price] as const))),
       quotes: current.quotes,
       warnings: rows.flatMap((row) => planWarnings(row).map((warning) => ({ accountId: row.accountId, name: row.name, warning }))),
       tracked: trackedSummary(),
+      kept: keptPlans.map((plan) => `${accountName(plan.accountId)}: the holdings already saved for ${date} were kept; nothing changed there.`),
+      doubles: doubles.map((d) => d.text),
     });
     // Only what was reviewed and confirmed is saved; a retry goes on with what an earlier save left.
     if (!run || (!again && !canSave)) return;
@@ -1454,6 +1644,8 @@ export function HoldingsImport({
           conflicts: run.warnings.filter((w) => savedPlans.has(w.accountId)),
           notCreated: missing,
           pending: left.length ? { ...run, plans: left } : undefined,
+          kept: run.kept,
+          doubles: run.doubles,
         });
         setSaves((n) => n + 1);
       }
@@ -1470,7 +1662,6 @@ export function HoldingsImport({
 
   const kind = "cas_type" in statement ? `${KINDS[statement.file_type] ?? statement.file_type} summary statement` : `${KINDS[statement.file_type] ?? statement.file_type} statement`;
   const investorName = statement.investor_info.name?.trim() || statement.investor_info.email?.trim() || "This investor";
-  const date = longDate(holdings.date);
   const itemsShown = items.filter((item) => snapshotKeys.has(item.key) || holdings.sources.some((s) => (s.zero ?? []).some((h) => holdingKey(h) === item.key)));
   const editWhat = editor ? (editor.kind === "cost" ? `your purchase-cost edit for ${editor.name}` : `your change to ${editor.name}`) : "";
   const missingCosts = rows.filter((r) => !r.cost && r.accountId);
@@ -1488,13 +1679,8 @@ export function HoldingsImport({
     </p>
   );
   const nextQuestion = () => {
-    if (accountQuestion) {
-      const source = undecidedSources.find((s) => valueOf(sourceKey(s)) === null);
-      if (source) setOpen("part", true);
-      return focusSoon(source ? sourceKey(source) : investor, true);
-    }
-    if (openKeys.length) return focusSoon(ids.question(openKeys[0]), true);
-    focusSoon(ids.before, true);
+    if (accountQuestion) return focusAccountQuestion(true);
+    focusSoon(openHeadings()[0] ?? ids.questions, true);
   };
 
   const header = (
@@ -1517,14 +1703,14 @@ export function HoldingsImport({
   );
 
   const status = (
-    <p role="status" className="sr-only">
+    <p role="status" className="sr-only" style={{ overflowWrap: "anywhere" }}>
       {busy === "import" ? "Saving…" : said}
     </p>
   );
 
   if (result) {
     return (
-      <div className="grid gap-6">
+      <div className="grid grid-cols-1 gap-6">
         {header}
         {status}
         {error && (
@@ -1533,13 +1719,17 @@ export function HoldingsImport({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        <HoldingsResult
-          key={saves}
-          result={result.saved}
-          accounts={[...allAccounts, ...created.current.values()]}
-          notCreated={result.notCreated}
-          retry={result.pending && (() => void runSave(result.pending))}
-        />
+        {(result.saved.saved.length > 0 || result.saved.failed.length > 0 || result.notCreated.length > 0 || !result.kept.length) && (
+          <HoldingsResult
+            key={saves}
+            result={result.saved}
+            accounts={[...allAccounts, ...created.current.values()]}
+            notCreated={result.notCreated}
+            retry={result.pending && (() => void runSave(result.pending))}
+          />
+        )}
+        {result.kept.map((line) => <p key={line} className="text-sm" style={{ overflowWrap: "anywhere" }}>{line}</p>)}
+        {result.doubles.map((line) => <p key={line} className="text-warning text-sm" style={{ overflowWrap: "anywhere" }}>{line}</p>)}
         {result.conflicts.map((c, i) => <p key={i} className="text-warning text-sm">{accountName(c.accountId)}, {c.name}: {c.warning}</p>)}
         {result.tracked && (
           <p className="text-sm">
@@ -1570,8 +1760,61 @@ export function HoldingsImport({
     const auto = searches.get(key).auto;
     return item.noun === "fund" && item.isin && auto?.status === "done" && !auto.amfi;
   }).length;
-  const answeredKeys = items.filter((item) => item.key in answers && answers[item.key] && snapshotKeys.has(item.key) && sourcesOf(item.key).some(savedSource)).map((i) => i.key);
-  const anyQuestions = questionKeys.length > 0 || answeredKeys.length > 0;
+  const answeredKeys = items.filter((item) => item.key in answers && answers[item.key] && snapshotKeys.has(item.key) && sourcesOf(item.key).some(savingSource)).map((i) => i.key);
+  const anyQuestions = questionKeys.length > 0 || answeredKeys.length > 0 || asks.length > 0;
+  const openCount = openKeys.length + openAsks.length;
+  const answeredCount = answeredKeys.length + asks.length - openAsks.length;
+  /** A rare question: its card while it's open, then its answered line. */
+  const askView = (ask: Ask) => {
+    if (ask.answer !== undefined) {
+      return (
+        <ul key={ask.id} className="grid">
+          <AskAnswered text={ask.words.receipt(ask.answer)} target={ask.target} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+        </ul>
+      );
+    }
+    const name = (label: string) => `${label}: ${ask.target}`;
+    return (
+      <AskCard
+        key={ask.id}
+        headingId={ids.ask(ask.id)}
+        title={ask.words.title}
+        target={ask.target}
+        main={{ label: ask.words.main, name: name(ask.words.main), onClick: () => answerAsk(ask, true) }}
+        other={{ label: ask.words.other, name: name(ask.words.other), onClick: () => answerAsk(ask, false) }}
+        note={ask.words.note}
+        caution={ask.words.caution}
+        why={ask.words.why ? { text: ask.words.why, open: !!open[`why:${ask.id}`], onOpenChange: (yes) => setOpen(`why:${ask.id}`, yes) } : undefined}
+        disabled={busy !== "" || !current}
+      >
+        <p>{ask.words.line}</p>
+        {ask.changes && (
+          <ul className="list-disc ps-4">
+            {ask.changes.map((change) => (
+              <li key={change}>{change}</li>
+            ))}
+          </ul>
+        )}
+      </AskCard>
+    );
+  };
+  /** The statement's holdings that would have gone to an account whose saved holdings are kept. */
+  const keptHoldings = (plan: AccountPlan) =>
+    holdings.sources.filter((s) => accountOf(s) === plan.accountId).flatMap((s) => s.holdings.map((h) => {
+      const item = itemOf.get(holdingKey(h))!;
+      return { key: `${s.id}|${item.key}`, name: shownName(item, fundOf(item.key)), units: unitWords(item, h.units) };
+    }));
+  /** Keeps the sources a double-count warning names in the account whose saved holdings are kept. */
+  const keepInKept = (d: (typeof doubles)[number]) => {
+    chooseAccounts(Object.fromEntries(d.sources.map((s) => [sourceKey(s), d.accountId])));
+    const left = holdings.sources.some((s) => !d.sources.includes(s) && destination(s) !== LEFT_OUT && !keptSaved.has(accountOf(s) ?? ""));
+    if (!left) {
+      focusSoon(ids.summary);
+      return announce(`Nothing will be saved. ${d.account}'s holdings for ${date} are kept.`);
+    }
+    focusSoon(ids.ready);
+    announce(`${d.sources.length === 1 ? `${d.sources[0].title ?? d.sources[0].label} now goes` : `${plural(d.sources.length, "statement section")} now go`} to ${d.account}, whose holdings for ${date} are kept.`);
+  };
   const laterPlans = plans.filter((plan) => plan.existing.later.length > 0);
   const later = (plan: AccountPlan) =>
     `This saves holdings history for ${date}. ${accountName(plan.accountId)}'s current holdings still come from its snapshot of ${longDate(plan.existing.later[plan.existing.later.length - 1])}.`;
@@ -1588,7 +1831,12 @@ export function HoldingsImport({
           </Badge>
         ) : (
           <>
-            <Badge variant="outline">{readyKeys.size} ready</Badge>
+            {keptPlans.map((plan) => (
+              <Badge key={plan.accountId} variant="outline" className="max-w-full whitespace-normal" style={{ overflowWrap: "anywhere" }}>
+                {accountName(plan.accountId)} kept as saved
+              </Badge>
+            ))}
+            {(readyKeys.size > 0 || !keptPlans.length) && <Badge variant="outline">{readyKeys.size} ready</Badge>}
             {notIncludedKeys.size > 0 && <Badge variant="outline">{notIncludedKeys.size} not included</Badge>}
             {questionCount > 0 && (
               <Button type="button" variant="outline" size="xs" className="border-warning" onClick={nextQuestion}>
@@ -1630,7 +1878,7 @@ export function HoldingsImport({
         <section aria-labelledby={ids.questions} className="grid gap-3">
           <h3 id={ids.questions} tabIndex={-1} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
             Questions for you
-            {openKeys.length > 0 && ` · ${openKeys.length} of ${openKeys.length + answeredKeys.length} left`}
+            {openCount > 0 && ` · ${openCount} of ${openCount + answeredCount} left`}
           </h3>
           {amfiFunds > 0 && amfi.status !== "on" && (
             <Alert variant="warning">
@@ -1666,12 +1914,12 @@ export function HoldingsImport({
               <Spinner /> Looking up {plural(lookingUp.length, "holding")}…
             </p>
           )}
-          {openKeys.length === 0 && answeredKeys.length > 0 && lookingUp.length === 0 ? (
+          {openCount === 0 && answeredCount > 0 && lookingUp.length === 0 ? (
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-2 rounded-lg border p-3">
               <span aria-hidden="true" className="text-success">
                 ✓
               </span>
-              <span>{answeredKeys.length === 1 ? "Question answered." : `All ${answeredKeys.length} questions answered.`}</span>
+              <span>{answeredCount === 1 ? "Question answered." : `All ${answeredCount} questions answered.`}</span>
               <Disclosure
                 id={id("show-answers")}
                 label={open.answers ? "Hide answers" : "Show answers"}
@@ -1679,6 +1927,9 @@ export function HoldingsImport({
                 onOpenChange={(yes) => setOpen("answers", yes)}
               >
                 <ul className="mt-2 grid gap-2">
+                  {sameAsks.map((ask) => (
+                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} target={ask.target} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+                  ))}
                   {answeredKeys.map((key) => (
                     <AnsweredLine
                       key={key}
@@ -1689,11 +1940,15 @@ export function HoldingsImport({
                       onChange={() => reopen(key)}
                     />
                   ))}
+                  {holdingAsks.map((ask) => (
+                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} target={ask.target} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+                  ))}
                 </ul>
               </Disclosure>
             </div>
           ) : (
             <div className="grid gap-3">
+              {sameAsks.map(askView)}
               {items
                 .filter((item) => openKeys.includes(item.key) || answeredKeys.includes(item.key))
                 .map((item) =>
@@ -1702,7 +1957,7 @@ export function HoldingsImport({
                       key={item.key}
                       item={item}
                       label={labelOf.get(item.key)!}
-                      units={unitWords(item, sourcesOf(item.key).filter(savedSource).flatMap((s) => s.holdings.filter((h) => holdingKey(h) === item.key))
+                      units={unitWords(item, sourcesOf(item.key).filter(savingSource).flatMap((s) => s.holdings.filter((h) => holdingKey(h) === item.key))
                         .reduce((total, h) => format(add(dec(total), dec(h.units))), "0"))}
                       search={searches.get(item.key)}
                       searches={searches}
@@ -1723,10 +1978,35 @@ export function HoldingsImport({
                     </ul>
                   ),
                 )}
+              {holdingAsks.map(askView)}
             </div>
           )}
         </section>
       )}
+      {keptPlans.map((plan) => (
+        <section key={plan.accountId} aria-labelledby={id(`kept-${plan.accountId}`)} className="grid grid-cols-1 gap-2" style={{ overflowWrap: "anywhere" }}>
+          <h3 id={id(`kept-${plan.accountId}`)} tabIndex={-1} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
+            {accountName(plan.accountId)}: nothing will be saved
+          </h3>
+          <p className="text-success text-sm">Its existing holdings will be kept for {date}.</p>
+          <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
+            <Disclosure
+              label="Show this statement's holdings"
+              ariaLabel={`Show this statement's holdings for ${accountLabel(plan.accountId)}`}
+              open={!!open[`kept:${plan.accountId}`]}
+              onOpenChange={(yes) => setOpen(`kept:${plan.accountId}`, yes)}
+            >
+              <ul className="mt-2 grid grid-cols-1 gap-1">
+                {keptHoldings(plan).map((h) => (
+                  <li key={h.key}>
+                    {h.name} <span className="text-muted-foreground">· {h.units}</span>
+                  </li>
+                ))}
+              </ul>
+            </Disclosure>
+          </div>
+        </section>
+      ))}
       {rows.length > 0 && (
         <section aria-labelledby={ids.ready} className="grid gap-3">
           <h3 id={ids.ready} tabIndex={-1} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
@@ -1741,6 +2021,16 @@ export function HoldingsImport({
             <p key={plan.accountId} className="text-warning text-sm">
               {later(plan)}
             </p>
+          ))}
+          {doubles.map((d) => (
+            <div key={d.accountId} className="grid grid-cols-1 gap-2" style={{ overflowWrap: "anywhere" }}>
+              <p className="text-warning text-sm">{d.text}</p>
+              <div className="flex flex-wrap gap-2">
+                <WrapButton type="button" variant="outline" disabled={busy !== ""} aria-label={`${d.button}${nameNumber(accounts, accounts.findIndex((a) => a.id === d.accountId), "account")}`} onClick={() => keepInKept(d)}>
+                  {d.button}
+                </WrapButton>
+              </div>
+            </div>
           ))}
           <ReadyTable
             ctx={ctx}
@@ -1757,12 +2047,63 @@ export function HoldingsImport({
           />
         </section>
       )}
+      {keptAsIs.length > 0 && (
+        <section aria-labelledby={id("kept-as-is")} className="grid gap-2">
+          <h3 id={id("kept-as-is")} tabIndex={-1} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
+            Kept as they are ({keptAsIs.length})
+          </h3>
+          <ul className="grid gap-2 text-sm">
+            {keptAsIs.map(({ plan, position }) => (
+              <li key={`${plan.accountId}|${position.key}`} className="grid grid-cols-1 gap-1">
+                <span>
+                  <span className="font-medium">{position.name}</span>
+                  <span className="text-muted-foreground">
+                    {" "}
+                    · {units(position.existing!.units)} units in {accountName(plan.accountId)}
+                  </span>
+                </span>
+                {position.notes.map((note, i) => (
+                  <span key={i} className="text-muted-foreground">
+                    {note}
+                  </span>
+                ))}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       <NotIncluded
         tracked={tracked}
         counted={counted}
         skipped={skipped.map((item) => labelOf.get(item.key)!)}
         unsaved={unsaved.map((item) => labelOf.get(item.key)!)}
-        defaulted={[...new Set(defaulted.map((p) => p.name))]}
+        defaulted={defaulted.map(({ plan, position }) => {
+          // A row left out can be changed to another asset, as a ready row can.
+          const row = toRow(plan, position, choicesFor(plan.accountId, plan));
+          const answered = position.ask?.kind === "replace"
+            ? [`${accountName(plan.accountId)} keeps ${assetNames(plan.positions.filter((p) => position.replaces?.includes(p.key)))} for now, by your answer above.`]
+            : [];
+          return {
+            key: row.id,
+            name: `${row.name}${keptPlans.length || plans.length > 1 ? ` (${accountName(plan.accountId)})` : ""}`,
+            notes: [...answered, ...position.notes.filter((note) => !note.endsWith(OVERLAP_NOTE))],
+            change: (
+              <>
+                <LinkButton
+                  id={ids.row(row).change}
+                  type="button"
+                  aria-expanded={handlers.changing === row.id && handlers.changingItem === row.item.key}
+                  aria-label={`Change: ${row.label} in ${accountLabel(plan.accountId)}`}
+                  onClick={() => handlers.onChange(row)}
+                >
+                  Change
+                </LinkButton>
+                <OtherChanges row={row} handlers={handlers} />
+              </>
+            ),
+            panel: handlers.changing === row.id ? handlers.changePanel(row) : undefined,
+          };
+        })}
         lines={leftOutLines}
         open={open}
         setOpen={setOpen}
@@ -1781,62 +2122,6 @@ export function HoldingsImport({
         onReview={(accountId) => review(accountId)}
         partId={id("not-included")}
       />
-      {decisionPlans.length > 0 && (
-        <section aria-labelledby={ids.before} className="grid gap-3">
-          <h3 id={ids.before} tabIndex={-1} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
-            Before saving
-          </h3>
-          {decisionPlans.map((plan) => (
-            <BeforeSaving
-              key={plan.accountId}
-              plan={plan}
-              account={accountName(plan.accountId)}
-              label={accountLabel(plan.accountId)}
-              choices={choicesFor(plan.accountId, plan)}
-              confirmed={confirmed.has(plan.accountId)}
-              change={(position) => {
-                // A statement row left out by default can be changed to another asset, as a ready row can.
-                const row = toRow(plan, position, choicesFor(plan.accountId, plan));
-                return (
-                  <>
-                    <span className="text-sm">
-                      <LinkButton
-                        id={ids.row(row).change}
-                        type="button"
-                        aria-expanded={handlers.changing === row.id && handlers.changingItem === row.item.key}
-                        aria-label={`Change: ${row.label} in ${accountLabel(plan.accountId)}`}
-                        onClick={() => handlers.onChange(row)}
-                      >
-                        Change
-                      </LinkButton>
-                    </span>
-                    <OtherChanges row={row} handlers={handlers} />
-                    {handlers.changing === row.id && handlers.changePanel(row)}
-                  </>
-                );
-              }}
-              disabled={busy !== ""}
-              onFlip={(key) => {
-                clearPositionWrites((p, position) => p.accountId === plan.accountId && position.key === key, true);
-                setFlips((all) => {
-                  const next = new Set(all.get(plan.accountId) ?? []);
-                  if (!next.delete(key)) next.add(key);
-                  return new Map(all).set(plan.accountId, next);
-                });
-              }}
-              onKeep={(key, keep) => setKeeps((all) => new Map(all).set(plan.accountId, new Map(all.get(plan.accountId) ?? []).set(key, keep)))}
-              onConfirm={(yes) =>
-                setConfirmed((all) => {
-                  const next = new Set(all);
-                  if (yes) next.add(plan.accountId);
-                  else next.delete(plan.accountId);
-                  return next;
-                })
-              }
-            />
-          ))}
-        </section>
-      )}
       {error && (
         <Alert variant="destructive">
           <AlertTitle>Something went wrong</AlertTitle>
@@ -1851,7 +2136,7 @@ export function HoldingsImport({
           </WrapButton>
         </div>
       )}
-      {current?.plans.filter((plan) => open[`snapshot:${plan.accountId}`]).map((plan) => (
+      {plans.filter((plan) => open[`snapshot:${plan.accountId}`]).map((plan) => (
         <section key={plan.accountId} id={id(`snapshot-${plan.accountId}`)} aria-label={`${accountName(plan.accountId)}'s holdings on ${date} after saving`}>
           <SnapshotTable plan={plan} choices={choicesFor(plan.accountId, plan)} account={accountName(plan.accountId)} />
         </section>
@@ -1860,7 +2145,7 @@ export function HoldingsImport({
         summaryId={ids.summary}
         lines={(() => {
           if (busy === "import") {
-            return (current?.plans ?? []).map((plan) => (
+            return plans.map((plan) => (
               <p key={plan.accountId}>
                 {saving[plan.accountId] === "saved" ? "Saved" : saving[plan.accountId] === "failed" ? "Didn't save" : "Saving"}{" "}
                 <span className="font-semibold">{accountName(plan.accountId)}</span>
@@ -1873,24 +2158,34 @@ export function HoldingsImport({
           if (editor) return [<p key="e" className="text-warning">Save or cancel {editWhat} first.</p>];
           if (lookingUp.length) return [<p key="l">Looking up {plural(lookingUp.length, "holding")}…</p>];
           if (questionCount) {
-            // Only Before saving's questions left: the snapshots they decide can be seen already.
+            // Only the rare questions left: the snapshots they decide can be seen already.
             return [
               <p key="q">{plural(questionCount, "question")} left before saving.</p>,
               ...(answeredAll && current
-                ? current.plans.flatMap((plan) => [
+                ? plans.flatMap((plan) => [
                     ...(plan.existing.later.length ? [<p key={`later:${plan.accountId}`} className="text-warning">{later(plan)}</p>] : []),
                     see(plan),
                   ])
                 : []),
             ];
           }
-          if (nothing) return [<p key="n">Nothing from this statement will be saved.</p>];
+          if (nothing) {
+            return [
+              <p key="n">
+                {keptPlans.length
+                  ? `Nothing will change: you kept the holdings already saved in ${list(keptPlans.map((plan) => accountName(plan.accountId)))} for ${date}.`
+                  : "Nothing from this statement will be saved."}
+              </p>,
+            ];
+          }
           if (!current) return [<p key="w" className="text-muted-foreground">Working out what will be saved…</p>];
-          const lines = current.plans.map((plan) => {
+          const lines = plans.map((plan) => {
             const n = rows.filter((r) => r.accountId === plan.accountId).length;
             const name = <span className="font-semibold">{accountName(plan.accountId)}</span>;
+            // What the answers about its holdings do.
+            const done = holdingAsks.filter((a) => a.accountId === plan.accountId && a.answer !== undefined).map((a) => a.words.done(a.answer!));
             return (
-              <div key={plan.accountId} className="grid gap-1">
+              <div key={plan.accountId} className="grid grid-cols-1 gap-1">
                 <p>
                   {isProposed(plan.accountId) ? (
                     <>
@@ -1906,11 +2201,26 @@ export function HoldingsImport({
                     </>
                   )}
                 </p>
+                {done.length > 0 && <p className="text-muted-foreground">{capital(done.join("; "))}.</p>}
                 {plan.existing.later.length > 0 && <p className="text-warning">{later(plan)}</p>}
                 {see(plan)}
               </div>
             );
           });
+          for (const plan of keptPlans) {
+            lines.push(
+              <p key={`kept:${plan.accountId}`} className="text-muted-foreground">
+                {accountName(plan.accountId)}: existing holdings kept for {date}.
+              </p>,
+            );
+          }
+          for (const d of doubles) {
+            lines.push(
+              <p key={`double:${d.accountId}`} className="text-warning">
+                {d.text}
+              </p>,
+            );
+          }
           if (missingCosts.length) {
             lines.push(
               <p key="c" className="text-warning">
@@ -1925,11 +2235,18 @@ export function HoldingsImport({
         })()}
         action={
           questionCount || lookingUp.length
-            ? { label: current?.plans.every((p) => p.existing.date) && current.plans.length ? "Update holdings" : "Save holdings", disabled: true }
+            ? { label: plans.every((p) => p.existing.date) && plans.length ? "Update holdings" : "Save holdings", disabled: true }
             : nothing
-              ? { label: "Finish", disabled: !!editor || !!renaming, onClick: () => { remember(); onAnother(`Finished: nothing from ${fileName} was saved.`); } }
+              ? {
+                  label: "Finish",
+                  disabled: !!editor || !!renaming,
+                  onClick: () => {
+                    remember();
+                    onAnother(`Finished: nothing from ${fileName} was saved.${keptPlans.length ? ` ${keptPlans.map(keptWords).join(". ")}.` : ""}`);
+                  },
+                }
               : {
-                  label: busy === "import" ? "Saving…" : current?.plans.every((p) => p.existing.date) && current.plans.length ? "Update holdings" : "Save holdings",
+                  label: busy === "import" ? "Saving…" : plans.every((p) => p.existing.date) && plans.length ? "Update holdings" : "Save holdings",
                   disabled: !canSave,
                   busy: busy === "import",
                   onClick: () => void runSave(),
@@ -1969,6 +2286,9 @@ interface Pending {
   /** Each plan's rows' warnings, shown once its snapshot is saved. */
   warnings: { accountId: string; name: string; warning: string }[];
   tracked?: TrackedSummary;
+  /** Accounts whose holdings saved for the date were kept, and what that still counts twice. */
+  kept: string[];
+  doubles: string[];
 }
 
 interface SaveResult {
@@ -1979,6 +2299,8 @@ interface SaveResult {
   conflicts: { accountId: string; name: string; warning: string }[];
   notCreated: NotCreated[];
   pending?: Pending;
+  kept: string[];
+  doubles: string[];
 }
 
 interface TrackedSummary {

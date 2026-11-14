@@ -197,9 +197,40 @@ describe("the statement's transactions", () => {
       why: (f, s) => (s.scheme === "E" ? "skipped" : f.folio === "F2" ? "notImported" : "answers"),
     });
     const { leftOut, ...counts } = b;
-    assert.deepEqual(counts, { total: 9, toImport: 1, before: 1, duplicates: 0, answers: 1, earlier: 1, skipped: 1, notImported: 1, unbalanced: 1 });
+    assert.deepEqual(counts, {
+      total: 9, toImport: 1, before: 1, duplicates: 0, skippedDuplicates: 0, importedDuplicates: 0, otherDuplicates: 0,
+      answers: 1, earlier: 1, skipped: 1, notImported: 1, unbalanced: 1, skippedUnbalanced: 0,
+    });
     assert.deepEqual(leftOut.map((l) => [l.row.scheme.scheme, l.kind]), [["C", "reversal"], ["C", "reversal"]]);
     assert.equal(Object.values(counts).slice(1).reduce((a, n) => a + n, 0) + leftOut.length, b.total);
+    // Skipped by the answer, D's rows are counted as such.
+    const answered = breakdown({
+      mapping, planned, sent: (t) => sends(t, () => false), why: () => "answers", unbalancedAnswer: (f, s) => (s.scheme === "D" ? false : undefined),
+    });
+    assert.deepEqual([answered.unbalanced, answered.skippedUnbalanced], [0, 1]);
+  });
+
+  test("possible duplicates are counted as waiting for an answer, skipped or imported by it, or never asked about", () => {
+    const data = statement(folio("F1", [
+      scheme("A", [tx("2023-06-01", "PURCHASE", "1000", "10", "100")], { close: "10", close_calculated: "10" }),
+      scheme("B", [tx("2023-06-01", "PURCHASE", "2000", "20", "100")], { close: "20", close_calculated: "20" }),
+    ]));
+    // Wealthfolio has both purchases, entered by hand: each is a possible duplicate.
+    const first = planFor(data).plan;
+    const existing = first.flatMap((t) => [stored(t.transaction.activity, true), stored(t.transaction.cash, true)]);
+    const { mapping, planned } = planFor(data, { existing });
+    const plan = [...planned.values()];
+    const count = (state, sentToo = () => false) => {
+      const b = breakdown({ mapping, planned, sent: sentToo, why: () => "answers", duplicate: (t) => (plan.includes(t) ? state(t) : undefined) });
+      return [b.toImport, b.before, b.duplicates, b.skippedDuplicates, b.importedDuplicates, b.otherDuplicates];
+    };
+    const [a] = plan;
+    assert.deepEqual(plan.map((t) => t.status), ["existing", "existing"]);
+    assert.deepEqual(count(() => "open"), [0, 0, 2, 0, 0, 0]);
+    assert.deepEqual(count((t) => (t === a ? "skipped" : "open")), [0, 0, 1, 1, 0, 0]);
+    assert.deepEqual(count((t) => (t === a ? "imported" : "skipped"), (t) => t === a), [0, 0, 0, 1, 1, 0]);
+    // Not asked about: what Wealthfolio has already is skipped.
+    assert.deepEqual(count(() => "never"), [0, 2, 0, 0, 0, 0]);
   });
 });
 

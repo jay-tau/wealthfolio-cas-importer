@@ -161,14 +161,24 @@ export const unitsDiffer = (group: Pick<FundGroup, "after" | "statement">) => gr
 /** Why a statement row isn't imported, from the Review screen's point of view. */
 export type Waiting = "answers" | "skipped" | "notImported";
 
+/** What became of a possible duplicate: asked and waiting, skipped or imported by the answer, or never asked. */
+export type DuplicateState = "open" | "skipped" | "imported" | "never";
+
 /** The statement's transactions by what happens to them. Their parts add up to `total`. */
 export interface Breakdown {
   total: number;
+  /** New transactions to import, without the possible duplicates the user chose to import. */
   toImport: number;
   /** Already in Wealthfolio. */
   before: number;
-  /** Possible duplicates left out unless chosen under Before importing. */
+  /** Possible duplicates waiting for the user's answer. */
   duplicates: number;
+  /** Possible duplicates skipped by the user's answer. */
+  skippedDuplicates?: number;
+  /** Possible duplicates imported by the user's answer. */
+  importedDuplicates?: number;
+  /** Possible duplicates never asked about, such as a merger's: skipped. */
+  otherDuplicates?: number;
   /** In funds or folios still waiting for an answer. */
   answers: number;
   /** In funds that start with units Wealthfolio doesn't have. */
@@ -177,8 +187,10 @@ export interface Breakdown {
   skipped: number;
   /** In folios set to Don't import. */
   notImported: number;
-  /** In funds whose rows don't add up, left out unless chosen under Before importing. */
+  /** In funds whose rows don't add up, waiting for the user's answer. */
   unbalanced: number;
+  /** In funds whose rows don't add up, skipped by the user's answer. */
+  skippedUnbalanced?: number;
   /** Left out for a reason of their own: a reversal, a row the add-on can't import, a transaction Wealthfolio refuses. */
   leftOut: { row: RowOutcome; reason: string; kind: "reversal" | "row" }[];
 }
@@ -188,29 +200,44 @@ export function breakdown({
   planned,
   sent,
   why,
+  duplicate,
+  unbalancedAnswer,
 }: {
   mapping: Mapping;
   planned: Planned;
   sent: (t: PlannedTransaction) => boolean;
   /** Why a scheme with no account or fund isn't imported. */
   why: (folio: CasFolio, scheme: CasScheme) => Waiting;
+  /** What became of a possible duplicate; undefined for any other transaction. Without it, each one waits. */
+  duplicate?: (t: PlannedTransaction) => DuplicateState | undefined;
+  /** The answer for a fund whose rows don't add up: false skipped it; undefined while it waits. */
+  unbalancedAnswer?: (folio: CasFolio, scheme: CasScheme) => boolean | undefined;
 }): Breakdown {
-  const b: Breakdown = { total: 0, toImport: 0, before: 0, duplicates: 0, answers: 0, earlier: 0, skipped: 0, notImported: 0, unbalanced: 0, leftOut: [] };
+  const b: Breakdown = {
+    total: 0, toImport: 0, before: 0, duplicates: 0, skippedDuplicates: 0, importedDuplicates: 0, otherDuplicates: 0,
+    answers: 0, earlier: 0, skipped: 0, notImported: 0, unbalanced: 0, skippedUnbalanced: 0, leftOut: [],
+  };
   for (const outcome of mapping.outcomes) {
     b.total++;
     const { leftOut } = outcome;
     if (leftOut) {
       if (leftOut.kind === "unchosen") b[why(outcome.folio, outcome.scheme)]++;
       else if (leftOut.kind === "opening") b.earlier++;
-      else if (leftOut.kind === "unbalanced") b.unbalanced++;
-      else b.leftOut.push({ row: outcome, reason: leftOut.reason, kind: leftOut.kind === "reversal" ? "reversal" : "row" });
+      else if (leftOut.kind === "unbalanced") {
+        if (unbalancedAnswer?.(outcome.folio, outcome.scheme) === false) b.skippedUnbalanced!++;
+        else b.unbalanced++;
+      } else b.leftOut.push({ row: outcome, reason: leftOut.reason, kind: leftOut.kind === "reversal" ? "reversal" : "row" });
       continue;
     }
     const t = planned.get(outcome.transaction!);
+    const asked = !t ? undefined : duplicate ? duplicate(t) : t.status === "duplicate" ? "open" : undefined;
     if (!t) b.leftOut.push({ row: outcome, reason: "This row isn't imported.", kind: "row" });
+    else if (asked === "imported") b.importedDuplicates!++;
     else if (sent(t)) b.toImport++;
+    else if (asked === "open") b.duplicates++;
+    else if (asked === "skipped") b.skippedDuplicates!++;
     else if (t.status === "existing") b.before++;
-    else if (t.status === "duplicate") b.duplicates++;
+    else if (t.status === "duplicate") b.otherDuplicates!++;
     else b.leftOut.push({ row: outcome, reason: invalidReason(t), kind: "row" });
   }
   return b;

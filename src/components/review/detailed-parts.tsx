@@ -1,4 +1,3 @@
-import { Checkbox, Label } from "@wealthfolio/ui";
 import type { ReactNode } from "react";
 import type { Breakdown } from "../../cas/review";
 import { nameNumber } from "../../lib/name-number";
@@ -33,14 +32,14 @@ const sectionTitle = "text-muted-foreground text-sm font-semibold uppercase trac
 
 /**
  * What this import leaves out, each with why: funds waiting for earlier purchases, with How to fix;
- * funds skipped by an answer; folios set to Don't import; funds whose rows don't add up, left out
- * unless chosen under Before importing; and transactions left out for a reason of their own.
+ * funds skipped by an answer; folios set to Don't import; funds skipped because their rows don't add
+ * up, with Change; and transactions left out for a reason of their own.
  */
 export function NotIncludedDetailed({
   earlier,
   skipped,
   notImported,
-  defaulted,
+  unbalanced,
   leftOut,
   registrar,
   open,
@@ -55,8 +54,8 @@ export function NotIncludedDetailed({
   skipped: string[];
   /** Folios set to Don't import, by name. */
   notImported: string[];
-  /** Funds whose rows don't add up, left out unless chosen under Before importing. */
-  defaulted: Pick<LeftOutFund, "key" | "name" | "label">[];
+  /** Funds whose rows don't add up, skipped by an answer: each can still be changed. */
+  unbalanced: Pick<LeftOutFund, "key" | "name" | "label">[];
   leftOut: LeftOutFund[];
   /** "CAMS", "KFintech": whose earlier statement to read. */
   registrar: string;
@@ -68,7 +67,7 @@ export function NotIncludedDetailed({
   onReopen: (key: string) => void;
   changePanel: (key: string) => ReactNode;
 }) {
-  if (!earlier.length && !skipped.length && !notImported.length && !defaulted.length && !leftOut.length) return null;
+  if (!earlier.length && !skipped.length && !notImported.length && !unbalanced.length && !leftOut.length) return null;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       <h3 id={`${partId}-heading`} tabIndex={-1} className={sectionTitle}>
@@ -110,13 +109,15 @@ export function NotIncludedDetailed({
           “Save to” is set to Don't import.
         </p>
       )}
-      {defaulted.length > 0 && (
-        <div className="grid gap-1 text-sm">
-          <p className="font-semibold">Left out unless you choose otherwise under “Before importing” ({defaulted.length})</p>
-          {defaulted.map((fund) => (
+      {unbalanced.length > 0 && (
+        <div className="grid grid-cols-1 gap-1 text-sm">
+          <p>
+            <span className="font-semibold">Skipped because their transactions don't add up ({unbalanced.length})</span>, by your answer:
+          </p>
+          {unbalanced.map((fund) => (
             <p key={fund.key}>
               {fund.name} ·{" "}
-              <LinkButton type="button" aria-label={`Change: ${fund.label}, rows don't add up`} onClick={() => onReopen(fund.key)}>
+              <LinkButton type="button" aria-label={`Change: ${fund.label}, transactions don't add up`} onClick={() => onReopen(fund.key)}>
                 Change
               </LinkButton>
             </p>
@@ -175,13 +176,17 @@ export function breakdownParts(b: Breakdown) {
     : `${b.leftOut.length} left out, listed under “Not included”`;
   return [
     b.toImport && `${b.toImport} to import`,
+    b.importedDuplicates && `${plural(b.importedDuplicates, "possible duplicate")}, imported by your answer`,
     b.before && `${b.before} imported before, skipped`,
-    b.duplicates && `${plural(b.duplicates, "possible duplicate")}, skipped unless chosen under “Before importing”`,
+    b.duplicates && `${plural(b.duplicates, "possible duplicate")}, waiting for your answer`,
+    b.skippedDuplicates && `${plural(b.skippedDuplicates, "possible duplicate")}, skipped by your answer`,
+    b.otherDuplicates && `${plural(b.otherDuplicates, "possible duplicate")}, skipped`,
     b.answers && `${b.answers} waiting for your answers`,
     b.earlier && `${b.earlier} waiting for earlier purchases`,
     b.skipped && `${b.skipped} in skipped funds`,
     b.notImported && `${b.notImported} in folios not imported`,
-    b.unbalanced && `${b.unbalanced} in funds whose rows don't add up, left out unless chosen under “Before importing”`,
+    b.unbalanced && `${b.unbalanced} in funds whose rows don't add up, waiting for your answer`,
+    b.skippedUnbalanced && `${b.skippedUnbalanced} in funds whose rows don't add up, skipped by your answer`,
     b.leftOut.length && leftOut,
   ].filter((part): part is string => !!part);
 }
@@ -212,96 +217,11 @@ export function TransactionsSummary({ breakdown, range, partId }: { breakdown: B
             {parts.map((part, i) => (
               <span key={i}>
                 {i > 0 && " · "}
-                {i === 0 && breakdown.toImport ? <span className="text-foreground font-medium">{part}</span> : part}
+                {i === 0 && (breakdown.toImport || breakdown.importedDuplicates) ? <span className="text-foreground font-medium">{part}</span> : part}
               </span>
             ))}
           </p>
         )}
-      </div>
-    </section>
-  );
-}
-
-/** A possible duplicate the user can import anyway. */
-export interface DuplicateChoice {
-  key: string;
-  /** "Fictiva Midcap Fund · Purchase · 3 Jul 2026 · ₹5,000" */
-  title: string;
-  /** Why it may be a duplicate. */
-  reason: string;
-  /** Its accessible name in the checkbox's. */
-  label: string;
-  /** "purchase", "sale": what a second one would be. */
-  noun: string;
-  checked: boolean;
-}
-
-/** A fund whose rows don't add up to its closing units. */
-export interface UnbalancedChoice {
-  key: string;
-  title: string;
-  gap: string;
-  checked: boolean;
-}
-
-/**
- * Today's other preview decisions, with their behaviour and defaults: importing a possible
- * duplicate anyway, and importing a fund whose rows don't add up. Each says what it does.
- */
-export function BeforeImporting({
-  duplicates,
-  unbalanced,
-  onDuplicate,
-  onUnbalanced,
-  disabled,
-  headingId,
-}: {
-  duplicates: DuplicateChoice[];
-  unbalanced: UnbalancedChoice[];
-  onDuplicate: (key: string, yes: boolean) => void;
-  onUnbalanced: (key: string, yes: boolean) => void;
-  disabled: boolean;
-  headingId: string;
-}) {
-  if (!duplicates.length && !unbalanced.length) return null;
-  return (
-    <section aria-labelledby={headingId} className="grid gap-3">
-      <h3 id={headingId} tabIndex={-1} className={sectionTitle}>
-        Before importing
-      </h3>
-      <div className="grid gap-3 rounded-lg border p-4">
-        {duplicates.map((d) => (
-          <div key={d.key} className="grid gap-1 border-t pt-3 first:border-t-0 first:pt-0">
-            <span className="font-medium">{d.title}</span>
-            <span className="text-muted-foreground text-sm">{d.reason}</span>
-            <Label className="flex items-center gap-2 text-sm font-normal">
-              <Checkbox disabled={disabled} checked={d.checked} onCheckedChange={(yes) => onDuplicate(d.key, yes)} />
-              Import it anyway
-              <span className="sr-only">: {d.label}</span>
-            </Label>
-            <span className="text-muted-foreground text-sm">
-              {d.checked
-                ? `It's imported as a second ${d.noun}.`
-                : `Skipped unless you tick it. Two equal ${d.noun === "purchase" ? "purchases" : `${d.noun}s`} on one day can both be real.`}
-            </span>
-          </div>
-        ))}
-        {unbalanced.map((u) => (
-          <div key={u.key} className="grid gap-1 border-t pt-3 first:border-t-0 first:pt-0">
-            <span className="font-medium">{u.title}</span>
-            <span className="text-muted-foreground text-sm">{u.gap}</span>
-            <Label className="flex items-center gap-2 text-sm font-normal">
-              <Checkbox disabled={disabled} checked={u.checked} onCheckedChange={(yes) => onUnbalanced(u.key, yes)} />
-              Import this fund anyway
-              <span className="sr-only">: {u.title}</span>
-            </Label>
-            <span className="text-muted-foreground text-sm">
-              {u.checked
-                ? "Its rows are imported: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio."
-                : "Its rows are left out unless you tick it."}
-            </span>
-          </div>
-        ))}
       </div>
     </section>
   );

@@ -584,16 +584,35 @@ export interface PlannedPosition {
   heldBy?: OtherAccount[];
   /**
    * The folios, demat accounts or PRANs whose earlier import added the account's units of it, set
-   * when keeping those units may count them twice: the holding they were added for is left out
-   * because an account that tracks transactions holds it, or one of them now goes to another account.
-   * Saving needs the user's choice to keep them, or to remove them once all of them came from these
-   * sources.
+   * when only the user can tell whether to keep them (`ask` says why). Saving waits for their choice to
+   * keep them, or to remove them, as all of them came from these sources.
    */
   removable?: Source[];
+  /** What the user is asked about it before saving; set with `removable`, or on a statement row with `replaces`. */
+  ask?: Ask;
   notes: string[];
   /** Where the statement first lists it. */
   order: number;
 }
+
+/**
+ * A question about the account's holding that only the user can answer, asked on the Review screen:
+ *
+ * - `missing`: an earlier import of `removable` added it, and they no longer list it. Keep it, or set
+ *   it to zero. Never removed by default: a statement can leave out a fund that's still held.
+ * - `moved`: an earlier import of `removable` added it, and `moved` now go to other accounts. Keep it
+ *   here, or remove it.
+ * - `overlap`: an earlier import of `removable` added units of a fund that `tracked`, accounts that
+ *   track transactions, hold. `row` is the statement row the units were added for, left out for the
+ *   overlap: the position itself, or another asset's. Keep them, or remove them.
+ * - `replace`: a statement row (`replaces`) that an earlier import of `recorded` added as another
+ *   asset. Keep that one and leave this row out, or replace it with this row.
+ */
+export type Ask =
+  | { kind: "missing" }
+  | { kind: "moved"; moved: { source: Source; account: string }[] }
+  | { kind: "overlap"; tracked: OtherAccount[]; row: string }
+  | { kind: "replace"; recorded: Source[] };
 
 export interface AccountPlan {
   accountId: string;
@@ -847,7 +866,6 @@ interface Elsewhere {
 const several = (sources: Iterable<Source>) => new Set([...sources].map((s) => s.label)).size > 1;
 const holds = (sources: Source[]) => `${labels(sources)} ${several(sources) ? "hold" : "holds"}`;
 const leavesOut = (sources: Source[]) => `An earlier import of ${labels(sources)}, which this import leaves out,`;
-const onlyIfNoneIn = (sources: Source[]) => `only if ${labels(sources)} no longer ${several(sources) ? "hold" : "holds"} any`;
 const UNLISTED = "a folio, demat account or PRAN that this statement doesn't list";
 /** `one` for a single folio, demat account or PRAN, else `many`. */
 const verb = (sources: Iterable<Source>, one: string, many: string) => (several(sources) ? many : one);
@@ -886,13 +904,13 @@ const correctUnits = (reassigned: Reassigned[]) => {
 
 /**
  * A statement row whose lines would replace units that a left-out source's earlier import added: it's
- * left out by default, so the account keeps them, as it keeps that source's other holdings.
+ * left out, so the account keeps them, as it keeps that source's other holdings.
  */
 function settleUnread(position: PlannedPosition, unread: Source[]) {
   if (!unread.length) return;
-  const replaces = `Importing this row replaces the ${position.existing!.units} units this account holds with the statement's ${position.units}, which don't count any that ${holds(unread)}`;
+  const replaces = `Importing this row would replace the ${position.existing!.units} units this account holds with the statement's ${position.units}, which don't count any that ${holds(unread)}`;
   position.notes.push(`${leavesOut(unread)} recorded adding this holding. ${replaces}${position.include
-    ? `, so it's left out by default. Import it ${onlyIfNoneIn(unread)}.`
+    ? `, so it's left out and the account keeps its units. To update them, save ${labels(unread)} too.`
     : "."}`);
   position.include = false;
   if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
@@ -905,7 +923,7 @@ const listedIn = (s: Source) => [...s.holdings, ...(s.misread ?? [])];
 /** Missing ISINs across formats can leave no common identity to compare. */
 const incomparable = (s: Source, earlier: string[]) =>
   listedIn(s).some((h) => !security(h).some((id) => earlier.some((old) => old.includes("|") === id.includes("|"))));
-const IMPORTS_DONT_RECORD = "imports don't record how many units each folio, demat account or PRAN added";
+const UNCOMPARABLE = "A listed holding lacks a comparable identifier, so this earlier imported holding is kept. Check it in Wealthfolio after saving.";
 
 /**
  * A folio's holding left out because an account that tracks transactions holds it, when this
@@ -943,10 +961,7 @@ function settleOverlap(
   const units = existing.units;
   if (from.length && !mixed) {
     position.removable = from;
-    position.notes.push(
-      `An earlier import of ${labels(from)} recorded adding this holding. Leaving this row out keeps the ${units} units this account holds unless you remove them. Keeping them counts them here and in ${names(position.heldBy!)}. ` +
-      `Keep them, or remove them only if all of them came from ${labels(from)}: ${IMPORTS_DONT_RECORD}.`,
-    );
+    position.ask = { kind: "overlap", tracked: position.heldBy!, row: position.key };
     return;
   }
   const why = from.length
@@ -1006,21 +1021,17 @@ function settleOthers(
   }
   for (const [target, { whole, part }] of replacing) {
     if (whole.length) {
+      // Asked: replacing the old asset with it, or keeping the old one and leaving it out.
       target.include = false;
       target.replaces = whole.map((m) => m.old.key);
-      const old = assetNames(whole.map((m) => m.old));
-      const them = whole.length > 1;
-      target.notes.push(
-        `An earlier import of ${labels(whole.flatMap((m) => m.sources))} added this holding as ${old}. So that it isn't counted twice, it's left out unless you replace ${old} with it. ` +
-        `Replace ${them ? "them" : "it"} only if all ${them ? "their" : "its"} units came from ${labels(whole.flatMap((m) => m.recorded))}: imports don't record how many units each folio, demat account or PRAN added.`,
-      );
+      target.ask = { kind: "replace", recorded: [...new Set(whole.flatMap((m) => m.recorded))] };
     }
     if (part.length) {
       const old = assetNames(part.map((m) => m.old));
       const added = `An earlier import of ${labels(part.flatMap((m) => m.sources))} added this holding as ${old}`;
       if (importable.has(target)) {
         target.include = false;
-        target.notes.push(`${added}, which may also hold other units, so it's left out by default. If you keep both, correct the units of ${old} in Wealthfolio so that they aren't counted twice.`);
+        target.notes.push(`${added}, which may also hold other units, so this row is left out and the account keeps ${old} as it is, so that its units aren't counted twice.`);
       } else {
         target.notes.push(`${added}.`);
       }
@@ -1083,20 +1094,16 @@ function settleOther(
     const them = moved.length > 1;
     const added = `An earlier import of ${labels(replaced.sources)} added it for ${them ? "holdings" : "a holding"} that this import lists under ${assetNames(targets)}.`;
     if (whole) {
+      // Asked on the statement row that would replace it.
       position.replacedBy = targets[0].key;
-      position.notes.push(`${added} It's kept unless you replace it with ${assetName(targets[0])}.`);
     } else if (!shared && targets.length === 1 && targets[0].heldBy) {
       // Left out because an account that tracks transactions holds it: keeping this one counts its units twice.
       position.removable = recorded;
-      position.notes.push(
-        `${added} ${alreadyHold(targets[0].heldBy)} ${them ? "those holdings" : "that holding"}, so keeping this one counts its units in both accounts. ` +
-        `Keep it, or remove it only if all its units came from ${labels(recorded)}: ${IMPORTS_DONT_RECORD}.`,
-      );
+      position.ask = { kind: "overlap", tracked: targets[0].heldBy, row: targets[0].key };
     } else {
       const left = targets.filter((t) => importable.has(t));
       position.notes.push(left.length
-        ? `${added} The add-on can't tell how many of its units ${them ? "those holdings account" : "that holding accounts"} for, so it's kept and ${assetNames(left)} ${left.length > 1 ? "are" : "is"} left out by default. ` +
-          `If you keep both, correct this holding's units in Wealthfolio so that they aren't counted twice.`
+        ? `${added} The add-on can't tell how many of its units ${them ? "those holdings account" : "that holding accounts"} for, so it's kept and ${assetNames(left)} ${left.length > 1 ? "are" : "is"} left out, so that they aren't counted twice.`
         : added);
       const overlapping = targets.filter((t) => t.heldBy);
       const heldBy = [...new Map(overlapping.flatMap((t) => t.heldBy!).map((a) => [a.name, a])).values()];
@@ -1109,48 +1116,49 @@ function settleOther(
     if (reassigned.length) position.notes.push(reassignedNote(reassigned));
   } else if (reassigned.length) {
     // Never removed by default: the source that now goes to another account may still list it there.
-    const units = position.existing!.units;
     if (!mixed && reassigned.every((r) => r.lists !== undefined)) {
-      // Every source that recorded it no longer lists it, or now goes to another account.
-      const removable = [...from, ...reassigned.map((r) => r.source)];
-      const listing = reassigned.filter((r) => r.lists);
-      position.removable = removable;
-      position.notes.push(
-        `${reassignedNote(reassigned, recorded, from)} ` +
-        `${listing.length ? `Keeping this account's ${units} units may count them here and in ${accountsOf(listing)}. Keep them` : `Keep this account's ${units} units`}, ` +
-        `or remove them only if all of them came from ${labels(removable)}: ${IMPORTS_DONT_RECORD}.`,
-      );
+      // Every source that recorded it no longer lists it, or now goes to another account: asked.
+      position.removable = [...from, ...reassigned.map((r) => r.source)];
+      position.ask = { kind: "moved", moved: reassigned.map(({ source, account }) => ({ source, account })) };
     } else {
       position.notes.push([
         reassignedNote(reassigned, recorded, from),
         ...(unread.length ? [`${leavesOut(unread)} added it too.`] : []),
         ...(unlisted ? [`An earlier import of ${UNLISTED} added it too.`] : []),
-        `${mixed ? "Its units may also include others, so" : "So"} it's kept. If you keep it, correct its units in Wealthfolio: ${correctUnits(reassigned)}.`,
+        `${mixed ? "Its units may also include others, so" : "So"} it's kept. Correct its units in Wealthfolio after saving: ${correctUnits(reassigned)}.`,
       ].join(" "));
-      if (uncertain) position.notes.push("A listed holding lacks a comparable identifier. Check whether to keep this earlier imported holding.");
+      if (uncertain) position.notes.push(UNCOMPARABLE);
     }
   } else if (from.length && unread.length) {
     // Removing it would take the left-out source's units too.
     position.notes.push(
       `An earlier import of ${labels(from)} added it, and ${labels(from)} no longer ${several(from) ? "list" : "lists"} it. ${leavesOut(unread)} added it too, so it's kept. ` +
-      `Remove it ${onlyIfNoneIn(unread)}. If you keep it, correct its units in Wealthfolio: they may include some that came from ${labels(from)}.`,
+      `Correct its units in Wealthfolio after saving: they may include some that came from ${labels(from)}, and none are left if ${labels(unread)} no longer ${several(unread) ? "hold" : "holds"} any.`,
     );
     if (unlisted) position.notes.push(`An earlier import of ${UNLISTED} added it too.`);
   } else if (from.length && unlisted) {
     // The statement may leave that one out for another reason than its units having gone.
     position.notes.push(
       `An earlier import of ${labels(from)} added it, and ${labels(from)} no longer ${several(from) ? "list" : "lists"} it. An earlier import of ${UNLISTED} added it too, so it's kept. ` +
-      `Check whether it was redeemed, sold or moved from there too, and untick Keep if so. If you keep it, correct its units in Wealthfolio: they may include some that came from ${labels(from)}.`,
+      `Check whether it was redeemed, sold or moved from there too, and correct its units in Wealthfolio after saving: they may include some that came from ${labels(from)}.`,
     );
+  } else if (from.length && mixed) {
+    // The statement may still list it elsewhere, or its identifiers may not compare.
+    position.notes.push(
+      `An earlier import of ${labels(from)} added it, and ${labels(from)} no longer ${several(from) ? "list" : "lists"} it, but its units may also include others, so it's kept. ` +
+      `Correct its units in Wealthfolio after saving: they may include some that came from ${labels(from)}.`,
+    );
+    if (uncertain) position.notes.push(UNCOMPARABLE);
   } else if (from.length) {
-    position.include = false;
-    position.notes.push(`Not on the statement any more. An earlier import of ${from.map((s) => s.label).join(" and ")} added it.`);
+    // Asked: a statement can leave out a fund that's still held.
+    position.removable = from;
+    position.ask = { kind: "missing" };
   } else {
     if (unlisted) {
-      position.notes.push(`An earlier import added it from ${UNLISTED}. Check whether it was redeemed, sold or moved, and untick Keep if so.`);
-      if (unread.length) position.notes.push(`${leavesOut(unread)} added it too: untick Keep ${onlyIfNoneIn(unread)}.`);
+      position.notes.push(`An earlier import added it from ${UNLISTED}, so it's kept. Check whether it was redeemed, sold or moved, and if so, correct its units in Wealthfolio after saving.`);
+      if (unread.length) position.notes.push(`${leavesOut(unread)} added it too.`);
     }
-    if (uncertain) position.notes.push("A listed holding lacks a comparable identifier. Check whether to keep this earlier imported holding.");
+    if (uncertain) position.notes.push(UNCOMPARABLE);
   }
   if (position.misread) return replaced;
   if (position.existing?.split) {
@@ -1193,13 +1201,18 @@ export function costOf(position: PlannedPosition, typed: string | undefined) {
 }
 
 export interface Choices {
-  /** Preview rows whose default the user flipped, by `key`. */
+  /** Statement rows the user chose to include though they're left out by default, by `key`. */
   flipped: ReadonlySet<string>;
   /** Typed total costs by `key`. */
   costs: ReadonlyMap<string, string>;
   /** For `removable` rows, by `key`: true keeps the account's units, false removes them. Undecided until set. */
   keep?: ReadonlyMap<string, boolean>;
+  /** For statement rows that `replace` another asset, by `key`: true replaces it, false keeps it. Undecided until set. */
+  replace?: ReadonlyMap<string, boolean>;
 }
+
+/** Whether the default of the row with this key is turned around: flipped, or a replacement chosen. */
+const turned = (key: string, choices: Choices) => choices.flipped.has(key) || choices.replace?.get(key) === true;
 
 /**
  * Whether the statement's lines replace the account's units, or for others whether the account keeps
@@ -1208,11 +1221,20 @@ export interface Choices {
 export const included = (position: PlannedPosition, choices: Choices) =>
   position.misread ? position.include
   : position.removable && !position.lines.length ? choices.keep?.get(position.key) !== false
-  : position.include !== choices.flipped.has(position.replacedBy ?? position.key);
+  : position.include !== turned(position.replacedBy ?? position.key, choices);
 
-/** Whether the account's units of a `removable` row still need the user's choice to keep or remove them. */
+/** Whether the position's question still needs the user's answer: saving waits for it. */
 export const undecided = (position: PlannedPosition, choices: Choices) =>
-  !!position.removable && !choices.keep?.has(position.key) && !(position.lines.length && included(position, choices));
+  position.ask?.kind === "replace"
+    ? !choices.replace?.has(position.key)
+    : !!position.removable && !choices.keep?.has(position.key) && !(position.lines.length && included(position, choices));
+
+/**
+ * The positions whose question the Review screen shows, answered or not: a statement row that's
+ * saved anyway (in both accounts) isn't asked about the account's units of it.
+ */
+export const asked = (plan: AccountPlan, choices: Choices) =>
+  plan.positions.filter((p) => !p.misread && p.ask && (p.ask.kind === "replace" || !(p.lines.length && included(p, choices))));
 
 /** Whether saving removes the account's units of a statement row that isn't imported: the user chose to. */
 const removed = (position: PlannedPosition, choices: Choices) =>

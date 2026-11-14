@@ -25,6 +25,8 @@ export interface TrackedFund {
   canSave: boolean;
   /** Saved in both accounts by the user's choice. */
   included: boolean;
+  /** What the account the folio goes to keeps of it, and why. */
+  notes?: string[];
 }
 
 /** Already-tracked funds, by the accounts that track them. */
@@ -103,7 +105,7 @@ function Tracked({
           </ul>
         </Disclosure>
       </div>
-      <div className="grid gap-1 text-sm">
+      <div className="grid grid-cols-1 gap-1 text-sm">
         {checking ? (
           <span className="text-muted-foreground">Comparing the units with {group.accounts}…</span>
         ) : (
@@ -138,6 +140,11 @@ function Tracked({
           }
           return null;
         })}
+        {shownFunds.flatMap((fund) => (fund.notes ?? []).map((note, i) => (
+          <span key={`${fund.key}-note-${i}`} className="text-muted-foreground">
+            {fund.name}: {note}
+          </span>
+        )))}
       </div>
       <div className="flex flex-wrap items-baseline gap-x-3 text-sm">
         <Disclosure id={ids.why} label="Why?" ariaLabel={`Why? Already tracked in ${group.accounts}`} open={why} onOpenChange={onWhy}>
@@ -151,10 +158,21 @@ function Tracked({
   );
 }
 
+/** A statement row left out so that units aren't counted twice, with why and its Change. */
+export interface LeftOutRow {
+  key: string;
+  name: string;
+  notes: string[];
+  /** Its Change links, */
+  change: ReactNode;
+  /** and the Change panel while it's open. */
+  panel?: ReactNode;
+}
+
 /**
  * What this save leaves out, each with why: funds an account that tracks transactions already holds
  * (compared with it), holdings skipped by an answer, holdings of folios, demat accounts and PRANs set
- * to Don't save, statement rows left out unless chosen under Before saving, and lines that may be
+ * to Don't save, statement rows left out so that units aren't counted twice, and lines that may be
  * misread or have no units.
  */
 export function NotIncluded({
@@ -176,7 +194,7 @@ export function NotIncluded({
   counted: Pick<TrackedFund, "key" | "name" | "label">[];
   skipped: string[];
   unsaved: string[];
-  defaulted: string[];
+  defaulted: LeftOutRow[];
   lines: LeftOutLine[];
   open: Record<string, boolean>;
   setOpen: (id: string, open: boolean) => void;
@@ -234,9 +252,25 @@ export function NotIncluded({
         </p>
       )}
       {defaulted.length > 0 && (
-        <p className="text-sm">
-          <span className="font-semibold">Left out unless you choose otherwise under “Before saving” ({defaulted.length})</span>: {list(defaulted)}.
-        </p>
+        <div className="grid gap-2 text-sm">
+          <p className="font-semibold">Left out, so units aren't counted twice ({defaulted.length})</p>
+          <ul className="grid gap-2">
+            {defaulted.map((row) => (
+              <li key={row.key} className="grid grid-cols-1 gap-1">
+                <span className="flex flex-wrap items-baseline gap-x-2">
+                  <span className="min-w-0 font-medium">{row.name}</span>
+                  {row.change}
+                </span>
+                {row.notes.map((note, i) => (
+                  <span key={i} className="text-muted-foreground">
+                    {note}
+                  </span>
+                ))}
+                {row.panel}
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
       {lines.length > 0 && (
         <ul className="grid gap-1 text-sm">

@@ -46,29 +46,42 @@ screen shows, in this order:
   confirms one, and **Skip this fund** leaves it out. The asset that holdings imports price from
   statements isn't offered: detailed imports don't use the statement's prices. An answered question
   becomes one line with **Change answer**.
+
+  Two more questions come up only when they're needed, a card each, and the import waits for their
+  answers. A transaction Wealthfolio may already have, entered by hand or flagged by Wealthfolio's
+  check, is worded from its movement ("This purchase may already be in Mutual funds", "This
+  redemption …", "This cash dividend …") and shows both rows: "On this statement: 3 Jul 2026 ·
+  Purchase · Fictiva Midcap Fund · 61.350 units · ₹5,000" and "Already in Mutual funds: 3 Jul 2026 ·
+  Buy · … · entered by hand on 4 Jul 2026". Two equal transactions on one day can both be real:
+  **Skip this transaction** is the main answer, and **Import it as a second purchase** imports it.
+  More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
+  Credit Risk Fund's transactions don't add up. They add up to 1,204.500 units; the statement says
+  1,250.000.") has **Skip this fund** as the main answer, and **Import with this difference**.
 - **Ready to import**: each fund with new transactions, with its plan and option, where its prices
   come from (and whether it was chosen before or by you) and **Change**, its **New transactions**
   ("38 imported before" under them) and its **Units after import**: the units Wealthfolio has at the
   statement's end, with what the import sends. A fund whose units then won't match the statement's
   says so ("After import: 1,204.500 units · Statement: 1,250.000. Imported with the difference you
-  accepted.") and always shows; with more than five rows, only the first three, those and the ones
+  accepted.", or "Includes the second purchase you chose."; a second cash dividend you chose adds
+  income instead: "Includes the second cash dividend you chose: ₹500 more income.") and always
+  shows; with more than five rows, only the first three, those and the ones
   just changed show until **Show all**. A fund with nothing new is one line under the table. A family
   statement's funds are grouped by investor and account ("A. Investor → Mutual funds").
 - **Not included in this import**: a fund that starts with units bought before the statement, which
   Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**); funds you skipped;
-  folios set to "Don't import"; funds whose rows don't add up (below); and transactions left out, each
-  with why.
+  folios set to "Don't import"; funds you skipped because their rows don't add up, with **Change**;
+  and transactions left out, each with why.
 - **Transactions in this statement**: how many there are, and what happens to each: to import,
-  imported before, waiting for your answers or for earlier purchases, in skipped funds or folios not
-  imported, or left out, with why. The parts add up to the total.
-- **Before importing**: possible duplicates, with **Import it anyway**, and funds whose rows don't add
-  up, with **Import this fund anyway**, each left out unless ticked and saying what ticking does.
+  imported before, possible duplicates waiting for your answer or skipped or imported by it, waiting
+  for your answers or for earlier purchases, in skipped funds or folios not imported, or left out,
+  with why. The parts add up to the total.
 - A bar that stays at the bottom: what's left before importing, or what will be imported ("Import
   136 transactions for 8 funds into **Mutual funds**.", or "Create the Wealthfolio account **Mutual
   funds** and import 136 transactions for 8 funds into it." for a new account), which funds' units
-  won't match the statement afterwards, and how each bank account's movements go, with **See every
-  transaction**, which shows each activity with its cash and status, and **Import 136 transactions**
-  (**Create account and import 136 transactions** with a new account). With nothing to import, it
+  won't match the statement afterwards, how each bank account's movements go, and what your answers
+  did ("1 possible duplicate skipped by your answer."), with **See every transaction**, which shows
+  each activity with its cash and status, and **Import 136 transactions** (**Create account and
+  import 136 transactions** with a new account). With nothing to import, it
   says why ("Nothing new: every transaction on this statement is already in Wealthfolio.") and has
   **Finish**.
 
@@ -77,8 +90,10 @@ the add-on's page again. After the import, the result compares each imported fun
 Wealthfolio with the statement's closing balance. A fund the import adds to Wealthfolio gets the
 statement's name. When Wealthfolio then fetches the fund's profile, a name in it, such as a Yahoo
 listing's, replaces the statement's; a Yahoo listing without a name keeps it. A fund whose rows don't
-add up to its closing balance is left out unless you tick **Import this fund anyway**; then check its
-rows against the PDF and add or correct the missing ones in Wealthfolio after importing.
+add up to its closing balance is asked about, and left out unless you answer **Import with this
+difference**; then check its rows against the PDF and add or correct the missing ones in Wealthfolio
+after importing. The result after importing reports its unit difference, as it does for a second
+transaction you chose to import.
 
 A purchase costs the statement's units × NAV plus stamp duty; a redemption pays units × NAV less
 STT and TDS. casparser says some older CAMS and KFintech layouts print no NAV column. casparser
@@ -104,8 +119,10 @@ match a row with the activity imported with its ID into the same account, even a
 you edit that activity, so equal transactions, such as the same purchase on one day in two folios,
 each go in once. Activities without these IDs, imported by version 2.2.0 or earlier or entered by
 hand, are compared with each row by their values, each with one row at most. Wealthfolio's own check
-can still report an equal row as a duplicate of such an activity; **Import it anyway**, under
-**Before importing**, imports it. Before
+can still report an equal row as a duplicate of such an activity; if the transaction is otherwise
+valid and isn't already fully matched, it's asked about as a possible duplicate, and **Import it as a
+second purchase** (or redemption, or cash dividend) imports it. Fully matched transactions count as
+imported before and aren't offered again. Before
 Wealthfolio 3.12.0, Wealthfolio's check also missed the trades of a fund that an earlier import
 created. A fund whose statement starts with units needs
 those units in Wealthfolio first, from an earlier statement or entered by hand.
@@ -344,24 +361,33 @@ Review screen shows, in this order:
   in another currency than rupees says so.
   **None of these: use the price on the statement** prices it from statements (below), and **Skip
   this holding** leaves it out. An answered question becomes one line with **Change answer**.
+
+  The decisions only some imports need come up here too, a card each, only when the case happens:
+  holdings already saved for the statement's date (asked first, per account), a holding the
+  statement no longer lists, a folio, demat account or PRAN that now goes to another account, units
+  an earlier import added of a fund tracked from its transactions, and an old asset to replace (see
+  the snapshot rules below). Each has a plain heading, one line of evidence and the safe answer as
+  its main button; nothing is preselected, and saving waits for every answer. Answering moves the
+  focus to the next open question; **Change answer** reopens the card.
 - **Ready to save**: every holding that will be saved, with its plan and option, where its prices
   come from (and whether it was chosen before or by you), **Change**, units, value and purchase cost.
   **Add cost** takes the total cost of the holding's units in rupees, with or without grouping commas
   (Indian or Western) and up to two decimals; anything else stays open with a hint. With more than
   five rows, only the first three, those with a missing cost and those just changed show, until
   **Show all**. Below the `sm` width, the rows are a stacked list.
+- **Kept as they are**: holdings the account keeps as it has them, with a note to check them, such as
+  one that a folio the statement doesn't list added (below).
 - **Not included in this save**: funds already tracked from transactions in another account
-  (below), holdings you skipped, holdings of what's set to "Don't save", statement rows left out by
-  default under **Before saving**, and lines with no units or that may be misread, each with why.
-- **Before saving**, once the questions are answered: the snapshot choices below that still take a
-  tick or a choice of their own. An undecided keep or remove, and replacing a snapshot already saved
-  for the date, count as questions. A statement row left out by default there has **Change** too.
+  (below), holdings you skipped, holdings of what's set to "Don't save", statement rows left out so
+  that units aren't counted twice, with why and **Change**, and lines with no units or that may be
+  misread, each with why.
 - A bar that stays at the bottom: what's left before saving, or what will be saved ("Update
   **Demat** to 31 Jul 2026 with 10 holdings from this statement. Its other holdings and cash stay.",
   or "Create the Wealthfolio account **CDSL Demat** and save 10 holdings on 31 Jul 2026." for a new
-  account) with **See Demat's holdings on 31 Jul 2026 after saving**, the missing costs with **Add
-  costs**, and **Update holdings** or **Save holdings**. With nothing to save, it's **Finish**. While
-  a cost, Change or a new account's Rename is open, saving waits until you save or cancel it.
+  account) with what your answers do ("Fictiva Liquid Fund kept at 512.300 units"), **See Demat's
+  holdings on 31 Jul 2026 after saving**, the missing costs with **Add costs**, and **Update
+  holdings** or **Save holdings**. With nothing to save, it's **Finish**. While a cost, Change or a
+  new account's Rename is open, saving waits until you save or cancel it.
 
 Each account's snapshot is worked out again as you answer, from reads of Wealthfolio that are
 repeated when you open the add-on's page again. A fund confirmed for a detailed statement is already
@@ -448,9 +474,17 @@ rules:
 - It starts from the account's latest snapshot on or before the statement's date; calculated
   snapshots are ignored. The statement's holdings replace their own; the account's other holdings
   and its cash carry over. A holding that an earlier import of the same folio or demat account added on or before that snapshot's date,
-  and that the statement no longer lists, defaults to removed. If the printed identifiers can't
-  be compared, it stays with a note to check it. Under **Before saving**, you can keep or remove each
-  one that has something to say.
+  and that the statement no longer lists, is asked about: "Fictiva Liquid Fund isn't on this
+  statement. CDSL Demat holds 512.300 units of it, from an earlier import of Mutual fund folio
+  7712045." **Keep 512.300 units** is the main answer, and **Set it to zero on 31 Jul** removes it;
+  **Why am I asked?** says that a statement can leave out a fund you still hold, for example one
+  that covers only some fund houses. Nothing is preselected: earlier versions removed it by default.
+  A folio, demat account or PRAN that lists nothing asks the same about each holding its earlier
+  imports added, never emptying the account: its other holdings and cash stay. The question belongs
+  to the folio, demat account or PRAN that recorded the holding: setting it to "Don't save", or
+  moving it to another account, removes the question. If its units may also come from another
+  source, or the printed identifiers can't be compared, it stays with a note to check it, under
+  **Kept as they are**.
 - An earlier import's record of a holding follows its asset after the asset's symbol or exchange
   changes in Wealthfolio, by the asset ID the import recorded. The snapshot then follows the other
   snapshot rules using the asset's current symbol and exchange. Another asset that now has the
@@ -462,18 +496,18 @@ rules:
   holding under its chosen asset's current symbol and exchange, with its ID.
 - A folio, demat account or PRAN you leave out keeps what its earlier imports added. When one of
   those holdings would change because the statement's other lines list it too, or no longer list
-  it, its row names the left-out one. A listed holding is left out by default, since its lines
-  don't count the left-out one's units, and one they no longer list is kept. Import or remove it
-  only if the left-out one no longer holds any. Once you do, the left-out one's import record no
-  longer lists it, so later imports don't ask again. A folio that shares one record with an
+  it, its row names the left-out one. A listed holding is left out, since its lines don't count the
+  left-out one's units, and one they no longer list is kept, each with a note. To update them, save
+  the left-out one too. Once an import replaces or removes the holding, the left-out one's import
+  record no longer lists it, so later imports don't ask again. A folio that shares one record with an
   included folio, linked through the issuer's folio number, still lists what that one imported.
 - A folio, demat account or PRAN that now goes to another account takes its holdings there. In the
   account an earlier import of it put them in, a holding that it recorded adding, and that the
-  statement doesn't list there, gets a note that says where it goes now and whether it still lists
-  the holding. Saving waits until you keep or remove that holding's units.
-  Remove them only if all of them came from it, since imports don't record how many units each folio,
-  demat account or PRAN added. The choice also names the account's own folios, demat accounts or PRANs
-  that recorded the holding too and no longer list it. If another folio, demat account or PRAN, left
+  statement doesn't list there, is asked about: "Mutual fund folio 7712045 now goes to Mutual funds
+  (holdings). CDSL Demat holds 812.300 units of Testbridge Gilt Fund that this folio added." **Keep
+  them in CDSL Demat** is the main answer; **Remove them from CDSL Demat** removes them, so remove
+  them only if all of them came from it, since imports don't record how many units each folio, demat
+  account or PRAN added; the card says so under its buttons. This applies when the account is being updated. If another folio, demat account or PRAN, left
   out or not listed, may have added some of the units, or the identifiers can't be compared, the
   holding is kept with a note to correct its units in Wealthfolio. An old asset it added isn't offered
   for replacement, and a fund left out for overlap doesn't offer to remove the account's units. A
@@ -484,8 +518,8 @@ rules:
   An account that no folio, demat account or PRAN on the statement goes to isn't saved, so its units
   stay; the other account's row only says it holds them too.
 - A holding that an earlier import added from a folio, demat account or PRAN that the statement
-  doesn't list is kept, with a note to check whether it was redeemed, sold or moved, and to untick
-  Keep if so: a statement can leave out a folio for other reasons, such as one requested for some
+  doesn't list is kept, with a note to check whether it was redeemed, sold or moved, and to correct
+  its units in Wealthfolio if so: a statement can leave out a folio for other reasons, such as one requested for some
   fund houses only. When the statement's own folios, demat accounts or PRANs no longer list it, it's
   kept the same way instead of removed. An old asset such an import added isn't offered for
   replacement, and a fund left out for overlap doesn't offer to remove the account's units. Once an
@@ -499,12 +533,17 @@ rules:
   rules apply.
 - A holding the statement still lists, but that you now confirm to another asset than the one an
   earlier import of the same folio, demat account or PRAN added (AMFI's result instead of Yahoo's,
-  say, or a summary statement's fund that now prints its ISIN), isn't counted twice: the old asset
-  is kept and the new one left out until you choose to replace the old asset with it. Imports
-  record identifiers, not units, so replace it only if all its units came from those folios, demat
-  accounts or PRANs. When the old asset may also hold other units, it's kept and the new one left
-  out, each with its own choice and a note to correct the units in Wealthfolio. An old asset that
-  a possibly misread line holds back is kept as it is, and the new one left out the same way.
+  say, or a summary statement's fund that now prints its ISIN), isn't counted twice. It's asked
+  about: "Testbridge Gilt Fund is now matched to its AMFI fund. CDSL Demat holds it as …". The main
+  answer keeps the old asset for now and leaves the new one out ("The AMFI fund isn't saved, so its
+  units aren't counted twice."); the other replaces the old asset with it, which the card says to
+  choose only if all the old asset's units came from the folios, demat accounts or PRANs it names,
+  since imports don't record how many units each added. A replacement is asked about only when the
+  old asset's recorded holdings still listed can all be compared and map to one asset being saved,
+  and no left-out, unlisted or moved source may have added units. A recorded holding no longer listed
+  doesn't block the question. When the old asset may also hold other units, it's kept and the
+  new one left out, with a note. An old asset that a possibly misread line holds back is kept as it
+  is, and the new one left out the same way.
 - A holding carried over from an older snapshot whose asset has a split recorded since gets a
   note: its units predate the split, so correct them in Wealthfolio after saving, and its cost
   there isn't reused. A split counts on its day in Wealthfolio's timezone setting (UTC if none is
@@ -513,11 +552,14 @@ rules:
 - A folio's fund that an account tracking transactions already holds is left out by default (see
   above) so it isn't counted twice. Leaving it out keeps the units the
   account already has of it unless you remove them; keeping them counts them in both accounts.
-  When an earlier import of that folio recorded adding the holding for its own lines alone,
-  saving waits until you choose to keep or remove its units; remove them only if all of them
-  came from that folio, since imports don't record how many units each folio, demat account or
-  PRAN added. An old asset that an earlier import of the folio added for the fund, now confirmed to
-  another asset left out for overlap, gets the same choice. If its units may include others,
+  When an earlier import of that folio recorded adding the holding for its own lines alone, it's
+  asked about: "Fictiva Flexi Cap Fund is already tracked in Mutual funds. CDSL Demat also holds
+  1,500.000 units of it, from an earlier import of …", with **Keep them in CDSL Demat** as the main
+  answer and **Remove them from CDSL Demat**; remove them only if all of them came from that folio,
+  since imports don't record how many units each folio, demat account or PRAN added, as the card
+  says under its buttons. An old asset
+  that an earlier import of the folio added for the fund, now confirmed to another asset left out
+  for overlap, is asked about the same way. If its units may include others,
   or no earlier import of that folio recorded the holding, they are kept with a note to check
   them in Wealthfolio. Another account holding a fund or share gets a warning.
 - The cost is the one printed on the statement. Otherwise, the add-on proposes the account's average
@@ -526,9 +568,22 @@ rules:
   is not reused and gets a note. A printed zero is treated as unknown. An unknown cost says "Purchase
   cost missing: gains will look too high": Wealthfolio stores it as zero and counts the holding's
   whole value as gain.
-- Replacing a snapshot Wealthfolio already has for that date needs your confirmation under **Before
-  saving**. When the account already has a later snapshot, the Review screen and the bar say the save
-  is holdings history: the account's current holdings still come from that later snapshot.
+- Holdings Wealthfolio already has saved for the statement's date are asked about first, for each
+  account: "CDSL Demat already has holdings saved for 31 Jul 2026. Replacing them with this statement
+  changes:", then the differences, from what would be saved there ("Fictiva Balanced Advantage Fund:
+  added, 1,000.000 units", "Fictiva Liquid Fund: 512.300 units now, not on this statement", "9 other
+  holdings: same units"); the comparison uses each asset's actual saved quantity, leaving out
+  skipped, excluded and rerouted statement contributions.
+  **Keep the saved ones** is the main answer: nothing is saved in that account, and its holdings and
+  their questions make way for "CDSL Demat: nothing will be saved", with **Show this statement's
+  holdings**. Folios, demat accounts and PRANs that go to other accounts are still saved there. If
+  one of them has funds the kept account already holds, Ready to save warns that saving them there
+  too would count their units twice, with **Keep the … in CDSL Demat**, which sends them to that
+  account itself; the bar and the result repeat the warning. With nothing else to save, the bar
+  says "Nothing will change: you kept the holdings already saved in CDSL Demat for 31 Jul 2026."
+  with **Finish**. **Replace them with this statement** saves the statement's. When the account
+  already has a later snapshot, the Review screen and the bar say the save is holdings history: the
+  account's current holdings still come from that later snapshot.
 - Saving a snapshot makes Wealthfolio write the average cost of each holding priced by hand as its
   price on the snapshot's date. Right after saving, the add-on writes the statement's price there
   instead for each such holding included from the statement. A kept holding uses that price too

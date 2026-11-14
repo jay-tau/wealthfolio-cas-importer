@@ -167,7 +167,7 @@ export function ActivityTable({
             t.problem,
             earlierNote(t),
             ...currencyNotes(t),
-            forced ? "Imported anyway, as you chose under Before importing." : undefined,
+            forced ? "Imported anyway, by your answer." : undefined,
           ].filter((note) => note !== undefined);
           const cells = (scheme: string, row: ActivityImport, standIns: (keyof ActivityImport)[] = []) => (
             <>
