@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { after, afterEach, before, test } from "node:test";
 import { createServer } from "vite";
+import { proposedId } from "../src/lib/new-accounts.ts";
 
 let server;
 let DetailedImport;
@@ -103,6 +104,7 @@ function controller(props) {
       }
       assert.equal(dirty, false, "the controller settled");
     },
+    update(patch) { Object.assign(props, patch); dirty = true; },
     get tree() { return tree; },
     dispose() { slots.forEach((slot) => slot.cleanup?.()); },
   };
@@ -1144,4 +1146,396 @@ test("a repeated statement with a reversed purchase left out isn't called nothin
   assert.deepEqual([b.toImport, b.before, b.leftOut.map((l) => l.kind)], [0, 3, ["reversal", "reversal"]]);
   assert.deepEqual(footer(run).slice(0, 1), ["Nothing is ready to import. See the transactions left out or waiting above."]);
   assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+// Accounts proposed when none fits, created when the transactions are imported.
+/**
+ * A review where Wealthfolio has only Savings, which can't take funds (it tracks holdings here), or
+ * `accounts`, and remembers nothing. Wealthfolio creates each account asked for, except names in
+ * `refuse`; the add-on's page adds them to its accounts and keeps what's remembered, as the import page does.
+ */
+function withNewAccounts({ accounts = [], refuse = new Set(), change } = {}) {
+  const context = setup({ entries: [], remembered: {}, change });
+  const { props, api } = context;
+  Object.assign(props, { accounts, allAccounts: accounts });
+  const asked = [];
+  const checkedAt = [];
+  let next = 0;
+  api.accounts = {
+    create: async (payload) => {
+      asked.push(payload);
+      if (refuse.has(payload.name)) throw new Error(`made-up refusal of ${payload.name}`);
+      return { id: `created-${++next}`, ...payload, isArchived: false, group: null };
+    },
+  };
+  const check = api.activities.checkImport;
+  api.activities.checkImport = async (rows) => {
+    checkedAt.push([...new Set(rows.map((r) => r.accountId))]);
+    return check(rows);
+  };
+  props.onCreated = (made) => context.run.update({ accounts: [...props.accounts, ...made], allAccounts: [...props.allAccounts, ...made] });
+  props.onRemember = (r) => {
+    context.remembers.push(r);
+    context.run.update({ accountChoices: { ...props.accountChoices, ...Object.fromEntries(r.accounts) } });
+  };
+  return { ...context, asked, checkedAt, refuse };
+}
+const textOfLine = (node) => (Array.isArray(node) ? node.map(textOfLine).join("") : node && typeof node === "object" ? textOfLine(node.props?.children) : node == null || node === false ? "" : String(node));
+
+test("a new profile proposes Mutual funds, creates it on importing, checks its rows there and only then remembers it", async () => {
+  const { run, keys, asked, checkedAt, imported, remembers } = withNewAccounts();
+  await run.flush();
+  const box = saveTo(run);
+  assert.equal(box.values[keys.pan], proposedId(keys.pan));
+  assert.deepEqual(box.proposed(keys.pan), { id: proposedId(keys.pan), name: "Mutual funds" });
+  assert.equal(box.values[choices.folioKey(find(run, "SaveToDetailed").boxes[0].folios[0])], "");
+  const line = box.newLine(keys.pan, "ANANYA R TESTWALA's funds");
+  assert.equal(textOfLine(line.type(line.props)), "New · Wealthfolio account, created when you save · Rename");
+  assert.match(footer(run)[0], /^Create the Wealthfolio account Mutual funds and import \d+ transactions for \d+ funds into it\.$/);
+  const action = find(run, "Footer").action;
+  assert.match(action.label, /^Create account and import \d+ transactions$/);
+  // Wealthfolio can't check rows for an account that doesn't exist yet.
+  assert.deepEqual(checkedAt, []);
+  action.onClick();
+  await run.flush();
+  assert.deepEqual(asked, [{ name: "Mutual funds", accountType: "SECURITIES", currency: "INR", isDefault: false, isActive: true, trackingMode: "TRANSACTIONS" }]);
+  assert.deepEqual(checkedAt, [["created-1"]]);
+  assert.equal(imported.length, 1);
+  assert.deepEqual([...new Set(imported[0].map((r) => r.accountId))], ["created-1"]);
+  assert.deepEqual(remembers.map((r) => r.accounts), [[], [[keys.pan, "created-1"]]]);
+  const result = find(run, "ImportResult");
+  assert.deepEqual(result.notCreated, []);
+  assert.equal(result.retry, undefined);
+  assert.equal(result.accounts.find((a) => a.id === "created-1").name, "Mutual funds");
+});
+
+test("with an account for transactions but none remembered, nothing is preselected and the new one stays offered", async () => {
+  const { run, keys, asked } = withNewAccounts({ accounts: [account("mf", "Mutual funds")] });
+  await run.flush();
+  assert.equal(saveTo(run).values[keys.pan], null);
+  assert.equal(saveTo(run).proposed(keys.pan).name, "Mutual funds 2");
+  assert.equal(find(run, "Footer").action.disabled, true);
+  saveTo(run).onChange(keys.pan, "mf");
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked, []);
+});
+
+test("a folio sent to its own new account gets one, named after it", async () => {
+  const { run, keys, asked, imported } = withNewAccounts();
+  await run.flush();
+  saveTo(run).onChange(keys.testbridge, proposedId(keys.testbridge));
+  await run.flush();
+  assert.equal(saveTo(run).proposed(keys.testbridge).name, "Testbridge Mutual Fund folio 1040012345");
+  const lines = footer(run).filter((l) => l.startsWith("Create"));
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /^Create the Wealthfolio account Testbridge Mutual Fund folio 1040012345 and import \d+ transactions? for \d+ funds? into it\.$/);
+  assert.match(find(run, "Footer").action.label, /^Create 2 accounts and import \d+ transactions$/);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Testbridge Mutual Fund folio 1040012345"]);
+  assert.deepEqual(new Set(imported[0].map((r) => r.accountId)), new Set(["created-1", "created-2"]));
+});
+
+/** Two investors, each with a PAN; the second's folio receives a gift from a folio of the first's. */
+function twoInvestorGift(data) {
+  const base = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+  const row = (date, type, amount, units, gift_folio = null) => ({
+    date, type, amount, units, nav: "50", balance: null, description: type, dividend_rate: null, gift_folio,
+  });
+  const giving = { ...structuredClone(base), open: "0", close: "0", close_calculated: "0", transactions: [
+    row("2024-06-01", "PURCHASE", "500", "10"), row("2024-06-03", "GIFT_OUT", "-500", "-10", "44444444"),
+  ] };
+  const receiving = { ...structuredClone(base), open: "0", close: "10", close_calculated: "10",
+    transactions: [row("2024-06-03", "GIFT_IN", "500", "10", "33333333")] };
+  data.folios = [
+    ...data.folios,
+    { ...data.folios[0], folio: "33333333", schemes: [giving] },
+    { ...data.folios[0], folio: "44444444", PAN: "FGHIJ5678K", name: "B. Investor", schemes: [receiving] },
+  ];
+  return data;
+}
+
+test("a gift to an account Wealthfolio didn't create waits whole, and Try again imports both sides together", async () => {
+  const refuse = new Set(["Mutual funds (B. Investor)"]);
+  const { run, asked, imported, remembers } = withNewAccounts({ refuse, change: twoInvestorGift });
+  await run.flush();
+  const boxes = saveTo(run).boxes;
+  assert.deepEqual(boxes.map((b) => saveTo(run).proposed(b.key).name), ["Mutual funds", "Mutual funds (B. Investor)"]);
+  assert.match(find(run, "Footer").action.label, /^Create 2 accounts and import \d+ transactions$/);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Mutual funds (B. Investor)"]);
+  assert.equal(imported.length, 1);
+  // Neither side of the gift went in; the first investor's other transactions did.
+  assert.ok(!imported[0].some((r) => r.activityType.startsWith("TRANSFER")), JSON.stringify(imported[0].map((r) => r.activityType)));
+  assert.ok(imported[0].length > 0);
+  assert.deepEqual([...new Set(imported[0].map((r) => r.accountId))], ["created-1"]);
+  assert.deepEqual(remembers.at(-1).accounts, [[boxes[0].key, "created-1"]]);
+  let result = find(run, "ImportResult");
+  assert.deepEqual(result.notCreated.map((n) => n.name), ["Mutual funds (B. Investor)"]);
+  assert.equal(result.waiting(result.notCreated[0]), "1 transaction for it wasn't imported.");
+  assert.ok(result.retry);
+  refuse.clear();
+  result.retry();
+  await run.flush();
+  // Only the account that wasn't created is asked for again.
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Mutual funds (B. Investor)", "Mutual funds (B. Investor)"]);
+  assert.equal(imported.length, 2);
+  assert.deepEqual(imported[1].map((r) => [r.activityType, r.accountId]), [["TRANSFER_OUT", "created-1"], ["TRANSFER_IN", "created-2"]]);
+  assert.deepEqual(remembers.at(-1).accounts, [[boxes[1].key, "created-2"]]);
+  result = find(run, "ImportResult");
+  assert.deepEqual(result.notCreated, []);
+  assert.equal(result.retry, undefined);
+  assert.equal(result.result.summary.total, imported[0].length + 2);
+  assert.equal(result.sent.length, imported[0].length + 2);
+});
+
+test("a transaction Wealthfolio refuses in a new account stays out with its message, and the rest go in", async () => {
+  const { run, api, imported } = withNewAccounts();
+  const check = api.activities.checkImport;
+  api.activities.checkImport = async (rows) => (await check(rows)).map((r) =>
+    r.activityType === "DIVIDEND" ? { ...r, isValid: false, errors: { symbol: ["Made-up refusal."] } } : r);
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 1);
+  assert.ok(!imported[0].some((r) => r.activityType === "DIVIDEND"));
+  const result = find(run, "ImportResult").result;
+  const refused = result.activities.filter((a) => a.errors?.symbol);
+  assert.ok(refused.length > 0);
+  assert.ok(refused.every((a) => a.activityType === "DIVIDEND" && a.errors.symbol[0] === "Made-up refusal."));
+  const rejected = result.activities.filter((a) => Object.keys(a.errors ?? {}).length);
+  assert.ok(rejected.filter((a) => !a.errors.symbol).every((a) =>
+    a.errors.general[0] === "Another row of this transaction was rejected, so none of it was imported."));
+  assert.equal(result.summary.total, imported[0].length + rejected.length);
+  assert.equal(result.summary.skipped, rejected.length);
+});
+
+test("when no new account is created, nothing is imported or remembered for it and the review stays", async () => {
+  const refuse = new Set(["Mutual funds"]);
+  const { run, keys, asked, imported, remembers } = withNewAccounts({ refuse });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(find(run, "ImportResult"), undefined);
+  assert.equal(imported.length, 0);
+  assert.deepEqual(remembers.map((r) => r.accounts), [[]]);
+  const alert = find(run, "NotCreatedAlert");
+  assert.deepEqual(alert.accounts.map((a) => a.name), ["Mutual funds"]);
+  assert.equal(alert.what(alert.accounts[0]), "Nothing was imported.");
+  refuse.clear();
+  const tryAgain = nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOfLine(n) === "Try again");
+  tryAgain.props.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Mutual funds"]);
+  assert.equal(imported.length, 1);
+  assert.deepEqual(remembers.at(-1).accounts, [[keys.pan, "created-1"]]);
+});
+
+test("Rename of a new account waits the import and changes the name it's created with", async () => {
+  const { run, keys, asked } = withNewAccounts();
+  document.getElementById = () => ({ dataset: {}, focus() {}, scrollIntoView() {} });
+  await run.flush();
+  const line = () => saveTo(run).newLine(keys.pan, "funds").props;
+  line().onRename();
+  await run.flush();
+  assert.deepEqual(footer(run), ["Save or cancel the new account name first."]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  assert.equal(find(run, "Footer").go.label, "Go to it");
+  line().onDraft("Family funds");
+  await run.flush();
+  line().onSave();
+  await run.flush();
+  assert.match(footer(run)[0], /^Create the Wealthfolio account Family funds and import/);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Family funds"]);
+});
+
+test("a created account stops being offered as new after an import exception, and the main button reuses it", async () => {
+  const { run, api, keys, asked, imported } = withNewAccounts();
+  const send = api.activities.import;
+  api.activities.import = async () => { throw new Error("made-up import failure"); };
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(find(run, "ImportResult"), undefined);
+  assert.equal(saveTo(run).values[keys.pan], "created-1");
+  assert.equal(saveTo(run).proposed(keys.pan), undefined);
+  const view = nodes(run.tree).find((n) => n.type?.name === "SaveToDetailed");
+  const select = nodes(view.type(view.props)).find((n) => n.type?.name === "AccountSelect" && n.props.id === keys.pan);
+  assert.equal(select.props.proposed, undefined);
+  assert.equal(find(run, "Footer").action.disabled, false);
+  api.activities.import = send;
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds"]);
+  assert.equal(imported.length, 1);
+  assert.ok(imported[0].every((r) => r.accountId === "created-1"));
+});
+
+test("a refused gift leg reports both withheld rows and counts the whole group", async () => {
+  const { run, api, imported } = withNewAccounts({ change: twoInvestorGift });
+  const check = api.activities.checkImport;
+  api.activities.checkImport = async (rows) => (await check(rows)).map((r) =>
+    r.activityType === "TRANSFER_IN" ? { ...r, isValid: false, errors: { symbol: ["Made-up recipient refusal."] } } : r);
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 1);
+  assert.ok(!imported[0].some((r) => r.activityType.startsWith("TRANSFER")));
+  const result = find(run, "ImportResult").result;
+  const refused = result.activities.filter((r) => Object.keys(r.errors ?? {}).length);
+  assert.deepEqual(refused.map((r) => r.activityType), ["TRANSFER_OUT", "TRANSFER_IN"]);
+  assert.deepEqual(refused[0].errors.general, ["Another row of this transaction was rejected, so none of it was imported."]);
+  assert.deepEqual(refused[1].errors.symbol, ["Made-up recipient refusal."]);
+  assert.equal(result.summary.total, imported[0].length + 2);
+  assert.equal(result.summary.skipped, 2);
+});
+
+for (const errors of [undefined, {}]) {
+  test(`a newly created account's invalid row has a reason with ${errors ? "empty" : "absent"} host errors`, async () => {
+    const { run, api, imported } = withNewAccounts();
+    const check = api.activities.checkImport;
+    api.activities.checkImport = async (rows) => (await check(rows)).map((r) =>
+      r.activityType === "DIVIDEND" ? { ...r, isValid: false, errors } : r);
+    await run.flush();
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    assert.ok(!imported[0].some((r) => r.activityType === "DIVIDEND"));
+    const refused = find(run, "ImportResult").result.activities.filter((r) => r.isValid === false);
+    assert.ok(refused.length > 0);
+    assert.ok(refused.some((r) => r.activityType === "DIVIDEND"));
+    assert.ok(refused.every((r) => r.errors.general[0] === (r.activityType === "DIVIDEND"
+      ? "Wealthfolio can't import this row."
+      : "Another row of this transaction was rejected, so none of it was imported.")));
+  });
+}
+
+test("a retry's created account is reported as created even if the held gift's import then fails", async () => {
+  const refuse = new Set(["Mutual funds (B. Investor)"]);
+  const { run, api, asked, imported } = withNewAccounts({ refuse, change: twoInvestorGift });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(find(run, "ImportResult").notCreated.length, 1);
+  refuse.clear();
+  const send = api.activities.import;
+  api.activities.import = async () => { throw new Error("made-up held import failure"); };
+  find(run, "ImportResult").retry();
+  await run.flush();
+  assert.deepEqual(find(run, "ImportResult").notCreated, []);
+  assert.ok(find(run, "ImportResult").retry);
+  assert.equal(imported.length, 1);
+  assert.match(textOfLine(run.tree), /made-up held import failure/);
+  api.activities.import = send;
+  find(run, "ImportResult").retry();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Mutual funds (B. Investor)", "Mutual funds (B. Investor)"]);
+  assert.deepEqual(imported[1].map((r) => [r.activityType, r.accountId]), [["TRANSFER_OUT", "created-1"], ["TRANSFER_IN", "created-2"]]);
+  assert.equal(find(run, "ImportResult").retry, undefined);
+});
+
+test("a failed held-batch retry leaves its bank entry alone after an earlier batch succeeded", async () => {
+  const name = "Testbridge Mutual Fund folio 1040012345";
+  const refuse = new Set([name]);
+  const { run, props, api, keys, activities, imported } = withNewAccounts({ accounts: [account("bank", "Savings")], refuse });
+  api.accounts.getAll = async () => props.allAccounts;
+  activities.push({ ...ENTRIES[0] });
+  const changed = [];
+  api.activities.create = async () => { changed.push("create"); return { id: "fund-transfer" }; };
+  api.activities.update = async () => { changed.push("update"); };
+  api.activities.linkTransfer = async () => { changed.push("link"); };
+  await run.flush();
+  saveTo(run).onChange(keys.pan, proposedId(keys.pan));
+  saveTo(run).onChange(keys.testbridge, proposedId(keys.testbridge));
+  saveTo(run).onChange(choices.bankKey(keys.pan), "bank");
+  await run.flush();
+  const [check] = checksUnder(run, choices.bankKey(keys.pan));
+  assert.deepEqual(check.check.pairs.map((p) => p.entry.id), ["dividend"]);
+  check.onLink();
+  await run.flush();
+  assert.equal(find(run, "Footer").action.disabled, false);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 1);
+  assert.ok(imported[0].length > 0);
+  assert.deepEqual(find(run, "ImportResult").notCreated.map((a) => a.name), [name]);
+  assert.deepEqual(changed, []);
+  refuse.clear();
+  const send = api.activities.import;
+  api.activities.import = async (rows) => {
+    const result = await send(rows);
+    const rejected = rows.find((r) => r.activityType !== "DIVIDEND");
+    assert.ok(rejected);
+    return {
+      ...result,
+      activities: rows.map((r) => r === rejected ? { ...r, isValid: false, errors: { general: ["Made-up validation failure."] } } : r),
+      summary: { ...result.summary, success: false, imported: 0, skipped: 1 },
+    };
+  };
+  find(run, "ImportResult").retry();
+  await run.flush();
+  assert.equal(imported.length, 2);
+  assert.ok(imported[1].some((r) => r.activityType === "DIVIDEND"));
+  assert.deepEqual(changed, []);
+  const result = find(run, "ImportResult");
+  assert.equal(result.result.summary.success, true);
+  assert.deepEqual(result.links.map((l) => l.error), ["The trade wasn't imported, so the bank's entry was left as it is."]);
+});
+
+test("Rename's footer message and Go to it take precedence over a failed detailed planning read", async () => {
+  const { run, api, keys } = withNewAccounts();
+  api.activities.getAll = async () => { throw new Error("made-up planning failure"); };
+  await run.flush();
+  assert.match(footer(run)[0], /made-up planning failure/);
+  saveTo(run).newLine(keys.pan, "funds").props.onRename();
+  await run.flush();
+  assert.deepEqual(footer(run), ["Save or cancel the new account name first."]);
+  assert.equal(find(run, "Footer").go.label, "Go to it");
+  assert.equal(find(run, "Footer").action.disabled, true);
+  saveTo(run).newLine(keys.pan, "funds").props.onCancel();
+  await run.flush();
+  assert.match(footer(run)[0], /made-up planning failure/);
+  assert.equal(find(run, "Footer").go.label, "Try again");
+});
+
+test("a failed new account holds back a purchase and both new bank-transfer legs until the retry", async () => {
+  const refuse = new Set(["Mutual funds"]);
+  const { run, keys, asked, imported } = withNewAccounts({ accounts: [account("bank", "Savings")], refuse });
+  await run.flush();
+  saveTo(run).onChange(keys.pan, proposedId(keys.pan));
+  saveTo(run).onChange(choices.bankKey(keys.pan), "bank");
+  await run.flush();
+  assert.equal(find(run, "Footer").action.disabled, false);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 0);
+  refuse.clear();
+  nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOfLine(n) === "Try again").props.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Mutual funds"]);
+  assert.equal(imported.length, 1);
+  const buy = imported[0].find((r) => r.activityType === "BUY");
+  const cash = imported[0].filter((r) => r.sourceRecordId === `${buy.sourceRecordId}:cash` || r.sourceRecordId === `${buy.sourceRecordId}:bank`);
+  assert.equal(cash.length, 2);
+  assert.deepEqual(cash.map((r) => r.accountId), ["created-1", "bank"]);
+});
+
+test("a fresh detailed no-PAN folio has its own preselected proposal and leaving everything out creates nothing", async () => {
+  const { run, asked } = withNewAccounts({ change(data) { data.folios[1].PAN = null; return data; } });
+  await run.flush();
+  const boxes = saveTo(run).boxes;
+  assert.equal(boxes.length, 2);
+  assert.equal(boxes[1].pan, false);
+  assert.equal(saveTo(run).values[boxes[1].key], proposedId(boxes[1].key));
+  for (const box of boxes) saveTo(run).onChange(box.key, choices.LEFT_OUT);
+  await run.flush();
+  assert.deepEqual(footer(run), ["Nothing from this statement will be imported."]);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked, []);
 });

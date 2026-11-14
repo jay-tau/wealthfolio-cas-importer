@@ -36,9 +36,10 @@ import {
   type Waiting,
 } from "../cas/review";
 import type { CasData, CasFolio, CasScheme } from "../cas/types";
-import type { Ignored } from "../components/account-choices";
+import { type Ignored, NewAccountLine, type Proposed, type Renaming } from "../components/account-choices";
 import type { AmfiCheck } from "../components/amfi-banner";
 import { type FundChoice, type FundItem, fundItems } from "../components/fund-choices";
+import { type NotCreated, NotCreatedAlert } from "../components/holdings-preview";
 import { ActivityTable, type BankLink, ImportResult, staleText } from "../components/preview";
 import { BankCheck, type BankCheckModel, checkReceipt, paid } from "../components/review/bank-check";
 import {
@@ -63,6 +64,7 @@ import { bankKey, type ChosenFund, folioKey, fundKey, LEFT_OUT, NO_BANK, panKey 
 import { readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
+import { isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames } from "../lib/new-accounts";
 import { plural } from "../lib/plural";
 import { longDate, rupees, units } from "../lib/review-format";
 import { sha256 } from "../lib/sha256";
@@ -75,6 +77,41 @@ interface Imported {
   sent: ActivityImport[];
   closing: FundUnits[];
   links: BankLink[];
+  /** New accounts Wealthfolio didn't create. */
+  notCreated: NotCreated[];
+  /** What waits for them. */
+  held?: Part[];
+  /** Creates them and imports what waits. */
+  retry?: () => void;
+}
+
+/** Two imports' results as one: the counts added up, every row listed. */
+function mergeResults(a: ImportActivitiesResult, b: ImportActivitiesResult): ImportActivitiesResult {
+  const sum = (field: "total" | "imported" | "skipped" | "duplicates" | "assetsCreated") => (a.summary[field] ?? 0) + (b.summary[field] ?? 0);
+  const failed = [a, b].find((r) => !r.summary.success);
+  return {
+    ...b,
+    activities: [...a.activities, ...b.activities],
+    summary: {
+      ...b.summary,
+      total: sum("total"),
+      imported: sum("imported"),
+      skipped: sum("skipped"),
+      duplicates: sum("duplicates"),
+      assetsCreated: sum("assetsCreated"),
+      // Each part's rows say what went wrong; the summary says whether any of it went in.
+      success: a.summary.success || b.summary.success,
+      ...(failed && !(a.summary.success || b.summary.success) ? { errorMessage: (failed.summary as { errorMessage?: string }).errorMessage } : {}),
+    },
+  };
+}
+
+/** A transaction the import sends, with the rows it sends: all of it, or none. */
+interface Part {
+  t: PlannedTransaction;
+  rows: ActivityImport[];
+  /** The bank entry its cash links to instead of a new transfer, as the review showed it. */
+  entry?: { row: ActivityDetails; facts: EntryFacts };
 }
 
 /** What the automatic plan found from Wealthfolio's activities and the review's choices. */
@@ -153,6 +190,7 @@ export function DetailedImport({
   busy,
   setBusy,
   onRemember,
+  onCreated,
   onAnother,
 }: {
   ctx: AddonContext;
@@ -176,6 +214,8 @@ export function DetailedImport({
   busy: Busy;
   setBusy: (busy: Busy) => void;
   onRemember: (remembered: DetailedRemembered) => void;
+  /** Adds the accounts the import created to the page's accounts. */
+  onCreated: (accounts: Account[]) => void;
   /** Leaves the review for the file form; `notice` says what happened. */
   onAnother: (notice?: string) => void;
 }) {
@@ -185,8 +225,16 @@ export function DetailedImport({
   // Wealthfolio values an account that tracks holdings from its snapshots alone, so transactions go to
   // the others, which include NOT_SET.
   const targets = accounts.filter((a) => a.trackingMode !== "HOLDINGS");
-  const accountName = (accountId: string) => allAccounts.find((a) => a.id === accountId)?.name ?? "the bank account";
-  const accountLabel = (accountId: string) => `${accountName(accountId)}${nameNumber(allAccounts, allAccounts.findIndex((a) => a.id === accountId), "account")}`;
+  // The accounts this review created, by proposed ID: importing again goes into them, never creating another.
+  const created = useRef(new Map<string, Account>());
+  function accountName(accountId: string) {
+    const account = created.current.get(accountId);
+    if (account) return account.name;
+    if (isProposed(accountId)) return proposalNames.get(proposalKey(accountId)) ?? "";
+    return allAccounts.find((a) => a.id === accountId)?.name ?? [...created.current.values()].find((a) => a.id === accountId)?.name ?? "the bank account";
+  }
+  const accountLabel = (accountId: string) =>
+    isProposed(accountId) ? accountName(accountId) : `${accountName(accountId)}${nameNumber(allAccounts, allAccounts.findIndex((a) => a.id === accountId), "account")}`;
 
   // Who each folio belongs to: a box per PAN, and one per folio printed without a PAN.
   const boxes = useMemo(() => {
@@ -221,6 +269,25 @@ export function DetailedImport({
   const boxOf = (folio: CasFolio) => boxes.find((b) => b.folios.includes(folio))!;
   const boxKeys = new Set(boxes.map((b) => b.key));
   const boxBankKeys = new Set(boxes.map((b) => bankKey(b.key)));
+
+  // A new account each funds' select offers, created when the transactions are imported: "Mutual
+  // funds" for the first box, with its investor's name for the others, and each of a PAN's folios
+  // its own, named after it.
+  const [renamed, setRenamed] = useState<Record<string, string>>({});
+  const [renaming, setRenaming] = useState<Renaming | null>(null);
+  // Names an import tried and couldn't create, kept while the created accounts take theirs.
+  const tried = useRef<Record<string, string>>({});
+  const proposalNames = proposedNames(
+    [
+      ...boxes.map((box, i) => ({ key: box.key, base: "Mutual funds", who: i ? box.name : undefined })),
+      ...boxes.filter((b) => b.pan).flatMap((b) => b.folios.map((f) => ({ key: folioKey(f), base: folioName(f) }))),
+    ],
+    allAccounts.map((a) => a.name),
+    { ...tried.current, ...renamed },
+  );
+  const proposed = (key: string): Proposed => ({ id: proposedId(key), name: proposalNames.get(key) ?? "" });
+  // Accounts this review creates don't change what it preselected.
+  const proposeNew = useRef(targets.length === 0).current;
 
   // Like a hidden, archived or missing one, a remembered account that tracks holdings is ignored, and
   // its row says why.
@@ -262,7 +329,17 @@ export function DetailedImport({
   const [openedSettings, setOpenedSettings] = useState(false);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [prepareError, setPrepareError] = useState("");
-  const [imported, setImported] = useState<Imported | null>(null);
+  const [imported, setImportedState] = useState<Imported | null>(null);
+  // The latest result, for Try again, which goes on from it.
+  const latestImported = useRef<Imported | null>(null);
+  const setImported = (next: Imported) => {
+    latestImported.current = next;
+    setImportedState(next);
+  };
+  // Accounts the last import couldn't create; it imported nothing else, so the review stays.
+  const [notCreated, setNotCreated] = useState<NotCreated[]>([]);
+  // Bumped by each Try again, so its result takes the focus again.
+  const [retries, setRetries] = useState(0);
   const [stale, setStale] = useState<StaleEntry[] | null>(null);
   const [error, setError] = useState("");
   // Bumped when the page is opened again, Try again is pressed or bank entries changed: Wealthfolio may have changed meanwhile.
@@ -277,7 +354,8 @@ export function DetailedImport({
     if (key in ignored) return null;
     const value = usable[key];
     if (value !== undefined) return boxBankKeys.has(key) && value === NO_BANK ? "" : value;
-    return boxKeys.has(key) ? null : "";
+    // With no account that tracks transactions when the review starts, each box's new one is chosen.
+    return boxKeys.has(key) ? (proposeNew ? proposedId(key) : null) : "";
   };
   /** Where a folio's transactions go: an account, `LEFT_OUT`, or undefined until chosen. */
   const folioAccount = (folio: CasFolio, value = valueOf) => {
@@ -311,7 +389,7 @@ export function DetailedImport({
   };
   const undecidedFolios = data.folios.filter((f) => folioState(f) === "undecided" || folioState(f) === "conflict");
   const conflicts = new Set(data.folios.filter((f) => folioState(f) === "conflict").map((f) => bankChoiceOf(f).key));
-  const accountQuestion = targets.length > 0 && undecidedFolios.length > 0;
+  const accountQuestion = undecidedFolios.length > 0;
 
   const choiceOf = (key: string): FundChoice | undefined =>
     key in answers ? answers[key] : matched[key] ? { fund: matched[key] } : fundChoices[key];
@@ -442,7 +520,13 @@ export function DetailedImport({
       entered: (row) => entered(row).length > 0,
     });
     const rows = rowsOf(mapping);
-    const checked = rows.length ? await once(`check:${sha256(JSON.stringify(rows))}`, () => api.activities.checkImport(rows)) : [];
+    // Wealthfolio checks rows against their account, so rows for an account still to create are
+    // checked once it's created, just before they're imported. Until then they're new, as an
+    // account with no activities has them.
+    const known = rows.filter((row) => !isProposed(row.accountId));
+    const checkedKnown = known.length ? await once(`check:${sha256(JSON.stringify(known))}`, () => api.activities.checkImport(known)) : [];
+    let at = 0;
+    const checked = rows.map((row) => (isProposed(row.accountId) ? { ...row, isValid: true } : checkedKnown[at++]));
     const plan = planImport(mapping, existing, checked, funds, timeZone);
     // A bank transfer already linked to another can't be used.
     const candidates = [...new Map(plan.flatMap((t) => bankCandidates(t, existing)).map((a) => [a.id, a])).values()];
@@ -462,8 +546,12 @@ export function DetailedImport({
   // Which confirmed fund each asset of `activities` is. A fund without an asset ID goes by the symbol
   // and exchange on each asset's profile; one with an ID needs its asset to still have the symbol,
   // exchange and type its rows are imported with. Either match needs the import's type.
-  async function fundsIn(activities: ActivityDetails[], profileOf: (assetId: string) => Promise<Awaited<ReturnType<typeof api.assets.getProfile>>>) {
-    const chosen = data.folios.flatMap((f) => f.schemes.flatMap((s) => target(f, s) ?? []));
+  async function fundsIn(
+    activities: ActivityDetails[],
+    profileOf: (assetId: string) => Promise<Awaited<ReturnType<typeof api.assets.getProfile>>>,
+    targetOf: typeof target = target,
+  ) {
+    const chosen = data.folios.flatMap((f) => f.schemes.flatMap((s) => targetOf(f, s) ?? []));
     const funds = chosen.map((t) => t.asset);
     const accountIds = new Set(chosen.map((t) => t.accountId));
     const ids = new Set(funds.flatMap((f) => (f.assetId ? [f.assetId] : [])));
@@ -764,7 +852,7 @@ export function DetailedImport({
 
   const answeredAll = openKeys.length === 0 && lookingUp.length === 0 && !accountQuestion;
   const questionCount = openKeys.length + (accountQuestion ? 1 : 0) + openChecks.length;
-  const nothing = targets.length > 0 && !accountQuestion && data.folios.every((f) => folioAccount(f) === LEFT_OUT);
+  const nothing = !accountQuestion && data.folios.every((f) => folioAccount(f) === LEFT_OUT);
 
   // Ids the focus moves to.
   const ids = {
@@ -784,7 +872,10 @@ export function DetailedImport({
     checkChange: (checkId: string) => id(`check-change-${checkId}`),
     showAll: id("show-all"),
     every: id("every"),
+    notCreated: id("not-created"),
   };
+  // The accounts the last import couldn't create, while something still goes to them.
+  const missingNow = notCreated.filter((n) => data.folios.some((f) => accountOf(f) === n.accountId));
 
   /** The select a folio's account question is answered in. */
   const questionKey = (folio: CasFolio) => {
@@ -980,6 +1071,8 @@ export function DetailedImport({
   const chooseAccount = (key: string, value: string) => {
     const after = (k: string) => (k === key ? value : valueOf(k));
     setPicks((all) => ({ ...all, [key]: value }));
+    // A rename goes with its new account.
+    if (renaming?.key === key && value !== proposedId(key)) setRenaming(null);
     // Answers and typed searches of funds no longer imported go.
     const dropped = items.filter((item) => foliosOf(item.key).every((f) => folioState(f, after) === "out")).map((i) => i.key);
     if (dropped.length) {
@@ -996,11 +1089,12 @@ export function DetailedImport({
   const changes =
     Object.entries(picks).filter(([key, value]) => value !== (accountChoices[key] ?? (boxKeys.has(key) ? null : ""))).length +
     Object.keys(answers).length + importAnyway.size + unbalanced.size + Object.keys(checkAnswers).length + Object.values(ticks).filter((t) => t.changed).length +
-    searchChanges + (editor ? 1 : 0);
+    searchChanges + (editor ? 1 : 0) + Object.keys(renamed).length + (renaming ? 1 : 0);
 
   const remember = () => {
     // A choice in place of an ignored one is remembered even when it's the same as having none.
-    const accountsChanged = Object.entries(picks).filter(([key, value]) => value !== (accountChoices[key] ?? "") || key in ignored);
+    // A new account is remembered once it's created.
+    const accountsChanged = Object.entries(picks).filter(([key, value]) => !isProposed(value) && (value !== (accountChoices[key] ?? "") || key in ignored));
     const funds = [
       ...Object.entries(matched).filter(([key]) => !(key in answers)).map(([key, fund]) => [key, { fund }] as [string, FundChoice]),
       ...Object.entries(answers).flatMap(([key, choice]) => (choice ? [[key, choice] as [string, FundChoice]] : [])),
@@ -1008,11 +1102,88 @@ export function DetailedImport({
     onRemember({ accounts: accountsChanged, funds });
   };
 
+  // Rename edits a new account's name in place; its field and Rename button take the focus in turn.
+  const renameIds = (key: string) => ({ rename: id(`rename-${key}`), field: id(`rename-field-${key}`) });
+  const goToRename = (key: string) => {
+    const box = boxKeys.has(key) ? undefined : boxes.find((b) => b.folios.some((f) => folioKey(f) === key));
+    if (box) setOpen(`part:${box.key}`, true);
+    focusSoon(renameIds(key).field, true);
+  };
+  const newLine = (key: string, label: string) => (
+    <NewAccountLine
+      proposed={proposed(key)}
+      label={label}
+      ids={renameIds(key)}
+      editing={renaming?.key === key ? renaming : undefined}
+      onRename={() => {
+        if (renaming) {
+          announce("Save or cancel the new account name first.");
+          return goToRename(renaming.key);
+        }
+        setRenaming({ key, draft: proposed(key).name });
+        focusSoon(renameIds(key).field, true);
+      }}
+      onDraft={(draft) => setRenaming((r) => r && { ...r, draft })}
+      onSave={() => {
+        if (!renaming) return;
+        const problem = nameProblem(renaming.draft);
+        if (problem) {
+          setRenaming({ ...renaming, error: problem });
+          announce(problem);
+          focusSoon(renameIds(key).field, true);
+          return;
+        }
+        const name = renaming.draft.trim();
+        setRenamed((all) => ({ ...all, [key]: name }));
+        setRenaming(null);
+        announce(`The new account will be called ${name}.`);
+        focusSoon(renameIds(key).rename, true);
+      }}
+      onCancel={() => {
+        setRenaming(null);
+        focusSoon(renameIds(key).rename, true);
+      }}
+    />
+  );
+
+  // A row or transaction with each new account this review created in place of its proposed ID.
+  const inCreated = (row: ActivityImport): ActivityImport => {
+    const account = row.accountId ? created.current.get(row.accountId) : undefined;
+    return account ? { ...row, accountId: account.id } : row;
+  };
+  const transactionInCreated = (t: PlannedTransaction): PlannedTransaction => {
+    const tr = t.transaction;
+    return {
+      ...t,
+      transaction: {
+        ...tr,
+        activity: inCreated(tr.activity),
+        cash: tr.cash && inCreated(tr.cash),
+        bank: tr.bank && inCreated(tr.bank),
+        arriving: tr.arriving && { ...tr.arriving, activity: inCreated(tr.arriving.activity) },
+        receiving: tr.receiving && { ...tr.receiving, activity: inCreated(tr.receiving.activity) },
+      },
+      rows: t.rows.map((r) => ({ ...r, activity: inCreated(r.activity) })),
+    };
+  };
+
+  /**
+   * Imports the transactions the review approved. Each new account a transaction's rows go to is
+   * created first; a transaction that needs one Wealthfolio didn't create waits whole, with both
+   * sides of a gift and a trade's bank transfer, and the others are imported. A transaction going to
+   * a new account is checked once it's created; one Wealthfolio refuses stays out, with its message.
+   * Try again goes on from what waits, with the review as it was, and never creates an account twice.
+   */
   const runImport = async () => {
     if (!current) return;
     remember();
+    // Firefox keeps the focus on the pressed button while it's disabled; the others drop it.
+    const pressed = document.activeElement;
     setBusy("import");
     setError("");
+    setNotCreated([]);
+    const made: Account[] = [];
+    const nowRemembered: [string, string][] = [];
     try {
       // Re-read what the user accepted, even when revisiting refreshed the plan behind the receipt.
       const approved = new Map(checks.flatMap((c) => answerOf(c)?.linked ? [...answerOf(c)!.shown] : []));
@@ -1048,47 +1219,184 @@ export function DetailedImport({
         return;
       }
       setStale(null);
-      const sent = importRows(plan, forced, reused);
-      const result = await api.activities.import(sent);
-      setImported({ result, sent, closing: [], links: [] });
-      // Each bank entry used, once its transaction's trade is in.
-      const links: BankLink[] = [];
-      for (const [t] of chosen) {
-        const bankRow = checked.current.get(t)!;
-        const line = t.transaction.activity.lineNumber;
-        const trade = result.activities.find((a) => a.lineNumber === line);
-        const wasForced = sent.some((r) => r.lineNumber === line && r.forceImport);
-        const ok =
-          result.summary.success && trade && !Object.keys(trade.errors ?? {}).length && (wasForced || !(trade.duplicateOfId || trade.duplicateOfLineNumber));
-        links.push({
-          transaction: t,
-          bankRow,
-          ...(ok
-            ? await reuseBankEntry(api, t, bankRow, checked.facts.get(bankRow.id)!)
-            : { error: "The trade wasn't imported, so the bank's entry was left as it is.", changes: [], warnings: [] }),
-        });
+      const parts = plan.flatMap((t): Part[] => {
+        const rows = importRows([t], forced, reused);
+        if (!rows.length) return [];
+        const row = reused(t) ? checked.current.get(t) : undefined;
+        return [{ t, rows, entry: row && { row, facts: checked.facts.get(row.id)! } }];
+      });
+      // What the review chose, kept for Try again: the plan behind it can change once accounts exist.
+      const choiceKeys = [...boxes.map((b) => b.key), ...data.folios.map(folioKey)];
+      const pointing = new Map<string, string[]>();
+      for (const key of choiceKeys) {
+        const value = valueOf(key);
+        if (isProposed(value)) pointing.set(value, [...(pointing.get(value) ?? []), key]);
       }
-      setImported({ result, sent, closing: [], links });
-      api.query.invalidateQueries([QueryKeys.ACTIVITY_DATA]);
-      api.query.invalidateQueries([QueryKeys.ACTIVITIES]);
-      try {
-        const accountIds = [...new Set(data.folios.flatMap((f) => f.schemes.flatMap((s) => {
-          const t = target(f, s);
-          return t ? [t.accountId, ...(t.bankAccountId ? [t.bankAccountId] : [])] : [];
-        })))];
-        const after = (await Promise.all(accountIds.map((accountId) => api.activities.getAll(accountId)))).flat();
-        // The funds the import sent transactions for; the others' units didn't change.
-        const touched = new Set(groups.filter((g) => g.sent > 0).flatMap((g) => g.schemes.map((s) => s.scheme)));
-        const closing = closingUnits(data, (f, s) => (touched.has(s) ? target(f, s) : undefined), after, await fundsIn(after, (assetId) => api.assets.getProfile(assetId)), await engineTimeZone(api.settings));
-        setImported({ result, sent, closing, links });
-      } catch {
-        setError("The import finished, but the closing units couldn't be checked. Check the holdings in Wealthfolio.");
+      const reviewed = { target, groups, fundsIn };
+
+      /** Creates the new accounts `ids` names that this review hasn't; returns those Wealthfolio didn't create. */
+      const createAccounts = async (ids: string[], made: Account[], remembered: [string, string][]) => {
+        const missing: NotCreated[] = [];
+        for (const accountId of ids) {
+          if (created.current.has(accountId)) continue;
+          const name = accountName(accountId);
+          try {
+            const account = await api.accounts.create(newAccount(name, "TRANSACTIONS"));
+            created.current.set(accountId, account);
+            made.push(account);
+            // The choices that pointed at it are remembered now that it exists.
+            for (const key of pointing.get(accountId) ?? []) remembered.push([key, account.id]);
+          } catch (e) {
+            // Its name stays as shown while other new accounts take theirs.
+            tried.current[proposalKey(accountId)] = name;
+            missing.push({ accountId, name, error: String(e) });
+          }
+        }
+        return missing;
+      };
+
+      const importParts = async (parts: Part[], before: Imported | null, made: Account[], remembered: [string, string][]) => {
+        const missing = await createAccounts([...new Set(parts.flatMap((p) => p.rows.map((r) => r.accountId)).filter(isProposed))], made, remembered);
+        // Creation can succeed even when the following check or import fails.
+        if (before) setImported({ ...before, notCreated: missing });
+        const blocked = new Set(missing.map((m) => m.accountId));
+        const held = parts.filter((p) => p.rows.some((r) => blocked.has(r.accountId)));
+        let ready = parts.filter((p) => !held.includes(p));
+        // Rows for an account this review created are checked there before anything is imported.
+        const fresh = ready.flatMap((p) => p.rows.filter((r) => isProposed(r.accountId)).map((row) => ({ p, row })));
+        const refused: ActivityImport[] = [];
+        if (fresh.length) {
+          const answers = await api.activities.checkImport(fresh.map((f) => inCreated(f.row)));
+          const out = new Set<Part>();
+          const rejected = new Map<ActivityImport, ActivityImport>();
+          fresh.forEach(({ p, row }, i) => {
+            const answer = answers[i];
+            if (answer && answer.isValid !== false && !Object.keys(answer.errors ?? {}).length) return;
+            out.add(p);
+            rejected.set(row, {
+              ...inCreated(row), isValid: false,
+              errors: Object.keys(answer?.errors ?? {}).length ? answer!.errors : {
+                general: [answer ? "Wealthfolio can't import this row." : "Wealthfolio didn't check this row."],
+              },
+            });
+          });
+          refused.push(...[...out].flatMap((p) => p.rows.map((row) => rejected.get(row) ?? {
+            ...inCreated(row), isValid: false,
+            errors: { general: ["Another row of this transaction was rejected, so none of it was imported."] },
+          })));
+          ready = ready.filter((p) => !out.has(p));
+        }
+        if (!before && !ready.length && !refused.length) return { missing, imported: null };
+        const sent = ready.flatMap((p) => p.rows.map(inCreated));
+        let result: ImportActivitiesResult = sent.length
+          ? await api.activities.import(sent)
+          : { activities: [], importRunId: "", summary: { total: 0, imported: 0, skipped: 0, duplicates: 0, assetsCreated: 0, success: true } };
+        if (refused.length) {
+          // Reported as rows Wealthfolio rejected.
+          const summary = result.summary;
+          result = {
+            ...result,
+            activities: [...result.activities, ...refused],
+            summary: { ...summary, total: (summary.total ?? 0) + refused.length, skipped: (summary.skipped ?? 0) + refused.length },
+          };
+        }
+        const allSent = [...(before?.sent ?? []), ...sent];
+        const retry = held.length ? () => again(held) : undefined;
+        let shown: Imported = { result: before ? mergeResults(before.result, result) : result, sent: allSent, closing: before?.closing ?? [], links: before?.links ?? [], notCreated: missing, held, retry };
+        setImported(shown);
+        // Each bank entry used, once its transaction's trade is in.
+        const links = [...shown.links];
+        for (const p of ready.filter((p) => p.entry)) {
+          const line = p.t.transaction.activity.lineNumber;
+          const trade = result.activities.find((a) => a.lineNumber === line);
+          const wasForced = sent.some((r) => r.lineNumber === line && r.forceImport);
+          const ok =
+            result.summary.success && trade && !Object.keys(trade.errors ?? {}).length && (wasForced || !(trade.duplicateOfId || trade.duplicateOfLineNumber));
+          links.push({
+            transaction: p.t,
+            bankRow: p.entry!.row,
+            ...(ok
+              ? await reuseBankEntry(api, transactionInCreated(p.t), p.entry!.row, p.entry!.facts)
+              : { error: "The trade wasn't imported, so the bank's entry was left as it is.", changes: [], warnings: [] }),
+          });
+        }
+        shown = { ...shown, links };
+        setImported(shown);
+        api.query.invalidateQueries([QueryKeys.ACTIVITY_DATA]);
+        api.query.invalidateQueries([QueryKeys.ACTIVITIES]);
+        try {
+          // Each fund's units, in the accounts that exist now; a fund whose account wasn't created isn't checked.
+          const inAccount = (f: CasFolio, s: CasScheme) => {
+            const t = reviewed.target(f, s);
+            if (!t || (isProposed(t.accountId) && !created.current.has(t.accountId))) return undefined;
+            return { ...t, accountId: created.current.get(t.accountId)?.id ?? t.accountId };
+          };
+          const touched = new Set(reviewed.groups.filter((g) => g.sent > 0 && !blocked.has(g.accountId)).flatMap((g) => g.schemes.map((s) => s.scheme)));
+          const accountIds = [...new Set(data.folios.flatMap((f) => f.schemes.flatMap((s) => {
+            const t = touched.has(s) ? inAccount(f, s) : undefined;
+            return t ? [t.accountId, ...(t.bankAccountId ? [t.bankAccountId] : [])] : [];
+          })))];
+          const after = (await Promise.all(accountIds.map((accountId) => api.activities.getAll(accountId)))).flat();
+          const target = (f: CasFolio, s: CasScheme) => (touched.has(s) ? inAccount(f, s) : undefined);
+          const funds = await reviewed.fundsIn(after, (assetId) => api.assets.getProfile(assetId), target);
+          shown = { ...shown, closing: closingUnits(data, target, after, funds, await engineTimeZone(api.settings)) };
+          setImported(shown);
+        } catch {
+          setError("The import finished, but the closing units couldn't be checked. Check the holdings in Wealthfolio.");
+        }
+        return { missing, imported: shown };
+      };
+
+      // Try again: the accounts still to create, then what waited for them.
+      const again = async (held: Part[]) => {
+        setBusy("import");
+        setError("");
+        const made: Account[] = [];
+        const remembered: [string, string][] = [];
+        try {
+          // The bank entries chosen are read again, as before the first import.
+          const linking = held.filter((p) => p.entry).map((p): [PlannedTransaction, ActivityDetails] => [p.t, p.entry!.row]);
+          if (linking.length) {
+            const latest = await recheckEntries(api, linking, new Map(held.flatMap((p) => (p.entry ? [[p.entry.row.id, p.entry.facts] as const] : []))), accountName);
+            if (latest.stale.length) {
+              setError("A bank entry you chose changed since the import, so nothing more was imported. Read the statement again to review it.");
+              return;
+            }
+          }
+          await importParts(held, latestImported.current, made, remembered);
+          setRetries((n) => n + 1);
+        } catch (e) {
+          setError(`The import failed: ${String(e)}`);
+        } finally {
+          settleCreated(made, remembered);
+          setBusy("");
+        }
+      };
+
+      const { missing, imported: done } = await importParts(parts, null, made, nowRemembered);
+      if (!done && missing.length) {
+        // Nothing was imported: the review stays as it was, saying which accounts weren't created.
+        setNotCreated(missing);
+        announce(`Nothing was imported: Wealthfolio didn't create ${missing.length === 1 ? `the account ${missing[0].name}` : `${missing.length} accounts`}.`);
+        focusSoon(ids.notCreated, false, pressed);
       }
     } catch (e) {
       setError(`The import failed: ${String(e)}`);
     } finally {
+      settleCreated(made, nowRemembered);
       setBusy("");
     }
+  };
+
+  /**
+   * Accounts an import created join the page's, and the choices that pointed at them are remembered
+   * and now name them, so a review that stays goes on with them as existing accounts.
+   */
+  const settleCreated = (made: Account[], remembered: [string, string][]) => {
+    if (made.length) onCreated(made);
+    if (!remembered.length) return;
+    onRemember({ accounts: remembered, funds: [] });
+    setPicks((all) => ({ ...all, ...Object.fromEntries(remembered) }));
   };
 
   const registrar = REGISTRARS[statement.file_type] ?? statement.file_type;
@@ -1130,7 +1438,20 @@ export function DetailedImport({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        <ImportResult result={imported.result} sent={imported.sent} closing={imported.closing} links={imported.links} accounts={allAccounts} />
+        <ImportResult
+          key={retries}
+          result={imported.result}
+          sent={imported.sent}
+          closing={imported.closing}
+          links={imported.links}
+          accounts={[...allAccounts, ...created.current.values()]}
+          notCreated={imported.notCreated}
+          waiting={(account) => {
+            const n = (imported.held ?? []).filter((p) => p.rows.some((r) => r.accountId === account.accountId)).length;
+            return `${plural(n, "transaction")} for it ${n === 1 ? "wasn't" : "weren't"} imported.`;
+          }}
+          retry={imported.retry}
+        />
       </div>
     );
   }
@@ -1229,6 +1550,11 @@ export function DetailedImport({
     return `${plural(questionCount, "question")} left before importing.`;
   })();
   const toImport = counts?.toImport ?? 0;
+  // The new accounts the import creates first.
+  const creating = perAccount.filter((a) => isProposed(a.accountId)).length;
+  const importLabel = creating
+    ? `Create ${creating === 1 ? "account" : `${creating} accounts`} and import ${plural(toImport, "transaction")}`
+    : `Import ${plural(toImport, "transaction")}`;
   const range = `${month(from)} to ${month(to)}`;
 
   return (
@@ -1270,6 +1596,8 @@ export function DetailedImport({
       <SaveToDetailed
         boxes={boxes}
         targets={targets}
+        proposed={(key) => created.current.has(proposedId(key)) ? undefined : proposed(key)}
+        newLine={newLine}
         values={values}
         ignored={Object.fromEntries(Object.entries(ignored).filter(([key]) => !(key in picks)))}
         conflicts={conflicts}
@@ -1478,6 +1806,14 @@ export function DetailedImport({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
+      {missingNow.length > 0 && (
+        <div id={ids.notCreated} tabIndex={-1} className="grid gap-2">
+          <NotCreatedAlert accounts={missingNow} what={() => "Nothing was imported."} />
+          <WrapButton type="button" variant="outline" className="justify-self-start" onClick={() => void runImport()} disabled={!!editor || !!renaming || !current || !toImport}>
+            Try again
+          </WrapButton>
+        </div>
+      )}
       {stale && stale.length > 0 && (
         <Alert variant="warning">
           <AlertTitle>Nothing was imported: bank entries you chose changed</AlertTitle>
@@ -1500,10 +1836,10 @@ export function DetailedImport({
         summaryId={ids.summary}
         lines={(() => {
           if (busy === "import") return [<p key="i">Importing…</p>];
+          if (renaming) return [<p key="r" className="text-warning">Save or cancel the new account name first.</p>];
           if (prepareError && !nothing) return [<p key="x" className="text-destructive">{prepareError}</p>];
           if (editor) return [<p key="e" className="text-warning">Save or cancel {editWhat} first.</p>];
           if (lookingUp.length) return [<p key="l">Looking up {plural(lookingUp.length, "fund")}…</p>];
-          if (targets.length === 0) return [<p key="t">No account can take these transactions yet.</p>];
           if (questionCount) return [<p key="q">{leftWords}</p>];
           if (nothing) return [<p key="n">Nothing from this statement will be imported.</p>];
           if (!current || !counts) return [<p key="w" className="text-muted-foreground">Working out what will be imported…</p>];
@@ -1523,7 +1859,17 @@ export function DetailedImport({
           return [
             ...perAccount.map((a) => (
               <p key={a.accountId}>
-                Import {plural(a.transactions, "transaction")} for {plural(a.funds, "fund")} into <span className="font-semibold">{accountName(a.accountId)}</span>.
+                {isProposed(a.accountId) ? (
+                  <>
+                    Create the Wealthfolio account <span className="font-semibold">{accountName(a.accountId)}</span> and import{" "}
+                    {plural(a.transactions, "transaction")} for {plural(a.funds, "fund")} into it.
+                  </>
+                ) : (
+                  <>
+                    Import {plural(a.transactions, "transaction")} for {plural(a.funds, "fund")} into{" "}
+                    <span className="font-semibold">{accountName(a.accountId)}</span>.
+                  </>
+                )}
               </p>
             )),
             ...(differ.length
@@ -1543,38 +1889,40 @@ export function DetailedImport({
           ];
         })()}
         action={
-          questionCount || lookingUp.length || targets.length === 0
-            ? { label: toImport ? `Import ${plural(toImport, "transaction")}` : "Import", disabled: true }
+          questionCount || lookingUp.length
+            ? { label: toImport ? importLabel : "Import", disabled: true }
             : nothing || (current && counts && !toImport)
               ? {
                   label: "Finish",
-                  disabled: !!editor,
+                  disabled: !!editor || !!renaming,
                   onClick: () => {
                     remember();
                     onAnother(`Finished: nothing from ${fileName} was imported.`);
                   },
                 }
               : {
-                  label: busy === "import" ? "Importing…" : `Import ${plural(toImport, "transaction")}`,
-                  disabled: !current || !!editor || busy !== "" || !!prepareError || !toImport,
+                  label: busy === "import" ? "Importing…" : importLabel,
+                  disabled: !current || !!editor || !!renaming || busy !== "" || !!prepareError || !toImport,
                   busy: busy === "import",
                   onClick: () => void runImport(),
                 }
         }
         go={
-          (prepareError || (retrying && !editor)) && !nothing
+          (prepareError || (retrying && !editor)) && !renaming && !nothing
             ? {
                 label: "Try again",
                 busy: retrying,
                 onClick: () => {
                   // With an edit open, the button becomes its Go to it and keeps the focus.
-                  retryFrom.current = editor ? null : document.activeElement;
+                  retryFrom.current = editor || renaming ? null : document.activeElement;
                   setRetrying(true);
                   cache.current = { reads: new Map() };
                   setGeneration((n) => n + 1);
                 },
               }
-            : editor
+            : renaming
+              ? { label: "Go to it", onClick: () => goToRename(renaming.key) }
+              : editor
               ? { label: "Go to it", onClick: () => focusSoon(ids.changePanel(editor.rowId), true) }
               : questionCount && !lookingUp.length
                 ? { label: questionCount === 1 ? "Go to the question" : "Go to the next question", onClick: () => nextQuestion() }

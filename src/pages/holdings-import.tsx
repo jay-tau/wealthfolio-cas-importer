@@ -33,10 +33,10 @@ import {
 } from "../cas/holdings";
 import { engineTimeZone, fundRef } from "../cas/plan";
 import type { Statement } from "../cas/types";
-import type { Ignored } from "../components/account-choices";
+import { type Ignored, NewAccountLine, type Proposed, type Renaming } from "../components/account-choices";
 import type { AmfiCheck } from "../components/amfi-banner";
 import type { FundChoice, FundItem } from "../components/fund-choices";
-import { HoldingsResult, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
+import { HoldingsResult, type NotCreated, NotCreatedAlert, type SavedSnapshots, type Unfinished } from "../components/holdings-preview";
 import { useReviewFocus } from "../components/review/focus";
 import { Footer } from "../components/review/footer";
 import { ReviewHeader } from "../components/review/header";
@@ -64,6 +64,7 @@ import {
 import { readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
+import { holdingsBase, isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames, sourceBase } from "../lib/new-accounts";
 import { plural } from "../lib/plural";
 import { grouped, longDate, parseCost, rupees, units } from "../lib/review-format";
 
@@ -376,6 +377,7 @@ export function HoldingsImport({
   busy,
   setBusy,
   onRemember,
+  onCreated,
   onAnother,
 }: {
   ctx: AddonContext;
@@ -398,6 +400,8 @@ export function HoldingsImport({
   setBusy: (busy: "" | "preview" | "import" | "check") => void;
   /** Remembers the review's account and fund choices. */
   onRemember: (remembered: Remembered) => void;
+  /** Adds the accounts the save created to the page's accounts. */
+  onCreated: (accounts: Account[]) => void;
   /** Leaves the review for the file form; `notice` says what happened. */
   onAnother: (notice?: string) => void;
 }) {
@@ -429,6 +433,23 @@ export function HoldingsImport({
   // Printed zeros never go in a snapshot; misread lines hold back their asset, so they need one.
   const snapshotKeys = new Set(holdings.sources.flatMap((s) => [...s.holdings, ...(s.misread ?? [])].map(holdingKey)));
 
+  // A new account each select offers, created when the holdings are saved: the investor's, named after
+  // the depository or "Mutual funds", and each folio's, demat account's and PRAN's, named after it.
+  const [renamed, setRenamed] = useState<Record<string, string>>({});
+  const [renaming, setRenaming] = useState<Renaming | null>(null);
+  // The accounts this review created, by proposed ID: saving again goes into them, never creating another.
+  const created = useRef(new Map<string, Account>());
+  // Names a save tried and couldn't create, kept while the created accounts take theirs.
+  const tried = useRef<Record<string, string>>({});
+  const proposalNames = proposedNames(
+    [{ key: investor, base: holdingsBase(statement.file_type) }, ...holdings.sources.map((s) => ({ key: sourceKey(s), base: sourceBase(s) }))],
+    allAccounts.map((a) => a.name),
+    { ...tried.current, ...renamed },
+  );
+  const proposed = (key: string): Proposed => ({ id: proposedId(key), name: proposalNames.get(key) ?? "" });
+  // Accounts this review creates don't change what it preselected.
+  const proposeNew = useRef(targets.length === 0).current;
+
   // The review's own choices, over the remembered ones.
   const [picks, setPicks] = useState<Record<string, string>>({});
   const [answers, setAnswers] = useState<Record<string, FundChoice | undefined>>({});
@@ -449,7 +470,11 @@ export function HoldingsImport({
   const [openedSettings, setOpenedSettings] = useState(false);
   const [prepared, setPrepared] = useState<Prepared | null>(null);
   const [prepareError, setPrepareError] = useState("");
-  const [result, setResult] = useState<{ saved: SavedSnapshots; tracked?: TrackedSummary; conflicts: { accountId: string; name: string; warning: string }[] } | null>(null);
+  const [result, setResult] = useState<SaveResult | null>(null);
+  // Accounts the last save couldn't create; it saved nothing else, so the review stays.
+  const [notCreated, setNotCreated] = useState<NotCreated[]>([]);
+  // Bumped by each save, so its result takes the focus again.
+  const [saves, setSaves] = useState(0);
   const [saving, setSaving] = useState<Record<string, "saving" | "saved" | "failed">>({});
   const [error, setError] = useState("");
   // Bumped when the page is opened again or Try again is pressed: Wealthfolio may have changed meanwhile.
@@ -460,8 +485,9 @@ export function HoldingsImport({
   const { said, announce, focusSoon } = useReviewFocus();
 
   // Each choice as the select shows it: an account ID, `LEFT_OUT`, "" for Same as above, null for none yet.
+  // With no account that tracks holdings when the review starts, the investor's new one is chosen.
   const valueOf = (key: string): string | null =>
-    key in picks ? picks[key] : key in ignored ? null : (usable[key] ?? (key === investor ? null : ""));
+    key in picks ? picks[key] : key in ignored ? null : (usable[key] ?? (key === investor ? (proposeNew ? proposedId(investor) : null) : ""));
   /** Where a folio, demat account or PRAN goes: an account, `LEFT_OUT`, or undefined until chosen. */
   const destination = (source: Source) => {
     const own = valueOf(sourceKey(source));
@@ -531,7 +557,7 @@ export function HoldingsImport({
   const lookingUp = questionKeys.filter((key) => !searched.current.has(key));
   const openKeys = questionKeys.filter((key) => searched.current.has(key));
   const undecidedSources = holdings.sources.filter((s) => destination(s) === undefined);
-  const accountQuestion = targets.length > 0 && undecidedSources.length > 0;
+  const accountQuestion = undecidedSources.length > 0;
 
   // The automatic plan: worked out again whenever the accounts or confirmed assets change, from reads
   // of Wealthfolio cached until the page is opened again.
@@ -595,7 +621,9 @@ export function HoldingsImport({
     };
     const [existingList, holdersRead] = await Promise.all([
       Promise.all(ids.map(async (accountId) => {
-        const read = await once(`existing:${accountId}`, () => readExisting(api, profileOf, accountId, holdings.date));
+        // An account still to create has no snapshot, nor any import's record.
+        const read = await once(`existing:${accountId}`, async () =>
+          isProposed(accountId) ? { date: null, positions: [], cash: {}, later: [] } : readExisting(api, profileOf, accountId, holdings.date));
         // Each plan sets fields on these, so it gets its own copy.
         return [accountId, structuredClone(read)] as const;
       })),
@@ -708,7 +736,7 @@ export function HoldingsImport({
       remembered: (source, accountId) => remembered.get(`${source.id}|${accountId}`)?.remembered ?? new Map(),
       recorded: (source, accountId) => remembered.get(`${source.id}|${accountId}`) ?? {},
       heldElsewhere: (ref, accountId) => (held.get(ref) ?? []).filter((o) => o.id !== accountId),
-      accountName: (accountId) => allAccounts.find((a) => a.id === accountId)?.name ?? accountId,
+      accountName,
       unlisted: (accountId) => unlisted.get(accountId) ?? [],
     });
     // The funds an account that tracks transactions already holds are compared with it, as Check units did.
@@ -776,7 +804,12 @@ export function HoldingsImport({
         return asset && fundRef(asset.symbol, asset.exchangeMic) === ref;
       }))));
   };
-  const accountName = (accountId: string) => allAccounts.find((a) => a.id === accountId)?.name ?? accountId;
+  function accountName(accountId: string) {
+    const account = created.current.get(accountId);
+    if (account) return account.name;
+    if (isProposed(accountId)) return proposalNames.get(proposalKey(accountId)) ?? "";
+    return allAccounts.find((a) => a.id === accountId)?.name ?? [...created.current.values()].find((a) => a.id === accountId)?.name ?? accountId;
+  }
   /** The account's name in accessible names, numbered when another account has the same one. */
   const accountLabel = (accountId: string) => {
     const i = accounts.findIndex((a) => a.id === accountId);
@@ -949,7 +982,7 @@ export function HoldingsImport({
     ? current.plans.reduce((n, plan) => n + blockers(plan, choicesFor(plan.accountId, plan), confirmed.has(plan.accountId)), 0)
     : 0;
   const questionCount = openKeys.length + (accountQuestion ? 1 : 0) + blocking;
-  const nothing = targets.length > 0 && !accountQuestion && holdings.sources.every((s) => destination(s) === LEFT_OUT);
+  const nothing = !accountQuestion && holdings.sources.every((s) => destination(s) === LEFT_OUT);
 
   // Ids the focus moves to.
   const ids = {
@@ -966,7 +999,10 @@ export function HoldingsImport({
     changePanel: (rowId: string) => id(`change-panel-${rowId}`),
     row: (row: ReadyRow, item = row.item) => ({ change: id(`change-${row.id}${item.key === row.item.key ? "" : `-${item.key}`}`), cost: id(`cost-${row.id}`), field: id(`cost-field-${row.id}`) }),
     showAll: id("show-all"),
+    notCreated: id("not-created"),
   };
+  // The accounts the last save couldn't create, while something still goes to them.
+  const missingNow = notCreated.filter((n) => holdings.sources.some((s) => accountOf(s) === n.accountId));
 
   // Says what the first searches found, once they're all done.
   const initial = useRef<readonly string[] | null>(questionKeys);
@@ -1180,6 +1216,8 @@ export function HoldingsImport({
       return;
     }
     setPicks((all) => ({ ...all, [key]: value }));
+    // A rename goes with its new account.
+    if (renaming?.key === key && value !== proposedId(key)) setRenaming(null);
     const used = new Set(holdings.sources.map(after).filter((to) => to && to !== LEFT_OUT));
     // Answers and typed searches of holdings no longer saved go, and so do the costs and choices of
     // accounts nothing goes to any more. Saving a fund in both accounts stays for when it's saved again.
@@ -1211,17 +1249,62 @@ export function HoldingsImport({
     }
   };
 
+  // Rename edits a new account's name in place; its field and Rename button take the focus in turn.
+  const renameIds = (key: string) => ({ rename: id(`rename-${key}`), field: id(`rename-field-${key}`) });
+  const goToRename = (key: string) => {
+    if (key !== investor) setOpen("part", true);
+    focusSoon(renameIds(key).field, true);
+  };
+  const newLine = (key: string, label: string) => (
+    <NewAccountLine
+      proposed={proposed(key)}
+      label={label}
+      ids={renameIds(key)}
+      editing={renaming?.key === key ? renaming : undefined}
+      onRename={() => {
+        if (renaming) {
+          announce("Save or cancel the new account name first.");
+          return goToRename(renaming.key);
+        }
+        setRenaming({ key, draft: proposed(key).name });
+        focusSoon(renameIds(key).field, true);
+      }}
+      onDraft={(draft) => setRenaming((r) => r && { ...r, draft })}
+      onSave={() => {
+        if (!renaming) return;
+        const problem = nameProblem(renaming.draft);
+        if (problem) {
+          setRenaming({ ...renaming, error: problem });
+          announce(problem);
+          focusSoon(renameIds(key).field, true);
+          return;
+        }
+        const name = renaming.draft.trim();
+        setRenamed((all) => ({ ...all, [key]: name }));
+        setRenaming(null);
+        announce(`The new account will be called ${name}.`);
+        focusSoon(renameIds(key).rename, true);
+      }}
+      onCancel={() => {
+        setRenaming(null);
+        focusSoon(renameIds(key).rename, true);
+      }}
+    />
+  );
+
   const searchChanges = items.filter((item) => {
     const s = searches.get(item.key);
     return !!s.text.trim() || !!s.typed || !!s.picked;
   }).length;
   const sizes = (map: ReadonlyMap<string, ReadonlySet<string> | ReadonlyMap<string, unknown>>) => [...map.values()].reduce((n, v) => n + v.size, 0);
   const changes = Object.entries(picks).filter(([key, value]) => value !== (accountChoices[key] ?? (key === investor ? null : ""))).length +
-    Object.keys(answers).length + sizes(costs) + sizes(flips) + sizes(keeps) + confirmed.size + alsoSave.size + searchChanges + (editor ? 1 : 0);
+    Object.keys(answers).length + sizes(costs) + sizes(flips) + sizes(keeps) + confirmed.size + alsoSave.size + searchChanges + (editor ? 1 : 0) +
+    Object.keys(renamed).length + (renaming ? 1 : 0);
 
   const remember = () => {
     // A choice in place of an ignored one is remembered even when it's the same as having none.
-    const accountsChanged = Object.entries(picks).filter(([key, value]) => value !== (accountChoices[key] ?? "") || key in ignored);
+    // A new account is remembered once it's created.
+    const accountsChanged = Object.entries(picks).filter(([key, value]) => !isProposed(value) && (value !== (accountChoices[key] ?? "") || key in ignored));
     const funds = [
       ...Object.entries(matched).filter(([key]) => !(key in answers)).map(([key, fund]) => [key, { fund }] as [string, FundChoice]),
       ...Object.entries(answers).flatMap(([key, choice]) => (choice ? [[key, choice] as [string, FundChoice]] : [])),
@@ -1242,45 +1325,100 @@ export function HoldingsImport({
     };
   };
 
-  const runSave = async () => {
-    if (!current) return;
-    remember();
+  /**
+   * Saves each plan's snapshot, first creating its account if it's a new one. A plan whose account
+   * isn't created saves nothing, and the others go on. `again` saves what an earlier save left: plans
+   * whose account wasn't created, or whose snapshot failed in an account this review created, which
+   * it saves into without creating another.
+   */
+  const runSave = async (again?: Pending) => {
+    const run = again ?? (current && {
+      plans: current.plans,
+      // The statement's price for each manual-priced asset any account's snapshot lists.
+      listed: new Map(current.plans.flatMap((plan) =>
+        pricesToSave(plan, choicesFor(plan.accountId, plan)).filter((p) => p.from === "statement").map((p) => [p.ref, p.price] as const))),
+      quotes: current.quotes,
+      warnings: rows.flatMap((row) => planWarnings(row).map((warning) => ({ accountId: row.accountId, name: row.name, warning }))),
+      tracked: trackedSummary(),
+    });
+    if (!run) return;
+    if (!again) remember();
+    // Firefox keeps the focus on the pressed button while it's disabled; the others drop it.
+    const pressed = document.activeElement;
     setBusy("import");
     setError("");
-    const saved: SavedSnapshots = { saved: [], failed: [], unremembered: false, unfinished: [] };
-    const summary = trackedSummary();
+    setNotCreated([]);
+    // A retry keeps what was saved, and replaces what it tries again.
+    const before = again && result ? result.saved : undefined;
+    const retried = new Set(run.plans.map((plan) => created.current.get(plan.accountId)?.id ?? plan.accountId));
+    const saved: SavedSnapshots = {
+      saved: [...(before?.saved ?? [])],
+      failed: (before?.failed ?? []).filter((f) => !retried.has(f.accountId)),
+      unremembered: before?.unremembered ?? false,
+      unfinished: (before?.unfinished ?? []).filter((f) => !retried.has(f.accountId)),
+    };
+    const savedPlans = new Set(again && result ? result.savedPlans : []);
+    const missing: NotCreated[] = [];
+    const left: AccountPlan[] = [];
+    const made: Account[] = [];
+    const nowRemembered: [string, string][] = [];
+    let stopped = false;
     try {
-      // The statement's price for each manual-priced asset any account's snapshot lists.
-      const listed = new Map(current.plans.flatMap((plan) =>
-        pricesToSave(plan, choicesFor(plan.accountId, plan)).filter((p) => p.from === "statement").map((p) => [p.ref, p.price] as const)));
-      for (const plan of current.plans) {
+      for (const plan of run.plans) {
         setSaving((all) => ({ ...all, [plan.accountId]: "saving" }));
         const chosen = choicesFor(plan.accountId, plan);
+        let accountId = plan.accountId;
+        if (isProposed(accountId)) {
+          let account = created.current.get(accountId);
+          if (!account) {
+            const name = accountName(accountId);
+            try {
+              account = await api.accounts.create(newAccount(name, "HOLDINGS"));
+            } catch (e) {
+              // Its name stays as shown while other new accounts take theirs.
+              tried.current[proposalKey(accountId)] = name;
+              missing.push({ accountId, name, error: String(e) });
+              left.push(plan);
+              setSaving((all) => ({ ...all, [plan.accountId]: "failed" }));
+              continue;
+            }
+            created.current.set(accountId, account);
+            made.push(account);
+            // The choices that pointed at it are remembered now that it exists.
+            for (const key of [investor, ...holdings.sources.map(sourceKey)]) {
+              if (valueOf(key) === accountId) nowRemembered.push([key, account.id]);
+            }
+          }
+          accountId = account.id;
+        }
+        const into: AccountPlan = accountId === plan.accountId ? plan : { ...plan, accountId };
         const { holdings: positions, cash } = snapshotOf(plan, chosen);
         try {
-          await api.snapshots.save(plan.accountId, positions, cash, plan.date);
-          saved.saved.push({ accountId: plan.accountId, date: plan.date, holdings: positions.length });
+          await api.snapshots.save(accountId, positions, cash, plan.date);
+          saved.saved.push({ accountId, date: plan.date, holdings: positions.length });
+          savedPlans.add(plan.accountId);
         } catch (e) {
-          saved.failed.push({ accountId: plan.accountId, error: String(e) });
+          saved.failed.push({ accountId, error: String(e) });
+          if (isProposed(plan.accountId)) left.push(plan);
           setSaving((all) => ({ ...all, [plan.accountId]: "failed" }));
           // A failed host save can already have written average-cost quotes.
-          saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, current.quotes, () => savedAssets(api, plan.accountId, plan.date), false)));
+          saved.unfinished.push(...(await afterSave(api, into, chosen, run.listed, run.quotes, () => savedAssets(api, accountId, plan.date), false)));
           continue;
         }
         let assetIds: Promise<Map<string, string>> | undefined;
-        const savedIds = () => (assetIds ??= savedAssets(api, plan.accountId, plan.date));
-        saved.unfinished.push(...(await afterSave(api, plan, chosen, listed, current.quotes, savedIds)));
+        const savedIds = () => (assetIds ??= savedAssets(api, accountId, plan.date));
+        saved.unfinished.push(...(await afterSave(api, into, chosen, run.listed, run.quotes, savedIds)));
         try {
           // The IDs of the assets the save created or found, so that a later import can follow them
           // after their symbol or exchange changes. A record without one goes by remembered choices.
           const unknown = unidentified(plan, chosen);
           const found = unknown.length ? await savedIds() : new Map<string, string>();
           if (unknown.some((ref) => !found.has(ref))) saved.unremembered = true;
-          await saveImports(api.storage, plan.accountId, plan.date, importedRefs(plan, chosen, found));
+          await saveImports(api.storage, accountId, plan.date, importedRefs(plan, chosen, found));
           await saveUnlisted(api.storage, plan.date, unlistedRefs(plan, chosen));
           // Each folio, demat account and PRAN with a record in the account, so a later statement
           // that doesn't list it finds what it added.
-          await indexSources(api.storage, plan.accountId, holdings.investor, [
+          await indexSources(api.storage, accountId, holdings.investor, [
             ...plan.sources,
             ...[...plan.unread, ...plan.reassigned].filter((u) => u.remembered.size > 0 || u.aside?.size).map((u) => u.source),
           ]);
@@ -1290,11 +1428,31 @@ export function HoldingsImport({
         setSaving((all) => ({ ...all, [plan.accountId]: "saved" }));
       }
     } catch (e) {
+      stopped = true;
       setError(`The import stopped: ${String(e)}`);
     } finally {
-      const conflicts = rows.flatMap((row) => saved.saved.some((s) => s.accountId === row.accountId)
-        ? planWarnings(row).map((warning) => ({ accountId: row.accountId, name: row.name, warning })) : []);
-      setResult({ saved, tracked: summary, conflicts });
+      // The accounts it created join the page's, and the choices that pointed at them now name them.
+      if (made.length) onCreated(made);
+      if (nowRemembered.length) {
+        onRemember({ accounts: nowRemembered, funds: [] });
+        setPicks((all) => ({ ...all, ...Object.fromEntries(nowRemembered) }));
+      }
+      if (!result && !stopped && !saved.saved.length && !saved.failed.length && missing.length) {
+        // Nothing was saved: the review stays as it was, saying which accounts weren't created.
+        setNotCreated(missing);
+        announce(`Nothing was saved: Wealthfolio didn't create ${missing.length === 1 ? `the account ${missing[0].name}` : `${missing.length} accounts`}.`);
+        focusSoon(ids.notCreated, false, pressed);
+      } else {
+        setResult({
+          saved,
+          savedPlans,
+          tracked: run.tracked,
+          conflicts: run.warnings.filter((w) => savedPlans.has(w.accountId)),
+          notCreated: missing,
+          pending: left.length ? { ...run, plans: left } : undefined,
+        });
+        setSaves((n) => n + 1);
+      }
       for (const key of [QueryKeys.HOLDINGS, QueryKeys.SNAPSHOTS, QueryKeys.ACCOUNTS, QueryKeys.PORTFOLIO_SUMMARY, QueryKeys.HISTORY_VALUATION]) {
         api.query.invalidateQueries([key]);
       }
@@ -1371,7 +1529,13 @@ export function HoldingsImport({
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        <HoldingsResult result={result.saved} accounts={accounts} />
+        <HoldingsResult
+          key={saves}
+          result={result.saved}
+          accounts={[...allAccounts, ...created.current.values()]}
+          notCreated={result.notCreated}
+          retry={result.pending && (() => void runSave(result.pending))}
+        />
         {result.conflicts.map((c, i) => <p key={i} className="text-warning text-sm">{accountName(c.accountId)}, {c.name}: {c.warning}</p>)}
         {result.tracked && (
           <p className="text-sm">
@@ -1448,6 +1612,8 @@ export function HoldingsImport({
         investorKey={investor}
         sources={holdings.sources}
         targets={targets}
+        proposed={(key) => created.current.has(proposedId(key)) ? undefined : proposed(key)}
+        newLine={newLine}
         values={Object.fromEntries([investor, ...holdings.sources.map(sourceKey)].map((key) => [key, valueOf(key)]))}
         ignored={Object.fromEntries(Object.entries(ignored).filter(([key]) => !(key in picks)))}
         remembered={!!usable[investor] && !(investor in picks)}
@@ -1673,6 +1839,14 @@ export function HoldingsImport({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
+      {missingNow.length > 0 && (
+        <div id={ids.notCreated} tabIndex={-1} className="grid gap-2">
+          <NotCreatedAlert accounts={missingNow} what={() => "Nothing was saved."} />
+          <WrapButton type="button" variant="outline" className="justify-self-start" onClick={() => void runSave()} disabled={!!editor || !!renaming || !current}>
+            Try again
+          </WrapButton>
+        </div>
+      )}
       {current?.plans.filter((plan) => open[`snapshot:${plan.accountId}`]).map((plan) => (
         <section key={plan.accountId} id={id(`snapshot-${plan.accountId}`)} aria-label={`${accountName(plan.accountId)}'s holdings on ${date} after saving`}>
           <SnapshotTable plan={plan} choices={choicesFor(plan.accountId, plan)} account={accountName(plan.accountId)} />
@@ -1690,10 +1864,10 @@ export function HoldingsImport({
               </p>
             ));
           }
+          if (renaming) return [<p key="r" className="text-warning">Save or cancel the new account name first.</p>];
           if (prepareError && !nothing) return [<p key="x" className="text-destructive">{prepareError}</p>];
           if (editor) return [<p key="e" className="text-warning">Save or cancel {editWhat} first.</p>];
           if (lookingUp.length) return [<p key="l">Looking up {plural(lookingUp.length, "holding")}…</p>];
-          if (targets.length === 0) return [<p key="t">No account can hold these yet.</p>];
           if (questionCount) {
             // Only Before saving's questions left: the snapshots they decide can be seen already.
             return [
@@ -1714,7 +1888,11 @@ export function HoldingsImport({
             return (
               <div key={plan.accountId} className="grid gap-1">
                 <p>
-                  {plan.existing.date ? (
+                  {isProposed(plan.accountId) ? (
+                    <>
+                      Create the Wealthfolio account {name} and save {plural(n, "holding")} on {date}.
+                    </>
+                  ) : plan.existing.date ? (
                     <>
                       Update {name} to {date} with {plural(n, "holding")} from this statement. Its other holdings and cash stay.
                     </>
@@ -1742,25 +1920,27 @@ export function HoldingsImport({
           return lines;
         })()}
         action={
-          questionCount || lookingUp.length || targets.length === 0
+          questionCount || lookingUp.length
             ? { label: current?.plans.every((p) => p.existing.date) && current.plans.length ? "Update holdings" : "Save holdings", disabled: true }
             : nothing
-              ? { label: "Finish", disabled: !!editor, onClick: () => { remember(); onAnother(`Finished: nothing from ${fileName} was saved.`); } }
+              ? { label: "Finish", disabled: !!editor || !!renaming, onClick: () => { remember(); onAnother(`Finished: nothing from ${fileName} was saved.`); } }
               : {
                   label: busy === "import" ? "Saving…" : current?.plans.every((p) => p.existing.date) && current.plans.length ? "Update holdings" : "Save holdings",
-                  disabled: !current || !!editor || busy !== "" || !!prepareError || current.plans.length === 0,
+                  disabled: !current || !!editor || !!renaming || busy !== "" || !!prepareError || current.plans.length === 0,
                   busy: busy === "import",
                   onClick: () => void runSave(),
                 }
         }
         go={
-          (prepareError || (retrying && !editor)) && !nothing
+          renaming
+            ? { label: "Go to it", onClick: () => goToRename(renaming.key) }
+            : (prepareError || (retrying && !editor)) && !nothing
             ? {
                 label: "Try again",
                 busy: retrying,
                 onClick: () => {
                   // With an edit open, the button becomes its Go to it and keeps the focus.
-                  retryFrom.current = editor ? null : document.activeElement;
+                  retryFrom.current = editor || renaming ? null : document.activeElement;
                   setRetrying(true);
                   cache.current = { reads: new Map(), profileOf: profiles(api) };
                   setGeneration((n) => n + 1);
@@ -1775,6 +1955,26 @@ export function HoldingsImport({
       />
     </div>
   );
+}
+
+/** What a save left to do, with what it was worked out from: Try again saves it. */
+interface Pending {
+  plans: AccountPlan[];
+  listed: ReadonlyMap<string, string>;
+  quotes: ReadonlyMap<string, Quote>;
+  /** Each plan's rows' warnings, shown once its snapshot is saved. */
+  warnings: { accountId: string; name: string; warning: string }[];
+  tracked?: TrackedSummary;
+}
+
+interface SaveResult {
+  saved: SavedSnapshots;
+  /** The plans saved, by their account ID in the review: a new account's proposed ID. */
+  savedPlans: ReadonlySet<string>;
+  tracked?: TrackedSummary;
+  conflicts: { accountId: string; name: string; warning: string }[];
+  notCreated: NotCreated[];
+  pending?: Pending;
 }
 
 interface TrackedSummary {

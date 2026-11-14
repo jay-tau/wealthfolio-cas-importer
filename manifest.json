@@ -35,8 +35,8 @@
   "permissions": [
     {
       "category": "accounts",
-      "functions": ["getAll"],
-      "purpose": "Choose the account each PAN's or folio's transactions go to and the bank account their cash comes from and goes to, or the account each folio's, demat account's or PRAN's holdings go to"
+      "functions": ["getAll", "create"],
+      "purpose": "Choose the account each PAN's or folio's transactions go to and the bank account their cash comes from and goes to, or the account each folio's, demat account's or PRAN's holdings go to. Create the account a statement's holdings or transactions go to, when you choose a proposed new account and save"
     },
     {
       "category": "portfolio",

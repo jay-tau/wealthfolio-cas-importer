@@ -1,23 +1,28 @@
 import type { Account } from "@wealthfolio/addon-sdk";
-import { Alert, AlertDescription, AlertTitle, Label } from "@wealthfolio/ui";
+import { Label } from "@wealthfolio/ui";
+import type { ReactNode } from "react";
 import type { Source } from "../../cas/holdings";
 import { LEFT_OUT, sourceKey } from "../../lib/choices";
+import { isProposed } from "../../lib/new-accounts";
 import { plural } from "../../lib/plural";
-import { AccountSelect, ChooseAgain, type Ignored } from "../account-choices";
+import { AccountSelect, ChooseAgain, type Ignored, newLabel, type Proposed } from "../account-choices";
 import { Disclosure } from "./parts";
 
 const NOT_HOLDINGS = "doesn't track holdings. A snapshot saved there wouldn't change its holdings";
 
 /**
  * Where the statement's holdings are saved: one account for all of them, and under Save part of it
- * to another account, one for each folio, demat account and NPS account, or none. Each select's id is
- * its choice's storage key.
+ * to another account, one for each folio, demat account and NPS account, or none. Each select offers
+ * a new account of its own, created when the holdings are saved. Each select's id is its choice's
+ * storage key.
  */
 export function SaveTo({
   investorName,
   investorKey,
   sources,
   targets,
+  proposed,
+  newLine,
   values,
   ignored,
   remembered,
@@ -31,7 +36,11 @@ export function SaveTo({
   sources: Source[];
   /** Accounts a snapshot can be saved in today: active, unarchived, tracking holdings. */
   targets: Account[];
-  /** Each key's choice as the select shows it: an account ID, `LEFT_OUT`, "" for Same as above, null for none yet. */
+  /** The new account each key's select offers, until it's created. */
+  proposed: (key: string) => Proposed | undefined;
+  /** What's under a select that shows its new account, by key, with what the account is for. */
+  newLine: (key: string, label: string) => ReactNode;
+  /** Each key's choice as the select shows it: an account ID, a proposed account's, `LEFT_OUT`, "" for Same as above, null for none yet. */
   values: Record<string, string | null>;
   /** Remembered choices that are ignored, by key. */
   ignored: Record<string, Ignored>;
@@ -42,35 +51,13 @@ export function SaveTo({
   onChange: (key: string, value: string) => void;
   partId: string;
 }) {
-  const statementAccount = targets.find((a) => a.id === values[investorKey])?.name;
+  const investorValue = values[investorKey];
+  const investorProposal = proposed(investorKey);
+  const statementAccount = isProposed(investorValue)
+    ? investorProposal && newLabel(investorProposal)
+    : targets.find((a) => a.id === investorValue)?.name;
   const why = (key: string) => <ChooseAgain ignored={ignored[key]} mode={NOT_HOLDINGS} />;
-  if (targets.length === 0) {
-    return (
-      <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
-        <h3 id={`${partId}-heading`} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
-          Save to
-        </h3>
-        <Alert variant="warning">
-          <AlertTitle>No account can hold these yet</AlertTitle>
-          <AlertDescription>
-            <p>
-              No account tracks holdings. To save these holdings, add one in Wealthfolio, set to track holdings, then read
-              the statement again.
-            </p>
-            {[[investorKey, `${investorName}'s holdings`], ...sources.map((s) => [sourceKey(s), s.title ?? s.label])].map(
-              ([key, label]) =>
-                key in ignored && (
-                  <div key={key}>
-                    <p>{label}</p>
-                    {why(key)}
-                  </div>
-                ),
-            )}
-          </AlertDescription>
-        </Alert>
-      </section>
-    );
-  }
+  const isNew = (key: string) => isProposed(values[key]) && values[key] === proposed(key)?.id;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       <h3 id={`${partId}-heading`} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
@@ -84,12 +71,14 @@ export function SaveTo({
           <AccountSelect
             id={investorKey}
             accounts={targets}
+            proposed={proposed(investorKey)}
             value={values[investorKey]}
             onChange={(id) => onChange(investorKey, id)}
             leaveOut={LEFT_OUT}
             leaveOutLabel="Don't save them"
           />
         </div>
+        {isNew(investorKey) && newLine(investorKey, `${investorName}'s holdings`)}
         {why(investorKey)}
       </div>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-2 text-sm">
@@ -109,6 +98,7 @@ export function SaveTo({
                     <AccountSelect
                       id={key}
                       accounts={targets}
+                      proposed={proposed(key)}
                       value={values[key]}
                       onChange={(id) => onChange(key, id)}
                       inherit={`Same as above${statementAccount ? ` (${statementAccount})` : ""}`}
@@ -116,6 +106,7 @@ export function SaveTo({
                       leaveOutLabel="Don't save"
                     />
                   </div>
+                  {isNew(key) && newLine(key, source.title ?? source.label)}
                   {why(key)}
                 </div>
               );

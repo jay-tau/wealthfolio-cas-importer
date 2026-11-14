@@ -1,8 +1,8 @@
 // Runs inside the sandboxed iframe that tests/browser/sandbox.mjs builds. The page posts the
 // packaged files as Blobs; this stands in for ctx.assets and drives the real CasParser, then
 // mounts the import page on a fake host: accounts tracking transactions or holdings, some of them
-// hidden or archived, in-memory storage, secrets and snapshots, a fund search, market data providers,
-// recorded navigation and error toasts, and
+// hidden or archived, accounts created as Wealthfolio creates them, in-memory storage, secrets and
+// snapshots, a fund search, market data providers, recorded navigation and error toasts, and
 // an import that stores rows the way Wealthfolio returns them. Snapshot saves write a manual
 // asset's average cost as its quote for the day, and profile updates store every field as sent,
 // both as Wealthfolio does. The parser's Workers can be made to stall or stop. Wealthfolio's own
@@ -66,6 +66,9 @@ const host = {
     { ...account("archived-3", "Old demat", "HOLDINGS"), isActive: false, isArchived: true },
   ],
   failAccounts: false,
+  // What `accounts.create` was asked for, and the names it refuses.
+  creates: [] as Record<string, unknown>[],
+  failCreate: [] as string[],
   storage: new Map<string, string>(),
   secrets: new Map<string, string>(),
   activities: [] as ActivityDetails[],
@@ -319,9 +322,6 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
     return { ...data, folios: [{ ...first, schemes: [...first.schemes, ...third.schemes] }, second, ...rest] };
   }
   if (host.noPanFolio) data.folios = data.folios.map((f) => (f.folio === host.noPanFolio ? { ...f, PAN: null } : f));
-  if (host.otherInvestorFolio) {
-    data.folios = data.folios.map((f) => (f.folio === host.otherInvestorFolio ? { ...f, PAN: "FGHIJ5678K", name: "BHAVYA R TESTWALA" } : f));
-  }
   if (host.merger) data.folios[0].schemes.push(...mergedSchemes());
   if (host.gifts) {
     const [first] = data.folios;
@@ -332,6 +332,10 @@ CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, p
       { ...first, folio: "92345678", schemes: [given] },
       { ...first, folio: "93456789", schemes: [taken] },
     ];
+  }
+  // After the gifts, so a gift's receiving folio can belong to the other investor.
+  if (host.otherInvestorFolio) {
+    data.folios = data.folios.map((f) => (f.folio === host.otherInvestorFolio ? { ...f, PAN: "FGHIJ5678K", name: "BHAVYA R TESTWALA" } : f));
   }
   if (host.segregated) {
     const [folio] = structuredClone(segregatedStatement as CasData).folios;
@@ -471,6 +475,24 @@ const api = {
     getAll: async (includeArchived = false) => {
       if (host.failAccounts) throw new Error("Accounts unavailable");
       return host.accounts.filter((a) => includeArchived || !a.isArchived).map((a) => ({ ...a }));
+    },
+    // Like Wealthfolio 3.13.0: `isDefault` and `isActive` have no default, a name and a currency
+    // can't be empty, and the tracking mode is Not set unless given. The new account is listed from then on.
+    create: async (payload: Record<string, unknown>) => {
+      await wait("create");
+      host.creates.push(payload);
+      for (const field of ["isDefault", "isActive"]) {
+        if (typeof payload[field] !== "boolean") throw new Error(`missing field \`${field}\``);
+      }
+      if (!String(payload.name ?? "").trim()) throw new Error("Account name cannot be empty");
+      if (!String(payload.currency ?? "").trim()) throw new Error("Currency cannot be empty");
+      if (host.failCreate.includes(String(payload.name))) throw new Error("Accounts can't be created right now");
+      const created = {
+        ...account(`created-${host.creates.length}`, String(payload.name), String(payload.trackingMode ?? "NOT_SET")),
+        ...payload, isArchived: false,
+      } as (typeof host.accounts)[number];
+      host.accounts.push(created);
+      return { ...created };
     },
   },
   portfolio: {
