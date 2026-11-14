@@ -2173,3 +2173,71 @@ test("Try again reads Wealthfolio afresh, so a fund's type fixed there lets the 
   assert.doesNotMatch(footer(run).join(" "), /We couldn't work out/);
   assert.equal(find(run, "Footer").action.disabled, false);
 });
+
+test("an entry changed into a transfer whose answer was lost is linked on Try again without changing it again", async () => {
+  const { run, api, steps } = await withChosenEntry(true);
+  const update = api.activities.update;
+  let lose = true;
+  // Wealthfolio changes the entry, then the answer is lost.
+  api.activities.update = async (row) => {
+    await update(row);
+    if (lose) throw new Error("made-up lost answer");
+  };
+  const removed = [];
+  api.spending.unassignCategory = async (id, kind) => void removed.push([id, kind]);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  let result = find(run, "ImportResult");
+  assert.deepEqual(result.links.map((l) => [l.stage, l.converted]), [["convert", false]]);
+  assert.deepEqual(steps, ["create", "update"]);
+  lose = false;
+  result.onRetryLink(result.links[0]);
+  await run.flush();
+  result = find(run, "ImportResult");
+  // Only the link: the entry isn't changed again, and its spending category goes as after a change.
+  assert.deepEqual(steps, ["create", "update", "link"]);
+  assert.deepEqual(result.links.map((l) => [l.stage, l.converted]), [[undefined, true]]);
+  assert.deepEqual(removed.map(([, kind]) => kind), ["expense"]);
+});
+
+test("a recovered conversion reports its deleted split and stopped sync while using current categories", async () => {
+  const { run, api, activities, steps } = await withChosenEntry(true);
+  let splits = [
+    { categoryId: "food", taxonomyId: "spending_categories" },
+    { categoryId: "travel", taxonomyId: "spending_categories" },
+  ];
+  let assignments = [{ categoryId: "food", taxonomyId: "spending_categories" }];
+  api.accounts.getAll = async () => ACCOUNTS.map((a) => a.id === "bank" ? { ...a, provider: "synced" } : a);
+  api.spending.searchCashActivities = async () => ({ items: [{ id: "purchase", splits, assignments }], totalCount: 1 });
+  const update = api.activities.update;
+  api.activities.update = async (row) => {
+    await update(row);
+    splits = [];
+    activities.find((a) => a.id === row.id).isUserModified = true;
+    throw new Error("made-up lost answer after deleting the split and marking as edited");
+  };
+  const removed = [];
+  api.spending.unassignCategory = async (id, kind) => void removed.push([id, kind]);
+  // The new split and sync consequences are disclosed before importing.
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.match(textOf(run.tree), /split across 2 spending categories/);
+  assert.deepEqual(steps, []);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  let result = find(run, "ImportResult");
+  assert.equal(result.links[0].stage, "convert");
+  assert.deepEqual(result.links[0].changes, []);
+  // Its category was removed elsewhere before retrying; the old facts must not remove it again.
+  assignments = [];
+  result.onRetryLink(result.links[0]);
+  await run.flush();
+  result = find(run, "ImportResult");
+  assert.deepEqual(steps, ["create", "update", "link"]);
+  assert.equal(result.links[0].stage, undefined);
+  assert.deepEqual(removed, []);
+  assert.deepEqual(result.links[0].changes, [
+    "Its split across 2 spending categories was deleted.",
+    "Later corrections to it from the sync won't change it.",
+  ]);
+});

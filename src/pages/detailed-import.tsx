@@ -1746,7 +1746,9 @@ export function DetailedImport({
       const t = transactionInCreated(link.transaction);
       const from = { fundId: link.fundId, converted: link.converted };
       const checked = await recheckLink(api, t, link.bankRow, link.facts, from);
-      const again = await reuseBankEntry(api, t, checked.row, checked.facts, { ...from, linked: checked.linked });
+      const again = await reuseBankEntry(api, t, checked.row, checked.facts,
+        { ...from, converted: checked.converted, linked: checked.linked },
+        checked.converted && !from.converted ? link.facts : checked.facts);
       if (again.error) api.logger.error(again.error);
       next = { ...link, ...again, changes: [...new Set([...link.changes, ...again.changes])], warnings: again.warnings };
       setImported({ ...(latestImported.current ?? state), links: (latestImported.current ?? state).links.map((l) => (l === link ? next : l)) });

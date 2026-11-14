@@ -240,7 +240,11 @@ export async function recheckLink(
 ) {
   try {
     const row = (await api.activities.getAll(before.accountId)).find((r) => r.id === before.id);
-    const type = from.converted ? t.transaction.bank!.activityType : before.activityType;
+    const bankType = t.transaction.bank!.activityType;
+    // Once the fund account's transfer was added, the entry may have been changed into a transfer
+    // before that answer was lost: then it's this import's change, and isn't made again.
+    const convertedNow = !from.converted && !!from.fundId && before.activityType !== bankType && row?.activityType === bankType;
+    const type = from.converted || convertedNow ? bankType : before.activityType;
     if (!row || row.activityType !== type || row.amount !== before.amount || day(row.date) !== day(before.date) || !bankCandidates(t, [row]).length) {
       throw new Explained("The bank entry changed since the import. Finish linking it in Wealthfolio.");
     }
@@ -260,8 +264,7 @@ export async function recheckLink(
     if ((pair && !own(pair)) || (fundPair && !own(fundPair)) || !!pair !== !!fundPair) {
       throw new Explained("One of these entries is already linked with another transfer. Check the links in Wealthfolio.");
     }
-    // A link may have succeeded before its answer failed; no write needs repeating then.
-    if (own(pair)) return { row, facts: shown, linked: true };
+    // Read again even when the link went through, as its category clean-up still goes by them.
     const facts = (await readEntryFacts(api, [row])).get(row.id)!;
     // After conversion, its remaining categories are still removed when the link succeeds.
     const next = { ...facts, converts: shown.converts };
@@ -269,7 +272,8 @@ export async function recheckLink(
     if (notesOf(next, "The bank account").some((note) => !accepted.includes(note))) {
       throw new Explained("The bank entry's spending details changed since the import. Finish linking it in Wealthfolio.");
     }
-    return { row, facts, linked: false };
+    // A link may have succeeded before its answer failed; no write needs repeating then.
+    return { row, facts, linked: own(pair), converted: !!from.converted || convertedNow };
   } catch (e) {
     if (e instanceof Explained) throw e;
     throw new Explained("We couldn't check the bank entries again. Nothing more was changed. Try again.");
@@ -293,6 +297,7 @@ export interface Reused extends LinkProgress {
  * income categories of an entry it changed into a transfer, keeping a savings one, as Wealthfolio's
  * own conversion does. An entry that was already a transfer keeps its categories, as when
  * Wealthfolio links two transfers. Says what changed, also when a later step failed.
+ * `before` keeps a recovered conversion's split and sync effects; category removal uses `facts`.
  */
 export async function reuseBankEntry(
   api: { activities: Pick<Activities, "create" | "update" | "linkTransfer">; spending: Pick<Spending, "unassignCategory">; logger: Pick<AddonContext["api"]["logger"], "warn"> },
@@ -300,14 +305,16 @@ export async function reuseBankEntry(
   entry: ActivityDetails,
   facts: EntryFacts,
   from: LinkProgress = {},
+  before: EntryFacts = facts,
 ): Promise<Reused> {
   const { error, stage, fundId, converted, linked } = await linkBankRow(api.activities, t, entry, from);
   const changes: string[] = [];
   const warnings: string[] = [];
   const known = facts.inSpending === false ? undefined : facts.spending;
+  const prior = before.inSpending === false ? undefined : before.spending;
   if (converted) {
-    if (!known) changes.push("Any split it had across spending categories was deleted.");
-    else if (known.splitCategories) changes.push(`Its split across ${splitText(known)} was deleted.`);
+    if (!prior) changes.push("Any split it had across spending categories was deleted.");
+    else if (prior.splitCategories) changes.push(`Its split across ${splitText(prior)} was deleted.`);
   }
   if (converted && facts.inSpending !== false) {
     const kinds = known ? REMOVED.filter((kind) => known.kinds.includes(kind)) : REMOVED;
@@ -332,6 +339,6 @@ export async function reuseBankEntry(
     if (known) changes.push(...removed.map((kind) => `Its ${WORDS[kind]} category was removed.`));
     else if (removed.length) changes.push(`Any ${removed.map((kind) => WORDS[kind]).join(" or ")} category it had was removed.`);
   }
-  if (facts.synced && (converted || linked)) changes.push("Later corrections to it from the sync won't change it.");
+  if (before.synced && (converted || linked)) changes.push("Later corrections to it from the sync won't change it.");
   return { error, stage, fundId, converted, changes, warnings };
 }

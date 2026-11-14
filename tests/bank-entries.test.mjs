@@ -505,6 +505,31 @@ describe("before retrying a bank link", () => {
     assert.equal((await recheck({ before, now, fund: fundRow(), from: { fundId: "fund-leg", converted: true }, spendingThen: spendingNow })).linked, false);
   });
 
+  test("a link that went through still has its spending read again: a category added since stops the retry", async () => {
+    const before = entry("WITHDRAWAL", "5000.00", "2023-04-08");
+    const now = { ...before, activityType: "TRANSFER_OUT", isUserModified: true };
+    const fund = fundRow();
+    const from = { fundId: fund.id, converted: true };
+    const pair = { transferOut: now, transferIn: fund };
+    const spendingThen = { assignments: [assignment(before.id, "spending_categories")] };
+    const spendingNow = { assignments: [assignment(before.id, "spending_categories"), assignment(before.id, "income_sources")] };
+    const unchanged = await recheck({ before, now, fund, from, pair, fundPair: pair, spendingThen, spendingNow: spendingThen });
+    assert.equal(unchanged.linked, true);
+    assert.deepEqual(unchanged.facts.spending.kinds, ["expense"]);
+    await assert.rejects(recheck({ before, now, fund, from, pair, fundPair: pair, spendingThen, spendingNow }), /The bank entry's spending details changed since the import/);
+  });
+
+  test("an entry changed into a transfer whose answer was lost resumes as this import's change", async () => {
+    const before = entry("WITHDRAWAL", "5000.00", "2023-04-08");
+    const now = { ...before, activityType: "TRANSFER_OUT", isUserModified: true };
+    const fund = fundRow();
+    const resumed = await recheck({ before, now, fund, from: { fundId: fund.id, converted: false } });
+    assert.deepEqual([resumed.row, resumed.linked, resumed.converted], [now, false, true]);
+    // Before the fund account's transfer was added, or into another type, it's still someone else's change.
+    await assert.rejects(recheck({ before, now, fund }), /The bank entry changed since the import/);
+    await assert.rejects(recheck({ before, now: { ...before, activityType: "DEPOSIT" }, fund, from: { fundId: fund.id } }), /The bank entry changed since the import/);
+  });
+
   test("a failed row or pair read has a plain retry message and does not change progress", async () => {
     const before = entry("TRANSFER_OUT", "5000.00", "2023-04-08");
     for (const fail of ["rows", "pair"]) {
