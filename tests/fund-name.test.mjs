@@ -685,6 +685,145 @@ test("reads a shorter or longer name's last word, or one not marked as cut, as b
   }
 });
 
+test("searches a name CDSL may have cut without the plan, option and filler words read past its cut word", () => {
+  for (const length of [100, 101]) {
+    for (const end of [
+      // The real statement's ending, cut from "- DIRECT GROWTH",
+      " FUND - DIRECT GROW",
+      // cut within a plan word,
+      " FUND - GROWTH - DIREC",
+      " FUND - IDCW - REGU",
+      // an option word,
+      " FUND - DIRECT PLAN - GROWT",
+      " FUND - REGULAR PLAN - IDC",
+      " FUND - DIRECT PLAN - CU",
+      " FUND - DIRECT PLAN - INCOME DISTRIBUTION CUM CAP",
+      " FUND - DIRECT PLAN - INCOME D",
+      // or a word read past them, like Option, Plan, Monthly or "Payout & Reinvestment".
+      " FUND - DIRECT PLAN - GROWTH OPTI",
+      " FUND - GROWTH - DIRECT PL",
+      " FUND - REGULAR PLAN - IDCW - MONTH",
+      " FUND - DIRECT PLAN - IDCW PAYOUT & REINV",
+    ]) {
+      // With spaces around its dashes, as CAMS prints a name, and without, as a real CDSL statement does.
+      for (const form of [end, end.replace(/ - /g, "-")]) {
+        const name = printed(length, form);
+        assert.notDeepEqual(planAndOption(name, true), {}, name);
+        assert.equal(fundQuery(name, true), name.slice(0, -form.length), name);
+      }
+    }
+    // Or with spaces alone, or parentheses, where the reading goes on past the cut word.
+    for (const end of [" FUND DIRECT PLAN GRO", " FUND (DIRECT PLAN) GRO", " FUND (DIRECT GRO", " FUND (GROWTH DIREC"]) {
+      const name = printed(length, end);
+      assert.equal(fundQuery(name, true), name.slice(0, -end.length), name);
+    }
+  }
+  // The name shown, without the fund house, and one with joined words, kept as printed.
+  assert.equal(fundQuery("FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND-DIRECT GROW", true), "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES");
+  assert.equal(fundQuery("FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND - DIRECT GROW", true), "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES");
+  assert.equal(fundQuery("FICTIVA McGRAW DirectEdge SAMPLES FUND-DIRECT GROW", true), "FICTIVA McGRAW DirectEdge SAMPLES");
+  // A cut word joined to the one before it, as in Yahoo's names, leaves the words before it as printed.
+  for (const end of ["DirGro", "DIRECTGro", "DirectPl", "RegMnIDC"]) {
+    const name = `FICTIVA McGRAW DirectEdge FUND-${end}`;
+    assert.notDeepEqual(planAndOption(name, true), {}, name);
+    assert.equal(fundQuery(name, true), "FICTIVA McGRAW DirectEdge", name);
+  }
+  // A part in parentheses before a cut filler word can hold the only plan or option, or be cut open.
+  for (const end of ["(DIRECT PLAN) OPTI", "(GROWTH) MONTH", "(DIRECT PL"]) {
+    const name = `FICTIVA FUND ${end}`;
+    assert.notDeepEqual(planAndOption(name, true), {}, name);
+    assert.equal(fundQuery(name, true), "FICTIVA", name);
+  }
+  // A reading that stops inside a part in parentheses leaves out the whole part.
+  for (const end of ["(PLAN A GROWTH) OPTI", "(PLAN A GROWTH OPTI"]) {
+    const name = `FICTIVA FIXED MATURITY ${end}`;
+    assert.deepEqual(planAndOption(name, true), { option: "Growth" }, name);
+    assert.equal(fundQuery(name, true), "FICTIVA FIXED MATURITY", name);
+  }
+  // A segregated portfolio keeps its marker and number, or its dated note, even from the words dropped.
+  assert.equal(
+    fundQuery("FICTIVA CREDIT RISK FUND SEGREGATED PORTFOLIO 1-DIRECT GROW", true),
+    "FICTIVA CREDIT RISK SEGREGATED PORTFOLIO 1",
+  );
+  assert.equal(
+    fundQuery("FICTIVA CREDIT RISK FUND (SEGREGATED - 15032020) (DIRECT PLAN) OPTI", true),
+    "FICTIVA CREDIT RISK SEGREGATED - 15032020",
+  );
+  assert.equal(
+    fundQuery("FICTIVA CREDIT RISK FUND DIRECT PLAN (SEGREGATED - 15032020) OPTI", true),
+    "FICTIVA CREDIT RISK SEGREGATED - 15032020",
+  );
+  // The words kept aren't read again, so the fund's own Growth stays.
+  assert.equal(fundQuery("FICTIVA GROWTH-DIRECT GROW", true), "FICTIVA GROWTH");
+  // With a " - ", the search still ends at the first one, even where the reading goes on before it.
+  for (const [name, query] of [
+    ["FICTIVA GROWTH - DIRECT PL", "FICTIVA GROWTH"],
+    ["FICTIVA REGULAR - GRO", "FICTIVA REGULAR"],
+    ["FICTIVA FUND DIRECT PLAN - GROW", "FICTIVA FUND DIRECT PLAN"],
+    ["FICTIVA GROWTH (PLAN A)- DIRECT PL", "FICTIVA GROWTH"],
+    ["FICTIVA GROWTH -(PLAN A) DIRECT PL", "FICTIVA GROWTH"],
+    ["FICTIVA FUND (DIRECT PLAN - GROW", "FICTIVA"],
+  ]) assert.equal(fundQuery(name, true), query, name);
+});
+
+test("searches a cut name as before when its last word is whole, can't be completed, or is in the fund's own name", () => {
+  for (const length of [100, 101]) {
+    for (const end of [
+      // Whole words, searched without them already,
+      " FUND - DIRECT GROWTH",
+      " FUND - DIRECT PLAN - IDCW - PAYOUT & REINVESTMENT",
+      // words that could read differently: Direct, Dividend or Daily; Regular or Reinvestment,
+      " FUND - DIRECT PLAN - D",
+      " FUND - DIRECT PLAN - DI",
+      " FUND - GROWTH - RE",
+      // a single letter, and Income without the next word of the IDCW phrase,
+      " FUND - DIRECT G",
+      " FUND - DIRECT PLAN - INCO",
+      // and a word cut in the fund's own name: "Fictiva Regular Savings Fund", "Fictiva Growth
+      // Opportunities Fund", "Fictiva Direct Equity Fund".
+      " FICTIVA REGU",
+      " FICTIVA GROW",
+      " FICTIVA DIREC",
+      " FICTIVA (INDIA) REGU",
+      " FICTIVA (INDIA GROW",
+    ]) {
+      for (const form of [end, end.replace(/ - /g, "-")]) {
+        const name = printed(length, form);
+        assert.equal(fundQuery(name, true), fundQuery(name), name);
+      }
+    }
+  }
+  // The cut word stays in the search, as before, with no " - " to drop it at.
+  const unread = printed(100, " FUND-DIRECT PLAN-DI");
+  assert.equal(fundQuery(unread, true), unread);
+  // A completed filler word with no plan or option read keeps the search as before.
+  for (const name of [
+    "FICTIVA FUND-PL",
+    "FICTIVA FIXED MATURITY PLAN OPTI",
+    "FICTIVA FIXED MATURITY PLAN ANNU",
+    "FICTIVA CREDIT RISK FUND SEGREGATED PORTFOLIO 1-PL",
+    "FICTIVA FUND (UNKNOWN-PL",
+  ]) {
+    assert.deepEqual(planAndOption(name, true), {}, name);
+    assert.equal(fundQuery(name, true), fundQuery(name), name);
+  }
+});
+
+test("searches a name not marked as cut, or of another length, with its last word as before", () => {
+  for (const end of [" FUND-DIRECT GROW", " FUND-REGULAR PLAN-IDC", " FUND-GROWTH-DIRE", " FUND-IDCW-REGU"]) {
+    for (const length of [99, 106]) {
+      const name = printed(length, end);
+      assert.equal(fundQuery(name, mayBeCut(name)), name, name);
+    }
+    // Only a fund in a CDSL statement's CDSL demat account is marked as cut.
+    const name = printed(100, end);
+    assert.equal(fundQuery(name), name, name);
+    assert.equal(fundQuery(name, false), name, name);
+  }
+  // A dash with spaces around it still ends the search before the plan and option.
+  assert.equal(fundQuery(printed(100, " FUND - DIRECT GROW")), printed(100, " FUND - DIRECT GROW").slice(0, -" FUND - DIRECT GROW".length));
+});
+
 test("a plan or option differs only when both names give it", () => {
   const statement = { plan: "Direct", option: "Growth" };
   assert.equal(differs({ plan: "Regular", option: "Growth" }, statement, "plan"), true);

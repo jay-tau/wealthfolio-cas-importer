@@ -53,12 +53,16 @@ export function fundName(scheme: string) {
  * "Fictiva Flexi Cap Fund - Direct Plan - Growth" → "Fictiva Flexi Cap", "FICTIVA FLEXI CAP FUND
  * DIRECT PLAN GROWTH" → "FICTIVA FLEXI CAP". A segregated portfolio keeps "Segregated Portfolio" and
  * its number, or its dated note's "Segregated" and date, after the rest of its name: "Fictiva Credit
- * Risk Fund (Segregated - 15032020)" → "Fictiva Credit Risk Segregated - 15032020".
+ * Risk Fund (Segregated - 15032020)" → "Fictiva Credit Risk Segregated - 15032020". A name that `cut`
+ * says may be cut short drops a last word cut partway through as `planAndOption(name, true)` reads
+ * it: "FICTIVA FLEXI CAP FUND-DIRECT GROW" → "FICTIVA FLEXI CAP".
  */
-export function fundQuery(scheme: string) {
-  const { first, dashed, segregated } = schemeParts(scheme);
+export function fundQuery(scheme: string, cut = false) {
+  const cutName = cut ? cutQueryName(scheme) : undefined;
+  const { first, dashed } = schemeParts(cutName ?? scheme);
+  const segregated = SEGREGATED.exec(scheme)?.[0];
   const own = first.replace(SEGREGATED, " ").replace(/\s+/g, " ").trim();
-  const base = (dashed ? own : withoutPlanAndOption(own)).replace(/[\s\-–—]+$/, "").replace(/(?<=\S)\s+fund$/i, "");
+  const base = (dashed || cutName !== undefined ? own : withoutPlanAndOption(own)).replace(/[\s\-–—]+$/, "").replace(/(?<=\S)\s+fund$/i, "");
   return [base, segregated].filter(Boolean).join(" ").replace(/\s+/g, " ").trim();
 }
 
@@ -284,6 +288,46 @@ function completeCut(text: string) {
 const TRAILING_SEPARATORS = new RegExp(`${SEPARATORS}+$`);
 
 /**
+ * `spaced` with its last word or phrase completed as `completeCut` gives it, and its reading, when the
+ * completed word counts in the plan and option's part of the name: where the reading goes on past
+ * it, or after a dash. "# FICTIVA REGU", cut from a fund called Fictiva Regular Savings, doesn't.
+ */
+function readCut(spaced: string) {
+  const completed = completeCut(spaced);
+  if (!completed) return undefined;
+  const read = readEnd(completed.text);
+  const before = spaced.slice(0, completed.start);
+  const stem = before.replace(TRAILING_SEPARATORS, "");
+  return read.count >= 2 || /[–—-]/.test(before.slice(stem.length)) ? { ...completed, read } : undefined;
+}
+
+/**
+ * What `fundQuery` searches from for a name that may be cut short, when `planAndOption(name, true)`
+ * reads a plan or option past its completed last word or phrase, with the words before it as printed.
+ * A name with a " - " gets its last word or phrase completed, and the search still ends at the first
+ * " - ": "FICTIVA GROWTH - DIRECT PL" keeps "FICTIVA GROWTH". Another gets the name up to where that
+ * reading stops, so it's never read again, without a part in parentheses the reading went into:
+ * "FICTIVA FLEXI CAP FUND-DIRECT GROW" → "FICTIVA FLEXI CAP FUND", "FICTIVA FUND DirGro" → "FICTIVA FUND".
+ * Undefined, for the search as before, when the last word isn't completed or only filler words are
+ * read, as in "FICTIVA FUND-PL".
+ */
+function cutQueryName(name: string) {
+  // Mark the spaces put between joined words, to take them out again of the words kept.
+  const marked = splitWords(name, "\0");
+  const completed = readCut(marked.replace(/\0/g, " "));
+  if (!completed) return undefined;
+  const { plan, option, end } = completed.read;
+  if (!plan && !option) return undefined;
+  const whole = marked.slice(0, completed.start).replace(/\0/g, "") + completed.text.slice(completed.start);
+  if (schemeParts(whole).dashed) return whole;
+  // A reading that stops inside a part in parentheses ends in that part's words, read without the
+  // parentheses; the name is kept up to the part, which the search leaves out anyway.
+  let kept = 0;
+  while (kept < end.length && completed.text[kept] === end[kept]) kept++;
+  return marked.slice(0, kept).replace(/\0/g, "");
+}
+
+/**
  * The plan (Direct or Regular) and option (Growth or IDCW) at the end of a fund's name, in any of
  * the usual spellings: "- Direct Plan - Growth", "DIRECT PLAN GROWTH", "Dir Gr", "- Growth - Direct
  * Plan", "(Direct Plan) (Growth)", "- Regular Plan - Income Distribution cum Capital Withdrawal
@@ -293,15 +337,6 @@ const TRAILING_SEPARATORS = new RegExp(`${SEPARATORS}+$`);
  */
 export function planAndOption(name: string, cut = false): PlanAndOption {
   const spaced = splitWords(name);
-  const completed = cut ? completeCut(spaced) : undefined;
-  let read = readEnd(completed?.text ?? spaced);
-  if (completed) {
-    // A completed word counts in the plan and option's part of the name: where the reading goes on
-    // past it, or after a dash. "# FICTIVA REGU", cut from a fund called Fictiva Regular Savings, doesn't.
-    const before = spaced.slice(0, completed.start);
-    const stem = before.replace(TRAILING_SEPARATORS, "");
-    if (read.count < 2 && !/[–—-]/.test(before.slice(stem.length))) read = readEnd(spaced);
-  }
-  const { plan, option } = read;
+  const { plan, option } = (cut && readCut(spaced)?.read) || readEnd(spaced);
   return { ...(plan && { plan }), ...(option && { option }) };
 }

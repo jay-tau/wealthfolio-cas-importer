@@ -2039,6 +2039,18 @@ test("marks a CDSL statement's CDSL demat fund printed as long as a cut name, wh
   assert.deepEqual(planAndOption(cut[0].name), {});
   // Its search leaves out "Fund" and everything from the first " - ", cut word included.
   assert.equal(fundQuery(cut[0].name), "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES");
+  assert.equal(fundQuery(cut[0].name, cut[0].cut), "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES");
+  // Printed without spaces around its dash, as a real CDSL statement prints names, it's still marked,
+  // and its search leaves out the plan and option read past its cut word.
+  {
+    const unspaced = structuredClone(data);
+    unspaced.accounts[0].mutual_funds.find((f) => f.name === printed).name = printed.replace(" - ", "-");
+    const [holding] = readHoldings(unspaced).sources.flatMap((s) => s.holdings).filter((h) => h.cut);
+    assert.deepEqual([holding.isin, holding.name], ["INFZ90K01GS2", shown.replace(" - ", "-")]);
+    assert.deepEqual(planAndOption(holding.name, holding.cut), { plan: "Direct", option: "Growth" });
+    assert.equal(fundQuery(holding.name), holding.name);
+    assert.equal(fundQuery(holding.name, holding.cut), "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES");
+  }
 
   // The same name keeps its reading elsewhere: in the CDSL statement's NSDL demat account and folios,
   // and in an NSDL statement's CDSL demat account.

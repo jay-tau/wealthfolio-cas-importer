@@ -145,7 +145,7 @@ export function useHoldingSearches(
     const stale = () => !mounted.current || latest.current.get(`auto:${key}`) !== id;
     update(key, (s) => ({ ...s, auto: { status: "searching" }, picked: s.picked?.startsWith("auto:") ? undefined : s.picked }));
     // A fund's name is searched shorter, without a final "Fund" or the plan and option.
-    const name = noun === "fund" ? fundQuery(item.name) : fundName(item.name);
+    const name = noun === "fund" ? fundQuery(item.name, item.cut) : fundName(item.name);
     try {
       let byName = isin ? undefined : name;
       const results = await ctx.api.market.searchTicker(isin ?? name);
