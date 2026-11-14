@@ -642,6 +642,8 @@ const savedOf = (account, choices = noChoices) => snapshotOf(account, choices).h
 const replacing = (key, replace = true) => ({ flipped: new Set(), costs: new Map(), replace: new Map([[key, replace]]) });
 /** A position's question: its `fundRef`, what it asks, the sources it asks about, and its notes. */
 const asking = (p) => [p.ref, p.ask?.kind, p.removable?.map((s) => s.label), p.notes];
+/** A replace question, with the labels of the sources whose earlier import added the old asset. */
+const replaceAsk = (p) => p.ask && { ...p.ask, recorded: p.ask.recorded?.map((s) => s.label) };
 /** The user's choice to keep (true) or remove (false) the account's units of a row. */
 const keeping = (key, keep, flipped = []) => ({ flipped: new Set(flipped), costs: new Map(), keep: new Map([[key, keep]]) });
 
@@ -657,7 +659,7 @@ test("a fund confirmed to another asset keeps the one an earlier import of its f
   // Asked, on the statement row: until it's answered, the account keeps the old asset's 100 units and doesn't add the statement's 110.
   assert.equal(listed.include, false);
   assert.deepEqual(listed.replaces, [old.key]);
-  assert.deepEqual([listed.ask, listed.notes], [{ kind: "replace" }, []]);
+  assert.deepEqual([replaceAsk(listed), listed.notes], [{ kind: "replace", recorded: ["Fictiva Mutual Fund, folio 91234567 / 12"] }, []]);
   assert.equal(undecided(listed, noChoices), true);
   assert.equal(old.include, true);
   assert.equal(old.replacedBy, listed.key);
@@ -872,7 +874,7 @@ test("a holding confirmed to another asset doesn't take the record of the asset 
   const reconciled = reconcileRecord(record, current, [amfi]);
   const [account] = planReconciled(statementOf("2025-04-30", folioOf("91234567 / 12", flexi("110"))), current, () => reconciled, { asset: () => amfi });
   const [listed, old] = account.positions;
-  assert.deepEqual([listed.ref, listed.include, listed.replaces, listed.ask], [fundRef("119551"), false, [old.key], { kind: "replace" }]);
+  assert.deepEqual([listed.ref, listed.include, listed.replaces, listed.ask?.kind], [fundRef("119551"), false, [old.key], "replace"]);
   assert.deepEqual([old.ref, old.existing.assetId, old.replacedBy, old.notes], [RENAMED, "yahoo-asset", listed.key, []]);
   // Kept, the old asset's record keeps its ID; replaced, the new asset's record has the ID its save gave it.
   assert.deepEqual(entriesAndIds(account), [[{ [RENAMED]: FLEXI }, { [RENAMED]: "yahoo-asset" }]]);
@@ -921,7 +923,7 @@ test("replacement names distinguish the same symbol on different exchanges", () 
   assert.equal(assetName(old), "Example Share (EXAMPLE · XBOM)");
   assert.equal(assetName(listed), "Example Share (EXAMPLE · XNSE)");
   assert.equal(assetNames([old, listed]), "Example Share (EXAMPLE · XBOM) and Example Share (EXAMPLE · XNSE)");
-  assert.deepEqual([listed.ask, listed.notes, old.notes], [{ kind: "replace" }, [], []]);
+  assert.deepEqual([listed.ask?.kind, listed.notes, old.notes], ["replace", [], []]);
   assert.deepEqual(savedOf(next), [["yahoo-asset", "100"]]);
   assert.deepEqual(savedOf(next, replacing(listed.key)), [["EXAMPLE", "110"]]);
 });
@@ -944,7 +946,7 @@ test("a summary fund that now prints its ISIN can replace the asset priced from 
   const [listed, old] = next.positions;
   assert.equal(listed.ref, ref("INFZ91T01ON3"));
   assert.deepEqual([listed.include, listed.replaces, old.include, old.replacedBy], [false, [old.key], true, listed.key]);
-  assert.deepEqual([listed.ask, listed.notes], [{ kind: "replace" }, []]);
+  assert.deepEqual([listed.ask?.kind, listed.notes], ["replace", []]);
   assert.deepEqual(savedOf(next), [["statement-priced", "12.5"]]);
   assert.deepEqual(savedOf(next, replacing(listed.key)), [["INFZ91T01ON3", "13"]]);
   // Kept, it gets the price it had; replaced, the new asset isn't priced by hand, so nothing is saved.
@@ -961,7 +963,7 @@ test("an asset several folios added is replaced whole; one that may hold other u
   const [shared] = plan(later, { asset: () => amfi, existing: () => heldBefore(yahoo, "100"), remembered: (s) => records.get(s.id) ?? new Map() });
   const [listed, old] = shared.positions;
   assert.deepEqual(listed.replaces, [old.key]);
-  assert.deepEqual([listed.ask, listed.notes, old.notes], [{ kind: "replace" }, [], []]);
+  assert.deepEqual([listed.ask?.kind, listed.notes, old.notes], ["replace", [], []]);
   assert.deepEqual(savedOf(shared), [["yahoo-asset", "100"]]);
   assert.deepEqual(savedOf(shared, replacing(listed.key)), [["119551", "120"]]);
 

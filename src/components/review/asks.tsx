@@ -22,6 +22,7 @@ export function AskCard({
   main,
   other,
   note,
+  caution,
   why,
   disabled,
 }: {
@@ -37,6 +38,8 @@ export function AskCard({
   other: Answer;
   /** What the main answer leaves, tied to its button. */
   note?: string;
+  /** What the other answer also removes, tied to its button. */
+  caution?: string;
   why?: { text: string; open: boolean; onOpenChange: (open: boolean) => void };
   disabled?: boolean;
 }) {
@@ -52,7 +55,7 @@ export function AskCard({
         <WrapButton type="button" disabled={disabled} aria-label={main.name} aria-describedby={note ? `${own}-note` : undefined} onClick={main.onClick}>
           {main.label}
         </WrapButton>
-        <WrapButton type="button" variant="outline" disabled={disabled} aria-label={other.name} onClick={other.onClick}>
+        <WrapButton type="button" variant="outline" disabled={disabled} aria-label={other.name} aria-describedby={caution ? `${own}-caution` : undefined} onClick={other.onClick}>
           {other.label}
         </WrapButton>
         {why && (
@@ -64,6 +67,11 @@ export function AskCard({
       {note && (
         <p id={`${own}-note`} className="text-muted-foreground text-xs">
           {note}
+        </p>
+      )}
+      {caution && (
+        <p id={`${own}-caution`} className="text-muted-foreground text-xs">
+          {caution}
         </p>
       )}
     </section>

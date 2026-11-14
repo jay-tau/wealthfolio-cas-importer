@@ -1783,6 +1783,7 @@ export function HoldingsImport({
         main={{ label: ask.words.main, name: name(ask.words.main), onClick: () => answerAsk(ask, true) }}
         other={{ label: ask.words.other, name: name(ask.words.other), onClick: () => answerAsk(ask, false) }}
         note={ask.words.note}
+        caution={ask.words.caution}
         why={ask.words.why ? { text: ask.words.why, open: !!open[`why:${ask.id}`], onOpenChange: (yes) => setOpen(`why:${ask.id}`, yes) } : undefined}
         disabled={busy !== "" || !current}
       >

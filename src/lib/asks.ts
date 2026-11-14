@@ -16,6 +16,8 @@ export interface AskWords {
   other: string;
   /** What the main answer leaves, said under the buttons. */
   note?: string;
+  /** What the other answer also removes, said under the buttons. */
+  caution?: string;
   /** Why it's asked, behind "Why am I asked?", where the reason isn't obvious. */
   why?: string;
   /** The answered line, for the main answer (true) or the other. */
@@ -33,6 +35,8 @@ const titles = (sources: readonly Source[]) => list([...new Set(sources.map(titl
 /** "this folio", "this demat account", "this NPS account". */
 const thisOne = (s: Source) => (s.kind === "folio" ? "this folio" : s.kind === "demat" ? "this demat account" : "this NPS account");
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
+/** Import records hold identifiers, not units: removing a holding also removes units added another way. */
+const IMPORTS_DONT_RECORD = "imports don't record how many units each folio, demat account or PRAN added";
 
 export const MISSING_WHY =
   "A statement can leave out a fund you still hold, for example one that covers only some fund houses. Set it to zero only if you no longer own any of its units; otherwise keep them, and check a statement that lists this fund.";
@@ -76,6 +80,7 @@ export function holdingAskWords(
       line: `${account} holds ${held} units of ${own} that ${one ? thisOne(moved[0]) : `earlier imports of ${titles(position.removable!)}`} added.`,
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
+      caution: `Remove them only if all of them came from ${one ? thisOne(moved[0]) : titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
       receipt: (keep) => `${own}: ${keep ? "kept in" : "removed from"} ${account}`,
       done: (keep) => `${own} ${keep ? "kept in" : "removed from"} ${account}`,
     };
@@ -88,6 +93,7 @@ export function holdingAskWords(
       line: `${account} also holds ${held} units of it${as}, from an earlier import of ${titles(position.removable!)}.`,
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
+      caution: `Remove them only if all of them came from ${titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
       receipt: (keep) => `${name(row)}: ${account}'s ${held} units ${keep ? "kept" : "removed"}`,
       done: (keep) => `${name(row)}: ${account}'s ${held} units ${keep ? "kept" : "removed"}`,
     };
@@ -106,6 +112,7 @@ export function holdingAskWords(
     main: `Keep ${old} for now`,
     note: `${capital(now)} isn't saved, so its units aren't counted twice.`,
     other: `Replace ${old} with ${now}`,
+    caution: `Replace ${old} only if all ${olds.length > 1 ? "their" : "its"} units came from ${titles(ask.recorded ?? position.lines.map((l) => l.source))}: ${IMPORTS_DONT_RECORD}.`,
     receipt: (keep) => (keep ? `${printed}: kept as ${old} for now` : `${printed}: ${old} replaced with ${now}`),
     done: (keep) => (keep ? `${printed} kept as ${old}` : `${old} replaced with ${now}`),
   };

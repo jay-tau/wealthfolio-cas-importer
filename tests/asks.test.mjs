@@ -47,10 +47,14 @@ test("a source that now goes to another account asks to keep its holding here or
     undefined,
   ]);
   assert.equal(words.receipt(false), "Testbridge Gilt Fund: removed from CDSL Demat");
+  // Import records hold identifiers, not units: removing them also removes units added another way.
+  assert.equal(words.caution, "Remove them only if all of them came from this folio: imports don't record how many units each folio, demat account or PRAN added.");
   // Another source that no longer lists it recorded it too: both are named.
   const both = { ...gilt, removable: [demat, folio] };
   assert.equal(holdingAskWords(planOf(both), both, { account: "CDSL Demat", name }).line,
     "CDSL Demat holds 812.300 units of Testbridge Gilt Fund that earlier imports of Fictiva Securities demat account and Mutual fund folio 7712045 added.");
+  assert.equal(holdingAskWords(planOf(both), both, { account: "CDSL Demat", name }).caution,
+    "Remove them only if all of them came from Fictiva Securities demat account and Mutual fund folio 7712045: imports don't record how many units each folio, demat account or PRAN added.");
   // A demat account says so.
   const fromDemat = { ...gilt, removable: [demat], ask: { kind: "moved", moved: [{ source: demat, account: "Shares" }] } };
   assert.match(holdingAskWords(planOf(fromDemat), fromDemat, { account: "CDSL Demat", name }).line, /that this demat account added\.$/);
@@ -63,11 +67,12 @@ test("units an earlier import added of a fund tracked from its transactions ask 
     lines: [line(other, "Fictiva Flexi Cap Fund", "1500")], include: false, ask: { kind: "overlap", tracked, row: "FLEXI@XBOM|overlap" },
   });
   const words = holdingAskWords(planOf(flexi), flexi, { account: "CDSL Demat", name });
-  assert.deepEqual([words.title, words.line, words.main, words.other], [
+  assert.deepEqual([words.title, words.line, words.main, words.other, words.caution], [
     "Fictiva Flexi Cap Fund is already tracked in Mutual funds",
     "CDSL Demat also holds 1,500.000 units of it, from an earlier import of Fictiva Mutual Fund account (folio 91234567).",
     "Keep them in CDSL Demat",
     "Remove them from CDSL Demat",
+    "Remove them only if all of them came from Fictiva Mutual Fund account (folio 91234567): imports don't record how many units each folio, demat account or PRAN added.",
   ]);
   // Added as another asset, for the statement row now left out for the overlap.
   const old = position("OLDFLEXI@XBOM", {
@@ -85,15 +90,16 @@ test("an old asset to replace keeps it for now as the main answer, and says what
   const old = position("0P0000GILT.BO@XBOM", { name: "Testbridge Gilt Reg Gr", existing: { ...existing("Testbridge Gilt Reg Gr", "812.3", "0P0000GILT.BO") }, replacedBy: "119551" });
   const gilt = position("119551@", {
     name: "Testbridge Gilt Fund", asset: { symbol: "119551", quoteCcy: "INR", instrumentType: "MUTUALFUND", providerId: "AMFI", name: "Testbridge Gilt Fund" },
-    lines: [line(folio, "Testbridge Gilt Fund", "812.3")], include: false, replaces: [old.key], ask: { kind: "replace" },
+    lines: [line(folio, "Testbridge Gilt Fund", "812.3")], include: false, replaces: [old.key], ask: { kind: "replace", recorded: [folio, demat] },
   });
   const amfi = holdingAskWords(planOf(gilt, old), gilt, { account: "CDSL Demat", name, provider: (p) => p.asset?.providerId });
-  assert.deepEqual([amfi.title, amfi.line, amfi.main, amfi.note, amfi.other], [
+  assert.deepEqual([amfi.title, amfi.line, amfi.main, amfi.note, amfi.other, amfi.caution], [
     "Testbridge Gilt Fund is now matched to its AMFI fund",
     "CDSL Demat holds it as Testbridge Gilt Reg Gr (0P0000GILT.BO · XBOM).",
     "Keep Testbridge Gilt Reg Gr for now",
     "The AMFI fund isn't saved, so its units aren't counted twice.",
     "Replace Testbridge Gilt Reg Gr with the AMFI fund",
+    "Replace Testbridge Gilt Reg Gr only if all its units came from Mutual fund folio 7712045 and Fictiva Securities demat account: imports don't record how many units each folio, demat account or PRAN added.",
   ]);
   assert.deepEqual([amfi.receipt(true), amfi.receipt(false)], [
     "Testbridge Gilt Fund: kept as Testbridge Gilt Reg Gr for now",

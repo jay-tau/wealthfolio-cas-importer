@@ -605,14 +605,14 @@ export interface PlannedPosition {
  * - `overlap`: an earlier import of `removable` added units of a fund that `tracked`, accounts that
  *   track transactions, hold. `row` is the statement row the units were added for, left out for the
  *   overlap: the position itself, or another asset's. Keep them, or remove them.
- * - `replace`: a statement row (`replaces`) that an earlier import added as another asset. Keep that
- *   one and leave this row out, or replace it with this row.
+ * - `replace`: a statement row (`replaces`) that an earlier import of `recorded` added as another
+ *   asset. Keep that one and leave this row out, or replace it with this row.
  */
 export type Ask =
   | { kind: "missing" }
   | { kind: "moved"; moved: { source: Source; account: string }[] }
   | { kind: "overlap"; tracked: OtherAccount[]; row: string }
-  | { kind: "replace" };
+  | { kind: "replace"; recorded: Source[] };
 
 export interface AccountPlan {
   accountId: string;
@@ -1024,7 +1024,7 @@ function settleOthers(
       // Asked: replacing the old asset with it, or keeping the old one and leaving it out.
       target.include = false;
       target.replaces = whole.map((m) => m.old.key);
-      target.ask = { kind: "replace" };
+      target.ask = { kind: "replace", recorded: [...new Set(whole.flatMap((m) => m.recorded))] };
     }
     if (part.length) {
       const old = assetNames(part.map((m) => m.old));

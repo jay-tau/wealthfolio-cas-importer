@@ -507,7 +507,7 @@ rules:
   (holdings). CDSL Demat holds 812.300 units of Testbridge Gilt Fund that this folio added." **Keep
   them in CDSL Demat** is the main answer; **Remove them from CDSL Demat** removes them, so remove
   them only if all of them came from it, since imports don't record how many units each folio, demat
-  account or PRAN added. This applies when the account is being updated. If another folio, demat account or PRAN, left
+  account or PRAN added; the card says so under its buttons. This applies when the account is being updated. If another folio, demat account or PRAN, left
   out or not listed, may have added some of the units, or the identifiers can't be compared, the
   holding is kept with a note to correct its units in Wealthfolio. An old asset it added isn't offered
   for replacement, and a fund left out for overlap doesn't offer to remove the account's units. A
@@ -536,9 +536,12 @@ rules:
   say, or a summary statement's fund that now prints its ISIN), isn't counted twice. It's asked
   about: "Testbridge Gilt Fund is now matched to its AMFI fund. CDSL Demat holds it as …". The main
   answer keeps the old asset for now and leaves the new one out ("The AMFI fund isn't saved, so its
-  units aren't counted twice."); the other replaces the old asset with it. Imports record
-  identifiers, not units, so a replacement is asked about only when all its units came from those
-  folios, demat accounts or PRANs. When the old asset may also hold other units, it's kept and the
+  units aren't counted twice."); the other replaces the old asset with it, which the card says to
+  choose only if all the old asset's units came from the folios, demat accounts or PRANs it names,
+  since imports don't record how many units each added. A replacement is asked about only when the
+  old asset's recorded holdings still listed can all be compared and map to one asset being saved,
+  and no left-out, unlisted or moved source may have added units. A recorded holding no longer listed
+  doesn't block the question. When the old asset may also hold other units, it's kept and the
   new one left out, with a note. An old asset that a possibly misread line holds back is kept as it
   is, and the new one left out the same way.
 - A holding carried over from an older snapshot whose asset has a split recorded since gets a
@@ -553,7 +556,8 @@ rules:
   asked about: "Fictiva Flexi Cap Fund is already tracked in Mutual funds. CDSL Demat also holds
   1,500.000 units of it, from an earlier import of …", with **Keep them in CDSL Demat** as the main
   answer and **Remove them from CDSL Demat**; remove them only if all of them came from that folio,
-  since imports don't record how many units each folio, demat account or PRAN added. An old asset
+  since imports don't record how many units each folio, demat account or PRAN added, as the card
+  says under its buttons. An old asset
   that an earlier import of the folio added for the fund, now confirmed to another asset left out
   for overlap, is asked about the same way. If its units may include others,
   or no earlier import of that folio recorded the holding, they are kept with a note to check

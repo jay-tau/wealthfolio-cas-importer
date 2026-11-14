@@ -2478,6 +2478,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       // The main answer says what it leaves, tied to it.
       const note = await keep.getAttribute("aria-describedby");
       assert.equal(await frame.locator(`[id="${note}"]`).textContent(), `${newName} isn't saved, so its units aren't counted twice.`);
+      // Replacing says when to, tied to it: import records hold identifiers, not units.
+      const caution = await frame.locator(`[id="${await replace.getAttribute("aria-describedby")}"]`).textContent();
+      assert.ok(caution.startsWith(`Replace ${oldName} only if all its units came from `) &&
+        caution.endsWith(": imports don't record how many units each folio, demat account or PRAN added."), caution);
       // Until it's answered, neither row is ready or left out, and the old asset is kept.
       assert.equal(await ready(newName).count(), 0);
       assert.equal(await statusOf(await snapshotTable("Fund folios"), oldName), "Kept");
@@ -2536,6 +2540,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const keepFlexi = flexiCard.getByRole("button", { name: "Keep them in Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true });
     const removeFlexi = flexiCard.getByRole("button", { name: "Remove them from Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true });
     await flexiCard.getByText("Fund folios also holds 2,892.104 units of it, from an earlier import of Mutual fund folio 91234567/12.", { exact: true }).waitFor();
+    // Removing says when to, tied to it: import records hold identifiers, not units.
+    assert.equal(await frame.locator(`[id="${await removeFlexi.getAttribute("aria-describedby")}"]`).textContent(),
+      "Remove them only if all of them came from Mutual fund folio 91234567/12: imports don't record how many units each folio, demat account or PRAN added.");
     await keepFlexi.waitFor();
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Needs an answer");
     await replaceBoth();

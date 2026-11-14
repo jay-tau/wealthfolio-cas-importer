@@ -278,6 +278,17 @@ test("controls distinguish equal holding names", () => {
     assert.ok(answered.includes(`aria-label="Change answer: Old Fund: kept at 5.000 units: Old Fund in Demat, holding ${n}"`));
   }
   assert.match(ask(1), /<h4 id="h1" tabindex="-1"[^>]*>Old Fund isn't on this statement<\/h4>/);
+  // A caution is said under the buttons and tied to the other answer, which it's about.
+  const cautioned = renderToStaticMarkup(createElement(components.AskCard, {
+    headingId: "h3", title: "Folio 1 now goes to Funds", target: "Old Fund in Demat", children: "Demat holds 5.000 units of Old Fund that this folio added.",
+    main: { label: "Keep them in Demat", name: "Keep them in Demat: Old Fund in Demat", onClick() {} },
+    other: { label: "Remove them from Demat", name: "Remove them from Demat: Old Fund in Demat", onClick() {} },
+    caution: "Remove them only if all of them came from this folio.",
+  })).replaceAll("&#x27;", "'");
+  const caution = cautioned.match(/<p id="([^"]+)"[^>]*>Remove them only if all of them came from this folio\.<\/p>/);
+  assert.ok(caution);
+  assert.match(cautioned, new RegExp(`aria-label="Remove them from Demat: Old Fund in Demat" aria-describedby="${caution[1]}"`));
+  assert.doesNotMatch(cautioned, new RegExp(`aria-label="Keep them in Demat: Old Fund in Demat" aria-describedby=`));
 });
 
 test("ready rows in different accounts still fold until Show all, keeping rows that need attention", () => {
