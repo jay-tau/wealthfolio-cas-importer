@@ -24,6 +24,7 @@ before(async () => {
     ...(await server.ssrLoadModule("/src/components/fund-choices.tsx")),
     ...(await server.ssrLoadModule("/src/components/holdings-preview.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/plan-parts.tsx")),
+    ...(await server.ssrLoadModule("/src/components/review/asks.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/question.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/ready.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/parts.tsx")),
@@ -66,31 +67,28 @@ test("the transactions in a statement count each part only when it isn't zero, o
   ]);
   assert.deepEqual(parts({ before: 21, duplicates: 1, skipped: 6, notImported: 3, unbalanced: 2 }), [
     "21 imported before, skipped",
-    "1 possible duplicate, skipped unless chosen under “Before importing”",
+    "1 possible duplicate, waiting for your answer",
     "6 in skipped funds",
     "3 in folios not imported",
-    "2 in funds whose rows don't add up, left out unless chosen under “Before importing”",
+    "2 in funds whose rows don't add up, waiting for your answer",
   ]);
   assert.deepEqual(parts({ duplicates: 2, leftOut: [reversal("REDEMPTION"), reversal("PURCHASE"), { kind: "row", reason: "x", row: { row: { type: "MISC" } } }] }), [
-    "2 possible duplicates, skipped unless chosen under “Before importing”",
+    "2 possible duplicates, waiting for your answer",
     "3 left out: a sale and a later row that may reverse it, and 1 more listed under “Not included”",
+  ]);
+  // What the answers did: one part each.
+  assert.deepEqual(parts({ toImport: 12, importedDuplicates: 1, skippedDuplicates: 2, otherDuplicates: 1, skippedUnbalanced: 4 }), [
+    "12 to import",
+    "1 possible duplicate, imported by your answer",
+    "2 possible duplicates, skipped by your answer",
+    "1 possible duplicate, skipped",
+    "4 in funds whose rows don't add up, skipped by your answer",
   ]);
   assert.deepEqual(parts({ leftOut: [{ kind: "row", reason: "x", row: { row: { type: "MISC" } } }] }), ["1 left out, listed under “Not included”"]);
   const summary = (b) => text("TransactionsSummary", { breakdown: { ...none, ...b }, range: "Apr 2019 to Jun 2026", partId: "t" });
   assert.match(summary({ total: 1, toImport: 1 }), / 1 transaction , Apr 2019 to Jun 2026 1 to import $/);
   assert.equal(components.nothingWords({ ...none, total: 21, before: 21 }), "Nothing new: every transaction on this statement is already in Wealthfolio.");
   assert.equal(components.nothingWords({ ...none, total: 5, before: 3, earlier: 2 }), "Nothing is ready to import. See the transactions left out or waiting above.");
-});
-
-test("Before importing says what each choice does, naming what it imports", () => {
-  const shown = (checked) => text("BeforeImporting", {
-    duplicates: [{ key: "d", title: "Fictiva Midcap Fund · Purchase · 3 Jul 2026 · ₹5000", reason: "Wealthfolio already has this purchase.", label: "Fictiva Midcap Fund · Purchase", noun: "purchase", checked }],
-    unbalanced: [{ key: "u", title: "Fictiva Credit Risk Fund, folio 1", gap: "The rows don't add up.", checked }],
-    onDuplicate() {}, onUnbalanced() {}, disabled: false, headingId: "before",
-  });
-  assert.match(shown(false), /Import it anyway : Fictiva Midcap Fund · Purchase Skipped unless you tick it\. Two equal purchases on one day can both be real\./);
-  assert.match(shown(false), /Import this fund anyway : Fictiva Credit Risk Fund, folio 1 Its rows are left out unless you tick it\./);
-  assert.match(shown(true), /It's imported as a second purchase\./);
 });
 
 /** Made-up bank matches for checking the words and names rendered by a bank question. */
@@ -159,7 +157,7 @@ test("equal bank pairs keep their visible labels and distinct names within and a
 test("earlier-purchase help and Change distinguish equal funds and their separate reasons", () => {
   const earlier = [1, 2].map((n) => ({ key: String(n), name: "Fictiva Fund", units: "10.000 units", waiting: 1 }));
   const props = {
-    earlier, defaulted: earlier.map((fund, i) => ({ key: fund.key, name: fund.name, label: `${fund.name}, fund ${i + 1}` })),
+    earlier, unbalanced: earlier.map((fund, i) => ({ key: fund.key, name: fund.name, label: `${fund.name}, fund ${i + 1}` })),
     skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: {}, setOpen() {},
     partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
   };
@@ -167,11 +165,11 @@ test("earlier-purchase help and Change distinguish equal funds and their separat
   for (const n of [1, 2]) {
     assert.ok(markup.includes(`aria-label="How to fix: Fictiva Fund, fund ${n}"`));
     assert.ok(markup.includes(`aria-label="Change: Fictiva Fund, fund ${n}, earlier purchases needed"`));
-    assert.ok(markup.replaceAll("&#x27;", "'").includes(`aria-label="Change: Fictiva Fund, fund ${n}, rows don't add up"`));
+    assert.ok(markup.replaceAll("&#x27;", "'").includes(`aria-label="Change: Fictiva Fund, fund ${n}, transactions don't add up"`));
   }
   const shown = text("NotIncludedDetailed", props);
   assert.ok(shown.includes("Earlier purchases needed : Fictiva Fund starts with 10.000 units bought before this statement, so its 1 transaction waits. Change How to fix"));
-  assert.ok(shown.includes("Left out unless you choose otherwise under “Before importing” (2) Fictiva Fund · Change Fictiva Fund · Change"));
+  assert.ok(shown.includes("Skipped because their transactions don't add up (2) , by your answer: Fictiva Fund · Change Fictiva Fund · Change"));
 });
 
 test("one fund's Ready and Not included Change controls have distinct names", () => {
@@ -184,7 +182,7 @@ test("one fund's Ready and Not included Change controls have distinct names", ()
     handlers: { ids: () => ({ change: "ready-change" }), label: () => item.name, nag: false, onChange() {}, changePanel: () => null },
   });
   const leftOut = {
-    earlier: [], skipped: [], notImported: [], defaulted: [],
+    earlier: [], skipped: [], notImported: [], unbalanced: [],
     leftOut: [{ key: item.key, name: item.name, label: item.name, canChange: true, lines: [{ when: "5 Jan 2026", reason: "This row isn't supported." }] }],
     registrar: "CAMS", open: {}, setOpen() {}, partId: "not-included", changeId: () => "left-change",
     onChange() {}, onReopen() {}, changePanel: () => null,
@@ -262,23 +260,24 @@ test("controls distinguish equal holding names", () => {
   for (const name of ["Change: Example Share, holding 1", "Change: Example Share, holding 2", "Add cost: Example Share, holding 1", "Edit: purchase cost of Example Share, holding 2"]) {
     assert.ok(ready.includes(`aria-label="${name}"`), name);
   }
-  // Before saving: an earlier import's holdings no longer on the statement, two with one name, in
-  // two accounts with one name, each replacing a snapshot on the statement's date.
-  const old = (ref) => ({ assetId: ref, symbol: ref, ref, name: "Old Fund", units: "5", cost: null, currency: "INR" });
-  const plans = components.planSnapshots(holdings, {
-    account: () => "a",
-    asset: (h) => ({ symbol: h.isin, exchangeMic: "XBOM", name: h.name, quoteCcy: "INR" }),
-    existing: () => ({ date: "2025-03-31", positions: [old("OLD1@XBOM"), old("OLD2@XBOM")], cash: {}, later: [] }),
-    remembered: () => new Map([["OLD1@XBOM", ["INEZOLD00011"]], ["OLD2@XBOM", ["INEZOLD00029"]]]),
-    heldElsewhere: () => [],
-  });
-  for (const [label, n] of [["Demat, account 1", 1], ["Demat, account 2", 2]]) {
-    const before = text("BeforeSaving", {
-      plan: plans[0], account: "Demat", label, choices: { flipped: new Set(), costs: new Map() }, confirmed: false, onFlip() {}, onKeep() {}, onConfirm() {}, disabled: false,
-    });
-    assert.ok(before.includes(`Replace the snapshot of 31 Mar 2025 in ${label}`), label);
-    for (const holding of [3, 4]) assert.ok(before.includes(`Keep Old Fund in ${label}, holding ${holding}`), `${label} ${holding} ${n}`);
+  // A question's answers each name what they act on, after their visible labels, and only the first
+  // is the main one; Why am I asked? names its question.
+  const ask = (n) => renderToStaticMarkup(createElement(components.AskCard, {
+    headingId: `h${n}`, title: "Old Fund isn't on this statement", target: `Old Fund in Demat, holding ${n}`, children: "Demat holds 5.000 units of it.",
+    main: { label: "Keep 5.000 units", name: `Keep 5.000 units: Old Fund in Demat, holding ${n}`, onClick() {} },
+    other: { label: "Set it to zero on 31 Mar", name: `Set it to zero on 31 Mar: Old Fund in Demat, holding ${n}`, onClick() {} },
+    why: { text: "Why.", open: false, onOpenChange() {} },
+  })).replace(/\s+/g, " ").replaceAll("&#x27;", "'");
+  for (const n of [1, 2]) {
+    for (const name of [`Keep 5.000 units: Old Fund in Demat, holding ${n}`, `Set it to zero on 31 Mar: Old Fund in Demat, holding ${n}`, `Why am I asked? Old Fund isn't on this statement: Old Fund in Demat, holding ${n}`]) {
+      assert.ok(ask(n).includes(`aria-label="${name}"`), name);
+    }
+    const answered = renderToStaticMarkup(createElement(components.AskAnswered, {
+      text: "Old Fund: kept at 5.000 units", target: `Old Fund in Demat, holding ${n}`, buttonId: `answer-${n}`, onChange() {},
+    }));
+    assert.ok(answered.includes(`aria-label="Change answer: Old Fund: kept at 5.000 units: Old Fund in Demat, holding ${n}"`));
   }
+  assert.match(ask(1), /<h4 id="h1" tabindex="-1"[^>]*>Old Fund isn't on this statement<\/h4>/);
 });
 
 test("ready rows in different accounts still fold until Show all, keeping rows that need attention", () => {
@@ -333,22 +332,15 @@ test("ready rows in different accounts still fold until Show all, keeping rows t
   assert.ok(text("ReadyTable", { ...props, rows: [unnamed], wide: true }).includes("Chosen listing's plan and option are unknown."));
 });
 
-test("Before saving offers Change only for a statement row not already shown as ready", () => {
-  const position = {
-    key: "NEW", ref: "NEW", name: "Example Fund", include: true, replaces: ["OLD"], notes: [],
-    lines: [{ source: { label: "Example folio" }, holding: { name: "Example Fund" } }],
-  };
-  const plan = { date: "2025-03-31", positions: [position], existing: { date: null, cash: {} } };
-  const changed = [];
-  const props = {
-    plan, account: "Fund folios", label: "Fund folios", choices: { flipped: new Set(), costs: new Map() },
-    confirmed: false, disabled: false, onFlip() {}, onKeep() {}, onConfirm() {},
-    change: (row) => { changed.push(row.key); return createElement("button", null, "Change this fund"); },
-  };
-  assert.ok(!text("BeforeSaving", props).includes("Change this fund"));
-  assert.deepEqual(changed, []);
-  assert.ok(text("BeforeSaving", { ...props, choices: { ...props.choices, flipped: new Set(["NEW"]) } }).includes("Change this fund"));
-  assert.deepEqual(changed, ["NEW"]);
+test("rows left out so that units aren't counted twice say why, each with its Change", () => {
+  const shown = text("NotIncluded", {
+    tracked: [], counted: [], skipped: [], unsaved: [], lines: [], open: {}, setOpen() {}, onSaveBoth() {}, onDontSave() {}, onReview() {}, partId: "n",
+    defaulted: [
+      { key: "a", name: "Example Fund", notes: ["Demat keeps Example Fund (OLD) for now, by your answer above."], change: createElement("button", null, "Change") },
+      { key: "b", name: "Other Fund", notes: [], change: createElement("button", null, "Change"), panel: createElement("div", null, "Change panel") },
+    ],
+  });
+  assert.ok(shown.includes("Left out, so units aren't counted twice (2) Example Fund Change Demat keeps Example Fund (OLD) for now, by your answer above. Other Fund Change Change panel"));
 });
 
 test("the read-only snapshot keeps an existing cost's currency while statement costs stay in rupees", () => {

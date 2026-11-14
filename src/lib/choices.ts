@@ -267,7 +267,7 @@ export async function indexSources(storage: Storage, accountId: string, investor
  */
 export async function readUnlisted(storage: Storage, accountId: string, investor: string, listed: Source[], baseDate: string | null): Promise<Unlisted[]> {
   if (baseDate === null || !investor) return [];
-  // A failed read throws: without these records, a holding they keep could be removed by default.
+  // A failed read throws: without these records, a holding they keep would be asked about as if no other folio had added it.
   const known = new Set(listed.flatMap((source) => keysOf(source, accountId)));
   const indexed = ((await readIndex(storage, accountId))[investorKey(investor)] ?? []).filter((key) => !known.has(key));
   if (!indexed.length) return [];

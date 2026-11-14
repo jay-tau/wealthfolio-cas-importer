@@ -115,6 +115,38 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         assert.fail(`${what}: the focus is on ${active}`);
       }
     };
+    // A clipped parent can hide overflow without changing the document's scroll width.
+    const textFits = async (locator, what) => {
+      const { width, rects } = await locator.evaluate((element) => {
+        const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+        const rects = [];
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          // Wealthfolio's Select needs its host CSS, which this harness does not load.
+          if (node.parentElement.closest('[data-slot="select-trigger"]')) continue;
+          if (!node.nodeValue.trim()) continue;
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          rects.push(...[...range.getClientRects()].map((r) => ({ text: node.nodeValue, left: r.left, right: r.right })));
+        }
+        return { width: document.documentElement.clientWidth, rects };
+      });
+      assert.ok(rects.length, `${what}: text is rendered`);
+      const outside = rects.filter((r) => r.left < -1 || r.right > width + 1);
+      assert.deepEqual(outside, [], `${what}: text stays inside ${width} px`);
+    };
+    const reviewFits = async (what) => {
+      const review = frame.locator("fieldset").first();
+      await textFits(review, what);
+      const { width, outside } = await review.evaluate((element) => {
+        const width = document.documentElement.clientWidth;
+        const outside = [element, ...element.querySelectorAll("*")]
+          .filter((child) => !child.closest('[data-slot="select-trigger"]'))
+          .flatMap((child) => [...child.getClientRects()].map((r) => ({ tag: child.tagName, left: r.left, right: r.right })))
+          .filter((r) => r.left < -1 || r.right > width + 1);
+        return { width, outside };
+      });
+      assert.deepEqual(outside, [], `${what}: add-on elements stay inside ${width} px`);
+    };
     // A click outside the add-on while the page is locked, such as on Wealthfolio's own menu, keeps
     // the focus there once the page is unlocked, as it would on Wealthfolio's own pages.
     const clickOutside = async () => {
@@ -396,7 +428,24 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const transactionsBox = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Transactions in this statement", exact: true }) });
     const transactionParts = () => transactionsBox.locator("p").nth(1).innerText();
     const notIncluded = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Not included in this import", exact: true }) });
-    const beforeImporting = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Before importing", exact: true }) });
+    // A rare question's card, by its heading.
+    const askCard = (title) => frame.getByRole("region", { name: title, exact: typeof title === "string" });
+    // Sets each holding the statement no longer lists to zero, by its question.
+    const zeroNotListed = async () => {
+      const notListed = frame.getByRole("region", { name: /isn't on this statement$/ });
+      while (await notListed.count()) {
+        await notListed.first().getByRole("button", { name: /^Set it to zero on \d+ \w+: / }).click();
+        await painted();
+      }
+    };
+    // An answered question's Change answer, opening Show answers when every question is answered.
+    const changeAnswer = async (name) => {
+      const show = frame.getByRole("button", { name: "Show answers", exact: true });
+      if (await show.count()) await show.click();
+      const button = frame.getByRole("button", { name, exact: true });
+      await button.waitFor();
+      return button;
+    };
     // See every transaction: today's activity table, read-only, above the footer.
     const everyTable = frame.getByRole("table", { name: "Every transaction on this statement", exact: true });
     const seeEvery = async () => {
@@ -600,7 +649,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readStatement();
     assert.equal(await fundQuestions.count(), 0);
     assert.deepEqual(await cellsOf(readyFund("Fund INFZ90K01LQ6")), [["3 3 imported before", "16.106"]]);
-    assert.equal(await beforeImporting.count(), 0);
+    assert.equal(await frame.getByRole("heading", { name: "Before importing" }).count(), 0);
     await importButton.click();
     await imported(6).waitFor();
     await readStatement();
@@ -610,29 +659,47 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.activities = rows;
     }, allImported);
 
-    // A purchase Wealthfolio has without the add-on's row ID, but without its cash, may be another:
-    // it's skipped unless chosen under Before importing, which says what that does.
+    // A switch in that Wealthfolio has as a purchase without the add-on's row ID, but without its cash,
+    // may be another: it's asked about in the statement's words, with both rows side by side and
+    // skipping it as the main answer, and the import waits for the answer.
     await hosted(() => {
       const buy = window.host.activities.find((a) => a.activityType === "BUY" && a.assetSymbol === "INFZ90K01LQ6" && a.date.startsWith("2024-06-20"));
       delete buy.sourceRecordId;
       window.host.activities = window.host.activities.filter((a) => !(a.activityType === "DEPOSIT" && a.date.startsWith("2024-06-20")));
     });
     await readStatement();
-    const duplicate = beforeImporting.getByRole("checkbox", { name: /^Import it anyway\s*:\s*Fund INFZ90K01LQ6 · Purchase · 20 Jun 2024 · ₹[\d,.]+$/ });
-    await duplicate.waitFor({ state: "attached" });
-    await beforeImporting.getByText("Wealthfolio already has this purchase, entered by hand or imported without the add-on's row ID.", { exact: true }).waitFor();
-    await beforeImporting.getByText("Skipped unless you tick it. Two equal purchases on one day can both be real.", { exact: true }).waitFor();
-    assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, skipped unless chosen under “Before importing” · 26 waiting for earlier purchases");
+    const duplicateCard = askCard("This switch in may already be in Mutual funds");
+    await duplicateCard.waitFor();
+    await duplicateCard.getByText("On this statement: 20 Jun 2024 · Switch in · Fund INFZ90K01LQ6 · 3.306 units · ₹9,162.28", { exact: true }).waitFor();
+    await duplicateCard.getByText("Already in Mutual funds: 20 Jun 2024 · Buy · INFZ90K01LQ6 · 3.306 units · ₹9,162.49 · entered by hand", { exact: true }).waitFor();
+    await duplicateCard.getByText("Two equal transactions on one day can both be real.", { exact: true }).waitFor();
+    const skipDuplicate = duplicateCard.getByRole("button", { name: "Skip this transaction: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
+    const importDuplicate = duplicateCard.getByRole("button", { name: "Import it as a second switch in: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
+    await skipDuplicate.waitFor();
+    assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, waiting for your answer · 26 waiting for earlier purchases");
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    assert.equal(await importButton.isDisabled(), true);
+    // Skipped: one line with Change answer, and nothing to import.
+    await skipDuplicate.focus();
+    await tab.keyboard.press("Enter");
+    await focused(dSummary, "Skip this transaction, the last question");
+    const duplicateAnswer = await changeAnswer("Change answer: ₹9,162.28 switch in of Fund INFZ90K01LQ6 on 20 Jun 2024: skipped: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024");
+    assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, skipped by your answer · 26 waiting for earlier purchases");
+    await dFooter.getByText("1 possible duplicate skipped by your answer.", { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Finish", exact: true }).waitFor();
-    await duplicate.dispatchEvent("click");
-    await beforeImporting.getByText("It's imported as a second purchase.", { exact: true }).waitFor();
+    // Change answer reopens the card, focused, and importing it is the other answer.
+    await duplicateAnswer.focus();
+    await tab.keyboard.press("Enter");
+    await focused(duplicateCard.getByRole("heading"), "Change answer on a possible duplicate");
+    await importDuplicate.click();
     await dSettled();
     // Imported, its units count too: the fund's row says so and doesn't fold away, and so does the footer.
-    await readyFund("Fund INFZ90K01LQ6").getByText("After import: 11.359 units · Statement: 8.053. Includes the second purchase you chose.", { exact: true }).waitFor();
+    await readyFund("Fund INFZ90K01LQ6").getByText("After import: 11.359 units · Statement: 8.053. Includes the second switch in you chose.", { exact: true }).waitFor();
     assert.deepEqual(await cellsOf(readyFund("Fund INFZ90K01LQ6")), [["1 2 imported before", "11.359"]]);
     await dFooter.getByText("Import 1 transaction for 1 fund into Mutual funds.", { exact: true }).waitFor();
     await dFooter.getByText("1 fund's units won't match the statement after importing: Fund INFZ90K01LQ6.", { exact: true }).waitFor();
-    assert.equal(await transactionParts(), "1 to import · 12 imported before, skipped · 26 waiting for earlier purchases");
+    await dFooter.getByText("1 possible duplicate imported by your answer.", { exact: true }).waitFor();
+    assert.equal(await transactionParts(), "1 possible duplicate, imported by your answer · 12 imported before, skipped · 26 waiting for earlier purchases");
     await importButton.click();
     await imported(2).waitFor();
     const forced = await hosted(() => window.host.activities.filter((a) => a.date.startsWith("2024-06-20")).map((a) => [a.activityType, a.assetSymbol]));
@@ -1330,8 +1397,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
-    // A fund whose rows don't add up to its closing balance is left out, even with its opening units in
-    // Wealthfolio, unless it's chosen under Before importing, which says what each choice does.
+    // A fund whose rows don't add up to its closing balance is asked about, even with its opening units
+    // in Wealthfolio, with skipping it as the main answer, and the import waits for the answer.
     const flexiOpening = {
       id: "flexi-opening", accountId: "account-1", activityType: "BUY", subtype: null, status: "POSTED",
       date: "2023-03-01T00:00:00+00:00", quantity: "1250", unitPrice: "40", amount: "50000", fee: null, currency: "INR",
@@ -1340,26 +1407,32 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted((opening) => { window.host.activities = [opening]; }, flexiOpening);
     await readStatement("tests/fixtures/made-up-cas-mismatch.pdf");
     await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
-    const importFlexi = beforeImporting.getByRole("checkbox", { name: /^Import this fund anyway\s*:\s*Fictiva Flexi Cap Fund - Direct Plan - Growth, folio 91234567 \/ 12$/ });
-    await importFlexi.waitFor({ state: "attached" });
-    await beforeImporting.getByText(
-      "The rows take the unit balance from 1250 to 2798.066, but the statement's closing balance is 2892.104, 94.038 units apart: a row was probably dropped or misread.",
-      { exact: true },
-    ).waitFor();
-    await beforeImporting.getByText("Its rows are left out unless you tick it.", { exact: true }).waitFor();
-    await notIncluded.getByText("Left out unless you choose otherwise under “Before importing” (1)", { exact: true }).waitFor();
-    assert.match(await transactionParts(), /^13 to import · \d+ in funds whose rows don't add up, left out unless chosen under “Before importing”$/);
-    await importFlexi.press("Space");
+    const gapCard = askCard("Fund INFZ90K01FC8's transactions don't add up");
+    await gapCard.getByText("They add up to 2,798.066 units; the statement says 2,892.104. A row may be missing or misread.", { exact: true }).waitFor();
+    const skipFlexi = gapCard.getByRole("button", { name: "Skip this fund: Fund INFZ90K01FC8", exact: true });
+    const importFlexi = gapCard.getByRole("button", { name: "Import with this difference: Fund INFZ90K01FC8", exact: true });
+    assert.match(await transactionParts(), /^13 to import · \d+ in funds whose rows don't add up, waiting for your answer$/);
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    assert.equal(await importButton.isDisabled(), true);
+    await importFlexi.focus();
+    await tab.keyboard.press("Enter");
     // Imported, its units won't match the statement: its row says so, and so does the footer.
     await readyFund("Fund INFZ90K01FC8").getByText("After import: 2,798.066 units · Statement: 2,892.104. Imported with the difference you accepted.", { exact: true }).waitFor();
     await dFooter.getByText("1 fund's units won't match the statement after importing: Fund INFZ90K01FC8.", { exact: true }).waitFor();
-    await beforeImporting.getByText("Its rows are imported: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.", { exact: true }).waitFor();
-    // Before importing stays while the plan is worked out again, so the checkbox keeps the focus.
-    await focused(importFlexi, "Import this fund anyway");
-    await importFlexi.press("Space");
-    await focused(importFlexi, "Import this fund anyway, unticked");
+    await dFooter.getByText("Fund INFZ90K01FC8 imported with the difference, by your answer.", { exact: true }).waitFor();
+    await focused(dSummary, "Import with this difference, once the plan is worked out again");
+    await dSaid.getByText("All questions answered. Ready to import.", { exact: true }).waitFor();
+    // Changed to Skip this fund, it's left out again, with Change under Not included.
+    const gapAnswer = await changeAnswer("Change answer: Fund INFZ90K01FC8: imported with the difference: Fund INFZ90K01FC8");
+    await gapAnswer.focus();
+    await tab.keyboard.press("Enter");
+    await focused(gapCard.getByRole("heading"), "Change answer on a fund whose rows don't add up");
+    await skipFlexi.click();
     await readyFund("Fund INFZ90K01FC8").waitFor({ state: "detached" });
+    await notIncluded.getByText(/^Skipped because their transactions don't add up \(1\)/).waitFor();
+    await notIncluded.getByRole("button", { name: /^Change: Fictiva Flexi Cap Fund - Direct Plan - Growth, transactions don't add up$/ }).waitFor();
     await dSettled();
+    assert.match(await transactionParts(), /^13 to import · \d+ in funds whose rows don't add up, skipped by your answer$/);
     await importButton.click();
     await imported(23).waitFor();
     const afterGap = await hosted(() => window.host.activities);
@@ -1481,7 +1554,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const escaped = (text) => text.replace(/\s+/g, " ").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // Each holding still to answer is a card in Questions for you, found by the name the statement prints.
     const question = (name) => frame.locator("section section").filter({ hasText: new RegExp(`On your statement: ${escaped(name)} ·`) });
-    const questions = frame.locator("section section");
+    // The fund questions: a card per holding with no confirmed asset, not the rarer questions beside them.
+    const questions = frame.locator("section section").filter({ hasText: /On your statement: / });
     // A holding that will be saved is a row of Ready to save, with Change named for it.
     const ready = (text) => frame.getByRole("row").filter({ has: frame.getByRole("button", { name: /^Change: / }) }).filter({ hasText: text });
     const readyRows = frame.getByRole("row").filter({ has: frame.getByRole("button", { name: /^Change: / }) });
@@ -1557,8 +1631,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
       await settled();
     };
+    // The answer that replaces an account's holdings saved for the statement's date.
     const sameDay = (account, date = "31 Mar 2025") =>
-      frame.getByRole("checkbox", { name: `Replace the snapshot of ${date} in ${account}`, exact: true });
+      frame.getByRole("button", { name: `Replace them with this statement: ${account}'s holdings for ${date}`, exact: true });
     // The read-only snapshot an account gets, under the footer's See … after saving.
     const snapshotTable = async (account, date = "31 Mar 2025") => {
       const toggle = frame.getByRole("button", { name: `See ${account}'s holdings on ${date} after saving`, exact: true });
@@ -2225,8 +2300,143 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(funds.holdings.find((h) => h.symbol === "GILT").averageCost, "100");
     await hosted((renamed) => { for (const id of renamed) window.host.assets[id].displayCode = window.host.assets[id].symbol; }, renamed);
 
+    // Keeping a snapshot for this date applies only to its account. Restore this fake state after
+    // each path so the replacement checks below still start from the first save.
+    const beforeKeptDate = await hosted(() => JSON.stringify({
+      snapshots: window.host.snapshots, saves: window.host.saves, assets: window.host.assets, quotes: window.host.quotes,
+      pricingModes: window.host.pricingModes, storage: [...window.host.storage], accounts: window.host.accounts,
+    }));
+    const longKeptHolding = "HoldingWithALongNameAndNoSpacesInTheKeptStatementDisclosure";
+    const resetKeptDate = async (allInDemat = false, accountName = "Demat") => {
+      await leaveReview();
+      await hosted(([saved, allInDemat, accountName, keys, longHolding]) => {
+        const { storage, ...state } = JSON.parse(saved);
+        Object.assign(window.host, state, { storage: new Map(storage) });
+        const [statement, nsdl, cdsl, folio, leftOut] = keys;
+        for (const [key, account] of [[statement, "holdings-1"], [nsdl, "holdings-1"],
+          [cdsl, allInDemat ? "holdings-1" : "left-out"], [folio, allInDemat ? "holdings-1" : "holdings-2"], [leftOut, "left-out"]]) {
+          window.host.storage.set(key, account);
+        }
+        // Keep an unmatched statement holding of a demat account that goes to Demat open, so keeping
+        // Demat must remove its question.
+        window.host.storage.delete("isin:INEZ90C01021");
+        window.host.accounts.find((a) => a.id === "holdings-1").name = accountName;
+        if (accountName !== "Demat") {
+          const key = "isin:INEZ90A01017";
+          window.host.storage.set(key, JSON.stringify({ ...JSON.parse(window.host.storage.get(key)), name: longHolding }));
+          window.host.assets["asset-INEZ90A01017"].name = longHolding;
+        }
+        // Demat still holds the Liquid fund even when its folio is now sent elsewhere.
+        const liquid = window.host.snapshots["holdings-2"]["2025-03-31"].holdings.find((h) => h.symbol === "INFZ90K01LQ6");
+        window.host.snapshots["holdings-1"]["2025-03-31"].holdings.push(structuredClone(liquid));
+      }, [beforeKeptDate, allInDemat, accountName, [statementKey, nsdlKey, cdslKey, otherFolioKey, leftOutFolioKey], longKeptHolding]);
+      await readHoldings();
+    };
+    const keptDateCard = (account = "Demat") => askCard(`${account} already has holdings saved for 31 Mar 2025`);
+    const keepSaved = (account = "Demat") => keptDateCard(account).getByRole("button", {
+      name: `Keep the saved ones: ${account}'s holdings for 31 Mar 2025`, exact: true,
+    });
+    const doubleWarning = "Demat will still hold Fund INFZ90K01LQ6. Saving it in Fund folios too would count its units twice.";
+    await resetKeptDate();
+    await keptDateCard().waitFor();
+    await question("DEMOCORP BANK LIMITED").waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true, "both saved-date answers are still needed");
+    // Skipped, excluded and rerouted statement holdings do not appear as changes to Demat.
+    await ready("FICTIVA POWER AND LIGHT LIMITED").getByRole("button", { name: /^Change: / }).click();
+    await frame.locator("[data-focus-first]").getByRole("button", { name: /^Skip this holding: / }).click();
+    await frame.locator("[data-focus-first]").waitFor({ state: "detached" });
+    await settled();
+    const changesInDemat = await keptDateCard().innerText();
+    for (const [why, name] of [["skipped", "FICTIVA POWER AND LIGHT LIMITED"],
+      ["excluded", "Testbridge Corporate Bond Fund"], ["excluded", "Fund 0P0000TBCB"], ["rerouted", "Fund INFZ90K01LQ6"]]) {
+      assert.ok(!changesInDemat.includes(name), `no saved-unit change for ${why} ${name}`);
+    }
+    await sameDay("Fund folios").click();
+    // Its cost draft and unmatched holding disappear together with the kept account's ready rows.
+    await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").getByRole("button", { name: /^(Add cost|Edit): / }).click();
+    await frame.getByRole("textbox", { name: /^Total purchase cost of these / }).fill("333");
+    await keepSaved().press("Enter");
+    await settled();
+    assert.equal(await questions.count(), 0);
+    assert.equal(await frame.getByRole("textbox", { name: /^Total purchase cost of these / }).count(), 0);
+    assert.equal(await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").count(), 0);
+    await frame.getByText("Demat: nothing will be saved", { exact: true }).waitFor();
+    await frame.getByText("Demat kept as saved", { exact: true }).waitFor();
+    await frame.getByText(/^Already tracked in Mutual funds \(1\)/).waitFor();
+    await frame.getByRole("button", { name: "Show this statement's holdings for Demat", exact: true }).click();
+    await frame.getByText(/^DEMOCORP BANK LIMITED · /).waitFor();
+    await footer.getByText(doubleWarning, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(doubleWarning, { exact: true }).count(), 2, "Ready and the footer both warn");
+    const keptBeforeSave = await hosted(() => ({ saves: window.host.saves.length, snapshot: window.host.snapshots["holdings-1"]["2025-03-31"] }));
+    await saveHoldings.click();
+    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await frame.getByText("Demat: the holdings already saved for 31 Mar 2025 were kept; nothing changed there.", { exact: true }).waitFor();
+    await frame.getByText(doubleWarning, { exact: true }).waitFor();
+    assert.deepEqual(await hosted((n) => window.host.saves.slice(n).map((s) => s.accountId), keptBeforeSave.saves), ["holdings-2"]);
+    assert.deepEqual(await snapshot("holdings-1", "2025-03-31"), keptBeforeSave.snapshot);
+
+    // Changing the main account first cannot turn Keep ... in Demat into Same as above.
+    await resetKeptDate();
+    await keepSaved().click();
+    await choose("investor", "Fund folios (INR)");
+    const keepFolio = frame.getByRole("button", { name: "Keep the Mutual fund folio 91234567/12 in Demat", exact: true });
+    await keepFolio.press("Enter");
+    await settled();
+    await focused(footer.locator("[tabindex='-1']").first(), "Keep the folio in the kept account, nothing left to save");
+    await said.getByText("Nothing will be saved. Demat's holdings for 31 Mar 2025 are kept.", { exact: true }).waitFor();
+    await openParts();
+    assert.match(await sourceSelect(otherFolioTitle).textContent(), /^Demat \(INR\)$/);
+    await footer.getByText("Nothing will change: you kept the holdings already saved in Demat for 31 Mar 2025.", { exact: true }).waitFor();
+    const beforeKeptFinish = await hosted(() => ({ saves: window.host.saves.length, snapshots: window.host.snapshots }));
+    await footer.getByRole("button", { name: "Finish", exact: true }).click();
+    await frame.getByText("Finished: nothing from made-up-nsdl.pdf was saved. Demat's holdings for 31 Mar 2025 are kept.", { exact: true }).waitFor();
+    assert.deepEqual(await hosted(() => ({ saves: window.host.saves.length, snapshots: window.host.snapshots })), beforeKeptFinish);
+
+    // Keeping the only destination also finishes without a write, including at 320 px with a long name.
+    const longAccount = "DematAccountWithALongNameAndNoSpacesForTheNarrowWindow";
+    await resetKeptDate(true, longAccount);
+    await frameWidth(320);
+    await keptDateCard(longAccount).waitFor();
+    await textFits(keptDateCard(longAccount).getByRole("heading"), "saved-date question heading at 320 px");
+    await reviewFits("saved-date review at 320 px");
+    const beforeOnlyKept = await hosted(() => ({ saves: window.host.saves.length, snapshots: window.host.snapshots }));
+    await keepSaved(longAccount).press("Enter");
+    await settled();
+    await focused(footer.locator("[tabindex='-1']").first(), "Keep the only account's saved holdings");
+    await frame.getByText(`${longAccount} kept as saved`, { exact: true }).waitFor();
+    await textFits(frame.getByRole("heading", { name: `${longAccount}: nothing will be saved`, exact: true }), "kept-account heading at 320 px");
+    await textFits(frame.getByText(`${longAccount} kept as saved`, { exact: true }), "kept-account chip at 320 px");
+    await textFits(footer.locator("[tabindex='-1']").first(), "kept-only footer summary at 320 px");
+    await frame.getByRole("button", { name: `Show this statement's holdings for ${longAccount}`, exact: true }).click();
+    await textFits(frame.getByText(new RegExp(`^${longKeptHolding} · `)), "kept statement holding at 320 px");
+    assert.equal(await frame.getByText(/^Already tracked in Mutual funds \(/).count(), 0, "the kept account's tracked funds leave Not included");
+    await reviewFits("kept-account review with statement holdings open at 320 px");
+    await footer.getByRole("button", { name: "Finish", exact: true }).click();
+    await reviewHeading.waitFor({ state: "detached" });
+    assert.deepEqual(await hosted(() => ({ saves: window.host.saves.length, snapshots: window.host.snapshots })), beforeOnlyKept);
+    await frameWidth(1000);
+    // The kept receipt and double-count warning must also fit when another account still saves.
+    await resetKeptDate(false, longAccount);
+    await sameDay("Fund folios").click();
+    await keepSaved(longAccount).click();
+    await settled();
+    await frameWidth(320);
+    await textFits(footer.locator("[tabindex='-1']").first(), "mixed-save footer summary at 320 px");
+    await reviewFits("mixed-save review at 320 px");
+    await saveHoldings.click();
+    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await textFits(frame.getByText(`${longAccount}: the holdings already saved for 31 Mar 2025 were kept; nothing changed there.`, { exact: true }), "kept receipt at 320 px");
+    await textFits(frame.getByText(doubleWarning.replace(/^Demat /, `${longAccount} `), { exact: true }), "double-count result warning at 320 px");
+    await reviewFits("kept-account result at 320 px");
+    await frameWidth(1000);
+    await hosted((saved) => {
+      const { storage, ...state } = JSON.parse(saved);
+      Object.assign(window.host, state, { storage: new Map(storage) });
+    }, beforeKeptDate);
+
     // A fund confirmed to another asset than the one an earlier import of its folio added keeps that
-    // asset, and leaves the new one out, until one choice under Before saving replaces the old asset with it.
+    // asset, and leaves the new one out, until the user answers its question: keep the old asset for
+    // now, or replace it with the new one.
     const balancedName = "Fictiva Balanced Advantage Fund - Direct Plan - IDCW Reinvestment";
     const changePanelOf = () => frame.locator("[data-focus-first]");
     // Changes a ready holding to a result its Change panel finds for `query`, or to its only result.
@@ -2253,35 +2463,29 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await panel.waitFor({ state: "detached" });
       await settled();
     };
-    const beforeSaving = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Before saving", exact: true }) });
-    // A decision under Before saving, by the holding's name.
-    const decision = (name) => beforeSaving.locator("div.border-t").filter({ has: frame.locator("span.font-medium", { hasText: new RegExp(`^${escaped(name)}$`) }) });
     const reread = async () => {
       await readHoldings();
       if (await question("PLACEHOLDER PHARMA LIMITED").count()) await answer("PLACEHOLDER PHARMA LIMITED", "skip");
       await settled();
     };
-    const replaceAndSave = async (oldName, newName, oldSymbol, newSymbol) => {
-      const [oldAsset, newAsset] = [`${oldName} (${oldSymbol} · XBOM)`, `${newName} (${newSymbol} · XBOM)`];
-      const [oldEntry, newEntry] = [decision(oldName), decision(newName)];
-      const replace = newEntry.getByRole("checkbox", { name: `Replace ${oldAsset} with ${newAsset} in Fund folios`, exact: true });
-      await replace.waitFor({ state: "attached" });
-      assert.equal(await replace.getAttribute("aria-checked"), "false");
-      await newEntry.getByText(
-        `An earlier import of Folio 91234567/12 added this holding as ${oldAsset}. So that it isn't counted twice, it's left out unless you replace ${oldAsset} with it. ` +
-        "Replace it only if all its units came from Folio 91234567/12: imports don't record how many units each folio, demat account or PRAN added.",
-        { exact: true },
-      ).waitFor();
-      assert.equal(await newEntry.getByText("Left out", { exact: true }).count(), 1);
-      // Not included says it waits for that choice.
-      await frame.getByText(new RegExp(`^Left out unless you choose otherwise under “Before saving” \\(1\\): ${escaped(newName)}\\.$`)).waitFor();
-      await oldEntry.getByText(`An earlier import of Folio 91234567/12 added it for a holding that this import lists under ${newAsset}. It's kept unless you replace it with ${newAsset}.`, { exact: true }).waitFor();
-      assert.equal(await oldEntry.getByText("Kept", { exact: true }).count(), 1);
-      // The old row has no choice of its own.
-      assert.equal(await oldEntry.getByRole("checkbox").count(), 0);
+    const replaceAndSave = async (oldName, newName, oldSymbol) => {
+      // Named as the statement prints it; the answers go by the assets' names.
+      const card = askCard(`Fictiva Balanced Advantage Fund is now matched to ${newName}`);
+      await card.getByText(`Fund folios holds it as ${oldName} (${oldSymbol} · XBOM).`, { exact: true }).waitFor();
+      const keep = card.getByRole("button", { name: `Keep ${oldName} for now: ${newName} in Fund folios`, exact: true });
+      const replace = card.getByRole("button", { name: `Replace ${oldName} with ${newName}: ${newName} in Fund folios`, exact: true });
+      await keep.waitFor();
+      // The main answer says what it leaves, tied to it.
+      const note = await keep.getAttribute("aria-describedby");
+      assert.equal(await frame.locator(`[id="${note}"]`).textContent(), `${newName} isn't saved, so its units aren't counted twice.`);
+      // Until it's answered, neither row is ready or left out, and the old asset is kept.
+      assert.equal(await ready(newName).count(), 0);
+      assert.equal(await statusOf(await snapshotTable("Fund folios"), oldName), "Kept");
+      assert.equal(await statusOf(await snapshotTable("Fund folios"), newName), "Needs an answer");
       await replace.dispatchEvent("click");
-      await oldEntry.getByText("Replaced", { exact: true }).waitFor();
-      assert.equal(await newEntry.getByText("New", { exact: true }).count(), 1);
+      await changeAnswer(`Change answer: Fictiva Balanced Advantage Fund: ${oldName} replaced with ${newName}: ${newName} in Fund folios`);
+      assert.equal(await statusOf(await snapshotTable("Fund folios"), oldName), "Replaced");
+      assert.equal(await statusOf(await snapshotTable("Fund folios"), newName), "New");
       await sameDay("Demat").dispatchEvent("click");
       await sameDay("Fund folios").dispatchEvent("click");
       await saveHoldings.click();
@@ -2289,18 +2493,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       return (await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => [h.symbol, h.quantity]);
     };
     await reread();
-    // Both accounts have a snapshot on this date now: replacing each needs a tick, which is a question until it's given.
+    // Both accounts have a snapshot on this date now: each is asked about first, until it's answered.
     await footer.getByText("2 questions left before saving.", { exact: true }).waitFor();
     await footer.getByRole("button", { name: "Go to the next question", exact: true }).click();
-    await focused(beforeSaving.getByRole("heading"), "Go to the next question, Before saving");
+    await focused(askCard("Demat already has holdings saved for 31 Mar 2025").getByRole("heading"), "Go to the next question, the saved holdings");
     await changeTo(ready(balancedName), "MULTI", /^Fund A /);
-    assert.deepEqual(await replaceAndSave("Fund INFZ90K01BA1", "Fund A", "INFZ90K01BA1", "A"), [
+    assert.deepEqual(await replaceAndSave("Fund INFZ90K01BA1", "Fund A", "INFZ90K01BA1"), [
       ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["A", "3540.293"],
     ]);
     // The import remembers the replacement, so going back is offered the same way.
     await reread();
     await changeTo(ready(balancedName), "INFZ90K01BA1", /^Fund INFZ90K01BA1 /);
-    assert.deepEqual(await replaceAndSave("Fund A", "Fund INFZ90K01BA1", "A", "INFZ90K01BA1"), [
+    assert.deepEqual(await replaceAndSave("Fund A", "Fund INFZ90K01BA1", "A"), [
       ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["INFZ90K01BA1", "3540.293"],
     ]);
 
@@ -2327,47 +2531,45 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01FC8").quantity, "2892.104");
     await reread();
-    // Each choice names the holding and account after its visible text, for screen readers.
-    const flexiEntry = decision("Fund INFZ90K01FC8");
-    const keepFlexi = flexiEntry.getByRole("radio", { name: "Keep its 2892.104 units for Fund INFZ90K01FC8 in Fund folios", exact: true });
-    const removeFlexi = flexiEntry.getByRole("radio", {
-      name: "Remove its 2892.104 units: all of them came from Folio 91234567/12 for Fund INFZ90K01FC8 in Fund folios", exact: true,
-    });
-    await keepFlexi.waitFor({ state: "attached" });
-    await flexiEntry.getByRole("radiogroup", { name: "Keep or remove its 2892.104 units for Fund INFZ90K01FC8 in Fund folios", exact: true }).waitFor();
-    await flexiEntry.getByText(
-      "An earlier import of Folio 91234567/12 recorded adding this holding. Leaving this row out keeps the 2892.104 units this account holds unless you remove them. Keeping them counts them here and in Mutual funds. " +
-      "Keep them, or remove them only if all of them came from Folio 91234567/12: imports don't record how many units each folio, demat account or PRAN added.",
-      { exact: true },
-    ).waitFor();
-    assert.equal(await flexiEntry.getByText("Needs a choice", { exact: true }).count(), 1);
-    assert.deepEqual([await keepFlexi.getAttribute("aria-checked"), await removeFlexi.getAttribute("aria-checked")], ["false", "false"]);
+    // Asked as one card: its answers name the holding after their visible text, for screen readers.
+    const flexiCard = askCard("Fund INFZ90K01FC8 is already tracked in Mutual funds");
+    const keepFlexi = flexiCard.getByRole("button", { name: "Keep them in Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true });
+    const removeFlexi = flexiCard.getByRole("button", { name: "Remove them from Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true });
+    await flexiCard.getByText("Fund folios also holds 2,892.104 units of it, from an earlier import of Mutual fund folio 91234567/12.", { exact: true }).waitFor();
+    await keepFlexi.waitFor();
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Needs an answer");
     await replaceBoth();
     // The undecided keep or remove is an open question until it's answered.
     await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
-    await keepFlexi.dispatchEvent("click");
-    await flexiEntry.getByText("Kept", { exact: true }).waitFor();
+    await keepFlexi.focus();
+    await tab.keyboard.press("Enter");
+    // The last answer takes the focus to the bar's summary, which says what it does.
+    await focused(footer.locator("[tabindex='-1']"), "the last question answered");
+    const flexiAnswer = await changeAnswer("Change answer: Fund INFZ90K01FC8: Fund folios's 2,892.104 units kept: Fund INFZ90K01FC8 in Fund folios");
+    await footer.getByText("Fund INFZ90K01FC8: Fund folios's 2,892.104 units kept.", { exact: true }).waitFor();
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Kept");
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
-    // Saving the statement's units in both accounts replaces the account's, so there's nothing to choose.
+    // Saving the statement's units in both accounts replaces the account's, so there's nothing to ask.
     await saveBoth();
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Updated");
-    assert.equal(await flexiEntry.getByRole("radio").count(), 0);
+    assert.equal(await flexiAnswer.count(), 0);
     await frame.getByRole("button", { name: /^Don't save it here: / }).click();
     await frame.getByText(/^Counted in both accounts: /).waitFor({ state: "detached" });
+    // Saved here no more, it's asked again.
+    await keepFlexi.waitFor();
     await removeFlexi.dispatchEvent("click");
-    await flexiEntry.getByText("Removed", { exact: true }).waitFor();
-    assert.equal(await removeFlexi.getAttribute("aria-checked"), "true");
+    await changeAnswer("Change answer: Fund INFZ90K01FC8: Fund folios's 2,892.104 units removed: Fund INFZ90K01FC8 in Fund folios");
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Removed");
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.symbol), ["GILT", "INFZ90K01LQ6", "INFZ90K01BA1"]);
-    // Removed with the earlier import's record, so the next review has nothing to choose.
+    // Removed with the earlier import's record, so the next review has nothing to ask.
     await reread();
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Left out");
-    assert.equal(await frame.getByRole("radio", { name: /^(Keep|Remove) its / }).count(), 0);
+    assert.equal(await flexiCard.count(), 0);
     await frame.getByText(/^Already tracked in Mutual funds \(1\)/).waitFor();
-    assert.equal(await frame.getByText(/^(An earlier import of Folio 91234567\/12 recorded|Leaving this row out)/).count(), 0);
 
     // Skipping a still-listed fund keeps both its units and the earlier import's provenance.
     await ready("Fictiva Liquid Fund - Direct Plan - Growth").getByRole("button", { name: /^Change: / }).click();
@@ -2381,10 +2583,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
 
-    // Once that fund is no longer listed, the remembered import still removes it by default, also
-    // after its asset's symbol changed in Wealthfolio and its choice was forgotten: the record's
-    // asset ID tells its asset. Replacing a snapshot on the same date needs confirming;
-    // Wealthfolio's cost carries over, also to a holding whose display code was changed.
+    // Once that fund is no longer listed, the remembered import still asks about it, also after its
+    // asset's symbol changed in Wealthfolio and its choice was forgotten: the record's asset ID tells
+    // its asset. Nothing is preselected, so saving waits for the answer. Replacing a snapshot on the
+    // same date needs confirming; Wealthfolio's cost carries over, also to a holding whose display
+    // code was changed.
     await hosted(() => {
       window.host.soldIsins = ["INFZ90K01LQ6"];
       window.host.assets["asset-INEZ90A01017"].displayCode = "MY SHARE";
@@ -2393,16 +2596,30 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     await reread();
     await frame.getByText("15 holdings", { exact: true }).waitFor();
-    const sold = decision("Fund INFZ90K01LQ6");
-    await sold.getByText("Not on the statement any more. An earlier import of Folio 91234567/12 added it.").waitFor();
-    assert.equal(await sold.getByText("Removed", { exact: true }).count(), 1);
-    assert.equal(await frame.getByRole("checkbox", { name: "Keep Fund INFZ90K01LQ6 in Fund folios", exact: true }).isChecked(), false);
+    const sold = askCard("Fund INFZ90K01LQ6 isn't on this statement");
+    await sold.getByText("Fund folios holds 8.053 units of it, from an earlier import of Mutual fund folio 91234567/12.", { exact: true }).waitFor();
+    assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01LQ6"), "Needs an answer");
+    // Why am I asked? says why, only when asked.
+    const why = sold.getByRole("button", { name: "Why am I asked? Fund INFZ90K01LQ6 isn't on this statement: Fund INFZ90K01LQ6 in Fund folios", exact: true });
+    assert.equal(await sold.getByText(/^A statement can leave out a fund you still hold/).count(), 0);
+    await why.click();
+    await sold.getByText(/^A statement can leave out a fund you still hold, for example one that covers only some fund houses\. Set it to zero only if you no longer own any of its units/).waitFor();
     const powerReady = ready("FICTIVA POWER AND LIGHT LIMITED");
     await powerReady.getByText(/^Purchase cost ₹1,85,175, from your earlier holdings · /).waitFor();
     assert.equal(await powerReady.count(), 1);
     assert.equal(await saveHoldings.isDisabled(), true);
-    // Both accounts have a snapshot on this date; each tick names its account.
+    // Both accounts have a snapshot on this date; each answer names its account.
     await replaceBoth();
+    assert.equal(await saveHoldings.isDisabled(), true);
+    await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
+    await sold.getByRole("button", { name: "Set it to zero on 31 Mar: Fund INFZ90K01LQ6 in Fund folios", exact: true }).click();
+    // Change answer reopens the card, its heading focused; answered again, the bar says what it does.
+    const soldAnswer = await changeAnswer("Change answer: Fund INFZ90K01LQ6: set to zero on 31 Mar: Fund INFZ90K01LQ6 in Fund folios");
+    await soldAnswer.focus();
+    await tab.keyboard.press("Enter");
+    await focused(sold.getByRole("heading"), "Change answer, a holding not on the statement");
+    await sold.getByRole("button", { name: "Set it to zero on 31 Mar: Fund INFZ90K01LQ6 in Fund folios", exact: true }).click();
+    await footer.getByText("Fund INFZ90K01LQ6 set to zero.", { exact: true }).waitFor();
     await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.deepEqual(
@@ -2433,9 +2650,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       delete window.host.assets["asset-INEZ90A01017"].instrumentSymbol;
       window.host.storage.set("isin:INEZ90A01017", choice);
     }, shareChoiceBefore);
-    // An empty demat account still reconciles its sold holdings. After saving, a manual-priced
-    // holding on the statement gets its printed price, and a kept one the price it had, not their
-    // average costs.
+    // An empty demat account still asks about each holding an earlier import of it added, never
+    // emptying the account. After saving, a manual-priced holding on the statement gets its printed
+    // price, and a kept one the price it had, not their average costs.
     await hosted(() => {
       window.host.soldIsins.push("INEZ90A01017", "INEZ90B01015", "INEZ90C01021", "INFZ90K01NE8", "INEZ91A07012", "INEZ91B07028");
       const share = window.host.snapshots["holdings-1"]["2025-03-31"].holdings.find((h) => h.symbol === "INEZ92A01013");
@@ -2472,8 +2689,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await openParts();
     assert.match(await sourceSelect(nsdlTitle).textContent(), /Demat/);
     for (const name of ["Fund INEZ90A01017", "Fund INFZ90K01NE8", "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31"]) {
-      assert.equal(await decision(name).getByText("Removed", { exact: true }).count(), 1, name);
+      const card = askCard(`${name} isn't on this statement`);
+      await card.getByRole("button", { name: new RegExp(`^Keep [\\d,.]+ units: ${escaped(name)} in Demat$`) }).waitFor();
+      await card.getByRole("button", { name: `Set it to zero on 31 Mar: ${name} in Demat`, exact: true }).click();
+      await changeAnswer(`Change answer: ${name}: set to zero on 31 Mar: ${name} in Demat`);
     }
+    // The empty demat account's other sold holdings are asked about the same way.
+    await zeroNotListed();
     await ready("Fund INEZ92A01013").getByText(priced, { exact: true }).waitFor();
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Gilt fund"), "Kept");
     await replaceBoth();
@@ -2554,6 +2776,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }, nsdl.accounts.flatMap((a) => [...a.equities, ...a.mutual_funds, ...a.bonds].map((h) => h.isin)));
     await readHoldings("tests/fixtures/made-up-nsdl.pdf");
     await sameDay("Demat").dispatchEvent("click");
+    await settled();
+    await zeroNotListed();
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await ready("FICTIVA POWER AND LIGHT LIMITED").getByText(priced, { exact: true }).waitFor();
 
@@ -2788,6 +3012,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await revisit();
     await settled();
     await sameDay("Demat").dispatchEvent("click");
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     const marketProfile = await hosted(() => window.host.assets["market-profile-011"]);
@@ -2813,6 +3038,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     await readHoldings();
     await ready("Provider pension").waitFor();
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, undefined);
@@ -2836,6 +3062,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readHoldings();
     await ready("Provider pension").getByText(priced, { exact: true }).waitFor();
     await sameDay("Demat").dispatchEvent("click");
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, "market-profile-011");
@@ -2883,6 +3110,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await setCost(ready("NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I"), "100");
     // A profile can fail after it's worked out; the readable scheme still gets its price and details.
     await hosted(() => { window.host.failGetProfileIds = ["pension-g-009"]; });
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     await frame.getByText("Some import history could not be saved", { exact: true }).waitFor();
@@ -2904,6 +3132,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.failSnapshotAccounts = []; window.host.failQuoteIds = []; window.host.failProfileIds = []; window.host.failGetProfileIds = []; });
     await readHoldings();
     await sameDay("Fund folios", "31 May 2025").dispatchEvent("click");
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 2 snapshots").waitFor();
     assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
@@ -2970,6 +3199,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await giltRow().getByText(priced, { exact: true }).waitFor();
     // The Gilt fund prints no cost: one below its price, so the price saved afterwards must win.
     await setCost(giltRow(), "40000");
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     await frame.getByText("Some prices or details weren't saved", { exact: true }).waitFor();
@@ -3019,6 +3249,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.failQuoteIds = []; window.host.failProfileIds = []; });
     const saveFolios = async (saved = "Saved 1 snapshot") => {
       await sameDay("Fund folios").dispatchEvent("click");
+      await zeroNotListed();
       await saveHoldings.click();
       await frame.getByText(saved, { exact: true }).waitFor();
     };
@@ -3087,12 +3318,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readHoldings();
     await showAllRows();
     await changeTo(corporateRow(), "0P0000TBCB", /^Fund 0P0000TBCB /);
+    // Another asset than the earlier import's: kept as that asset for now, which the old default did.
+    await askCard(/ is now matched to Fund 0P0000TBCB/).getByRole("button", { name: /^Keep .* for now: Fund 0P0000TBCB in Fund folios$/ }).click();
     await saveFolios();
     assert.deepEqual(await corporateStored(), corporateFund);
     await readHoldings();
-    // Confirmed to another asset than the one the earlier import added, it's left out until that
-    // asset is replaced with it, and its Change is under Before saving.
-    await decision("Fund 0P0000TBCB").getByRole("button", { name: "Change: Fund 0P0000TBCB in Fund folios", exact: true }).click();
+    // Confirmed to another asset than the one the earlier import added, it's asked about; kept as that
+    // asset for now, it's left out, with its Change under Not included.
+    await askCard(/ is now matched to Fund 0P0000TBCB/).getByRole("button", { name: /^Keep .* for now: Fund 0P0000TBCB in Fund folios$/ }).click();
+    await frame.getByText("Left out, so units aren't counted twice (1)", { exact: true }).waitFor();
+    await frame.getByText(/^Fund folios keeps .* for now, by your answer above\.$/).waitFor();
+    await frame.getByRole("button", { name: "Change: Fund 0P0000TBCB in Fund folios", exact: true }).click();
     await changePanelOf().getByRole("button", { name: /^(None of these: use|Use) the price on the statement for / }).click();
     await saveFolios();
     assert.deepEqual(await corporateStored(), corporatePriced);
@@ -3172,6 +3408,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await ready(textiles).getByText(priced, { exact: true }).waitFor();
     await smallCapPriced.getByText(priced, { exact: true }).waitFor();
     await setCost(ready(textiles), "4000");
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot").waitFor();
     assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
@@ -3395,6 +3632,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     };
     await skipOthersThanLiquid();
     await frame.getByText("1 fund found automatically on AMFI. Change any that look wrong.", { exact: true }).waitFor();
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
     const summaryAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
@@ -3422,6 +3660,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await changePanelOf().getByRole("button", { name: /^Use this fund for / }).click();
     await skipOthersThanLiquid();
     await sameDay("Fund folios").dispatchEvent("click");
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
     const summaryExisting = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
@@ -3470,6 +3709,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await revisit();
     await settled();
     await sameDay("Fund folios").dispatchEvent("click");
+    await zeroNotListed();
     await saveHoldings.click();
     await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
     const keptSnapshot = await snapshot("holdings-2", "2025-03-31");

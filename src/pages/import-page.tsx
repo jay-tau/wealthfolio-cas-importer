@@ -158,7 +158,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
         text="Import a CAMS, KFintech, NSDL or CDSL statement (CAS PDF). The PDF is read on this device."
       />
       <PageContent>
-        <fieldset disabled={busy !== ""} className="min-w-0 space-y-6">
+        {/* A fieldset is as wide as its widest unbreakable content unless its minimum width is 0. */}
+        <fieldset disabled={busy !== ""} className="min-w-0 space-y-6" style={{ minWidth: 0 }}>
           {/* While a statement is reviewed, its Questions say what AMFI would change. */}
           {!reviewing && <AmfiBanner amfi={amfi} />}
           {notice && !reviewing && <p className="text-muted-foreground text-sm">{notice}</p>}

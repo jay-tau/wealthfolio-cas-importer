@@ -82,6 +82,8 @@ export interface MappingWarning {
   leftOut: boolean;
   /** The scheme's rows don't add up to its closing balance; `SchemeTarget.importUnbalanced` imports them anyway. */
   unbalanced?: true;
+  /** For `unbalanced`: the units the rows add up to, and the statement's closing units. */
+  units?: { added: string; closing: string };
 }
 
 /**
@@ -169,6 +171,8 @@ interface Scheme {
   problemKind?: "unchosen" | "opening" | "scheme";
   /** How the rows miss the closing balance. Leaves out the scheme's rows unless `target.importUnbalanced`. */
   unbalanced?: string;
+  /** The units the rows add up to, and the closing units, when they miss. */
+  units?: { added: string; closing: string };
   entries: Entry[];
 }
 
@@ -241,7 +245,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   let lineNumber = 0;
   const number = (activity: ActivityImport) => ({ ...activity, lineNumber: ++lineNumber });
   for (const state of schemes) {
-    const { folio, scheme, problem, unbalanced, entries } = state;
+    const { folio, scheme, problem, unbalanced, units, entries } = state;
     const names = { folio: folio.folio, scheme: scheme.scheme };
     const warn = (rows: CasTransaction[], message: string, leftOut = true) =>
       mapping.warnings.push({ ...names, rows, message, leftOut });
@@ -253,9 +257,9 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
     const held = heldBack(state);
     if (unbalanced) {
       const message = held
-        ? `${unbalanced} None of this fund's rows are imported unless you choose to import it anyway, under Before importing: then check them against the PDF.`
-        : `${unbalanced} Its rows are imported anyway: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`;
-      mapping.warnings.push({ ...names, rows: [], message, leftOut: held, unbalanced: true });
+        ? `${unbalanced} None of this fund's rows are imported unless you choose to import it with this difference: then check them against the PDF.`
+        : `${unbalanced} Its rows are imported with this difference, as you chose: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`;
+      mapping.warnings.push({ ...names, rows: [], message, leftOut: held, unbalanced: true, units });
     }
     for (const entry of entries) {
       const rows = [entry.row, ...entry.charges];
@@ -404,6 +408,7 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
   const gap = abs(sub(dec(scheme.close), calculated));
   if (cmp(gap, UNIT_TOLERANCE) > 0) {
     state.unbalanced = `The rows take the unit balance from ${format(dec(scheme.open))} to ${format(calculated)}, but the statement's closing balance is ${format(dec(scheme.close))}, ${format(gap)} units apart: a row was probably dropped or misread.`;
+    state.units = { added: format(calculated), closing: format(dec(scheme.close)) };
   }
 
   scheme.transactions.forEach((row, index) => {

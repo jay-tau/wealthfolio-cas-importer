@@ -49,7 +49,8 @@ export function Footer({
   useClearOfStickyBars(bar);
   return (
     <div ref={bar} className="bg-background sticky bottom-0 z-10 grid gap-3 border-t py-3">
-      <div id={summaryId} tabIndex={-1} className="grid gap-1 text-sm">
+      {/* A long account or holding name with no spaces wraps rather than running past a narrow frame. */}
+      <div id={summaryId} tabIndex={-1} className="grid grid-cols-1 gap-1 text-sm" style={{ overflowWrap: "anywhere" }}>
         {lines}
       </div>
       <div className="flex flex-wrap items-center gap-2">

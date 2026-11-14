@@ -1,9 +1,9 @@
 import type { Account, ActivityDetails, ActivityImport, AddonContext, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Badge, Button, Spinner } from "@wealthfolio/ui";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { type EntryFacts, readEntryFacts, recheckEntries, reuseBankEntry, type StaleEntry } from "../cas/bank-entries";
-import { add, dec, format } from "../cas/decimal";
+import { abs, add, dec, format, mul } from "../cas/decimal";
 import { type Mapping, mapStatement } from "../cas/mapping";
 import {
   bankCandidates,
@@ -17,9 +17,11 @@ import {
   giftEntries,
   importRows,
   indexActivities,
+  localDay,
   openingUnits,
   planImport,
   type PlannedTransaction,
+  RECORD_PREFIX,
   rowsOf,
   sameUnits,
   statementDay,
@@ -28,9 +30,11 @@ import {
   bankMovements,
   bankPairs,
   breakdown,
+  type DuplicateState,
   fundGroups,
   MOVEMENT,
   plannedOf,
+  rowUnits,
   sends,
   unitsDiffer,
   type Waiting,
@@ -42,16 +46,8 @@ import { type FundChoice, type FundItem, fundItems } from "../components/fund-ch
 import { type NotCreated, NotCreatedAlert } from "../components/holdings-preview";
 import { ActivityTable, type BankLink, ImportResult, staleText } from "../components/preview";
 import { BankCheck, type BankCheckModel, checkReceipt, paid } from "../components/review/bank-check";
-import {
-  BeforeImporting,
-  type DuplicateChoice,
-  type EarlierFund,
-  type LeftOutFund,
-  NotIncludedDetailed,
-  nothingWords,
-  TransactionsSummary,
-  type UnbalancedChoice,
-} from "../components/review/detailed-parts";
+import { AskAnswered, AskCard } from "../components/review/asks";
+import { type EarlierFund, type LeftOutFund, NotIncludedDetailed, nothingWords, TransactionsSummary } from "../components/review/detailed-parts";
 import { useReviewFocus } from "../components/review/focus";
 import { Footer } from "../components/review/footer";
 import { type FundRow, type FundRowHandlers, FundsReadyTable } from "../components/review/funds-ready";
@@ -67,6 +63,7 @@ import { nameNumber } from "../lib/name-number";
 import { isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames } from "../lib/new-accounts";
 import { plural } from "../lib/plural";
 import { longDate, rupees, units } from "../lib/review-format";
+import { type AskWords } from "../lib/asks";
 import { sha256 } from "../lib/sha256";
 
 type Busy = "" | "preview" | "import" | "check";
@@ -118,6 +115,8 @@ interface Part {
 interface Prepared {
   /** The choices it was worked out from. */
   signature: string;
+  /** The destinations, funds and host reads its question evidence belongs to. */
+  questionSignature: string;
   existing: ActivityDetails[];
   funds: FundRefs;
   timeZone: string;
@@ -168,7 +167,37 @@ const noun = (t: PlannedTransaction, accountId = t.transaction.activity.accountI
 const LABELS: Record<string, string> = {
   BUY: "Purchase", SELL: "Sale", DIVIDEND: "Dividend", TRANSFER_IN: "Gift received", TRANSFER_OUT: "Gift given", ADJUSTMENT: "Merger",
 };
+const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 const activityLabel = (row: ActivityImport) => (row.activityType === "DIVIDEND" && row.subtype === "DRIP" ? "Reinvested dividend" : LABELS[row.activityType] ?? row.activityType);
+/** A statement row's movement as the statement words it: "purchase", "redemption", "cash dividend". */
+const STATEMENT_WORDS: Record<string, string> = {
+  PURCHASE: "purchase", PURCHASE_SIP: "SIP purchase", REDEMPTION: "redemption", SWITCH_IN: "switch in", SWITCH_IN_MERGER: "switch in",
+  SWITCH_OUT: "switch out", SWITCH_OUT_MERGER: "switch out", DIVIDEND_PAYOUT: "cash dividend", DIVIDEND_REINVEST: "reinvested dividend",
+};
+/** A transaction's movement as the statement words it, else as the Review screen does. */
+const statementWord = (t: PlannedTransaction, accountId?: string) => STATEMENT_WORDS[t.transaction.rows[0].type] ?? noun(t, accountId);
+/** Wealthfolio's names for an activity's type, as its activity list shows them. */
+const WEALTHFOLIO_TYPES: Record<string, string> = {
+  BUY: "Buy", SELL: "Sell", DIVIDEND: "Dividend", INTEREST: "Interest", DEPOSIT: "Deposit", WITHDRAWAL: "Withdrawal",
+  TRANSFER_IN: "Transfer in", TRANSFER_OUT: "Transfer out", ADJUSTMENT: "Adjustment", FEE: "Fee", TAX: "Tax", SPLIT: "Split",
+};
+
+/** A question only some detailed imports ask: a possible duplicate, or a fund whose rows don't add up. */
+interface Ask {
+  id: string;
+  words: AskWords;
+  /** Its evidence, in place of `words.line` where that's more than a line. */
+  evidence?: ReactNode;
+  /** After the visible label, what its buttons act on. */
+  target: string;
+  /** True for the main (safe) answer, false for the other; undefined until answered. */
+  answer: boolean | undefined;
+  /** The other answer is one to check, as importing rows that don't add up is. */
+  warn?: boolean;
+  /** The fund it's about, for a fund whose rows don't add up. */
+  fundKey?: string;
+  set: (answer: boolean | undefined) => void;
+}
 
 /**
  * A detailed CAMS or KFintech statement on one Review screen: where its transactions go, what needs
@@ -315,8 +344,11 @@ export function DetailedImport({
   const [matched, setMatched] = useState<Record<string, ChosenFund>>({});
   const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
   const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
-  const [importAnyway, setImportAnyway] = useState<ReadonlySet<string>>(new Set());
-  const [unbalanced, setUnbalanced] = useState<ReadonlySet<string>>(new Set());
+  // Answers to the rare questions: skip (true) or import a possible duplicate, by its transaction's
+  // key, and skip (true) or import a fund whose rows don't add up, by its folio's scheme.
+  const [duplicateAnswers, setDuplicateAnswers] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const [unbalancedAnswers, setUnbalancedAnswers] = useState<ReadonlyMap<string, boolean>>(new Map());
+  const importsUnbalanced = (key: string) => unbalancedAnswers.get(key) === false;
   // Each bank check's answer and ticks, for the pairs they were given for.
   const [checkAnswers, setCheckAnswers] = useState<Record<string, BankAnswer>>({});
   const [ticks, setTicks] = useState<Record<string, { signature: string; keys: string[]; changed: boolean }>>({});
@@ -398,6 +430,7 @@ export function DetailedImport({
     return choice && "fund" in choice ? choice.fund : undefined;
   };
   const foliosOf = (key: string) => data.folios.filter((f) => f.schemes.some((s) => fundKey(s) === key));
+  const fundNameOf = (key: string) => shownName(itemOf.get(key)!, fundOf(key));
   const included = (folio: CasFolio) => folioAccount(folio) !== LEFT_OUT;
 
   // Funds that need an answer: in a folio that's imported, or whose account isn't chosen yet, and with
@@ -457,11 +490,19 @@ export function DetailedImport({
     cache.current = { reads: new Map() };
     setGeneration((n) => n + 1);
   }, [visit]);
-  const signature = JSON.stringify([
+  const questionSignature = JSON.stringify([
     generation,
     data.folios.map((f) => [folioState(f), accountOf(f) ?? "", bankOf(f) ?? ""]),
     items.map((item) => fundOf(item.key) ?? null),
-    [...unbalanced].sort(),
+  ]);
+  // A different destination, fund or refreshed host needs new answers to its evidence.
+  useEffect(() => {
+    setDuplicateAnswers(new Map());
+    setUnbalancedAnswers(new Map());
+  }, [questionSignature]);
+  const signature = JSON.stringify([
+    questionSignature,
+    [...unbalancedAnswers].filter(([key]) => importsUnbalanced(key)).map(([key]) => key).sort(),
   ]);
   // Try again stays, busy, while the plan is worked out again, so its focus does too; once it's worked
   // out, the focus goes to the bar's summary, unless the user moved it meanwhile.
@@ -514,7 +555,7 @@ export function DetailedImport({
     const mapping = mapStatement(data, {
       target: (folio, scheme) => {
         const t = target(folio, scheme);
-        return t && { ...t, openingCovered: covered.has(scheme), importUnbalanced: unbalanced.has(schemeKey(folio.folio, scheme.scheme)) };
+        return t && { ...t, openingCovered: covered.has(scheme), importUnbalanced: importsUnbalanced(schemeKey(folio.folio, scheme.scheme)) };
       },
       alreadyImported: indexActivities(existing, funds).has,
       entered: (row) => entered(row).length > 0,
@@ -540,7 +581,7 @@ export function DetailedImport({
     const facts = entries.length
       ? await once(`facts:${entries.map((a) => a.id).sort().join(",")}`, () => readEntryFacts(api, entries))
       : new Map<string, EntryFacts>();
-    return { signature, existing, funds, timeZone, mapping, plan, linked, facts, opening };
+    return { signature, questionSignature, existing, funds, timeZone, mapping, plan, linked, facts, opening };
   }
 
   // Which confirmed fund each asset of `activities` is. A fund without an asset ID goes by the symbol
@@ -591,13 +632,17 @@ export function DetailedImport({
   // What the plan sends, and what the review says about it.
   const plan = current?.plan ?? [];
   const planned = plannedOf(plan);
-  const existingById = new Map((current?.existing ?? []).map((a) => [a.id, a]));
-  // A match by value may be another transaction; a row imported by this add-on isn't forced again.
-  const canImportAnyway = (t: PlannedTransaction) => !t.transaction.arriving && (
-    t.status === "duplicate" || (t.status === "existing" && t.rows.some((r) =>
-      r.existingId && !existingById.get(r.existingId)?.sourceRecordId?.startsWith("addon:cas-importer:")))
-  );
-  const forced = (t: PlannedTransaction) => canImportAnyway(t) && importAnyway.has(transactionKey(t));
+  // A possible duplicate is asked about: some of its rows equal what Wealthfolio has or another row of
+  // this statement, or Wealthfolio's check flags it. One Wealthfolio has all of, by its row IDs or by
+  // value, as an older import or one entered by hand, was imported before; a merger's isn't forced.
+  const canImportAnyway = (t: PlannedTransaction) => !t.transaction.arriving && t.status === "duplicate";
+  const forced = (t: PlannedTransaction) => canImportAnyway(t) && duplicateAnswers.get(transactionKey(t)) === false;
+  /** What became of each possible duplicate, for the transactions' counts. */
+  const duplicateState = (t: PlannedTransaction): DuplicateState | undefined => {
+    if (!canImportAnyway(t)) return t.status === "duplicate" ? "never" : undefined;
+    const answer = duplicateAnswers.get(transactionKey(t));
+    return answer === undefined ? "open" : answer ? "skipped" : "imported";
+  };
   const sentOf = (t: PlannedTransaction) => sends(t, forced);
   const sentPlan = plan.filter(sentOf);
   /** Each transaction's own folio: the one its first row is in. */
@@ -694,12 +739,23 @@ export function DetailedImport({
         ? "Imported with the difference you accepted."
         : group.forced
           ? group.forced === 1
-            ? `Includes the second ${noun(sentPlan.find((t) => t.status !== "new" && groupsOfTransaction(t).includes(group.key))!, group.accountId)} you chose.`
+            ? `Includes the second ${statementWord(sentPlan.find((t) => t.status !== "new" && groupsOfTransaction(t).includes(group.key))!, group.accountId)} you chose.`
             : `Includes the ${group.forced} possible duplicates you chose.`
           : group.other
             ? `${plural(group.other, "transaction")} of this fund ${group.other === 1 ? "isn't" : "aren't"} imported now.`
             : "Wealthfolio's other transactions of this fund differ from the statement.";
       note = `After import: ${units(format(group.after!))} units · Statement: ${units(format(group.statement))}. ${why}`;
+    }
+    if (group.forced) {
+      // A second cash dividend changes no units, only the income.
+      const income = sentPlan.filter((t) => t.status !== "new" && groupsOfTransaction(t).includes(group.key) && rowUnits(t.transaction.activity) === undefined);
+      if (income.length) {
+        const amount = income.reduce((total, t) => add(total, abs(dec(String(t.transaction.activity.amount ?? t.transaction.cash?.amount ?? "0")))), dec("0"));
+        const incomeNote = income.length === 1
+          ? `Includes the second ${statementWord(income[0], group.accountId)} you chose: ${rupees(format(amount))} more income.`
+          : `Includes ${income.length} possible duplicates you chose: ${rupees(format(amount))} more income.`;
+        note = note ? `${note} ${incomeNote}` : incomeNote;
+      }
     }
     return {
       id: group.key,
@@ -734,7 +790,12 @@ export function DetailedImport({
     const choice = choiceOf(fundKey(scheme));
     return choice && !("fund" in choice) ? "skipped" : "answers";
   };
-  const counts = current ? breakdown({ mapping: current.mapping, planned, sent: sentOf, why }) : undefined;
+  const counts = current
+    ? breakdown({
+        mapping: current.mapping, planned, sent: sentOf, why, duplicate: duplicateState,
+        unbalancedAnswer: (folio, scheme) => (unbalancedAnswers.get(schemeKey(folio.folio, scheme.scheme)) ? false : undefined),
+      })
+    : undefined;
   const earlier: EarlierFund[] = (() => {
     if (!current) return [];
     const waiting = new Map<string, { schemes: CasScheme[]; count: number }>();
@@ -768,9 +829,6 @@ export function DetailedImport({
     return choice && !("fund" in choice) && foliosOf(item.key).some(included);
   });
   const notImported = data.folios.filter((f) => folioAccount(f) === LEFT_OUT);
-  const defaultedSchemes = new Set((current?.mapping.warnings ?? []).filter((w) => w.unbalanced && w.leftOut).map((w) => schemeKey(w.folio, w.scheme)));
-  const defaulted = [...new Set(data.folios.flatMap((f) => f.schemes.filter((s) => defaultedSchemes.has(schemeKey(f.folio, s.scheme))).map(fundKey)))]
-    .map((key) => ({ key, name: itemOf.get(key)!.name, label: labelOf.get(key)! }));
   const leftOutFunds: LeftOutFund[] = (() => {
     if (!counts) return [];
     const byFund = new Map<string, LeftOutFund & { reasons: Map<string, string[]> }>();
@@ -794,46 +852,133 @@ export function DetailedImport({
     }));
   })();
 
-  // Today's other preview decisions: possible duplicates, and funds whose rows don't add up.
-  const offered = plan.filter(canImportAnyway);
-  const duplicates: DuplicateChoice[] = offered.map((t) => {
-    const { activity, rows: [first] } = t.transaction;
-    const what = noun(t);
-    const name = shownName(itemOf.get(fundKey(schemeOf(t)!))!, fundOf(fundKey(schemeOf(t)!)));
-    // The amount the statement prints, as the user can find it there.
-    const amount = first.amount?.replace(/^-/, "") ?? activity.amount ?? t.transaction.cash?.amount;
-    const title = [name, MOVEMENT[first.type] ?? activityLabel(activity), longDate(String(activity.date)), amount ? rupees(String(amount)) : ""].filter(Boolean).join(" · ");
-    const row = t.rows.find((r) => r.existingId || r.repeatsLine !== undefined || r.flagged);
-    const reason = row?.existingId
-      ? `Wealthfolio already has this ${what}, entered by hand or imported without the add-on's row ID.`
-      : row?.repeatsLine !== undefined
-        ? `This ${what} equals another one on this statement.`
-        : `Wealthfolio reports this ${what} as a duplicate.`;
-    return { key: transactionKey(t), title, reason, label: title, noun: what, checked: forced(t) };
-  });
-  const duplicateNames = duplicates.map((d) => ({ name: d.title }));
-  duplicates.forEach((d, i) => { d.label += nameNumber(duplicateNames, i, "transaction"); });
+  // The questions only some imports ask, from the plan as last worked out, so a card stays while an
+  // answer works the plan out again: funds whose rows don't add up, then possible duplicates.
+  const shown = current ?? prepared;
+  const staleQuestions = shown?.questionSignature !== questionSignature;
+  const shownById = new Map((shown?.existing ?? []).map((a) => [a.id, a]));
+  const onDay = (date: Date | string | undefined) => {
+    try {
+      return longDate(localDay(date, shown?.timeZone ?? "UTC"));
+    } catch {
+      return String(date ?? "");
+    }
+  };
   function schemeOf(t: PlannedTransaction) {
-    return current?.mapping.outcomes.find((o) => o.transaction === t.transaction && o.row === t.transaction.rows[0])?.scheme;
+    return shown?.mapping.outcomes.find((o) => o.transaction === t.transaction && o.row === t.transaction.rows[0])?.scheme;
   }
-  const unbalancedChoices: UnbalancedChoice[] = (current?.mapping.warnings ?? [])
-    .filter((w) => w.unbalanced)
-    .map((w) => {
-      const key = schemeKey(w.folio, w.scheme);
-      return { key, title: `${w.scheme}, folio ${w.folio}`, gap: w.message.replace(/ (None of this fund's rows|Its rows are imported anyway).*$/, ""), checked: unbalanced.has(key) };
-    });
-
-  // While a tick works the plan out again, Before importing keeps the last plan's items, with the
-  // ticks as they are now, so the checkbox pressed keeps the focus.
-  const lastBefore = useRef<{ duplicates: DuplicateChoice[]; unbalanced: UnbalancedChoice[] } | null>(null);
-  if (current) lastBefore.current = { duplicates, unbalanced: unbalancedChoices };
-  const before = current || prepareError || !lastBefore.current
-    ? { duplicates, unbalanced: unbalancedChoices }
-    : {
-        duplicates: lastBefore.current.duplicates.map((d) => ({ ...d, checked: importAnyway.has(d.key) })),
-        unbalanced: lastBefore.current.unbalanced.map((u) => ({ ...u, checked: unbalanced.has(u.key) })),
-      };
-
+  const unbalancedWarnings = (shown?.mapping.warnings ?? []).filter((w) => w.unbalanced);
+  const unbalancedAsks: Ask[] = unbalancedWarnings.map((w) => {
+    const key = schemeKey(w.folio, w.scheme);
+    const scheme = data.folios.find((f) => f.folio === w.folio)?.schemes.find((s) => s.scheme === w.scheme);
+    const fund = scheme ? fundNameOf(fundKey(scheme)) : w.scheme;
+    const twice = unbalancedWarnings.filter((other) => other.scheme === w.scheme).length > 1;
+    const added = units(w.units?.added ?? "");
+    const closing = units(w.units?.closing ?? "");
+    return {
+      id: `unbalanced|${key}`,
+      words: {
+        title: `${fund}'s transactions don't add up`,
+        line: `${twice ? `In folio ${w.folio}, they` : "They"} add up to ${added} units; the statement says ${closing}. A row may be missing or misread.`,
+        main: "Skip this fund",
+        other: "Import with this difference",
+        receipt: (skip) => `${fund}: ${skip ? "skipped" : "imported with the difference"}`,
+        done: (skip) => `${fund} ${skip ? "skipped" : "imported with the difference"}, by your answer`,
+      },
+      target: twice ? `${fund}, folio ${w.folio}` : fund,
+      fundKey: scheme && fundKey(scheme),
+      answer: unbalancedAnswers.get(key),
+      warn: unbalancedAnswers.get(key) === false,
+      set: (answer) => setUnbalancedAnswers((all) => {
+        const next = new Map(all);
+        if (answer === undefined) next.delete(key);
+        else next.set(key, answer);
+        return next;
+      }),
+    };
+  });
+  const offered = (shown?.plan ?? []).filter(canImportAnyway);
+  const duplicateAccounts = new Set<string>();
+  const duplicateAsks: Ask[] = offered.map((t) => {
+    const key = transactionKey(t);
+    const { activity, rows: [first] } = t.transaction;
+    const scheme = schemeOf(t);
+    const fund = scheme ? fundNameOf(fundKey(scheme)) : t.transaction.scheme;
+    const word = statementWord(t);
+    const amountOf = (row: typeof first) => (row.amount ? rupees(format(abs(dec(row.amount)))) : undefined);
+    const unitsOf = (row: typeof first) => (row.units && dec(row.units).n !== 0n ? `${units(format(abs(dec(row.units))))} units` : undefined);
+    const statementLine = (row: typeof first) =>
+      [longDate(row.date), capital(STATEMENT_WORDS[row.type] ?? row.type.toLowerCase()), fund, unitsOf(row), amountOf(row)].filter(Boolean).join(" · ");
+    const row = t.rows.find((r) => r.existingId || r.repeatsLine !== undefined || r.flagged);
+    const there = row && shownById.get(row.existingId ?? row.duplicateOfId ?? "");
+    const account = accountName(there?.accountId ?? row?.activity.accountId ?? activity.accountId);
+    duplicateAccounts.add(account);
+    const repeated = row?.repeatsLine !== undefined && !there
+      ? (shown?.plan ?? []).find((other) => other !== t && other.rows.some((r) => r.activity.lineNumber === row.repeatsLine))
+      : undefined;
+    const thereLine = there && (() => {
+      const type = there.activityType === "DIVIDEND" && there.subtype === "DRIP" ? "Reinvested dividend" : WEALTHFOLIO_TYPES[there.activityType] ?? there.activityType;
+      const amount = there.amount ?? (there.quantity && there.unitPrice ? format(mul(dec(String(there.quantity)), dec(String(there.unitPrice)))) : null);
+      const how = there.sourceRecordId?.startsWith(RECORD_PREFIX) ? "imported by this add-on"
+        : there.sourceSystem === "CSV" ? "imported from a file" : there.sourceRecordId ? "imported" : "entered by hand";
+      return [
+        onDay(there.date), type, there.assetName || there.assetSymbol || undefined,
+        there.quantity && Number(there.quantity) !== 0 ? `${units(format(abs(dec(String(there.quantity)))))} units` : undefined,
+        amount ? rupees(format(abs(dec(String(amount))))) : undefined,
+        `${how}${there.createdAt ? ` on ${onDay(there.createdAt)}` : ""}`,
+      ].filter(Boolean).join(" · ");
+    })();
+    const when = longDate(first.date);
+    const money = amountOf(first);
+    const evidence = (
+      <>
+        <p>
+          <span className="text-foreground font-medium">On this statement:</span> {statementLine(first)}
+        </p>
+        <p>
+          {repeated ? (
+            <>
+              <span className="text-foreground font-medium">Also on this statement:</span> {statementLine(repeated.transaction.rows[0])}
+            </>
+          ) : (
+            <>
+              <span className="text-foreground font-medium">Already in {account}:</span> {thereLine ?? "Wealthfolio reports an equal transaction there."}
+            </>
+          )}
+        </p>
+        <p>Two equal transactions on one day can both be real.</p>
+      </>
+    );
+    return {
+      id: `duplicate|${key}`,
+      words: {
+        title: repeated ? `This ${word} is on this statement twice`
+          : row?.activity === t.transaction.bank ? `The bank entry for this ${word} may already be in ${account}`
+          : `This ${word} may already be in ${account}`,
+        line: "",
+        main: "Skip this transaction",
+        other: `Import it as a second ${word}`,
+        receipt: (skip) => `${money ? `${money} ` : ""}${word} of ${fund} on ${when}: ${skip ? "skipped" : `imported as a second ${word}`}`,
+        done: (skip) => (skip ? "skipped" : "imported"),
+      },
+      evidence,
+      target: `${fund}, ${word}${money ? ` of ${money}` : ""} on ${when}`,
+      answer: duplicateAnswers.get(key),
+      set: (answer) => setDuplicateAnswers((all) => {
+        const next = new Map(all);
+        if (answer === undefined) next.delete(key);
+        else next.set(key, answer);
+        return next;
+      }),
+    };
+  });
+  const asks = [...unbalancedAsks, ...duplicateAsks];
+  // Equal questions are told apart by number, as elsewhere.
+  const targets0 = asks.map((a) => ({ name: a.target }));
+  asks.forEach((a, i) => {
+    a.target += nameNumber(targets0, i, a.id.startsWith("duplicate|") ? "transaction" : "fund");
+  });
+  const openAsks = asks.filter((a) => a.answer === undefined);
   // Fund lines, by box: what the counts say.
   const lines = boxes.flatMap((box) =>
     [...new Set(box.folios.flatMap((f) => f.schemes.map(fundKey)))].map((key) => ({ box, key })),
@@ -842,7 +987,8 @@ export function DetailedImport({
     const schemes = box.folios.flatMap((f) => f.schemes.filter((s) => fundKey(s) === key).map((scheme) => ({ folio: f, scheme })));
     const outcomes = (current?.mapping.outcomes ?? []).filter((o) => box.folios.includes(o.folio) && fundKey(o.scheme) === key);
     if (outcomes.some((o) => o.transaction && sentOf(planned.get(o.transaction)!))) return "ready";
-    if ((questionKeys.includes(key) && schemes.some(({ folio }) => included(folio))) || schemes.some(({ folio }) => undecidedFolios.includes(folio))) return "question";
+    if ((questionKeys.includes(key) && schemes.some(({ folio }) => included(folio))) || schemes.some(({ folio }) => undecidedFolios.includes(folio)) ||
+      schemes.some(({ folio, scheme }) => openAsks.some((a) => a.id === `unbalanced|${schemeKey(folio.folio, scheme.scheme)}`))) return "question";
     if (schemes.every(({ folio, scheme }) => target(folio, scheme) && !blockedSchemes.has(schemeKey(folio.folio, scheme.scheme))) && outcomes.every((o) => o.transaction && planned.get(o.transaction)?.status === "existing")) return "nothing";
     return "out";
   };
@@ -850,8 +996,7 @@ export function DetailedImport({
   const readyCount = states.filter((s) => s === "ready").length;
   const outCount = states.filter((s) => s === "out").length;
 
-  const answeredAll = openKeys.length === 0 && lookingUp.length === 0 && !accountQuestion;
-  const questionCount = openKeys.length + (accountQuestion ? 1 : 0) + openChecks.length;
+  const questionCount = openKeys.length + (accountQuestion ? 1 : 0) + openChecks.length + openAsks.length;
   const nothing = !accountQuestion && data.folios.every((f) => folioAccount(f) === LEFT_OUT);
 
   // Ids the focus moves to.
@@ -868,6 +1013,8 @@ export function DetailedImport({
     picker: (key: string) => id(`picker-${key}`),
     changePanel: (rowId: string) => id(`change-panel-${rowId}`),
     row: (row: FundRow, item = row.item) => ({ change: id(`change-${row.id}${item.key === row.item.key ? "" : `-${item.key}`}`) }),
+    ask: (askId: string) => id(`ask-${sha256(askId)}`),
+    askAnswer: (askId: string) => id(`ask-answer-${sha256(askId)}`),
     check: (checkId: string) => id(`check-${checkId}`),
     checkChange: (checkId: string) => id(`check-change-${checkId}`),
     showAll: id("show-all"),
@@ -903,6 +1050,7 @@ export function DetailedImport({
     if (accountQuestion) return focusAccountQuestion(force);
     if (openChecks.length) return focusCheck(openChecks[0], force);
     if (openKeys.length) return focusSoon(ids.question(openKeys[0]), force);
+    if (openAsks.length) return focusSoon(ids.ask(openAsks[0].id), force);
     focusSoon(ids.summary, force);
   };
 
@@ -935,14 +1083,25 @@ export function DetailedImport({
     announce(`AMFI added: ${plural(found, "fund")} matched. ${questionCount ? `${plural(questionCount, "question")} ${questionCount === 1 ? "remains" : "remain"}.` : "No questions remain."}`);
     if (accountQuestion) focusAccountQuestion(false, batch.origin);
     else if (openChecks.length) focusCheck(openChecks[0], false, batch.origin);
-    else focusSoon(openKeys.length ? ids.question(openKeys[0]) : ids.summary, false, batch.origin);
+    else focusSoon(openKeys.length ? ids.question(openKeys[0]) : openAsks.length ? ids.ask(openAsks[0].id) : ids.summary, false, batch.origin);
   });
 
   // After the last answer, the focus goes on to what's left, or to the summary.
   const afterAnswer = useRef(false);
   const afterChange = useRef<string | null>(null);
+  const afterAsk = useRef(false);
   useEffect(() => {
     if (!current) return;
+    if (afterAsk.current) {
+      // A rare question answered: on to the next open question, once the plan is worked out again.
+      afterAsk.current = false;
+      if (lookingUp.length) focusSoon(ids.questions);
+      else if (questionCount) nextQuestion(false);
+      else {
+        focusSoon(ids.summary);
+        announce(`All questions answered.${counts?.toImport || counts?.importedDuplicates ? " Ready to import." : ""}`);
+      }
+    }
     const changed = afterChange.current;
     if (changed) {
       afterChange.current = null;
@@ -958,6 +1117,15 @@ export function DetailedImport({
     }
   });
 
+  const answerAsk = (ask: Ask, main: boolean) => {
+    if (staleQuestions) return;
+    ask.set(main);
+    afterAsk.current = true;
+  };
+  const reopenAsk = (ask: Ask) => {
+    ask.set(undefined);
+    focusSoon(ids.ask(ask.id));
+  };
   const answer = (key: string, choice: FundChoice) => {
     setAnswers((all) => ({ ...all, [key]: choice }));
     setHandled((all) => new Set(all).add(key));
@@ -980,6 +1148,7 @@ export function DetailedImport({
     if (accountQuestion) focusAccountQuestion();
     else if (rest.length) focusCheck(rest[0]);
     else if (openKeys.length) focusSoon(ids.question(openKeys[0]));
+    else if (openAsks.length) focusSoon(ids.ask(openAsks[0].id));
     else if (lookingUp.length) {
       focusSoon(ids.questions);
       return announce(`${receipt} Looking up ${plural(lookingUp.length, "fund")}…`);
@@ -1088,7 +1257,7 @@ export function DetailedImport({
   }).length;
   const changes =
     Object.entries(picks).filter(([key, value]) => value !== (accountChoices[key] ?? (boxKeys.has(key) ? null : ""))).length +
-    Object.keys(answers).length + importAnyway.size + unbalanced.size + Object.keys(checkAnswers).length + Object.values(ticks).filter((t) => t.changed).length +
+    Object.keys(answers).length + duplicateAnswers.size + unbalancedAnswers.size + Object.keys(checkAnswers).length + Object.values(ticks).filter((t) => t.changed).length +
     searchChanges + (editor ? 1 : 0) + Object.keys(renamed).length + (renaming ? 1 : 0);
 
   const remember = () => {
@@ -1463,8 +1632,44 @@ export function DetailedImport({
     return item.isin && auto?.status === "done" && !auto.amfi;
   }).length;
   const answeredKeys = items.filter((item) => item.key in answers && answers[item.key] && foliosOf(item.key).some(included)).map((i) => i.key);
-  const anyQuestions = questionKeys.length > 0 || answeredKeys.length > 0;
-  const fundNameOf = (key: string) => shownName(itemOf.get(key)!, fundOf(key));
+  const anyQuestions = questionKeys.length > 0 || answeredKeys.length > 0 || asks.length > 0;
+  const openCount = openKeys.length + openAsks.length;
+  const answeredCount = answeredKeys.length + asks.length - openAsks.length;
+  /** A rare question's card while it's open, then its answered line. */
+  const askView = (ask: Ask, level: 4 | 5 = 4) => {
+    if (ask.answer !== undefined) {
+      return (
+        <ul key={ask.id} className="grid">
+          <AskAnswered text={ask.words.receipt(ask.answer)} target={ask.target} warn={ask.warn} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+        </ul>
+      );
+    }
+    return (
+      <AskCard
+        key={ask.id}
+        headingId={ids.ask(ask.id)}
+        title={ask.words.title}
+        target={ask.target}
+        level={level}
+        main={{ label: ask.words.main, name: `${ask.words.main}: ${ask.target}`, onClick: () => answerAsk(ask, true) }}
+        other={{ label: ask.words.other, name: `${ask.words.other}: ${ask.target}`, onClick: () => answerAsk(ask, false) }}
+        disabled={busy !== "" || staleQuestions}
+      >
+        {ask.evidence ?? <p>{ask.words.line}</p>}
+      </AskCard>
+    );
+  };
+  // More than three possible duplicates go under one heading, a card each.
+  const duplicateViews = duplicateAsks.length > 3 ? (
+    <section aria-labelledby={id("duplicates")} className="grid grid-cols-1 gap-3">
+      <h4 id={id("duplicates")} className="font-semibold" style={{ overflowWrap: "anywhere" }}>
+        {duplicateAsks.length} transactions may already be in {duplicateAccounts.size === 1 ? [...duplicateAccounts][0] : "Wealthfolio"}
+      </h4>
+      {duplicateAsks.map((ask) => askView(ask, 5))}
+    </section>
+  ) : (
+    duplicateAsks.map((ask) => askView(ask))
+  );
   const values = Object.fromEntries(
     [...boxes.map((b) => b.key), ...boxes.map((b) => bankKey(b.key)), ...data.folios.flatMap((f) => [folioKey(f), bankKey(folioKey(f))])].map((key) => [key, valueOf(key)]),
   );
@@ -1544,13 +1749,13 @@ export function DetailedImport({
   const leftWords = (() => {
     const bank = openChecks.length;
     const others = questionCount - bank;
-    const fundOnly = !accountQuestion;
+    const fundOnly = !accountQuestion && !openAsks.length;
     const checkWords = bank === 1 ? "the payment check" : `${bank} payment checks`;
     if (bank && others) return `${plural(questionCount, "question")} left: ${checkWords} and ${plural(others, fundOnly ? "fund question" : "other question")} before importing.`;
     if (bank) return `${plural(questionCount, "question")} left: ${checkWords} before importing.`;
     return `${plural(questionCount, "question")} left before importing.`;
   })();
-  const toImport = counts?.toImport ?? 0;
+  const toImport = (counts?.toImport ?? 0) + (counts?.importedDuplicates ?? 0);
   // The new accounts the import creates first.
   const creating = perAccount.filter((a) => isProposed(a.accountId)).length;
   // Whether the review can be imported as it stands: the import button's checks, which Try again shares.
@@ -1559,6 +1764,25 @@ export function DetailedImport({
   const importLabel = creating
     ? `Create ${creating === 1 ? "account" : `${creating} accounts`} and import ${plural(toImport, "transaction")}`
     : `Import ${plural(toImport, "transaction")}`;
+  // What the answers to the rare questions do.
+  const answerParts = [
+    ...(() => {
+      const skipped = duplicateAsks.filter((a) => a.answer === true).length;
+      const imported = duplicateAsks.filter((a) => a.answer === false).length;
+      return [
+        imported && `${plural(imported, "possible duplicate")} imported by your answer`,
+        skipped && `${plural(skipped, "possible duplicate")} skipped by your answer`,
+      ];
+    })(),
+    ...unbalancedAsks.filter((a) => a.answer !== undefined).map((a) => a.words.done(a.answer!)),
+  ].filter((part): part is string => !!part);
+  const answerLine = answerParts.length
+    ? [
+        <p key="answers" className="text-muted-foreground">
+          {capital(answerParts.join("; "))}.
+        </p>,
+      ]
+    : [];
   const range = `${month(from)} to ${month(to)}`;
 
   return (
@@ -1587,8 +1811,8 @@ export function DetailedImport({
         <Alert variant="warning">
           <AlertTitle>casparser reported warnings</AlertTitle>
           <AlertDescription>
-            A row or a whole scheme may have been dropped or misread. By default, the import leaves out each fund whose rows don't add up to its
-            closing balance; check anything else these name against the PDF before importing.
+            A row or a whole scheme may have been dropped or misread. Each fund whose rows don't add up to its closing balance is asked about
+            under “Questions for you”; check anything else these name against the PDF before importing.
             <ul className="list-disc ps-4">
               {statement.parse_warnings.map((warning) => (
                 <li key={warning}>{readableName(warning)}</li>
@@ -1630,8 +1854,8 @@ export function DetailedImport({
       {anyQuestions && (
         <section aria-labelledby={ids.questions} className="grid gap-3">
           <h3 id={ids.questions} tabIndex={-1} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
-            {openChecks.length > 0 && openKeys.length > 0 ? (accountQuestion ? "Other questions" : "Fund questions") : "Questions for you"}
-            {openKeys.length > 0 && ` · ${openKeys.length} of ${openKeys.length + answeredKeys.length} left`}
+            {openChecks.length > 0 && openCount > 0 ? (accountQuestion || openAsks.length ? "Other questions" : "Fund questions") : "Questions for you"}
+            {openCount > 0 && ` · ${openCount} of ${openCount + answeredCount} left`}
           </h3>
           {amfiFunds > 0 && amfi.status !== "on" && (
             <Alert variant="warning">
@@ -1673,12 +1897,12 @@ export function DetailedImport({
               <Spinner /> Looking up {plural(lookingUp.length, "fund")}…
             </p>
           )}
-          {openKeys.length === 0 && answeredKeys.length > 0 && lookingUp.length === 0 ? (
+          {openCount === 0 && answeredCount > 0 && lookingUp.length === 0 ? (
             <div className="flex flex-wrap items-baseline gap-x-2 gap-y-2 rounded-lg border p-3">
               <span aria-hidden="true" className="text-success">
                 ✓
               </span>
-              <span>{answeredKeys.length === 1 ? "Question answered." : `All ${answeredKeys.length} questions answered.`}</span>
+              <span>{answeredCount === 1 ? "Question answered." : `All ${answeredCount} questions answered.`}</span>
               <Disclosure
                 id={id("show-answers")}
                 label={open.answers ? "Hide answers" : "Show answers"}
@@ -1695,6 +1919,9 @@ export function DetailedImport({
                       buttonId={ids.answerButton(key)}
                       onChange={() => reopen(key)}
                     />
+                  ))}
+                  {asks.map((ask) => (
+                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} target={ask.target} warn={ask.warn} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
                   ))}
                 </ul>
               </Disclosure>
@@ -1731,6 +1958,8 @@ export function DetailedImport({
                     </ul>
                   ),
                 )}
+              {unbalancedAsks.map((ask) => askView(ask))}
+              {duplicateViews}
             </div>
           )}
         </section>
@@ -1767,8 +1996,8 @@ export function DetailedImport({
       <NotIncludedDetailed
         earlier={earlier}
         skipped={skipped.map((item) => labelOf.get(item.key)!)}
+        unbalanced={[...new Set(unbalancedAsks.filter((a) => a.answer === true).map((a) => a.fundKey!))].map((key) => ({ key, name: fundNameOf(key), label: labelOf.get(key)! }))}
         notImported={notImported.map((f) => `${folioName(f)} (${plural(f.schemes.length, "fund")})`)}
-        defaulted={defaulted}
         leftOut={leftOutFunds}
         registrar={registrar}
         open={open}
@@ -1780,30 +2009,6 @@ export function DetailedImport({
         changePanel={(key) => editor?.rowId === `left|${key}` && changePanel(editor.rowId, itemOf.get(key)!, id(`left-change-${key}`))}
       />
       {counts && <TransactionsSummary breakdown={counts} range={range} partId={id("transactions")} />}
-      {answeredAll && (
-        <BeforeImporting
-          duplicates={before.duplicates}
-          unbalanced={before.unbalanced}
-          onDuplicate={(key, yes) =>
-            setImportAnyway((all) => {
-              const next = new Set(all);
-              if (yes) next.add(key);
-              else next.delete(key);
-              return next;
-            })
-          }
-          onUnbalanced={(key, yes) =>
-            setUnbalanced((all) => {
-              const next = new Set(all);
-              if (yes) next.add(key);
-              else next.delete(key);
-              return next;
-            })
-          }
-          disabled={busy !== ""}
-          headingId={ids.before}
-        />
-      )}
       {error && (
         <Alert variant="destructive">
           <AlertTitle>Something went wrong</AlertTitle>
@@ -1859,7 +2064,7 @@ export function DetailedImport({
               </LinkButton>
             </p>
           );
-          if (!toImport) return [<p key="0">{nothingWords(counts)}</p>, see];
+          if (!toImport) return [<p key="0">{nothingWords(counts)}</p>, ...answerLine, see];
           return [
             ...perAccount.map((a) => (
               <p key={a.accountId}>
@@ -1889,6 +2094,7 @@ export function DetailedImport({
                 {line}
               </p>
             )),
+            ...answerLine,
             see,
           ];
         })()}

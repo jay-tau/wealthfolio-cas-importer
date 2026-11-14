@@ -1710,14 +1710,15 @@ describe("rows that don't add up to the closing balance", async () => {
     assert.ok(mapping.transactions.every((t) => t.scheme !== flexi.scheme));
     // The removed purchase's stamp duty is part of the gap, so it gets no warning of its own.
     assert.deepEqual(
-      mapping.warnings.map((w) => [w.scheme, w.folio, w.rows, w.leftOut, w.unbalanced, w.message]),
+      mapping.warnings.map((w) => [w.scheme, w.folio, w.rows, w.leftOut, w.unbalanced, w.units, w.message]),
       [[
         "Fictiva Flexi Cap Fund - Direct Plan - Growth",
         "91234567 / 12",
         [],
         true,
         true,
-        `${gap} None of this fund's rows are imported unless you choose to import it anyway, under Before importing: then check them against the PDF.`,
+        { added: "2798.066", closing: "2892.104" },
+        `${gap} None of this fund's rows are imported unless you choose to import it with this difference: then check them against the PDF.`,
       ]],
     );
   });
@@ -1731,7 +1732,7 @@ describe("rows that don't add up to the closing balance", async () => {
     assert.deepEqual(
       mapping.warnings.map((w) => [w.leftOut, w.unbalanced ?? false, w.message]),
       [
-        [false, true, `${gap} Its rows are imported anyway: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`],
+        [false, true, `${gap} Its rows are imported with this difference, as you chose: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`],
         [true, false, "There's no transaction on this day to add this stamp duty to."],
       ],
     );

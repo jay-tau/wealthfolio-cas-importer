@@ -39,6 +39,8 @@ export interface PlannedRow {
   repeatsLine?: number;
   /** checkImport found a duplicate. */
   flagged: boolean;
+  /** The Wealthfolio activity checkImport says it duplicates, when it names one. */
+  duplicateOfId?: string;
 }
 
 export interface PlannedTransaction {
@@ -301,6 +303,7 @@ export function planImport(
         existingType: recordedType ? (recordedType === activity.activityType ? undefined : recordedType) : match?.type,
         repeatsLine: settled ? undefined : seen.get(own),
         flagged: !!(result?.duplicateOfId || result?.duplicateOfLineNumber),
+        ...(result?.duplicateOfId && { duplicateOfId: result.duplicateOfId }),
       };
       if (!result) row.errors.push("Wealthfolio didn't check this row.");
       else if (!result.isValid && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
