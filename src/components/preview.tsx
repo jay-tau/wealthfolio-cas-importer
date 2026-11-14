@@ -16,9 +16,8 @@ import {
   TableRow,
 } from "@wealthfolio/ui";
 import { useEffect, useRef } from "react";
-import type { Reused, StaleEntry } from "../cas/bank-entries";
-import { type NotCreated, NotCreatedAlert } from "./holdings-preview";
-import { WrapButton } from "./review/parts";
+import type { EntryFacts, Reused, StaleEntry } from "../cas/bank-entries";
+import { LinkButton, WrapButton } from "./review/parts";
 import { format } from "../cas/decimal";
 import type { Mapping } from "../cas/mapping";
 import {
@@ -32,6 +31,7 @@ import {
 } from "../cas/plan";
 import { focusDropped } from "../lib/focus";
 import { plural } from "../lib/plural";
+import { longDate, units } from "../lib/review-format";
 import { otherCurrency } from "./fund-choices";
 
 const LABELS: Record<string, string> = {
@@ -52,6 +52,11 @@ const label = (row: { activityType: string; subtype?: string | null }) => {
 /** "the 2023-05-05 purchase of Fictiva Liquid Fund" */
 const transactionName = ({ transaction: { activity, scheme } }: PlannedTransaction) =>
   `the ${String(activity.date)} ${label(activity)} of ${scheme}`;
+/** "Purchase of Fictiva Liquid Fund on 5 May 2023" */
+const transactionTitle = ({ transaction: { activity, scheme } }: PlannedTransaction) => {
+  const what = label(activity);
+  return `${what[0].toUpperCase()}${what.slice(1)} of ${scheme} on ${longDate(String(activity.date).slice(0, 10))}`;
+};
 /** "The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF)" */
 const entryName = (entry: ActivityDetails, accountName: string) =>
   `The ${label(entry)} of ${entry.amount} on ${day(entry.date)} in ${accountName}${entry.comment ? ` (${entry.comment})` : ""}`;
@@ -80,6 +85,8 @@ export interface BankLink extends Reused {
   transaction: PlannedTransaction;
   /** As read right before the import. */
   bankRow: ActivityDetails;
+  /** What linking it changes, as read then, for a retry. */
+  facts: EntryFacts;
 }
 
 /** What changed in an entry the user chose, between the review and Import. */
@@ -230,80 +237,207 @@ export function ActivityTable({
   );
 }
 
+/** What an import did in one account the review imports into. */
+export interface ImportOutcome {
+  /** The account in the review: a new account's proposed ID. */
+  key: string;
+  /** Its Wealthfolio account, once there is one. */
+  accountId?: string;
+  name: string;
+  /** Created by this review. */
+  isNew: boolean;
+  /** Whose transactions they are, for an account that wasn't created: "B. Investor's". */
+  who?: string;
+  /** Its transactions imported. */
+  imported: number;
+  /** Its transactions that wait for it: it wasn't created, or Wealthfolio didn't import them. */
+  waiting: number;
+  /** Whether this account's Try again can finish any of them now. */
+  retryable?: boolean;
+  /** A missing account holding back this account's transactions. */
+  waitingFor?: string;
+  state: "imported" | "not-created" | "failed";
+}
+
+/** The units check after an import: not run, failed, or each fund's units. */
+export type ClosingCheck = FundUnits[] | "failed" | undefined;
+
+/** Ids of the result's lines, for the focus after a retry. */
+export const importIds = (base: string) => ({
+  title: `${base}-title`,
+  account: (key: string) => `${base}-account-${key.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+  link: (link: BankLink) => `${base}-link-${link.bankRow.id.replace(/[^a-zA-Z0-9_-]/g, "_")}`,
+  units: `${base}-units`,
+  linked: `${base}-linked`,
+});
+
+/** What an import did in an account, in a sentence. */
+export function outcomeWords(a: ImportOutcome) {
+  const named = `${a.name}${a.isNew ? " (new)" : ""}`;
+  if (a.state === "not-created") {
+    return `${a.name} couldn't be created, so ${a.who ?? "its"} ${plural(a.waiting, "transaction")} ${a.waiting === 1 ? "wasn't" : "weren't"} imported.`;
+  }
+  if (a.state === "failed") {
+    const words = a.imported
+      ? `${a.waiting} of ${plural(a.imported + a.waiting, "transaction")} for ${named} weren't imported.`
+      : `${plural(a.waiting, "transaction")} for ${named} ${a.waiting === 1 ? "wasn't" : "weren't"} imported.`;
+    return a.retryable === false ? `${words} ${a.waitingFor ? `Try again for ${a.waitingFor}.` : "The rows below say why."}` : words;
+  }
+  if (!a.imported) return `None of the transactions for ${named} were imported; the rows below say why.`;
+  return `${plural(a.imported, "transaction")} imported into ${named}`;
+}
+
+/** What happened to a bank entry the user chose, when using it failed part-way. */
+export function linkWords(l: BankLink) {
+  const when = longDate(day(l.bankRow.date));
+  switch (l.stage) {
+    case "trade":
+      return `The trade wasn't imported, so the bank entry of ${when} was left as it is.`;
+    case "transfer":
+      return `The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of ${when} wasn't linked.`;
+    case "convert":
+      return `The trade and the fund account's transfer are in Wealthfolio; the bank entry of ${when} wasn't changed into a transfer or linked.`;
+    default:
+      return `The trade and the fund account's transfer are in Wealthfolio; the bank entry of ${when} wasn't linked.`;
+  }
+}
+
+/** ✓ or ✗ before a line: the words say it too, so it isn't read out. */
+const Mark = ({ ok }: { ok: boolean }) => (
+  <span aria-hidden="true" className={ok ? "text-success" : "text-destructive"}>
+    {ok ? "✓" : "✗"}
+  </span>
+);
+
+/**
+ * What an import did, until Phase 3's Done screen: how many transactions went in, account by
+ * account, with Try again for an account that didn't get its transactions; rows Wealthfolio
+ * rejected or skipped; the bank entries the user chose, with Try again for one that wasn't linked;
+ * and the check of each fund's units in Wealthfolio, with Check again if it couldn't run.
+ */
 export function ImportResult({
   result,
   sent,
+  total,
+  imported,
+  outcomes,
   closing,
   links,
   accounts,
-  notCreated = [],
-  waiting = () => "",
-  retry,
+  base,
+  onRetryAccount,
+  onRetryLink,
+  onCheckAgain,
+  onOpenAccount,
 }: {
   result: ImportActivitiesResult;
   /** The rows sent, to tell Wealthfolio's surprises apart. */
   sent: ActivityImport[];
-  closing: FundUnits[];
+  /** The transactions the review approved, and those that went in. */
+  total: number;
+  imported: number;
+  outcomes: ImportOutcome[];
+  closing: ClosingCheck;
   links: BankLink[];
   accounts: Account[];
-  /** New accounts Wealthfolio didn't create. */
-  notCreated?: NotCreated[];
-  /** What waits for one of them. */
-  waiting?: (account: NotCreated) => string;
-  /** Creates them and imports what waits. */
-  retry?: () => void;
+  /** Prefix of the ids of its lines (`importIds`). */
+  base: string;
+  onRetryAccount: (key: string) => void;
+  onRetryLink: (link: BankLink) => void;
+  onCheckAgain: () => void;
+  onOpenAccount: (accountId: string) => void;
 }) {
-  // Shown in place of the preview and its Import button, which had the focus: the summary takes it,
+  const ids = importIds(base);
+  // Shown in place of the review and its Import button, which had the focus: the title takes it,
   // unless the user moved it while the import ran.
-  const summaryRef = useRef<HTMLDivElement>(null);
+  const title = useRef<HTMLSpanElement>(null);
   useEffect(() => {
-    if (focusDropped()) summaryRef.current?.focus();
+    if (focusDropped()) title.current?.focus();
   }, []);
-  const failedLinks = links.filter((l) => l.error);
+  const failedLinks = links.filter((l) => l.stage);
   const changedLinks = links.filter((l) => l.changes.length || l.warnings.length);
   const accountName = (id: string) => accounts.find((a) => a.id === id)?.name ?? "the bank account";
-  const { summary } = result;
   const failed = result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0);
   // Rows Wealthfolio skipped that the preview didn't expect to be duplicates.
   const forced = new Set(sent.filter((r) => r.forceImport).map((r) => r.lineNumber));
   const skipped = result.activities.filter(
     (a) => (a.duplicateOfId || a.duplicateOfLineNumber) && !forced.has(a.lineNumber),
   );
+  const heading = imported === total
+    ? `${plural(total, "transaction")} imported`
+    : imported
+      ? `${imported} of ${plural(total, "transaction")} imported`
+      : "No transactions were imported";
+  const created = result.summary.assetsCreated ?? 0;
+  const differ = Array.isArray(closing) ? closing.filter((f) => !sameUnits(f)) : [];
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Import</CardTitle>
+        <CardTitle>
+          <span ref={title} id={ids.title} tabIndex={-1}>
+            {heading}
+          </span>
+        </CardTitle>
       </CardHeader>
-      <CardContent className="space-y-6">
-        {summary.success ? (
-          <Alert ref={summaryRef} tabIndex={-1} variant="success">
-            <AlertTitle>
-              Imported {summary.imported} of {plural(summary.total, "activity", "activities")}
-            </AlertTitle>
-            <AlertDescription>
-              Wealthfolio skipped {summary.duplicates} as {summary.duplicates === 1 ? "a duplicate" : "duplicates"} and
-              created {plural(summary.assetsCreated, "fund")}.
-            </AlertDescription>
-          </Alert>
-        ) : (
-          <Alert ref={summaryRef} tabIndex={-1} variant="destructive">
-            <AlertTitle>Nothing was imported</AlertTitle>
-            <AlertDescription>
-              {(summary as { errorMessage?: string }).errorMessage ?? "Wealthfolio rejected the import."}
-            </AlertDescription>
-          </Alert>
+      <CardContent className="grid gap-4 text-sm">
+        <ul className="grid gap-2">
+          {outcomes.map((a) => (
+            <li key={a.key} id={ids.account(a.key)} tabIndex={-1} className="flex flex-wrap items-center gap-2">
+              <Mark ok={a.state === "imported" && a.imported > 0} />
+              <span>{outcomeWords(a)}</span>
+              {a.state !== "imported" && a.retryable !== false && (
+                <WrapButton type="button" variant="outline" size="sm" onClick={() => onRetryAccount(a.key)}>
+                  Try again<span className="sr-only">: {a.name}</span>
+                </WrapButton>
+              )}
+            </li>
+          ))}
+        </ul>
+        {created > 0 && <p className="text-muted-foreground">Wealthfolio added {plural(created, "fund")}.</p>}
+        {closing === "failed" && (
+          <p id={ids.units} tabIndex={-1} className="flex flex-wrap items-center gap-2">
+            <span className="text-warning">Saved, but the units couldn't be checked in Wealthfolio.</span>
+            <WrapButton type="button" variant="outline" size="sm" onClick={onCheckAgain}>
+              Check again<span className="sr-only">: the units in Wealthfolio</span>
+            </WrapButton>
+          </p>
         )}
-        <NotCreatedAlert accounts={notCreated} what={waiting} />
-        {retry && (
-          <WrapButton type="button" variant="outline" className="justify-self-start" onClick={retry}>
-            Try again
-          </WrapButton>
+        {Array.isArray(closing) && closing.length > 0 && (
+          <div id={ids.units} tabIndex={-1} className="grid gap-2">
+            {differ.length ? (
+              <>
+                <p className="text-warning">
+                  {`Checked in Wealthfolio: units differ for ${differ.length} of ${plural(closing.length, "fund")}.`}
+                </p>
+                <ul className="grid gap-2 ps-4">
+                  {differ.map((f) => (
+                    <li key={`${f.accountId} ${f.asset.symbol}`} className="flex flex-wrap items-center gap-x-2">
+                      <span>
+                        {f.schemes[0].scheme}:{" "}
+                        {f.held === undefined
+                          ? "its units need a look in Wealthfolio, after a split or an option's expiry."
+                          : `Wealthfolio has ${units(format(f.held))} units, the statement says ${units(format(f.statement))}.`}
+                      </span>
+                      <LinkButton type="button" onClick={() => onOpenAccount(f.accountId)}>
+                        Open {accountName(f.accountId)}
+                      </LinkButton>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : (
+              <p>
+                <Mark ok /> Checked in Wealthfolio: units match the statement for{" "}
+                {closing.length === 1 ? "the fund" : `all ${closing.length} funds`}.
+              </p>
+            )}
+          </div>
         )}
         {failed.length > 0 && (
           <Alert variant="destructive">
             <AlertTitle>Wealthfolio rejected rows</AlertTitle>
             <AlertDescription>
-              Their transactions may lack their purchase, sale or cash. Check these in Wealthfolio:
+              These transactions weren't imported. The rows below say why:
               <ul className="list-disc ps-4">
                 {failed.map((a) => (
                   <li key={a.lineNumber}>
@@ -315,29 +449,31 @@ export function ImportResult({
           </Alert>
         )}
         {links.length > failedLinks.length && (
-          <p className="text-sm">
-            Linked {links.length - failedLinks.length} of {plural(links.length, "bank row")} you chose with{" "}
+          <p id={ids.linked} tabIndex={-1}>
+            <Mark ok /> Linked {links.length - failedLinks.length} of {plural(links.length, "bank entry", "bank entries")} you chose with{" "}
             {links.length === 1 ? "its transaction" : "their transactions"}.
           </p>
         )}
         {failedLinks.length > 0 && (
-          <Alert variant="destructive">
-            <AlertTitle>Bank rows not linked</AlertTitle>
-            <AlertDescription>
-              <ul className="list-disc ps-4">
-                {failedLinks.map((l) => (
-                  <li key={l.bankRow.id}>
-                    {String(l.transaction.transaction.activity.date)} {label(l.transaction.transaction.activity)}{" "}
-                    {l.transaction.transaction.scheme}, bank row of {l.bankRow.amount} on {day(l.bankRow.date)}: {l.error}
-                  </li>
-                ))}
-              </ul>
-            </AlertDescription>
-          </Alert>
+          <ul className="grid gap-2">
+            {failedLinks.map((l) => (
+              <li key={l.bankRow.id} id={ids.link(l)} tabIndex={-1} className="flex flex-wrap items-center gap-2">
+                <Mark ok={false} />
+                <span>
+                  {transactionTitle(l.transaction)}: {linkWords(l)}
+                </span>
+                {l.stage !== "trade" && (
+                  <WrapButton type="button" variant="outline" size="sm" onClick={() => onRetryLink(l)}>
+                    Try again<span className="sr-only">: link the bank entry of {longDate(day(l.bankRow.date))}</span>
+                  </WrapButton>
+                )}
+              </li>
+            ))}
+          </ul>
         )}
         {changedLinks.length > 0 && (
           <Alert variant={changedLinks.some((l) => l.warnings.length) ? "warning" : "default"}>
-            <AlertTitle>What changed in the bank rows you chose</AlertTitle>
+            <AlertTitle>What changed in the bank entries you chose</AlertTitle>
             <AlertDescription>
               Check these in Wealthfolio:
               <ul className="list-disc ps-4">
@@ -365,34 +501,6 @@ export function ImportResult({
               </ul>
             </AlertDescription>
           </Alert>
-        )}
-        {summary.success && closing.length > 0 && (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Fund</TableHead>
-                <TableHead className="text-end">Units in the statement</TableHead>
-                <TableHead className="text-end">Units in Wealthfolio</TableHead>
-                <TableHead>Status</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {closing.map((f) => (
-                <TableRow key={`${f.accountId} ${f.asset.symbol}`}>
-                  <TableCell>{f.schemes[0].scheme}</TableCell>
-                  <TableCell className="text-end tabular-nums">{format(f.statement)}</TableCell>
-                  <TableCell className="text-end tabular-nums">{f.held === undefined ? "Needs review: split or option expiry" : format(f.held)}</TableCell>
-                  <TableCell>
-                    {sameUnits(f) ? (
-                      <Badge variant="success-subtle">Match</Badge>
-                    ) : (
-                      <Badge variant="warning-subtle">{f.held === undefined ? "Needs review" : "Differ"}</Badge>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
         )}
       </CardContent>
     </Card>

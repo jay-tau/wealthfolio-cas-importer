@@ -6,6 +6,9 @@ import { proposedId } from "../src/lib/new-accounts.ts";
 
 let server;
 let HoldingsImport;
+let StatementForm;
+let CasParser;
+let CasError;
 let investorKey;
 let sourceKey;
 let holdingKey;
@@ -30,15 +33,79 @@ before(async () => {
           `export const ${name} = (...args) => globalThis.reviewHooks.${name}(...args);`).join("\n");
       },
       transform(code, id) {
-        if (/src\/(pages\/(holdings|detailed)-import\.tsx|components\/review\/(search\.ts|parts\.tsx|focus\.ts|footer\.tsx))$/.test(id)) {
+        if (/src\/(pages\/(holdings|detailed)-import\.tsx|components\/(statement-form\.tsx|review\/(search\.ts|parts\.tsx|focus\.ts|footer\.tsx))|lib\/focus\.ts)$/.test(id)) {
           return code.replaceAll('from "react"', 'from "review-hooks"');
         }
       },
     }],
   });
   ({ HoldingsImport } = await server.ssrLoadModule("/src/pages/holdings-import.tsx"));
+  ({ StatementForm } = await server.ssrLoadModule("/src/components/statement-form.tsx"));
+  ({ CasParser, CasError } = await server.ssrLoadModule("/src/cas/parser.ts"));
   ({ investorKey, sourceKey, holdingKey, LEFT_OUT } = await server.ssrLoadModule("/src/lib/choices.ts"));
 });
+
+for (const saved of [null, "old-password"]) for (const moved of ["control", "host"]) {
+  test(`password failures are announced when focus moved away, without repeating the field's description (${saved ? "saved" : "typed"}, ${moved})`, async (t) => {
+    const globals = ["window", "Worker", "HTMLElement", "HTMLInputElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
+    const parse = CasParser.prototype.parse;
+    t.after(() => {
+      CasParser.prototype.parse = parse;
+      for (const [name, descriptor] of globals) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else delete globalThis[name];
+      }
+    });
+    class Element {
+      isConnected = true;
+      closest() { return { contains: (element) => element === field || element === button }; }
+      focus() { document.activeElement = this; }
+      select() {}
+    }
+    const field = new Element();
+    field.type = "password";
+    const button = new Element();
+    const outside = {};
+    globalThis.HTMLElement = globalThis.HTMLInputElement = Element;
+    globalThis.window = { addEventListener() {}, removeEventListener() {} };
+    globalThis.Worker = class {
+      constructor() { queueMicrotask(() => this.onmessage({ data: { type: "ready" } })); }
+      postMessage() {}
+      terminate() {}
+    };
+    globalThis.document = { activeElement: button, body: {}, hasFocus: () => true, getElementById: (id) => id === "cas-password" ? field : null };
+    let reject;
+    CasParser.prototype.parse = () => new Promise((resolve, fail) => { reject = fail; });
+    const run = active = controller({
+      ctx: { api: { secrets: { get: async () => saved }, logger: { error() {} } }, assets: {
+        getBlob: async () => new Blob([JSON.stringify({ files: [], wasmParts: [], wheels: [] })]),
+      } },
+      onClear() {}, onRead: async () => {},
+    }, StatementForm);
+    await run.flush();
+    nodes(run.tree).find((node) => node.props?.id === "cas-file").props.onChange({ target: { files: [{ name: "made-up.pdf", arrayBuffer: async () => new ArrayBuffer(1) }] } });
+    await run.flush();
+    const read = () => nodes(run.tree).find((node) => textOf(node) === "Read statement" && node.props?.onClick).props.onClick();
+    const status = () => nodes(run.tree).filter((node) => node.props?.role === "status").map(textOf);
+    read();
+    await run.flush();
+    if (moved === "host") document.hasFocus = () => false;
+    else document.activeElement = outside;
+    reject(new CasError("password", "wrong password"));
+    await run.flush();
+    const words = saved ? "Your saved password didn't open this PDF. Type its password." : "That password didn't open the PDF. Check it and try again.";
+    assert.equal(document.activeElement, moved === "host" ? button : outside, "the failure keeps focus where the user moved it");
+    assert.deepEqual(status(), [words], "the password error is announced once without focusing its field");
+    document.hasFocus = () => true;
+    document.activeElement = button;
+    read();
+    await run.flush();
+    reject(new CasError("password", "wrong password"));
+    await run.flush();
+    assert.equal(document.activeElement, field);
+    assert.deepEqual(status(), [""], "the focused field already reads its error through aria-describedby");
+  });
+}
 afterEach(() => {
   active?.dispose();
   active = undefined;
@@ -117,7 +184,10 @@ function setup(sources, choices = true) {
   globalThis.document = { activeElement: {}, body: {}, hasFocus: () => true, getElementById: () => null };
   const holdings = { investor: "TEST", date: "2025-03-31", sources, leftOut: [] };
   const accounts = ["A", "B"].map((id) => ({ id, name: id, trackingMode: "HOLDINGS", isActive: true, isArchived: false }));
+  // What the add-on logs: Wealthfolio's own errors, which the screen doesn't show.
+  const logged = [];
   const api = {
+    logger: { error: (m) => logged.push(m), warn: (m) => logged.push(m) },
     portfolio: { getHoldings: async () => [] },
     snapshots: { getAll: async () => [], getByDate: async () => [] },
     storage: { get: async () => null },
@@ -136,7 +206,7 @@ function setup(sources, choices = true) {
     amfi: { status: "off", searches: 0 }, visit: {}, busy: "", setBusy() {}, onRemember() {}, onAnother() {},
   };
   active = controller(props);
-  return { run: active, props, api };
+  return { run: active, props, api, logged };
 }
 
 for (const [position, observe] of [["sticky", true], ["static", true], [undefined, true], ["sticky", false]]) {
@@ -890,6 +960,44 @@ test("the saved overlap summary keeps negative tracked units when calculating a 
   assert.match(textOf(summary), /differs by 30\.000 units/);
 });
 
+for (const failedRead of ["activities", "profile"]) {
+  test(`a failed tracked-units ${failedRead} read offers a plain planning retry with the choices kept`, async () => {
+    const fund = { ...holding("INFZ90A01017"), kind: "fund", units: "20", value: "40" };
+    const { run, props, api, logged } = setup([{ ...source("X", [fund]), kind: "folio" }, source("Y", [holding("ISINY")])]);
+    props.allAccounts = [...props.allAccounts, { id: "T", name: "Mutual funds", trackingMode: "TRANSACTIONS", isArchived: false }];
+    api.portfolio.getHoldings = async (id) => id !== "T" ? [] : [{
+      holdingType: "security", quantity: "20", localCurrency: "INR", instrument: { id: "tracked", symbol: fund.isin, name: fund.name, quoteMode: "MARKET" },
+    }];
+    let fail = false;
+    api.assets.getProfile = async (id) => {
+      if (fail && failedRead === "profile" && id === "other") throw new Error("made-up profile unavailable");
+      return { instrumentSymbol: id === "other" ? "OTHER" : fund.isin, instrumentExchangeMic: "XBOM" };
+    };
+    api.activities.getAll = async () => {
+      if (fail && failedRead === "activities") throw new Error("made-up history unavailable");
+      return ["tracked", "other"].map((assetId) => ({ accountId: "T", assetId, activityType: "BUY", status: "POSTED", quantity: "20", date: "2025-03-01" }));
+    };
+    await run.flush();
+    assert.equal(find(run, "NotIncluded").tracked[0].funds[0].comparison.kind, "match");
+    const statement = props.statement;
+    const choices = { ...props.accountChoices };
+    fail = true;
+    run.update({ visit: {} });
+    await run.flush();
+    assert.equal(find(run, "Footer").lines.map(textOf)[0], "We couldn't work out what will be saved. Nothing was saved.");
+    assert.equal(find(run, "Footer").action.disabled, true);
+    assert.equal(find(run, "Footer").go.label, "Try again");
+    assert.match(logged.join("\n"), /made-up (history|profile) unavailable/);
+    fail = false;
+    find(run, "Footer").go.onClick();
+    await run.flush();
+    assert.equal(find(run, "NotIncluded").tracked[0].funds[0].comparison.kind, "match");
+    assert.equal(props.statement, statement);
+    assert.deepEqual(props.accountChoices, choices);
+    assert.equal(find(run, "Footer").action.disabled, false);
+  });
+}
+
 test("an empty or failed button search returns focus to its field unless the user moved it", async () => {
   for (const failed of [false, true]) for (const moved of [false, true]) {
     const { run, api } = setup([source("X", [holding("ISINX")])], false);
@@ -939,7 +1047,7 @@ test("the saved result preserves a plan conflict from the second statement holdi
 test("a failed plan exposes Try again while preserving an unrelated hidden editor's draft", async () => {
   const x = source("X", [holding("ISINX")]);
   const y = source("Y", [holding("ISINY")]);
-  const { run, api } = setup([x, y]);
+  const { run, api, logged } = setup([x, y]);
   await run.flush();
   const ready = find(run, "ReadyTable");
   const edited = ready.rows.find((row) => row.item.isin === "ISINY");
@@ -953,7 +1061,9 @@ test("a failed plan exposes Try again while preserving an unrelated hidden edito
   assert.equal(find(run, "ReadyTable"), undefined);
   const footer = find(run, "Footer");
   assert.equal(footer.go.label, "Try again");
-  assert.ok(JSON.stringify(footer.lines).includes("made-up read failure"));
+  // Wealthfolio's own error goes to the log; the bar says what happened in the user's words.
+  assert.deepEqual(footer.lines.map(textOf), ["We couldn't work out what will be saved. Nothing was saved."]);
+  assert.match(logged.at(-1), /made-up read failure/);
   api.snapshots.getAll = async () => [];
   footer.go.onClick();
   await run.flush();
@@ -1388,6 +1498,8 @@ function withNewAccounts(sources, { accounts = [], refuse = new Set() } = {}) {
   return { ...context, asked, saved, remembers };
 }
 const footerText = (run) => find(run, "Footer").lines.map(textOf);
+/** Each account's outcome in the result: its Wealthfolio account, or the proposed one, and its state. */
+const outcomes = (result) => result.result.accounts.map((a) => [a.accountId ?? a.key, a.state]);
 const NEW_LINE = "New · Wealthfolio account, created when you save · Rename";
 
 test("a new profile proposes the depository's account, creates it on saving and only then remembers it", async () => {
@@ -1413,9 +1525,7 @@ test("a new profile proposes the depository's account, creates it on saving and 
   // The review's choices first, with no new account among them; the new account once it's created.
   assert.deepEqual(remembers.map((r) => r.accounts), [[], [[investor, "created-1"]]]);
   const result = find(run, "HoldingsResult");
-  assert.deepEqual(result.result.saved.map((s) => s.accountId), ["created-1"]);
-  assert.equal(result.accounts.find((a) => a.id === "created-1").name, "NSDL Demat");
-  assert.equal(result.retry, undefined);
+  assert.deepEqual(result.result.accounts.map((a) => [a.accountId, a.name, a.isNew, a.holdings, a.state]), [["created-1", "NSDL Demat", true, 1, "saved"]]);
 });
 
 test("with accounts that track holdings but none remembered, nothing is preselected, and the new one stays offered", async () => {
@@ -1453,7 +1563,7 @@ test("a source sent to its own new account gets one; one Wealthfolio doesn't cre
   const x = source("X", [holding("ISINX")]);
   const y = source("Y", [holding("ISINY")]);
   const refuse = new Set(["Y demat"]);
-  const { run, asked, saved, remembers } = withNewAccounts([x, y], { refuse });
+  const { run, asked, saved, remembers, logged } = withNewAccounts([x, y], { refuse });
   await run.flush();
   const investor = investorKey("TEST");
   find(run, "SaveTo").onChange(sourceKey(y), proposedId(sourceKey(y)));
@@ -1470,19 +1580,17 @@ test("a source sent to its own new account gets one; one Wealthfolio doesn't cre
   // Only the created account is remembered: Y's choice isn't, so the next statement asks again.
   assert.deepEqual(remembers.at(-1).accounts, [[investor, "created-1"]]);
   let result = find(run, "HoldingsResult");
-  assert.deepEqual(result.notCreated.map((n) => [n.name, n.error]), [["Y demat", "Error: made-up refusal of Y demat"]]);
-  assert.ok(result.retry);
+  assert.deepEqual(outcomes(result), [["created-1", "saved"], [proposedId(sourceKey(y)), "not-created"]]);
+  assert.match(logged.at(-1), /^Couldn't create the account Y demat: Error: made-up refusal of Y demat$/);
   refuse.clear();
-  result.retry();
+  result.onRetryAccount(proposedId(sourceKey(y)));
   await run.flush();
   // Y's account only: NSDL Demat is never created twice.
   assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat", "Y demat", "Y demat"]);
   assert.deepEqual(saved, [{ accountId: "created-1", holdings: 1 }, { accountId: "created-2", holdings: 1 }]);
   assert.deepEqual(remembers.at(-1).accounts, [[sourceKey(y), "created-2"]]);
   result = find(run, "HoldingsResult");
-  assert.deepEqual(result.result.saved.map((s) => s.accountId), ["created-1", "created-2"]);
-  assert.deepEqual(result.notCreated, []);
-  assert.equal(result.retry, undefined);
+  assert.deepEqual(outcomes(result), [["created-1", "saved"], ["created-2", "saved"]]);
 });
 
 test("an account created but not saved into gets the snapshot on Try again, without another account", async () => {
@@ -1497,15 +1605,14 @@ test("an account created but not saved into gets the snapshot on Try again, with
   find(run, "Footer").action.onClick();
   await run.flush();
   let result = find(run, "HoldingsResult");
-  assert.deepEqual(result.result.failed, [{ accountId: "created-1", error: "Error: made-up snapshot failure" }]);
+  assert.deepEqual(outcomes(result), [["created-1", "failed"]]);
   fail = false;
-  result.retry();
+  result.onRetryAccount(result.result.accounts[0].key);
   await run.flush();
   assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat"]);
   assert.deepEqual(saved, [{ accountId: "created-1", holdings: 1 }]);
   result = find(run, "HoldingsResult");
-  assert.deepEqual(result.result.failed, []);
-  assert.deepEqual(result.result.saved.map((s) => s.accountId), ["created-1"]);
+  assert.deepEqual(outcomes(result), [["created-1", "saved"]]);
 });
 
 test("retrying a failed snapshot replaces its repaired-price warning and keeps another account's warning", async () => {
@@ -1536,16 +1643,22 @@ test("retrying a failed snapshot replaces its repaired-price warning and keeps a
   find(run, "Footer").action.onClick();
   await run.flush();
   let result = find(run, "HoldingsResult");
-  assert.deepEqual(result.result.failed.map((f) => f.accountId), ["created-1"]);
+  assert.deepEqual(outcomes(result), [["created-1", "failed"], ["created-2", "saved"]]);
   assert.deepEqual(result.result.unfinished.map((f) => [f.accountId, f.what]), [["created-1", "price"], ["created-2", "price"]]);
   fail = false;
-  result.retry();
+  result.onRetryAccount(result.result.accounts[0].key);
   await run.flush();
   result = find(run, "HoldingsResult");
   assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat", "Y demat"]);
   assert.deepEqual(repaired, ["ISINX"]);
-  assert.deepEqual(result.result.failed, []);
-  assert.deepEqual(result.result.unfinished.map((f) => [f.accountId, f.what]), [["created-2", "price"]]);
+  assert.deepEqual(outcomes(result), [["created-1", "saved"], ["created-2", "saved"]]);
+  assert.deepEqual(result.result.unfinished.map((f) => [f.accountId, f.what, !!f.done]), [["created-2", "price", false]]);
+  // The other account's price is retried on its own.
+  result.onRetryUnfinished(result.result.unfinished[0]);
+  await run.flush();
+  result = find(run, "HoldingsResult");
+  assert.deepEqual(repaired, ["ISINX", "ISINY"]);
+  assert.deepEqual(result.result.unfinished.map((f) => [f.accountId, f.what, !!f.done]), [["created-2", "price", true]]);
 });
 
 test("when the only new account isn't created, nothing is saved or remembered for it and the review stays", async () => {
@@ -1559,7 +1672,7 @@ test("when the only new account isn't created, nothing is saved or remembered fo
   assert.deepEqual(remembers.map((r) => r.accounts), [[]]);
   const alert = find(run, "NotCreatedAlert");
   assert.deepEqual(alert.accounts.map((a) => a.name), ["NSDL Demat"]);
-  assert.equal(alert.what(alert.accounts[0]), "Nothing was saved.");
+  assert.equal(alert.nothing, "saved");
   // Its Try again saves the review again.
   refuse.clear();
   const tryAgain = nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Try again");
@@ -1638,7 +1751,7 @@ test("an open Rename keeps its footer message and Go to it when a planning read 
   const investor = investorKey("TEST");
   find(run, "SaveTo").onChange(investor, proposedId(investor));
   await run.flush();
-  assert.match(footerText(run)[0], /made-up read failure/);
+  assert.equal(footerText(run)[0], "We couldn't work out what will be saved. Nothing was saved.");
   const line = () => find(run, "SaveTo").newLine(investor, "Made-up Investor's holdings").props;
   line().onRename();
   await run.flush();
@@ -1647,7 +1760,7 @@ test("an open Rename keeps its footer message and Go to it when a planning read 
   assert.equal(find(run, "Footer").go.label, "Go to it");
   line().onCancel();
   await run.flush();
-  assert.match(footerText(run)[0], /made-up read failure/);
+  assert.equal(footerText(run)[0], "We couldn't work out what will be saved. Nothing was saved.");
   assert.equal(find(run, "Footer").go.label, "Try again");
 });
 
@@ -1693,7 +1806,7 @@ test("the creation retry and planning retry have different accessible names", as
   // Revisiting refreshes planning reads while the failed proposal is still selected.
   run.update({ visit: {} });
   await run.flush();
-  assert.match(footerText(run)[0], /made-up planning failure/);
+  assert.equal(footerText(run)[0], "We couldn't work out what will be saved. Nothing was saved.");
   const retry = nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Try again");
   assert.equal(retry.props.disabled, true);
   assert.equal(find(run, "Footer").go.label, "Try again");
@@ -1779,6 +1892,71 @@ test("refreshing saved holdings reopens the same-date and holding questions", as
   assert.match(reopened[1].main.label, /Keep 123\.000 units/);
   assert.equal(find(run, "AskAnswered"), undefined);
   assert.equal(find(run, "Footer").action.disabled, true);
+});
+
+for (const changed of ["none", "units", "new holding", "units after failed retry"]) test(`retrying a failed plan keeps only unchanged snapshot and holding answers (${changed})`, async () => {
+  const added = holding("ISINNEW");
+  const x = source("X", [holding("ISINX"), added]);
+  const { run, props, api } = sameDate([x]);
+  delete props.fundChoices[holdingKey(added)];
+  const stored = new Map();
+  api.storage.get = async (key) => stored.get(key) ?? null;
+  api.storage.set = async (key, value) => stored.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, x, "A", "2025-02-28", { "ISINOLD@XBOM": ["ISINOLD"] });
+  await run.flush();
+  const cards = nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
+  assert.equal(cards.length, 2);
+  cards.forEach((card) => card.other.onClick());
+  await run.flush();
+  const answered = () => nodes(run.tree).filter((node) => node.type?.name === "AskAnswered").map((node) => node.props.text);
+  const choices = answered();
+  assert.equal(choices.length, 2);
+  let fail = true;
+  const getProfile = api.assets.getProfile;
+  api.assets.getProfile = async (id) => {
+    if (fail && id === "asset-ISINNEW") throw new Error("made-up temporary profile read failure");
+    return getProfile(id);
+  };
+  const newFund = {
+    symbol: added.isin, exchangeMic: "XBOM", quoteCcy: "INR", name: added.name, instrumentType: "EQUITY",
+    providerId: "YAHOO", assetId: "asset-ISINNEW", manual: true,
+  };
+  find(run, "QuestionCard").onAnswer({ fund: newFund });
+  await run.flush();
+  assert.match(find(run, "Footer").lines.map(textOf).join(" "), /We couldn't work out what will be saved/);
+  assert.deepEqual(answered(), choices);
+  fail = changed === "units after failed retry";
+  if (changed !== "none") {
+    const getByDate = api.snapshots.getByDate;
+    api.snapshots.getByDate = async (id) => {
+      const positions = await getByDate(id);
+      if (changed.startsWith("units")) return positions.map((p) => p.instrument.id === "asset-ISINOLD" ? { ...p, quantity: "123" } : p);
+      return [...positions, { holdingType: "security", quantity: "7", costBasis: null, localCurrency: "INR",
+        instrument: { id: "asset-ISINOTHER", name: "Other holding", symbol: "ISINOTHER", quoteMode: "MARKET" } }];
+    };
+  }
+  find(run, "Footer").go.onClick();
+  await run.flush();
+  if (changed === "units after failed retry") {
+    assert.match(find(run, "Footer").lines.map(textOf).join(" "), /We couldn't work out what will be saved/);
+    fail = false;
+    find(run, "AnsweredLine").onChange();
+    await run.flush();
+    find(run, "QuestionCard").onAnswer({ fund: newFund });
+    await run.flush();
+  }
+  if (changed === "none") {
+    assert.deepEqual(answered(), choices, "recovering unchanged evidence keeps both answers");
+    assert.equal(find(run, "AskCard"), undefined);
+    assert.equal(find(run, "Footer").action.disabled, false);
+  } else {
+    const cards = nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
+    assert.equal(cards.length, changed.startsWith("units") ? 2 : 1, "changed snapshot evidence needs a fresh answer");
+    assert.equal(answered().length, changed.startsWith("units") ? 0 : 1, "an unchanged holding's answer stays");
+    if (changed.startsWith("units")) assert.match(cards[1].main.label, /Keep 123\.000 units/);
+    assert.equal(find(run, "Footer").action.disabled, true);
+  }
 });
 
 test("the first announcement counts the questions about saved holdings", async () => {
@@ -2093,7 +2271,7 @@ test("a changed fund's new replacement question gets focus without leaving a sta
   assert.equal(document.activeElement?.id, beta.headingId);
 });
 
-test("a holding the statement no longer lists waits for an answer, with nothing preselected", async () => {
+for (const retry of [false, true]) test(`a holding the statement no longer lists keeps its answer${retry ? " through a failed save and return" : ", with nothing preselected"}`, async () => {
   const x = source("X", [holding("ISINX")]);
   const { run, api } = setup([x]);
   api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
@@ -2105,7 +2283,11 @@ test("a holding the statement no longer lists waits for an answer, with nothing 
   const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
   await saveImported(api.storage, x, "A", "2025-02-28", { "ISINX@XBOM": ["ISINX"], "ISINOLD@XBOM": ["ISINOLD"] });
   const saved = [];
-  api.snapshots.save = async (accountId, positions) => saved.push(positions.map((p) => [p.assetId ?? p.symbol, p.quantity]));
+  let fail = retry;
+  api.snapshots.save = async (accountId, positions) => {
+    if (fail) { fail = false; throw new Error("made-up snapshot failure"); }
+    saved.push(positions.map((p) => [p.assetId ?? p.symbol, p.quantity]));
+  };
   api.query = { invalidateQueries() {} };
   await run.flush();
   const card = find(run, "AskCard");
@@ -2120,5 +2302,106 @@ test("a holding the statement no longer lists waits for an answer, with nothing 
   assert.match(textOf(find(run, "Footer").lines[0]), /^Update A to 31 Mar 2025 with 1 holding from this statement\. Its other holdings and cash stay\.Example ISINOLD set to zero\./);
   find(run, "Footer").action.onClick();
   await run.flush();
+  if (retry) {
+    assert.deepEqual(saved, []);
+    run.update({ visit: {} });
+    await run.flush();
+    find(run, "HoldingsResult").onRetryAccount("A");
+    await run.flush();
+  }
   assert.deepEqual(saved, [[["asset-ISINX", "10"]]]);
+});
+
+test("a snapshot Wealthfolio doesn't save in an existing account gets its own Try again, and the other account's stays saved", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const { run, api, logged } = setup([x, y]);
+  const saved = [];
+  let fail = true;
+  api.snapshots.save = async (accountId) => {
+    if (fail && accountId === "B") throw new Error("made-up snapshot failure");
+    saved.push(accountId);
+  };
+  api.storage.set = async () => {};
+  api.query = { invalidateQueries() {} };
+  await run.flush();
+  find(run, "SaveTo").onChange(sourceKey(y), "B");
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  let result = find(run, "HoldingsResult");
+  assert.deepEqual(outcomes(result), [["A", "saved"], ["B", "failed"]]);
+  assert.equal(find(run, "ReviewHeader").unfinished, true, "leaving a partial result asks before discarding answers");
+  assert.deepEqual(saved, ["A"]);
+  assert.match(logged.at(-1), /^Couldn't save the snapshot of B on 2025-03-31: Error: made-up snapshot failure$/);
+  // B's Try again saves B only: A isn't saved again.
+  fail = false;
+  result.onRetryAccount("B");
+  await run.flush();
+  result = find(run, "HoldingsResult");
+  assert.deepEqual(saved, ["A", "B"]);
+  assert.deepEqual(outcomes(result), [["A", "saved"], ["B", "saved"]]);
+});
+
+test("import history that couldn't be saved, and a fund's details, are each saved again on their own", async () => {
+  const bond = { ...holding("INEZ91A07012"), kind: "bond", name: "Example Bond", details: { name: "Example Bond", coupon: "7.5" } };
+  const { run, props, api } = setup([source("X", [bond])]);
+  props.fundChoices[holdingKey(bond)].fund.assetId = "bond-asset";
+  api.assets.getProfile = async (id) => ({ id, instrumentSymbol: bond.isin, instrumentExchangeMic: "XBOM", instrumentType: "BOND", metadata: null });
+  let failStorage = true;
+  let failProfile = true;
+  const stored = new Map();
+  const updated = [];
+  api.snapshots.save = async () => {};
+  api.storage.set = async (key, value) => {
+    if (failStorage) throw new Error("made-up storage failure");
+    stored.set(key, value);
+  };
+  api.assets.updateProfile = async (profile) => {
+    if (failProfile) throw new Error("made-up profile failure");
+    updated.push(profile.id);
+  };
+  api.query = { invalidateQueries() {} };
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  let result = find(run, "HoldingsResult");
+  assert.deepEqual(outcomes(result), [["A", "saved"]]);
+  assert.deepEqual(result.result.history.map((h) => [h.accountId, !!h.done]), [["A", false]]);
+  assert.deepEqual(result.result.unfinished.map((u) => [u.what, u.name, !!u.done]), [["details", bond.name, false]]);
+  await new Promise((resolve) => setTimeout(resolve, 85));
+  await run.flush();
+  const notice = nodes(run.tree).find((n) => n.props?.role === "status").props.children;
+  assert.match(notice, /The statement's details for Example Bond weren't saved\. Retry saving the details\./);
+  assert.match(notice, /Holdings saved, but the import history couldn't be saved\./);
+  // The details' retry doesn't save the history, and the history's doesn't save the details.
+  failProfile = false;
+  result.onRetryUnfinished(result.result.unfinished[0]);
+  await run.flush();
+  result = find(run, "HoldingsResult");
+  assert.deepEqual(updated, ["bond-asset"]);
+  assert.deepEqual(result.result.unfinished.map((u) => [u.what, !!u.done]), [["details", true]]);
+  assert.equal(stored.size, 0);
+  failStorage = false;
+  result.onRetryHistory();
+  await run.flush();
+  result = find(run, "HoldingsResult");
+  assert.ok(stored.size > 0);
+  assert.deepEqual(result.result.history.map((h) => [h.accountId, !!h.done]), [["A", true]]);
+  assert.deepEqual(updated, ["bond-asset"]);
+});
+
+test("a search Wealthfolio rejects says so at the top until a search answers again, and an empty one doesn't", async () => {
+  const { run, api } = setup([source("X", [holding("ISINX")]), source("Y", [holding("ISINY")])], false);
+  let answer = () => Promise.reject(new Error("made-up provider failure"));
+  api.market.searchTicker = () => answer();
+  await run.flush();
+  assert.equal(find(run, "SearchDown").down, true);
+  const question = find(run, "QuestionCard");
+  assert.equal(question.search.auto.status, "failed");
+  // Nothing found is an answer: searching works.
+  answer = () => Promise.resolve([]);
+  question.searches.retry(question.item);
+  await run.flush();
+  assert.equal(find(run, "SearchDown").down, false);
 });

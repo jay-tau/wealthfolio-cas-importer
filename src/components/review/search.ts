@@ -101,6 +101,14 @@ export function useHoldingSearches(
   },
 ) {
   const [searches, setSearches] = useState<Record<string, ItemSearch>>({});
+  // The latest search to finish was rejected: Wealthfolio couldn't search at all. An empty result
+  // isn't a failure: Wealthfolio 3.13.0 turns a provider's error into one.
+  const [down, setDown] = useState(false);
+  const answered = (ok: boolean, error?: unknown) => {
+    if (!mounted.current) return;
+    if (!ok) ctx.api.logger.warn(`The search failed: ${String(error)}`);
+    setDown(!ok);
+  };
   const current = useRef(searches);
   current.current = searches;
   // Answers can arrive out of order; only each holding's latest search of each kind counts.
@@ -152,6 +160,7 @@ export function useHoldingSearches(
       }
       const search = done(item, found);
       update(key, (s) => ({ ...s, auto: { ...search, byName } }));
+      answered(true);
       // AMFI's scheme for the printed ISIN is confirmed without a click when nothing contradicts it,
       // unless the holding was answered or changed, or the user has started on it.
       const own = current.current[key];
@@ -164,7 +173,9 @@ export function useHoldingSearches(
       });
       if (match !== undefined) onMatchRef.current(key, choiceFor(item, found[match]));
     } catch (e) {
-      if (!stale()) update(key, (s) => ({ ...s, auto: { status: "failed", error: String(e) } }));
+      if (stale()) return;
+      update(key, (s) => ({ ...s, auto: { status: "failed", error: String(e) } }));
+      answered(false, e);
     }
   };
 
@@ -181,11 +192,13 @@ export function useHoldingSearches(
       const found = offered(item, await ctx.api.market.searchTicker(text));
       if (!mounted.current || latest.current.get(`typed:${key}`) !== id) return;
       update(key, (s) => ({ ...s, typed: { ...done(item, found), text } }));
+      answered(true);
       const auto = current.current[key]?.auto;
       onTypedRef.current?.(key, { text, origin, found: found.length, total: found.length + (auto?.status === "done" ? auto.results.length : 0) });
     } catch (e) {
       if (mounted.current && latest.current.get(`typed:${key}`) === id) {
         update(key, (s) => ({ ...s, typed: { status: "failed", error: String(e), text } }));
+        answered(false, e);
         onTypedRef.current?.(key, { text, origin, error: String(e) });
       }
     }
@@ -214,6 +227,8 @@ export function useHoldingSearches(
 
   return {
     get: (key: string) => searches[key] ?? empty,
+    /** Searching keeps failing: the latest search to finish was rejected. */
+    down,
     retry: (item: FundItem) => void runAuto(item),
     search: (item: FundItem) => void runTyped(item),
     setText: (key: string, text: string) => update(key, (s) => ({ ...s, text })),

@@ -13,8 +13,9 @@ Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0
 3.13.0) and Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on
 macOS.
 
-To import, pick the PDF and enter its password, if it has one. Once the statement is read, one Review
-screen shows, in this order:
+To import, choose or drop the PDF under **Add your statement** and enter its password, if it has
+one; with a password saved, the add-on uses it unless you choose **Use a different password**. Once
+the statement is read, one Review screen shows, in this order:
 
 - **Transactions, 1 Apr 2019 to 30 Jun 2026**, the statement's period, then the registrar, the
   investor's name as printed ("A. Investor and B. Investor" for a family statement) and the file.
@@ -145,11 +146,13 @@ well as Yahoo's listing. AMFI finds a fund only by its exact ISIN or AMFI scheme
 current list of schemes: some closed or merged schemes aren't in it, and an ISIN listed under more
 than one scheme code finds nothing.
 
-While AMFI is off, a banner at the top of the add-on's page says so before you read a statement. Add-ons
-can't turn AMFI on, so its **Open Market data settings** button opens **Settings** → **Market data**,
-where **Add provider** adds it. **Check again** checks whether it's on now, and **Continue without
-AMFI** hides the banner until you open the page again. The add-on also checks each time you open its
-page, and when its window gets the focus while AMFI isn't on. Once a check finds AMFI on, the banner
+While AMFI is off, a banner at the top of the add-on's page, "Add Indian mutual fund data
+(recommended)", says so before you read a statement. Add-ons can't turn AMFI on, so its **Open
+Market data settings** button opens **Settings** → **Market data**, where **Add provider** adds it.
+Once that's used, **I've added AMFI: check** checks whether it's on now ("AMFI added. Funds will be
+matched with it."), and **Continue without it** hides the banner until you open the page again. The
+add-on also checks each time you open its page, and when its window gets the focus while AMFI isn't
+on. Once a check finds AMFI on, the banner
 goes, and each fund that has no choice yet is searched again as when it was first shown, so its
 search finds AMFI's scheme too. The statement stays read, and the funds confirmed or left out stay
 as they are. When Wealthfolio doesn't say whether AMFI is on, there's no banner.
@@ -638,13 +641,54 @@ hidden, archived, no longer listed or tracks the wrong thing asks you to choose 
 account offered but not preselected, so a second account isn't made beside one you may still use.
 
 If Wealthfolio doesn't create an account, nothing that needs it is saved and it isn't remembered.
-Everything else is saved, and the result says which account wasn't created, with **Try again**; when
-nothing else was saved, the review stays as it was, saying so. Try again creates only the accounts
-still missing, and saves into one created before whose save failed, never creating a second. A
-transaction that needs a missing account waits whole, with both sides of a gift between two
-investors' accounts and a trade's bank transfer, so they go in together, as Wealthfolio links
-transfers only within one import. Wealthfolio checks a new account's transactions once it's created,
-just before they're imported: one it refuses stays out and is listed with its reason.
+Everything else is saved, and the result says, account by account, what was saved and what wasn't,
+with **Try again** beside each account that didn't get its holdings or transactions ("Mutual funds
+(B. Investor) couldn't be created, so B. Investor's 41 transactions weren't imported."); when nothing
+else was saved, the review stays as it was, saying so. Try again creates that account if it's still
+missing, and saves into one created before whose save failed, never creating a second. A transaction
+that needs a missing account waits whole, with both sides of a gift between two investors' accounts
+and a trade's bank transfer, so they go in together, as Wealthfolio links transfers only within one
+import. Wealthfolio checks a new account's transactions once it's created, just before they're
+imported: one it refuses stays out and is listed with its reason.
+
+## Troubleshooting
+
+Every failure says what happened and what to do next, and keeps the file, the password typed and
+every answer, cost and **Change** made on the Review screen. Errors from failed Wealthfolio planning
+requests go to its log file. When Wealthfolio rejects rows, its reasons stay visible.
+
+- **That password didn't open the PDF.** Check it and read the statement again; the file stays
+  chosen. "Your saved password didn't open this PDF. Type its password." means the password you saved
+  is for other statements: it stays saved, unless you tick **Remember this password (replaces the
+  saved one)**.
+- **We couldn't read this as a CAS from CAMS, KFintech, NSDL or CDSL.** The PDF isn't a statement
+  casparser reads, such as a bank statement or a contract note. A line under it says why when the
+  add-on knows: the statement's date or period, or whether it's detailed or a summary, couldn't be
+  found. Choose another file.
+- **We couldn't finish reading this PDF.** The PDF reader, Python running on this device, didn't
+  start, stopped or took too long. **Try again** starts it again and reads the same file with the
+  password already typed. If it keeps happening, restart Wealthfolio.
+- **Couldn't read your Wealthfolio accounts.** **Try again** reads them again, without reading the
+  PDF again.
+- **The search didn't work.** Wealthfolio couldn't search, and a line at the top of the Review screen
+  says "Searching isn't working right now" until a search answers; funds already matched aren't
+  affected. Wealthfolio 3.13.0 reports a provider that's down, such as Yahoo Finance, as finding
+  nothing, so "Nothing found" can mean that too: check the connection and search again, or use the
+  price on the statement.
+- **We couldn't work out what will be saved. Nothing was saved.** A read of Wealthfolio's activities,
+  assets, snapshots or quotes failed, so nothing was saved; **Try again** reads Wealthfolio afresh,
+  keeping your answers where their evidence is unchanged and asking again where it changed. When the
+  add-on knows why, such as a fund's asset that was deleted or whose symbol changed in Wealthfolio, a
+  line says what to change.
+- **After saving**, each account says what went in and what didn't, with **Try again** for work it can
+  retry. Rows Wealthfolio rejected keep their reasons.
+  A price or a fund's statement details that weren't saved have **Retry saving the price** and
+  **Retry saving the details**; import history that wasn't saved, which the next import uses to know
+  which holdings a statement added, has **Try again**. A bank entry that wasn't linked says how far
+  it got ("The trade and the fund account's transfer are in Wealthfolio; the bank entry of 5 Jan 2026
+  wasn't linked."), and **Try again** goes on from there, never adding the transfer twice. "Saved, but
+  the units couldn't be checked in Wealthfolio" has **Check again**; units that differ list each fund
+  with both numbers and a way to open its account.
 
 ## What the add-on keeps
 
@@ -672,8 +716,9 @@ just before they're imported: one it refuses stays out and is listed with its re
   the same folio number and issuer; learned links remain when a later summary omits the ISIN,
   but stop being used if it names more than one issuer.
   Importing an earlier date preserves the records for later dates.
-- In Wealthfolio's secret store, only if you tick "Remember": the PDF password. It stays after the
-  add-on is uninstalled until you choose "Forget the saved password".
+- In Wealthfolio's secret store, only if you tick "Remember this password": the PDF password. It
+  stays after the add-on is uninstalled until you choose "Forget saved password", under **Use a
+  different password**.
 - On the two activities of each merger's conversion, the group ID that pairs them: a SHA-256 hash of
   the Wealthfolio account, the folio number, the merger's date and the confirmed funds' symbols and
   exchanges. It stays the same when another statement omits an ISIN or prints different scheme codes.

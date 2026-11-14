@@ -90,7 +90,7 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     const [loaded] = await Promise.all([
       // The host supports includeArchived; the SDK omits this argument.
       (api.accounts.getAll as (includeArchived: boolean) => Promise<Account[]>)(true).catch((e) => {
-        throw new CasError("parse", `Couldn't load the accounts: ${String(e)}. Choose Read statement to try again.`);
+        throw new CasError("accounts", `Couldn't load the accounts: ${String(e)}`);
       }),
       ...keys.map(async (key) => {
         const id = await api.storage.get(key).catch(() => null);
@@ -153,13 +153,11 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
 
   return (
     <Page>
-      <PageHeader
-        heading="CAS Importer (India)"
-        text="Import a CAMS, KFintech, NSDL or CDSL statement (CAS PDF). The PDF is read on this device."
-      />
+      <PageHeader heading="CAS Importer (India)" />
       <PageContent>
         {/* A fieldset is as wide as its widest unbreakable content unless its minimum width is 0. */}
         <fieldset disabled={busy !== ""} className="min-w-0 space-y-6" style={{ minWidth: 0 }}>
+          {!reviewing && <h2 className="text-xl font-semibold">Add your statement</h2>}
           {/* While a statement is reviewed, its Questions say what AMFI would change. */}
           {!reviewing && <AmfiBanner amfi={amfi} />}
           {notice && !reviewing && <p className="text-muted-foreground text-sm">{notice}</p>}

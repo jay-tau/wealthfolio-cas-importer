@@ -1,4 +1,5 @@
 import type { ActivityDetails, ActivityImport, ActivityType, AddonContext } from "@wealthfolio/addon-sdk";
+import { Explained } from "../lib/explained.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, neg } from "./decimal.ts";
 import type { FundAsset, MappedTransaction, Mapping } from "./mapping.ts";
 import type { CasData, CasFolio, CasScheme } from "./types.ts";
@@ -41,6 +42,8 @@ export interface PlannedRow {
   flagged: boolean;
   /** The Wealthfolio activity checkImport says it duplicates, when it names one. */
   duplicateOfId?: string;
+  /** The import line checkImport says it duplicates, when it names one. */
+  duplicateOfLineNumber?: number;
 }
 
 export interface PlannedTransaction {
@@ -195,7 +198,7 @@ export function fundRefs(funds: (FundAsset & { assetId?: string; name?: string }
   const add = (id: string, ref: string, fund: (typeof funds)[number]) => {
     if (found.has(ref) && found.get(ref) !== id) {
       const symbol = [fund.symbol, fund.exchangeMic].filter(Boolean).join(" on ");
-      throw new Error(
+      throw new Explained(
         `Several Wealthfolio assets have the symbol and exchange of ${fund.name ?? symbol} (${symbol}). Choose Change beside the fund, search for ${fund.symbol} and pick the asset to import into.`,
       );
     }
@@ -304,6 +307,7 @@ export function planImport(
         repeatsLine: settled ? undefined : seen.get(own),
         flagged: !!(result?.duplicateOfId || result?.duplicateOfLineNumber),
         ...(result?.duplicateOfId && { duplicateOfId: result.duplicateOfId }),
+        ...(result?.duplicateOfLineNumber !== undefined && { duplicateOfLineNumber: result.duplicateOfLineNumber }),
       };
       if (!result) row.errors.push("Wealthfolio didn't check this row.");
       else if (!result.isValid && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
@@ -572,41 +576,68 @@ export function bankMatches(plan: PlannedTransaction[], existing: ActivityDetail
 type LinkApi = Pick<AddonContext["api"]["activities"], "create" | "update" | "linkTransfer">;
 
 /**
+ * The step of using a bank entry that failed: the trade wasn't imported, the fund account's transfer
+ * wasn't added, the bank's entry wasn't changed into a transfer, or the two weren't linked.
+ */
+export type LinkStage = "trade" | "transfer" | "convert" | "link";
+
+/** What an earlier try at using a bank entry did, for a retry to go on from. */
+export interface LinkProgress {
+  /** The fund account's transfer it added. */
+  fundId?: string;
+  /** It changed the bank's entry into a transfer. */
+  converted?: boolean;
+  /** A fresh read confirmed the two transfers are already linked. */
+  linked?: boolean;
+}
+
+/**
  * After the import sent a transaction's trade, records its cash against the bank row the user chose
  * to reuse: adds the fund account's transfer, changes a bank deposit or withdrawal into the
- * matching transfer, and links the two. Returns what went wrong, if anything, and whether the bank
- * row was changed into a transfer and linked.
+ * matching transfer, and links the two. Returns what went wrong, if anything, at which step, and
+ * what it did: the transfer added, and whether the bank row was changed into a transfer and linked.
+ * `from` is what an earlier try did, so a retry only does what's left.
  */
 export async function linkBankRow(
   activities: LinkApi,
   t: PlannedTransaction,
   bankRow: ActivityDetails,
-): Promise<{ error?: string; converted: boolean; linked: boolean }> {
+  from: LinkProgress = {},
+): Promise<{ error?: string; stage?: LinkStage } & LinkProgress & { converted: boolean; linked: boolean }> {
+  if (from.linked) return { fundId: from.fundId, converted: !!from.converted, linked: true };
   const cash = t.transaction.cash!;
   const type = t.transaction.bank!.activityType;
   const when = `on ${day(bankRow.date)}`;
-  let fundId: string;
-  try {
-    // create bypasses the import bridge, so namespace the fields here. ActivityCreate omits
-    // sourceRecordId and idempotencyKey, but Wealthfolio keeps both.
-    const sourceRecordId = `${RECORD_PREFIX}${cash.sourceRecordId}`;
-    const transfer = {
-      accountId: cash.accountId,
-      activityType: cash.activityType,
-      activityDate: String(cash.date),
-      amount: cash.amount,
-      currency: cash.currency,
-      sourceRecordId,
-      metadata: { addons: { "cas-importer": cash.metadata } },
-      // Keep retries from duplicating this bank row's cash, including copies made with "Import anyway".
-      idempotencyKey: `cas-importer-bank:${bankRow.id}`,
-    };
-    ({ id: fundId } = await activities.create(transfer));
-  } catch (e) {
-    return { error: `Couldn't add the fund account's transfer: ${String(e)}. The trade is in Wealthfolio without its cash.`, converted: false, linked: false };
+  let fundId = from.fundId;
+  if (!fundId) {
+    try {
+      // create bypasses the import bridge, so namespace the fields here. ActivityCreate omits
+      // sourceRecordId and idempotencyKey, but Wealthfolio keeps both.
+      const sourceRecordId = `${RECORD_PREFIX}${cash.sourceRecordId}`;
+      const transfer = {
+        accountId: cash.accountId,
+        activityType: cash.activityType,
+        activityDate: String(cash.date),
+        amount: cash.amount,
+        currency: cash.currency,
+        sourceRecordId,
+        metadata: { addons: { "cas-importer": cash.metadata } },
+        // Keep retries from duplicating this bank row's cash, including copies made with "Import anyway".
+        idempotencyKey: `cas-importer-bank:${bankRow.id}`,
+      };
+      ({ id: fundId } = await activities.create(transfer));
+    } catch (e) {
+      return {
+        error: `Couldn't add the fund account's transfer: ${String(e)}. The trade is in Wealthfolio without its cash.`,
+        stage: "transfer",
+        converted: false,
+        linked: false,
+      };
+    }
   }
-  const converted = bankRow.activityType !== type;
-  if (converted) {
+  // A retry goes on from the step that failed: the bank's row changed by an earlier try stays so.
+  const converted = !!from.converted || bankRow.activityType !== type;
+  if (converted && !from.converted) {
     try {
       // Fields left out keep their values.
       await activities.update({
@@ -620,6 +651,8 @@ export async function linkBankRow(
     } catch (e) {
       return {
         error: `Added the fund account's transfer, but couldn't change the bank's row ${when} into a transfer: ${String(e)}. Change it and link the two in Wealthfolio.`,
+        stage: "convert",
+        fundId,
         converted: false,
         linked: false,
       };
@@ -630,11 +663,13 @@ export async function linkBankRow(
   } catch (e) {
     return {
       error: `Added the fund account's transfer, but couldn't link it with the bank's row ${when}: ${String(e)}. Link the two in Wealthfolio.`,
+      stage: "link",
+      fundId,
       converted,
       linked: false,
     };
   }
-  return { converted, linked: true };
+  return { fundId, converted, linked: true };
 }
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];

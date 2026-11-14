@@ -4,7 +4,7 @@ import type { ChosenFund } from "../../lib/choices";
 import { exchangeOf } from "../../lib/review-format";
 import type { FundChoice, FundItem } from "../fund-choices";
 import { LinkButton, providerName, ResultLabel, resultName, shareExchange, WrapButton } from "./parts";
-import { type AutoSearch, type HoldingSearches, type ItemSearch, pickedFund, type Search, shown, statementPlan } from "./search";
+import { type AutoSearch, type HoldingSearches, type ItemSearch, pickedFund, shown, statementPlan } from "./search";
 
 /** What the user calls the holding's kind of choice: a share's is a listing on an exchange. */
 export const useWord = (item: FundItem) => (item.noun === "share" ? "listing" : item.noun === "fund" ? "fund" : item.noun);
@@ -23,8 +23,10 @@ function why(item: FundItem, auto: AutoSearch | undefined, amfiOn: boolean) {
   }
   if (!item.isin) {
     return item.noun === "fund"
-      ? "The statement prints no ISIN for it, so Yahoo Finance searched its name. AMFI can't search by name."
-      : "The statement prints no ISIN for it, so its name was searched.";
+      ? "No ISIN is printed for it, so its name was searched on Yahoo Finance. You can also search below with a code from its factsheet."
+      : item.noun === "NPS scheme"
+        ? "No ISIN is printed for it, so its name was searched."
+        : "No ISIN is printed for it, so its name was searched. You can also search below with its ISIN.";
   }
   // When the name found nothing too, the line under the results says so.
   if (auto.byName) {
@@ -146,7 +148,7 @@ export function Picker({
       )}
       {auto?.status === "failed" && (
         <p className="text-destructive flex flex-wrap items-center gap-2 text-sm">
-          The search didn't work: {auto.error}
+          <span>The search didn't work.</span>
           <Button type="button" variant="outline" size="sm" onClick={() => searches.retry(item)}>
             Try again<span className="sr-only">: {label}</span>
           </Button>
@@ -154,7 +156,7 @@ export function Picker({
       )}
       {auto?.status === "done" && auto.results.length === 0 && (
         <p className="text-warning text-sm">
-          Nothing found for {item.isin && auto.byName ? "the ISIN printed for it or its name" : item.isin ? "the ISIN printed for it" : "its name"}.
+          Nothing found by {item.isin && auto.byName ? "the ISIN printed for it or its name" : item.isin ? "the ISIN printed for it" : "its name"}.
           {" "}Search by its {item.noun === "fund" ? "fund code" : item.noun === "NPS scheme" ? "name" : "ISIN"} below{statementWords}.
         </p>
       )}
@@ -185,8 +187,13 @@ export function Picker({
           </Button>
         </div>
         {(typedNone || typedFailed) && (
-          <p id={`${own}-error`} className="text-destructive text-sm">
-            {typedFailed ? `The search didn't work: ${(typed as Search & { status: "failed" }).error}` : `Nothing found for “${typed!.text}”. Check the code.`}
+          <p className="text-destructive flex flex-wrap items-center gap-2 text-sm">
+            <span id={`${own}-error`}>{typedFailed ? "The search didn't work." : `Nothing found for “${typed!.text}”. Check the code.`}</span>
+            {typedFailed && (
+              <Button type="button" variant="outline" size="sm" onClick={() => searches.search(item)}>
+                Try again<span className="sr-only">: the search for {label}</span>
+              </Button>
+            )}
           </p>
         )}
         <p id={`${own}-hint`} className="text-muted-foreground text-xs">

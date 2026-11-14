@@ -7,6 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { withoutClosed, withReadableNames } from "../src/cas/mapping.ts";
+import { dec } from "../src/cas/decimal.ts";
 import { plural } from "../src/lib/plural.ts";
 
 let server;
@@ -26,6 +27,7 @@ before(async () => {
     ...(await server.ssrLoadModule("/src/components/review/plan-parts.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/asks.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/question.tsx")),
+    ...(await server.ssrLoadModule("/src/components/review/header.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/ready.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/parts.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/not-included.tsx")),
@@ -418,40 +420,96 @@ test("separately compared funds keep their accounts' global labels in headings a
   }
 });
 
-test("the import result counts activities, duplicates, funds and bank rows", () => {
-  const link = (id) => ({ transaction: {}, bankRow: { id }, changes: [], warnings: [] });
-  const result = (summary, links) =>
-    text("ImportResult", { result: { activities: [], summary: { success: true, ...summary } }, sent: [], closing: [], links, accounts: [] });
-  const one = result({ total: 1, imported: 1, duplicates: 0, assetsCreated: 1 }, [link("bank-1")]);
-  assert.match(one, / Imported 1 of 1 activity Wealthfolio skipped 0 as duplicates and created 1 fund\. /);
-  assert.match(one, / Linked 1 of 1 bank row you chose with its transaction\. /);
-  const some = result({ total: 2, imported: 1, duplicates: 1, assetsCreated: 0 }, [link("bank-1"), link("bank-2")]);
-  assert.match(some, / Imported 1 of 2 activities Wealthfolio skipped 1 as a duplicate and created 0 funds\. /);
-  assert.match(some, / Linked 2 of 2 bank rows you chose with their transactions\. /);
-  const two = result({ total: 4, imported: 2, duplicates: 2, assetsCreated: 2 }, []);
-  assert.match(two, / Imported 2 of 4 activities Wealthfolio skipped 2 as duplicates and created 2 funds\. /);
+/** The detailed import's result, with made-up outcomes. */
+const importResult = (props) => text("ImportResult", {
+  imported: (props.outcomes ?? []).reduce((n, a) => n + a.imported, 0),
+  result: { activities: [], summary: { success: true, total: 0, imported: 0, duplicates: 0, assetsCreated: 0 } },
+  sent: [], total: 1, outcomes: [], closing: undefined, links: [], accounts: [], base: "r",
+  onRetryAccount() {}, onRetryLink() {}, onCheckAgain() {}, onOpenAccount() {}, ...props,
+});
+const outcome = (fields) => ({ key: "k", name: "Mutual funds", isNew: false, imported: 0, waiting: 0, state: "imported", ...fields });
+
+test("the import result counts transactions, each account's, the funds added and the bank entries linked", () => {
+  const link = (id) => ({ transaction: {}, bankRow: { id }, facts: {}, changes: [], warnings: [] });
+  const one = importResult({
+    result: { activities: [], summary: { success: true, total: 1, imported: 1, duplicates: 0, assetsCreated: 1 } },
+    outcomes: [outcome({ imported: 1 })], links: [link("bank-1")],
+  });
+  assert.match(one, /^ 1 transaction imported ✓ 1 transaction imported into Mutual funds Wealthfolio added 1 fund\. /);
+  assert.match(one, / ✓ Linked 1 of 1 bank entry you chose with its transaction\. /);
+  const two = importResult({
+    result: { activities: [], summary: { success: true, total: 2, imported: 2, duplicates: 0, assetsCreated: 2 } },
+    total: 2, outcomes: [outcome({ imported: 2, isNew: true })], links: [link("bank-1"), link("bank-2")],
+  });
+  assert.match(two, /^ 2 transactions imported ✓ 2 transactions imported into Mutual funds \(new\) Wealthfolio added 2 funds\. /);
+  assert.match(two, / ✓ Linked 2 of 2 bank entries you chose with their transactions\. /);
 });
 
-test("the import result names each bank row the add-on changed, and how", () => {
+test("the import result says per account what wasn't imported, each with Try again", () => {
+  const partial = importResult({
+    total: 47,
+    outcomes: [
+      outcome({ key: "a", imported: 6 }),
+      outcome({ key: "b", name: "Mutual funds (B. Investor)", isNew: true, who: "B. Investor's", waiting: 41, state: "not-created" }),
+    ],
+  });
+  assert.equal(partial.trim(), "6 of 47 transactions imported ✓ 6 transactions imported into Mutual funds " +
+    "✗ Mutual funds (B. Investor) couldn't be created, so B. Investor's 41 transactions weren't imported. Try again : Mutual funds (B. Investor)");
+  const failed = importResult({ total: 1, outcomes: [outcome({ waiting: 1, state: "failed" })] });
+  assert.equal(failed.trim(), "No transactions were imported ✗ 1 transaction for Mutual funds wasn't imported. Try again : Mutual funds");
+  const some = importResult({ total: 5, outcomes: [outcome({ imported: 3, waiting: 2, state: "failed" })] });
+  assert.match(some, /^ 3 of 5 transactions imported ✗ 2 of 5 transactions for Mutual funds weren't imported\. Try again /);
+  const rejected = importResult({ total: 1, outcomes: [outcome({})] });
+  assert.match(rejected, / ✗ None of the transactions for Mutual funds were imported; the rows below say why\. $/);
+});
+
+test("rejected rows explain that their whole transactions stayed out", () => {
+  const shown = importResult({ result: { activities: [{ lineNumber: 1, date: "2025-03-31", activityType: "BUY", errors: { general: ["Made-up refusal."] } }], summary: {} } });
+  assert.match(shown, /Wealthfolio rejected rows These transactions weren't imported\. The rows below say why:/);
+  assert.doesNotMatch(shown, /may lack their purchase, sale or cash/);
+});
+
+test("the import result's units check: couldn't run, every fund matching, or units that differ", () => {
+  assert.match(importResult({ closing: "failed" }), / Saved, but the units couldn't be checked in Wealthfolio\. Check again : the units in Wealthfolio $/);
+  const fund = (scheme, statement, held) => ({
+    accountId: "account-1", asset: { symbol: scheme }, schemes: [{ scheme }], statement: dec(statement), held: held === undefined ? undefined : dec(held),
+  });
+  const accounts = [{ id: "account-1", name: "Mutual funds" }];
+  assert.match(importResult({ closing: [fund("A", "10", "10")], accounts }), / ✓ Checked in Wealthfolio: units match the statement for the fund\. $/);
+  assert.match(importResult({ closing: [fund("A", "10", "10"), fund("B", "5", "5")], accounts }), / for all 2 funds\. $/);
+  assert.match(importResult({ closing: [fund("A", "10", "9")], accounts }), /Checked in Wealthfolio: units differ for 1 of 1 fund\./);
+  const differ = importResult({ closing: [fund("A", "10", "10"), fund("B", "1234.5", "1224.5"), fund("C", "3", undefined)], accounts });
+  assert.ok(differ.includes(" Checked in Wealthfolio: units differ for 2 of 3 funds. " +
+    "B: Wealthfolio has 1,224.500 units, the statement says 1,234.500. Open Mutual funds " +
+    "C: its units need a look in Wealthfolio, after a split or an option's expiry. Open Mutual funds "), differ);
+});
+
+test("the import result names each bank entry the add-on changed, and says how far a failed one got", () => {
   const transaction = { transaction: { activity: { date: "2023-05-05", activityType: "BUY" }, scheme: "Fictiva Liquid Fund" } };
   const bankRow = (id, activityType, comment) =>
     ({ id, accountId: "bank-1", activityType, amount: "25000.00", date: "2023-05-04T00:00:00+00:00", comment });
   const links = [
-    { transaction, bankRow: bankRow("a", "WITHDRAWAL", "NEFT"), changes: ["Its split across 2 spending categories was deleted."], warnings: ["Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio."] },
-    { transaction, bankRow: bankRow("b", "TRANSFER_OUT"), changes: [], warnings: [] },
-    { transaction, bankRow: bankRow("c", "WITHDRAWAL"), error: "Added the fund account's transfer, but couldn't link it.", changes: [], warnings: ["Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio."] },
+    { transaction, bankRow: bankRow("a", "WITHDRAWAL", "NEFT"), facts: {}, changes: ["Its split across 2 spending categories was deleted."], warnings: ["Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio."] },
+    { transaction, bankRow: bankRow("b", "TRANSFER_OUT"), facts: {}, changes: [], warnings: [] },
+    { transaction, bankRow: bankRow("c", "WITHDRAWAL"), facts: {}, error: "Added the fund account's transfer, but couldn't link it.", stage: "link", changes: [], warnings: ["Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio."] },
   ];
-  const shown = text("ImportResult", {
-    result: { activities: [], summary: { success: true, total: 3, imported: 3, duplicates: 0, assetsCreated: 0 } },
-    sent: [], closing: [], links, accounts: [{ id: "bank-1", name: "Savings" }],
-  });
-  assert.match(shown, / Linked 2 of 3 bank rows you chose with their transactions\. /);
+  const shown = importResult({ total: 3, outcomes: [outcome({ imported: 3 })], links, accounts: [{ id: "bank-1", name: "Savings" }] });
+  assert.match(shown, / ✓ Linked 2 of 3 bank entries you chose with their transactions\. /);
   assert.ok(shown.includes(
-    "What changed in the bank rows you chose Check these in Wealthfolio: " +
+    " ✗ Purchase of Fictiva Liquid Fund on 5 May 2023: The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't linked. Try again : link the bank entry of 4 May 2023 ",
+  ), shown);
+  assert.ok(shown.includes(
+    "What changed in the bank entries you chose Check these in Wealthfolio: " +
       "The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT), for the 2023-05-05 purchase of Fictiva Liquid Fund: Its split across 2 spending categories was deleted. Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio. " +
       "The withdrawal of 25000.00 on 2023-05-04 in Savings, for the 2023-05-05 purchase of Fictiva Liquid Fund: Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio.",
   ), shown);
-  assert.ok(!shown.includes("transfer out of 25000.00"), "a bank row with nothing else changed isn't listed");
+  assert.ok(!shown.includes("transfer out of 25000.00"), "a bank entry with nothing else changed isn't listed");
+  // Each step that can fail says what happened before it; a trade that didn't go in has no Try again.
+  const failedAt = (stage) => importResult({ links: [{ ...links[2], stage }] });
+  assert.ok(failedAt("trade").includes(": The trade wasn't imported, so the bank entry of 4 May 2023 was left as it is. "));
+  assert.ok(!failedAt("trade").includes("Try again"));
+  assert.ok(failedAt("transfer").includes(": The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of 4 May 2023 wasn't linked. Try again"));
+  assert.ok(failedAt("convert").includes(": The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't changed into a transfer or linked. Try again"));
 });
 
 /** The detailed Review screen as first shown, before any search answers. */
@@ -598,4 +656,29 @@ test("an existing asset's market pricing takes precedence over its remembered st
   const listed = { ...statement, statementPrices: undefined, providerId: "YAHOO", exchangeMic: "XNSE" };
   assert.equal(components.pricesFrom({ noun: "share" }, listed, false), "Prices from NSE on Yahoo Finance");
   assert.equal(components.pricesFrom(item, listed, true), "Prices entered by hand");
+});
+
+
+test("held and refused account results explain the next step without an ineffective retry", () => {
+  const waiting = importResult({ total: 5, outcomes: [outcome({
+    imported: 4, waiting: 1, state: "failed", retryable: false, waitingFor: "Other funds",
+  })] });
+  assert.match(waiting, /1 of 5 transactions for Mutual funds weren't imported\. Try again for Other funds\./);
+  assert.doesNotMatch(waiting, /Try again : Mutual funds/);
+  const refused = importResult({ total: 1, outcomes: [outcome({ waiting: 1, state: "failed", retryable: false })] });
+  assert.match(refused, /1 transaction for Mutual funds wasn't imported\. The rows below say why\./);
+  assert.doesNotMatch(refused, /Try again : Mutual funds/);
+});
+
+
+test("leaving an unfinished result asks even when no review answers changed", () => {
+  const calls = [];
+  const props = { ids: {}, title: "Import", lines: [], changes: 0, unfinished: true, discard: false,
+    onDiscard: () => calls.push("ask"), onAnother: () => calls.push("leave") };
+  const header = components.ReviewHeader(props);
+  header.props.children[0].props.children[1].props.onClick();
+  assert.deepEqual(calls, ["ask"]);
+  assert.match(text("ReviewHeader", { ...props, discard: true }), /Leave this unfinished import and choose another file\?/);
+  components.ReviewHeader({ ...props, unfinished: false }).props.children[0].props.children[1].props.onClick();
+  assert.deepEqual(calls, ["ask", "leave"]);
 });

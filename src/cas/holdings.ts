@@ -1,4 +1,5 @@
 import type { ActivityDetails, MonetaryValue, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
+import { Explained } from "../lib/explained.ts";
 import { mayBeCut, readableName } from "../lib/fund-name.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
@@ -651,7 +652,7 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     if (!plan) {
       const existing = input.existing(accountId);
       const duplicate = existing.positions.find((p, i) => existing.positions.findIndex((other) => other.ref === p.ref) !== i);
-      if (duplicate) throw new Error(`The account's snapshot has multiple assets for ${duplicate.ref}. Resolve their identity in Wealthfolio or choose another account.`);
+      if (duplicate) throw new Explained(`The account's snapshot has multiple assets for ${duplicate.ref}. Resolve their identity in Wealthfolio or choose another account.`);
       const byRef = new Map(
         existing.positions.map((p): [string, PlannedPosition] => [
           p.ref,
