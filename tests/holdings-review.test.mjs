@@ -1647,3 +1647,53 @@ test("an open Rename keeps its footer message and Go to it when a planning read 
   assert.match(footerText(run)[0], /made-up read failure/);
   assert.equal(find(run, "Footer").go.label, "Try again");
 });
+
+test("Try again after an account isn't created waits for the same answers as saving, such as replacing a snapshot", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const accounts = [{ id: "A", name: "Demat", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run, api, saved } = withNewAccounts([x, y], { accounts, refuse: new Set(["NSDL Demat", "Y demat"]) });
+  // Demat already has holdings saved for the statement's date.
+  api.snapshots.getAll = async (id) => (id === "A" ? [{ id: "A-2025-03-31", snapshotDate: "2025-03-31", source: "MANUAL_ENTRY" }] : []);
+  await run.flush();
+  const investor = investorKey("TEST");
+  find(run, "SaveTo").onChange(investor, proposedId(investor));
+  await run.flush();
+  find(run, "SaveTo").onChange(sourceKey(y), proposedId(sourceKey(y)));
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(find(run, "HoldingsResult"), undefined);
+  const tryAgain = () => nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Try again");
+  assert.equal(tryAgain().props.disabled, false);
+  // X now goes to Demat, whose snapshot of that day it would replace: saving waits for that answer.
+  find(run, "SaveTo").onChange(sourceKey(x), "A");
+  await run.flush();
+  assert.deepEqual(find(run, "NotCreatedAlert").accounts.map((a) => a.name), ["Y demat"]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  assert.equal(tryAgain().props.disabled, true);
+  tryAgain().props.onClick();
+  await run.flush();
+  assert.deepEqual(saved, []);
+});
+
+test("the creation retry and planning retry have different accessible names", async () => {
+  const accounts = [{ id: "A", name: "Demat", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run, api, saved } = withNewAccounts([source("X", [holding("ISINX")])], { accounts, refuse: new Set(["NSDL Demat"]) });
+  await run.flush();
+  find(run, "SaveTo").onChange(investorKey("TEST"), proposedId(investorKey("TEST")));
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.ok(find(run, "NotCreatedAlert"));
+  api.portfolio.getHoldings = async () => { throw new Error("made-up planning failure"); };
+  // Revisiting refreshes planning reads while the failed proposal is still selected.
+  run.update({ visit: {} });
+  await run.flush();
+  assert.match(footerText(run)[0], /made-up planning failure/);
+  const retry = nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Try again");
+  assert.equal(retry.props.disabled, true);
+  assert.equal(find(run, "Footer").go.label, "Try again");
+  assert.equal(retry.props["aria-label"], "Try again saving holdings");
+  assert.deepEqual(saved, []);
+});

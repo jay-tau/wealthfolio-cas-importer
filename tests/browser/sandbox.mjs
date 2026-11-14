@@ -3599,7 +3599,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await hosted(() => window.host.snapshots), {});
     await reviewHeading.waitFor();
     await hosted(() => { window.host.failCreate = []; });
-    await frame.getByRole("button", { name: "Try again", exact: true }).click();
+    await frame.getByRole("button", { name: "Try again saving holdings", exact: true }).click();
     await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
     assert.deepEqual(await rememberedIds(), ["created-2"]);
     await leaveReview();

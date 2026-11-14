@@ -1003,6 +1003,9 @@ export function HoldingsImport({
   };
   // The accounts the last save couldn't create, while something still goes to them.
   const missingNow = notCreated.filter((n) => holdings.sources.some((s) => accountOf(s) === n.accountId));
+  // Whether the review can be saved as it stands: the save button's checks, which Try again shares.
+  const canSave = !questionCount && !lookingUp.length && !nothing && !!current && !editor && !renaming && busy === "" &&
+    !prepareError && current.plans.length > 0;
 
   // Says what the first searches found, once they're all done.
   const initial = useRef<readonly string[] | null>(questionKeys);
@@ -1341,7 +1344,8 @@ export function HoldingsImport({
       warnings: rows.flatMap((row) => planWarnings(row).map((warning) => ({ accountId: row.accountId, name: row.name, warning }))),
       tracked: trackedSummary(),
     });
-    if (!run) return;
+    // Only what was reviewed and confirmed is saved; a retry goes on with what an earlier save left.
+    if (!run || (!again && !canSave)) return;
     if (!again) remember();
     // Firefox keeps the focus on the pressed button while it's disabled; the others drop it.
     const pressed = document.activeElement;
@@ -1842,7 +1846,7 @@ export function HoldingsImport({
       {missingNow.length > 0 && (
         <div id={ids.notCreated} tabIndex={-1} className="grid gap-2">
           <NotCreatedAlert accounts={missingNow} what={() => "Nothing was saved."} />
-          <WrapButton type="button" variant="outline" className="justify-self-start" onClick={() => void runSave()} disabled={!!editor || !!renaming || !current}>
+          <WrapButton type="button" variant="outline" className="justify-self-start" aria-label="Try again saving holdings" onClick={() => void runSave()} disabled={!canSave}>
             Try again
           </WrapButton>
         </div>
@@ -1926,7 +1930,7 @@ export function HoldingsImport({
               ? { label: "Finish", disabled: !!editor || !!renaming, onClick: () => { remember(); onAnother(`Finished: nothing from ${fileName} was saved.`); } }
               : {
                   label: busy === "import" ? "Saving…" : current?.plans.every((p) => p.existing.date) && current.plans.length ? "Update holdings" : "Save holdings",
-                  disabled: !current || !!editor || !!renaming || busy !== "" || !!prepareError || current.plans.length === 0,
+                  disabled: !canSave,
                   busy: busy === "import",
                   onClick: () => void runSave(),
                 }

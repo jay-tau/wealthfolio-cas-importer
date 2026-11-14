@@ -1175,7 +1175,8 @@ export function DetailedImport({
    * Try again goes on from what waits, with the review as it was, and never creates an account twice.
    */
   const runImport = async () => {
-    if (!current) return;
+    // Only what was reviewed and answered is imported.
+    if (!current || !canImport) return;
     remember();
     // Firefox keeps the focus on the pressed button while it's disabled; the others drop it.
     const pressed = document.activeElement;
@@ -1552,6 +1553,9 @@ export function DetailedImport({
   const toImport = counts?.toImport ?? 0;
   // The new accounts the import creates first.
   const creating = perAccount.filter((a) => isProposed(a.accountId)).length;
+  // Whether the review can be imported as it stands: the import button's checks, which Try again shares.
+  const canImport = !questionCount && !lookingUp.length && !nothing && !!current && !!counts && toImport > 0 && !editor && !renaming &&
+    busy === "" && !prepareError;
   const importLabel = creating
     ? `Create ${creating === 1 ? "account" : `${creating} accounts`} and import ${plural(toImport, "transaction")}`
     : `Import ${plural(toImport, "transaction")}`;
@@ -1809,7 +1813,7 @@ export function DetailedImport({
       {missingNow.length > 0 && (
         <div id={ids.notCreated} tabIndex={-1} className="grid gap-2">
           <NotCreatedAlert accounts={missingNow} what={() => "Nothing was imported."} />
-          <WrapButton type="button" variant="outline" className="justify-self-start" onClick={() => void runImport()} disabled={!!editor || !!renaming || !current || !toImport}>
+          <WrapButton type="button" variant="outline" className="justify-self-start" aria-label="Try again importing transactions" onClick={() => void runImport()} disabled={!canImport}>
             Try again
           </WrapButton>
         </div>
@@ -1902,7 +1906,7 @@ export function DetailedImport({
                 }
               : {
                   label: busy === "import" ? "Importing…" : importLabel,
-                  disabled: !current || !!editor || !!renaming || busy !== "" || !!prepareError || !toImport,
+                  disabled: !canImport,
                   busy: busy === "import",
                   onClick: () => void runImport(),
                 }

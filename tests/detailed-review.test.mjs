@@ -1539,3 +1539,43 @@ test("a fresh detailed no-PAN folio has its own preselected proposal and leaving
   await run.flush();
   assert.deepEqual(asked, []);
 });
+
+test("Try again after an account isn't created waits for the same answers as importing", async () => {
+  const { run, keys, asked, imported } = withNewAccounts({ accounts: [account("mf", "Mutual funds")], refuse: new Set(["Mutual funds 2"]) });
+  await run.flush();
+  saveTo(run).onChange(keys.pan, proposedId(keys.pan));
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(find(run, "ImportResult"), undefined);
+  const tryAgain = () => nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOfLine(n) === "Try again");
+  assert.equal(tryAgain().props.disabled, false);
+  // The Testbridge folio now goes to Mutual funds with Mutual funds as its bank account too: a question.
+  saveTo(run).onChange(keys.testbridge, "mf");
+  await run.flush();
+  saveTo(run).onChange(choices.bankKey(keys.testbridge), "mf");
+  await run.flush();
+  assert.equal(find(run, "Footer").action.disabled, true);
+  assert.equal(tryAgain().props.disabled, true);
+  tryAgain().props.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds 2"]);
+  assert.equal(imported.length, 0);
+});
+
+test("the detailed creation retry and planning retry have different accessible names", async () => {
+  const { run, api, imported } = withNewAccounts({ refuse: new Set(["Mutual funds"]) });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.ok(find(run, "NotCreatedAlert"));
+  api.activities.getAll = async () => { throw new Error("made-up planning failure"); };
+  run.update({ visit: {} });
+  await run.flush();
+  assert.match(footer(run)[0], /made-up planning failure/);
+  const retry = nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOfLine(n) === "Try again");
+  assert.equal(retry.props.disabled, true);
+  assert.equal(find(run, "Footer").go.label, "Try again");
+  assert.equal(retry.props["aria-label"], "Try again importing transactions");
+  assert.equal(imported.length, 0);
+});
