@@ -1210,7 +1210,7 @@ describe("bank account", () => {
       linkTransfer: async (a, b) => void calls.push(["link", a, b]),
     };
     const withdrawal = bankRow("WITHDRAWAL", "5000.00", "2023-04-08");
-    assert.deepEqual(await linkBankRow(api, t, withdrawal), { converted: true, linked: true });
+    assert.deepEqual(await linkBankRow(api, t, withdrawal), { fundId: "fund-leg", converted: true, linked: true });
     const sourceRecordId = `${RECORD_PREFIX}${t.transaction.cash.sourceRecordId}`;
     assert.deepEqual(calls, [
       ["create", {
@@ -1232,7 +1232,7 @@ describe("bank account", () => {
     assert.deepEqual(importRows(again, () => false), []);
     // A transfer keeps its type.
     calls.length = 0;
-    assert.deepEqual(await linkBankRow(api, t, bankRow("TRANSFER_OUT", "5000.00", "2023-04-08")), { converted: false, linked: true });
+    assert.deepEqual(await linkBankRow(api, t, bankRow("TRANSFER_OUT", "5000.00", "2023-04-08")), { fundId: "fund-leg", converted: false, linked: true });
     assert.deepEqual(calls.map(([step]) => step), ["create", "link"]);
     // Each step's failure says what's left to do, and which steps changed the bank's row.
     const failing = (step) => ({ ...api, [step]: async () => { throw new Error("nope"); } });
@@ -1245,6 +1245,18 @@ describe("bank account", () => {
     const linked = await linkBankRow(failing("linkTransfer"), t, withdrawal);
     assert.match(linked.error, /couldn't link it with the bank's row on 2023-04-08: Error: nope\. Link the two in Wealthfolio\.$/);
     assert.deepEqual([linked.converted, linked.linked], [true, false]);
+    // Each failure says its step, and what was done before it, for a retry to go on from.
+    assert.deepEqual([notCreated.stage, notCreated.fundId], ["transfer", undefined]);
+    assert.deepEqual([updated.stage, updated.fundId], ["convert", "fund-leg"]);
+    assert.deepEqual([linked.stage, linked.fundId], ["link", "fund-leg"]);
+    // A retry doesn't add the transfer again: after a failed change, it changes the entry and links;
+    // after a failed link, it only links.
+    calls.length = 0;
+    assert.deepEqual(await linkBankRow(api, t, withdrawal, { fundId: updated.fundId, converted: updated.converted }), { fundId: "fund-leg", converted: true, linked: true });
+    assert.deepEqual(calls.map(([step]) => step), ["update", "link"]);
+    calls.length = 0;
+    assert.deepEqual(await linkBankRow(api, t, withdrawal, { fundId: linked.fundId, converted: linked.converted }), { fundId: "fund-leg", converted: true, linked: true });
+    assert.deepEqual(calls, [["link", withdrawal.id, "fund-leg"]]);
   });
 
   test("equal confirmed bank rows get distinct cash, including Import anyway, but retries cannot create it twice", async () => {

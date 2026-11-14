@@ -7,8 +7,10 @@ import type {
   CashActivitySearchRequest,
   SpendCategoryKind,
 } from "@wealthfolio/addon-sdk";
+import { Explained } from "../lib/explained.ts";
 import { plural } from "../lib/plural.ts";
-import { bankCandidates, day, linkBankRow, type PlannedTransaction } from "./plan.ts";
+import { cmp, dec } from "./decimal.ts";
+import { bankCandidates, day, linkBankRow, type LinkProgress, type LinkStage, type PlannedTransaction } from "./plan.ts";
 
 // What reusing a bank account's entry for a fund's cash changes in it besides its link, in
 // Wealthfolio 3.13.0. Changing a withdrawal or deposit into a transfer deletes its spending splits,
@@ -228,10 +230,58 @@ export async function recheckEntries(
   return { current, facts, stale };
 }
 
+/** Rechecks a failed link's entries and consent, allowing only the changes this import already made. */
+export async function recheckLink(
+  api: Reads & { activities: Pick<Activities, "getAll" | "getTransferPair"> },
+  t: PlannedTransaction,
+  before: ActivityDetails,
+  shown: EntryFacts,
+  from: LinkProgress = {},
+) {
+  try {
+    const row = (await api.activities.getAll(before.accountId)).find((r) => r.id === before.id);
+    const type = from.converted ? t.transaction.bank!.activityType : before.activityType;
+    if (!row || row.activityType !== type || row.amount !== before.amount || day(row.date) !== day(before.date) || !bankCandidates(t, [row]).length) {
+      throw new Explained("The bank entry changed since the import. Finish linking it in Wealthfolio.");
+    }
+    const cash = t.transaction.cash!;
+    if (from.fundId) {
+      const fund = (await api.activities.getAll(cash.accountId)).find((r) => r.id === from.fundId);
+      if (!fund || fund.accountId !== cash.accountId || fund.activityType !== cash.activityType || fund.status !== "POSTED" ||
+        fund.amount === null || cmp(dec(fund.amount), dec(String(cash.amount))) !== 0 || fund.currency !== cash.currency ||
+        day(fund.date) !== String(cash.date) || fund.assetId || fund.assetSymbol?.trim()) {
+        throw new Explained("The fund account's transfer changed since the import. Finish linking it in Wealthfolio.");
+      }
+    }
+    const pair = row.activityType.startsWith("TRANSFER_") ? await api.activities.getTransferPair(row.id) : null;
+    const fundPair = from.fundId ? await api.activities.getTransferPair(from.fundId) : null;
+    const own = (p: typeof pair) => !!p && !!from.fundId &&
+      [p.transferOut.id, p.transferIn.id].includes(row.id) && [p.transferOut.id, p.transferIn.id].includes(from.fundId);
+    if ((pair && !own(pair)) || (fundPair && !own(fundPair)) || !!pair !== !!fundPair) {
+      throw new Explained("One of these entries is already linked with another transfer. Check the links in Wealthfolio.");
+    }
+    // A link may have succeeded before its answer failed; no write needs repeating then.
+    if (own(pair)) return { row, facts: shown, linked: true };
+    const facts = (await readEntryFacts(api, [row])).get(row.id)!;
+    // After conversion, its remaining categories are still removed when the link succeeds.
+    const next = { ...facts, converts: shown.converts };
+    const accepted = notesOf(shown, "The bank account");
+    if (notesOf(next, "The bank account").some((note) => !accepted.includes(note))) {
+      throw new Explained("The bank entry's spending details changed since the import. Finish linking it in Wealthfolio.");
+    }
+    return { row, facts, linked: false };
+  } catch (e) {
+    if (e instanceof Explained) throw e;
+    throw new Explained("We couldn't check the bank entries again. Nothing more was changed. Try again.");
+  }
+}
+
 /** A reused entry, and what changed in it besides its type and link. */
-export interface Reused {
-  /** What went wrong linking, if anything. */
+export interface Reused extends LinkProgress {
+  /** What went wrong linking, if anything, for the log. */
   error?: string;
+  /** The step that failed. */
+  stage?: LinkStage;
   /** What the result says changed in the entry. */
   changes: string[];
   /** Categories that should have been removed and weren't. */
@@ -245,12 +295,13 @@ export interface Reused {
  * Wealthfolio links two transfers. Says what changed, also when a later step failed.
  */
 export async function reuseBankEntry(
-  api: { activities: Pick<Activities, "create" | "update" | "linkTransfer">; spending: Pick<Spending, "unassignCategory"> },
+  api: { activities: Pick<Activities, "create" | "update" | "linkTransfer">; spending: Pick<Spending, "unassignCategory">; logger: Pick<AddonContext["api"]["logger"], "warn"> },
   t: PlannedTransaction,
   entry: ActivityDetails,
   facts: EntryFacts,
+  from: LinkProgress = {},
 ): Promise<Reused> {
-  const { error, converted, linked } = await linkBankRow(api.activities, t, entry);
+  const { error, stage, fundId, converted, linked } = await linkBankRow(api.activities, t, entry, from);
   const changes: string[] = [];
   const warnings: string[] = [];
   const known = facts.inSpending === false ? undefined : facts.spending;
@@ -272,8 +323,9 @@ export async function reuseBankEntry(
         await api.spending.unassignCategory(entry.id, kind);
         removed.push(kind);
       } catch (e) {
+        api.logger.warn(`Couldn't remove the ${WORDS[kind]} category of bank entry ${entry.id}: ${String(e)}`);
         warnings.push(
-          `Couldn't remove its ${WORDS[kind]} category${known ? "" : ", if it has one"}: ${String(e)}. A transfer isn't ${WORDS[kind]}: remove it in Wealthfolio.`,
+          `Couldn't remove its ${WORDS[kind]} category${known ? "" : ", if it has one"}. A transfer isn't ${WORDS[kind]}: remove it in Wealthfolio.`,
         );
       }
     }
@@ -281,5 +333,5 @@ export async function reuseBankEntry(
     else if (removed.length) changes.push(`Any ${removed.map((kind) => WORDS[kind]).join(" or ")} category it had was removed.`);
   }
   if (facts.synced && (converted || linked)) changes.push("Later corrections to it from the sync won't change it.");
-  return { error, changes, warnings };
+  return { error, stage, fundId, converted, changes, warnings };
 }

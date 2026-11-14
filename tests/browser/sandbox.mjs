@@ -99,9 +99,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         else window.host.accounts.push({ id, currency: "INR", isActive: true, isArchived: false, ...fields });
       }
     }, changes);
-    const remember = frame.getByRole("checkbox", { name: "Remember the password" });
+    const remember = frame.getByRole("checkbox", { name: /^Remember this password/ });
     const readButton = frame.getByRole("button", { name: "Read statement", exact: true });
     const passwordBox = frame.locator("#cas-password");
+    // Types the password; with one saved, its field shows once a different password is asked for.
+    const usePassword = async (password) => {
+      if (!(await passwordBox.count())) await frame.getByRole("button", { name: "Use a different password" }).click();
+      await passwordBox.fill(password);
+    };
     // A control pressed with the keyboard that goes away hands the focus to what takes its place. One
     // that stays while the page is locked gets it back once the page is unlocked.
     const focused = async (locator, what) => {
@@ -160,9 +165,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       assert.equal(await tab.evaluate(() => document.activeElement.tagName), "BODY", what);
       assert.equal(await tab.frames()[1].evaluate(() => document.hasFocus()), false, what);
     };
-    const amfiBanner = frame.getByRole("alert").filter({ hasText: /^Add AMFI prices first/ });
-    const checkAgain = amfiBanner.getByRole("button", { name: "Check again" });
-    // What Check again found, which stays when the banner goes.
+    const amfiBanner = frame.getByRole("alert").filter({ hasText: /^Add Indian mutual fund data \(recommended\)/ });
+    const checkAgain = amfiBanner.getByRole("button", { name: "I've added AMFI: check" });
+    // What the check found, which stays when the banner goes.
     const amfiOutcome = frame.locator("fieldset > [role=status]");
     const fileInput = frame.locator("#cas-file");
     // Shows the same mounted page again, as when it's opened again in Wealthfolio.
@@ -175,13 +180,22 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.locator("#cas-password").isDisabled(), true);
     await tab.frames()[1].evaluate(() => window.host.secrets.set("statement-password", "saved-password"));
     // The banner can go away while the form is locked. Its focus handoff waits for the file input.
-    await amfiBanner.getByRole("button", { name: "Continue without AMFI" }).press("Enter");
+    await amfiBanner.getByRole("button", { name: "Continue without it" }).press("Enter");
     await amfiBanner.waitFor({ state: "detached" });
     await resume();
     await frame.locator("#cas-file:enabled").waitFor();
-    await focused(fileInput, "Continue without AMFI during password loading");
-    await frame.getByRole("button", { name: "Forget the saved password" }).click();
+    await focused(fileInput, "Continue without it during password loading");
+    // With a password saved, the form uses it and says so; its field is for another password.
+    await frame.getByText("Using your saved password", { exact: true }).waitFor();
+    assert.equal(await passwordBox.count(), 0);
+    await frame.getByRole("button", { name: "Use a different password" }).press("Enter");
+    await focused(passwordBox, "Use a different password");
     assert.equal(await remember.getAttribute("aria-checked"), "false");
+    assert.equal(await frame.getByRole("checkbox", { name: "Remember this password (replaces the saved one)" }).count(), 1);
+    await frame.getByRole("button", { name: "Forget saved password" }).click();
+    // Unstyled here, so the checkbox has no size: it's attached, not visible.
+    await frame.getByRole("checkbox", { name: "Remember this password", exact: true }).waitFor({ state: "attached" });
+    assert.equal(await frame.getByRole("button", { name: "Forget saved password" }).count(), 0);
     assert.deepEqual((await host()).secrets, []);
     // A statement without a password reads with the box left empty, so a file is all Read statement
     // needs; one with a password then says it's wrong.
@@ -193,19 +207,23 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // asks to add it.
     await revisit();
     await amfiBanner.waitFor();
-    assert.equal(await amfiBanner.locator("[data-slot=alert-title]").textContent(), "Add AMFI prices first");
+    assert.equal(await amfiBanner.locator("[data-slot=alert-title]").textContent(), "Add Indian mutual fund data (recommended)");
     assert.equal(
       await amfiBanner.locator("[data-slot=alert-description] p").textContent(),
-      "AMFI gives official names and daily NAVs for most Indian mutual funds. Without it, many funds only have Yahoo's abbreviated names.",
+      "AMFI gives official fund names and daily prices, so most funds are matched for you. Add it in Wealthfolio's Market data settings.",
     );
-    assert.deepEqual(await amfiBanner.getByRole("button").allTextContents(), ["Open Market data settings", "Check again", "Continue without AMFI"]);
-    assert.equal(await frame.locator("fieldset").first().locator("xpath=*[1]").getAttribute("data-slot"), "alert", "the banner comes first");
+    // Until Market data settings are opened, there's nothing to check.
+    assert.deepEqual(await amfiBanner.getByRole("button").allTextContents(), ["Open Market data settings", "Continue without it"]);
+    const pageParts = frame.locator("fieldset").first();
+    assert.equal(await pageParts.locator("xpath=*[1]").textContent(), "Add your statement", "the heading comes first");
+    assert.equal(await pageParts.locator("xpath=*[2]").getAttribute("data-slot"), "alert", "then the banner");
     assert.equal(await amfiOutcome.textContent(), "");
     // Add-ons can't turn a provider on, so the banner opens Wealthfolio's page where AMFI is added.
     await amfiBanner.getByRole("button", { name: "Open Market data settings" }).click();
     await tab.frames()[1].waitForFunction(() => window.host.navigations.length > 0);
     assert.deepEqual(await hosted(() => window.host.navigations), ["/settings/market-data"]);
-    // Check again says what it found, cleared while it checks so the same outcome is read out again.
+    assert.deepEqual(await amfiBanner.getByRole("button").allTextContents(), ["Open Market data settings", "I've added AMFI: check", "Continue without it"]);
+    // The check says what it found, cleared while it checks so the same outcome is read out again.
     // While AMFI is off, the banner and the focus stay.
     for (let i = 0; i < 2; i++) {
       await pause("providers");
@@ -213,13 +231,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await waiting();
       assert.equal(await amfiOutcome.textContent(), "");
       await resume();
-      await amfiOutcome.getByText("AMFI is still off.", { exact: true }).waitFor();
-      await focused(checkAgain, "Check again, AMFI still off");
+      await amfiOutcome.getByText("AMFI isn't added yet.", { exact: true }).waitFor();
+      await focused(checkAgain, "I've added AMFI: check, AMFI still off");
     }
-    // Continue without AMFI hides the banner until the page is opened again. The focus goes to the form below it.
-    await amfiBanner.getByRole("button", { name: "Continue without AMFI" }).press("Enter");
+    // Continue without it hides the banner until the page is opened again. The focus goes to the form below it.
+    await amfiBanner.getByRole("button", { name: "Continue without it" }).press("Enter");
     await amfiBanner.waitFor({ state: "detached" });
-    await focused(fileInput, "Continue without AMFI");
+    await focused(fileInput, "Continue without it");
     assert.equal(await amfiOutcome.textContent(), "");
     // A handoff waiting for the form to unlock must respect focus moved outside in the meantime.
     await pause("password");
@@ -227,23 +245,25 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await waiting();
     await amfiBanner.waitFor();
     assert.equal(await fileInput.isDisabled(), true);
-    await amfiBanner.getByRole("button", { name: "Continue without AMFI" }).press("Enter");
+    await amfiBanner.getByRole("button", { name: "Continue without it" }).press("Enter");
     await amfiBanner.waitFor({ state: "detached" });
     await clickOutside();
     await resume();
     await frame.locator("#cas-file:enabled").waitFor();
-    await stayedOutside("Continue without AMFI, focus moved before password loaded");
+    await stayedOutside("Continue without it, focus moved before password loaded");
     await fileInput.focus();
     await revisit();
     await amfiBanner.waitFor();
+    // Opened afresh, the page offers the check again once Market data settings are opened.
+    await amfiBanner.getByRole("button", { name: "Open Market data settings" }).click();
     // Without AMFI's entry, without its flag, or when the providers can't be read, Wealthfolio doesn't
     // say whether AMFI is on, and there's no banner.
     for (const mode of ["fail", "no-flag", "no-amfi"]) {
       await hosted((mode) => { window.host.providers = mode; }, mode);
       await checkAgain.press("Enter");
       await amfiBanner.waitFor({ state: "detached" });
-      await focused(fileInput, `Check again, ${mode}`);
-      assert.equal(await amfiOutcome.textContent(), "Couldn't check whether AMFI is on.", mode);
+      await focused(fileInput, `I've added AMFI: check, ${mode}`);
+      assert.equal(await amfiOutcome.textContent(), "Couldn't check whether AMFI is added. Open CAS Importer again to check.", mode);
       await hosted(() => { window.host.providers = ""; });
       await revisit();
       await amfiBanner.waitFor();
@@ -253,8 +273,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.amfi = true; });
     await checkAgain.press("Enter");
     await amfiBanner.waitFor({ state: "detached" });
-    await focused(fileInput, "Check again, AMFI on");
-    assert.equal(await amfiOutcome.textContent(), "AMFI is on.");
+    await focused(fileInput, "I've added AMFI: check, AMFI on");
+    assert.equal(await amfiOutcome.textContent(), "AMFI added. Funds will be matched with it.");
     let checks = await providerChecks();
     await revisit();
     await tab.frames()[1].waitForFunction((n) => window.host.providerChecks > n, checks);
@@ -295,9 +315,37 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readButton.press("Enter");
     await frame.locator("#cas-file:disabled").waitFor();
     assert.equal(await frame.locator("#cas-password").isDisabled(), true);
-    await frame.getByText("Wrong password", { exact: true }).waitFor({ timeout: 180_000 });
-    await focused(readButton, "Read statement, failed");
+    await frame.getByText("Reading the statement…", { exact: true }).waitFor();
+    // A wrong password is said under its field, tied to it, and the focus goes back to it. The file stays.
+    const wrongPassword = frame.locator("[id$='-password-error']");
+    await wrongPassword.waitFor({ timeout: 180_000 });
+    assert.equal(await wrongPassword.textContent(), "That password didn't open the PDF. Check it and try again.");
+    await focused(passwordBox, "Read statement, wrong password");
+    assert.equal(await passwordBox.getAttribute("aria-invalid"), "true");
+    assert.ok((await passwordBox.getAttribute("aria-describedby")).split(" ").includes(await wrongPassword.getAttribute("id")));
+    assert.equal(await fileInput.evaluate((input) => input.files[0]?.name), "made-up-cas.pdf");
+    const passwordStatus = frame.locator("[id$='-reading'][role='status']");
+    assert.equal(await passwordStatus.textContent(), "", "the field's description already reads the password error");
+    // A password failure still says what went wrong when the user moved focus outside while reading.
+    await hosted(() => {
+      const read = File.prototype.arrayBuffer;
+      File.prototype.arrayBuffer = async function () {
+        File.prototype.arrayBuffer = read;
+        await new Promise((resolve) => { window.releasePasswordRead = resolve; });
+        return read.call(this);
+      };
+    });
+    await readButton.press("Enter");
+    await frame.locator("#cas-file:disabled").waitFor();
+    await clickOutside();
+    await hosted(() => { window.releasePasswordRead(); delete window.releasePasswordRead; });
+    await wrongPassword.waitFor({ timeout: 180_000 });
+    await stayedOutside("Read statement, wrong password after focus moved");
+    assert.equal(await passwordStatus.textContent(), "That password didn't open the PDF. Check it and try again.");
+    assert.equal(await frame.getByRole("status").filter({ hasText: "That password didn't open the PDF. Check it and try again." }).count(), 1);
     await frame.locator("#cas-password").fill("ABCDE1234F");
+    assert.equal(await wrongPassword.count(), 0, "typing clears it");
+    assert.equal(await passwordStatus.textContent(), "");
     // Unstyled here, so the checkbox has no width to click on.
     await remember.dispatchEvent("click");
     assert.equal(await remember.getAttribute("aria-checked"), "true");
@@ -306,7 +354,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await passwordBox.press("Enter");
     await waiting();
     assert.equal(await frame.locator("#cas-file").isDisabled(), true);
-    assert.equal(await frame.getByRole("button", { name: "Reading…", exact: true }).isDisabled(), true);
+    assert.equal(await readButton.isDisabled(), true);
+    assert.equal(await frame.getByRole("status").filter({ hasText: "Reading the statement…" }).count(), 1);
     assert.equal(await frame.getByRole("heading", { name: /^Transactions, / }).count(), 0);
     await resume();
     await frame.getByRole("heading", { name: "Transactions, 1 Apr 2023 to 31 Mar 2025", exact: true }).waitFor({ timeout: 180_000 });
@@ -329,7 +378,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const dFooter = frame.locator("div.sticky.bottom-0");
     // The footer's summary, which takes the focus once every question is answered.
     const dSummary = dFooter.locator("[tabindex='-1']");
-    const dSaid = frame.locator("p[role=status]");
+    const dSaid = frame.locator("[role=status][id$='-status']");
     const importButton = dFooter.getByRole("button", { name: /^Import( \d+ transactions?)?$/ });
     const literal = (text) => text.replace(/\s+/g, " ").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const storage = async () => Object.fromEntries((await host()).storage);
@@ -364,7 +413,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const readStatement = async (file = "tests/fixtures/made-up-cas.pdf") => {
       await leaveDetailed();
       await frame.locator("#cas-file").setInputFiles(file);
-      await frame.locator("#cas-password").fill("ABCDE1234F");
+      await usePassword("ABCDE1234F");
       await readButton.click();
       await transactionsHeading.waitFor({ timeout: 180_000 });
       await dSettled();
@@ -453,8 +502,23 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
       await everyTable.waitFor();
     };
-    const resultUnits = () => frame.locator("table").last().locator("tbody tr");
-    const imported = (count) => frame.getByText(new RegExp(`^Imported ${count ?? "(\\d+)"} of ${count ?? "\\1"} activit(y|ies)`));
+    // The result's units check, as one line, with each fund whose units differ.
+    // Unstyled here, so its text is read node by node.
+    const unitsCheck = async () => (await frame.locator("[id$='-result-units']").evaluate((element) => {
+      const texts = [];
+      const walk = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+      while (walk.nextNode()) texts.push(walk.currentNode.textContent);
+      return texts.join(" ");
+    })).replace(/\s+/g, " ").replace(/ ([.,:;])/g, "$1").trim();
+    // The import result's title: how many of the transactions approved went in. `count` alone means
+    // all of them; with no count, any title says they all went in.
+    const importTitle = frame.locator("[id$='-result-title']");
+    const imported = async (count, total = count) => {
+      await importTitle.waitFor();
+      const title = await importTitle.textContent();
+      if (count === undefined) return assert.match(title, /^\d+ transactions? imported$/);
+      assert.equal(title, count === total ? `${count} transaction${count === 1 ? "" : "s"} imported` : `${count} of ${total} transactions imported`);
+    };
     const badges = (locator) => locator.locator("[data-slot=badge]").evaluateAll((all) => all.map((b) => `${b.textContent} ${b.dataset.variant}`));
     const inUsd = "The statement's prices and amounts are in rupees, but this asset is quoted in USD. Check that it's the right listing.";
     const quotedIn = (locator) => locator.getByText(/^The statement's prices and amounts are in rupees, but /);
@@ -553,29 +617,32 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     ]);
     assert.equal(await everyTable.getByRole("checkbox").count(), 0, "read-only");
 
-    // A failed import keeps the review, and says why.
+    // An import Wealthfolio refuses outright keeps the review as it was, says so in plain words, with
+    // Try again, and takes the focus there.
     await hosted(() => { window.host.failImport = true; });
-    await importButton.click();
-    await frame.getByText("The import failed: Error: Import unavailable", { exact: true }).waitFor();
+    await importButton.press("Enter");
+    const importFailed = frame.locator("[id$='-not-created']");
+    await importFailed.getByText("Nothing was imported: Wealthfolio couldn't import the transactions.", { exact: true }).waitFor();
+    await importFailed.getByText("The review is as you left it.", { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/Import unavailable/).count(), 0, "Wealthfolio's own error goes to the log");
+    await focused(importFailed, "Import, refused");
+    assert.equal(await importFailed.getByRole("button", { name: "Try again importing transactions" }).count(), 1);
     await transactionsHeading.waitFor();
     await hosted(() => { window.host.failImport = false; });
     // While it imports, the page is locked and the status says so; the result takes the focus.
     await pause("import");
     await importButton.press("Enter");
     await waiting();
-    await dSaid.getByText("Importing…", { exact: true }).waitFor();
-    assert.equal(await dFooter.getByRole("button", { name: "Importing…" }).isDisabled(), true);
+    await dSaid.getByText("Saving…", { exact: true }).waitFor();
+    assert.equal(await dFooter.getByRole("button", { name: "Saving…" }).isDisabled(), true);
     assert.equal(await fundsSelect().isDisabled(), true);
     await resume();
-    await imported(23).waitFor();
-    await focused(frame.getByRole("alert").filter({ hasText: /^Imported 23 of 23 activities/ }), "Import 13 transactions");
+    await imported(13);
+    await focused(importTitle, "Import 13 transactions");
+    assert.equal(await importFailed.count(), 0);
+    await frame.getByText("13 transactions imported into Mutual funds", { exact: true }).waitFor();
     // The closing units of the funds it imported into, each matching the statement.
-    assert.equal(await resultUnits().count(), 4);
-    assert.equal(await resultUnits().filter({ hasText: "Match" }).count(), 4);
-    assert.deepEqual(
-      await frame.locator("table").last().getByRole("columnheader").allTextContents(),
-      ["Fund", "Units in the statement", "Units in Wealthfolio", "Status"],
-    );
+    assert.equal(await unitsCheck(), "✓ Checked in Wealthfolio: units match the statement for all 4 funds.");
     // Remembered once imported: the PAN's account and the five funds, with no PAN or folio number in a key.
     const firstChoices = await storage();
     const firstKeys = Object.keys(firstChoices);
@@ -613,7 +680,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const renameFunds = (prefix) => hosted((prefix) => {
       for (const a of window.host.activities) if (a.assetId) a.assetSymbol = `${prefix}${a.symbol}`;
     }, prefix);
-    const cantWorkOutImport = (pattern) => dFooter.getByText(new RegExp(`^Couldn't work out what will be imported: Error: ${pattern}`));
+    // The bar says the plan couldn't be worked out, and why when the add-on knows.
+    const cantWorkOutImport = (why) => {
+      const lines = dFooter.locator("[id$='-summary'] p");
+      return { waitFor: async () => {
+        await lines.filter({ hasText: /^We couldn't work out what will be saved\. Nothing was saved\.$/ }).waitFor();
+        await lines.filter({ hasText: why }).waitFor();
+      } };
+    };
     const tryAgain = dFooter.getByRole("button", { name: "Try again", exact: true });
     await renameFunds("My ");
     await readStatement();
@@ -623,16 +697,16 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.assets[a.assetId] = { symbol: a.symbol, exchangeMic: a.exchangeMic, instrumentType: "METAL" };
     });
     await revisit();
-    await cantWorkOutImport("The symbol, exchange or type of Fund INFZ90K01LQ6 changed in Wealthfolio\\. Choose Change beside the fund and confirm it again\\.").waitFor();
+    await cantWorkOutImport("The symbol, exchange or type of Fund INFZ90K01LQ6 changed in Wealthfolio. Choose Change beside the fund and confirm it again.").waitFor();
     assert.equal(await importButton.isDisabled(), true);
     await hosted(() => { delete window.host.assets[window.host.activities.find((a) => a.assetId).assetId].instrumentType; });
     await tryAgain.click();
-    await cantWorkOutImport("The type of Fund INFZ90K01LQ6 isn't set in Wealthfolio\\. Set its type there, then choose Change beside the fund and confirm it again\\.").waitFor();
+    await cantWorkOutImport("The type of Fund INFZ90K01LQ6 isn't set in Wealthfolio. Set its type there, then choose Change beside the fund and confirm it again.").waitFor();
     await hosted(() => { delete window.host.assets[window.host.activities.find((a) => a.assetId).assetId]; });
     // A profile that can't be read stops the plan instead of offering the trades again.
     await hosted(() => { window.host.failGetProfileIds = [window.host.activities.find((a) => a.assetId).assetId]; });
     await tryAgain.press("Enter");
-    await cantWorkOutImport("Couldn't read a Wealthfolio asset's profile: Error: Profile unavailable\\. Try again\\. If the asset was deleted, choose Change beside its fund and pick its replacement\\.").waitFor();
+    await cantWorkOutImport("A fund's asset couldn't be read in Wealthfolio. If it was deleted there, choose Change beside its fund and pick its replacement.").waitFor();
     // Try again stays, busy, while it works the plan out again, so it keeps the focus when that fails
     // again; once the plan is worked out, the focus goes to the bar's summary.
     await focused(tryAgain, "Try again, failed again");
@@ -651,7 +725,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await cellsOf(readyFund("Fund INFZ90K01LQ6")), [["3 3 imported before", "16.106"]]);
     assert.equal(await frame.getByRole("heading", { name: "Before importing" }).count(), 0);
     await importButton.click();
-    await imported(6).waitFor();
+    await imported(3);
     await readStatement();
     assert.equal(await transactionParts(), "16 imported before, skipped · 26 waiting for earlier purchases");
     await hosted((rows) => {
@@ -701,12 +775,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await dFooter.getByText("1 possible duplicate imported by your answer.", { exact: true }).waitFor();
     assert.equal(await transactionParts(), "1 possible duplicate, imported by your answer · 12 imported before, skipped · 26 waiting for earlier purchases");
     await importButton.click();
-    await imported(2).waitFor();
+    await imported(1);
+    // Its units now differ from the statement's, as the review said.
+    assert.match(await unitsCheck(), /^Checked in Wealthfolio: units differ for 1 of 1 fund\. .+: Wealthfolio has 11\.359 units, the statement says 8\.053\. Open Mutual funds$/);
     const forced = await hosted(() => window.host.activities.filter((a) => a.date.startsWith("2024-06-20")).map((a) => [a.activityType, a.assetSymbol]));
     assert.deepEqual(forced, [["BUY", "INFZ90K01LQ6"], ["BUY", "INFZ90K01LQ6"], ["DEPOSIT", ""]]);
 
-    // An import Wealthfolio rejects a row of, whose closing units then can't be read: what the
-    // holdings checks below start from.
+    // A validation failure imports none of the batch. The add-on sends the other transactions
+    // without the refused one. Its funds aren't called checked while that transaction is missing.
     await hosted(() => { window.host.activities = []; });
     await readStatement();
     await pause("import");
@@ -715,20 +791,40 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await clickOutside();
     await hosted(() => {
       window.host.rejectLine = 1;
-      window.host.failHistory = true;
+      window.host.failSettings = true; // No funds qualify for a units check in this account.
     });
     await resume();
-    await frame.getByText("Imported 22 of 23 activities").waitFor();
+    await imported(12, 13);
     await frame.getByText("Wealthfolio rejected rows", { exact: true }).waitFor();
+    await frame.getByText(/^These transactions weren't imported\. The rows below say why:/).waitFor();
+    assert.equal(await frame.getByText(/Their transactions may lack/).count(), 0);
     await frame.getByText(/The fund could not be created/).waitFor();
-    await frame.getByText(/The import finished, but the closing units couldn't be checked/).waitFor();
     await stayedOutside("Import 13 transactions");
-    assert.equal(await frame.getByText(/The import failed/).count(), 0);
+    assert.equal(await frame.getByRole("button", { name: "Try again: Mutual funds", exact: true }).count(), 0, "only the refused transaction remains");
+    await hosted(() => { window.host.rejectLine = undefined; window.host.failSettings = false; });
+    const savedRows = await hosted(() => window.host.activities);
+    assert.equal(new Set(savedRows.map((a) => a.sourceRecordId)).size, savedRows.length, "the remaining batch imported each row once");
+    assert.equal(await frame.locator("[id$='-result-units']").count(), 0);
+    assert.equal(await frame.getByText(/^Nothing was imported/).count(), 0);
+    // The holdings checks below start from the twelve transactions imported before the missing one.
     const baseline = await hosted(() => ({ activities: window.host.activities, storage: [...window.host.storage] }));
-    await hosted(() => {
-      window.host.rejectLine = undefined;
-      window.host.failHistory = false;
-    });
+
+    // The next read finds just the missing transaction. Once it is saved, a failed units check says
+    // so, with Check again; that retry reads units alone and doesn't import the trade again.
+    await readStatement();
+    await pause("import");
+    await importButton.click();
+    await waiting();
+    await hosted(() => { window.host.failHistory = true; });
+    await resume();
+    await imported(1);
+    assert.equal(await unitsCheck(), "Saved, but the units couldn't be checked in Wealthfolio. Check again: the units in Wealthfolio");
+    const beforeUnitsRetry = await hosted(() => window.host.activities);
+    await hosted(() => { window.host.failHistory = false; });
+    await frame.getByRole("button", { name: "Check again: the units in Wealthfolio" }).press("Enter");
+    await frame.locator("[id$='-result-units']").getByText(/^✓ Checked in Wealthfolio: units match the statement for the fund\.$/).waitFor();
+    await focused(frame.locator("[id$='-result-units']"), "Check again");
+    assert.deepEqual(await hosted(() => window.host.activities), beforeUnitsRetry);
 
     // With a bank account, purchases transfer from it, and sales and cash dividends back to it. Entries
     // it already has can be those transfers: one check per bank account, a question under the bank
@@ -842,8 +938,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await resetBank();
       await hosted((outcome) => { window.host[outcome] = 1; }, outcome);
       await linkedImport();
-      await frame.getByText("Imported 29 of 30 activities").waitFor();
-      await frame.getByText(/The trade wasn't imported, so the bank's entry was left as it is\./).waitFor();
+      await imported(12, 13);
+      if (outcome === "rejectLine") {
+        assert.equal(await frame.getByRole("button", { name: "Try again: Mutual funds", exact: true }).count(), 0, "the other transactions saved automatically");
+      } else {
+        await frame.getByText(/: The trade wasn't imported, so the bank entry of 4 May 2023 was left as it is\.$/).waitFor();
+      }
       const unchanged = await hosted(() => ({
         bank: window.host.activities.find((a) => a.id === "bank-neft"),
         fundRows: window.host.activities.filter((a) => a.accountId === "account-1" && a.date.startsWith("2023-05-05")),
@@ -862,8 +962,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Linked: the trade, then the fund account's transfer, the bank entry changed into a transfer, and the link.
     await resetBank();
     await linkedImport();
-    await imported(30).waitFor();
-    await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
+    await imported(13);
+    await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
     const banked = await hosted(() => ({ activities: window.host.activities, links: window.host.links }));
     const byId = Object.fromEntries(banked.activities.map((a) => [a.id, a]));
     assert.equal(banked.links.length, 1);
@@ -881,6 +981,46 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readStatement();
     assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
     assert.equal(await savingsCheck.count(), 0);
+
+    // Each step of using the entry that fails says what's in Wealthfolio and what isn't, and its Try
+    // again goes on from that step: the fund account's transfer is never added twice.
+    const liquidLink = `Purchase of ${detailed.liquid} on 5 May 2023: `;
+    for (const [step, words, rest] of [
+      ["create", "The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of 4 May 2023 wasn't linked.", ["create", "update", "link"]],
+      ["update", "The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't changed into a transfer or linked.", ["update", "link"]],
+      ["link", "The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't linked.", ["link"]],
+      ["answer", "The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't linked.", []],
+    ]) {
+      await resetBank({
+        enabled: true, accountIds: ["bank-1"],
+        assignments: { "bank-neft": [{ taxonomyId: "spending_categories", categoryId: "investing" }] },
+      });
+      await hosted((step) => { window.host.failLinkStep = step; }, step);
+      await linkedImport();
+      await imported(13);
+      const line = frame.getByText(`${liquidLink}${words}`, { exact: true });
+      await line.waitFor();
+      assert.equal(await frame.getByText(/right now/).count(), 0, "Wealthfolio's own error goes to the log");
+      assert.deepEqual(await hosted(() => window.host.spending.unassigned), []);
+      if (step === "answer") {
+        assert.equal(await hosted(() => window.host.links.length), 1, "the link succeeded before its answer failed");
+        await frame.getByText(/Its spending category wasn't removed because linking failed\./).waitFor();
+      }
+      const before = await hosted(() => ({ rows: window.host.activities.length, updates: window.host.updates.length, links: window.host.links.length }));
+      await hosted(() => { window.host.failLinkStep = ""; });
+      const retry = frame.getByRole("button", { name: "Try again: link the bank entry of 4 May 2023" });
+      await retry.press("Enter");
+      await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
+      await focused(frame.locator("[id$='-result-linked']"), `Try again after a failed ${step}`);
+      const after = await hosted(() => ({ rows: window.host.activities.length, updates: window.host.updates.length, links: window.host.links.length }));
+      assert.deepEqual(
+        [after.rows - before.rows, after.updates - before.updates, after.links - before.links],
+        [rest.includes("create") ? 1 : 0, rest.includes("update") ? 1 : 0, rest.includes("link") ? 1 : 0],
+        step,
+      );
+      assert.deepEqual(await hosted(() => [window.host.spending.assignments["bank-neft"], window.host.spending.unassigned]), [[], [["bank-neft", "expense"]]], step);
+      assert.equal(await frame.getByText(/category wasn't removed because linking failed/).count(), 0, "the retry clears the old warning");
+    }
 
     // Before a pair is linked, it says what linking changes besides its type and link: its spending
     // split and category, and corrections from a synced account. One with a split never starts ticked.
@@ -927,8 +1067,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Import goes ahead.
     await fundsBox().getByRole("button", { name: /^Change answer: 1 of / }).waitFor();
     await importButton.click();
-    await imported(30).waitFor();
-    await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
+    await imported(13);
+    await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
     await frame.getByText(
       `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF SIP), for the 2023-05-05 purchase of ${detailed.liquid}: Its split across 2 spending categories was deleted. Its spending category was removed. Later corrections to it from the sync won't change it.`,
       { exact: true },
@@ -958,7 +1098,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await dFooter.getByText("1 question left: the payment check before importing.", { exact: true }).waitFor();
     await newTransfers.click();
     await importButton.click();
-    await imported(32).waitFor();
+    await imported(13);
     // A category Wealthfolio won't remove leaves the entry linked, with a warning.
     await resetBank({ enabled: true, accountIds: ["bank-1"], failUnassign: ["bank-neft"] });
     await hosted(() => { window.host.spending.assignments["bank-neft"] = [{ taxonomyId: "spending_categories", categoryId: "investing" }]; });
@@ -967,9 +1107,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await pairBox(neftPair).getAttribute("aria-checked"), "true", "a category alone doesn't stop the tick");
     await linkSelected.click();
     await importButton.click();
-    await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
+    await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), for the 2023-05-05 purchase of ${detailed.liquid}: Later corrections to it from the sync won't change it. Couldn't remove its spending category: Error: Category unavailable. A transfer isn't spending: remove it in Wealthfolio.`,
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), for the 2023-05-05 purchase of ${detailed.liquid}: Later corrections to it from the sync won't change it. Couldn't remove its spending category. A transfer isn't spending: remove it in Wealthfolio.`,
       { exact: true },
     ).waitFor();
     await editAccounts({ "bank-1": { provider: undefined, providerAccountId: undefined } });
@@ -1051,7 +1191,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await pickOption(bankSelect(), "None: don't add bank transfers");
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
     await importButton.click();
-    await imported(23).waitFor();
+    await imported(13);
     assert.deepEqual(await storage(), beforeIgnoredDetailed, "the choices made in their place");
 
     // Remembered folio accounts that are hidden, archived or no longer listed are ignored too, inside
@@ -1087,7 +1227,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Each folio's transactions go to the accounts chosen now: Fictiva's with deposits and withdrawals
     // in Mutual funds, Testbridge's in Not set, with transfers from and to Savings.
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     const routed = await hosted(() => window.host.activities.map((a) => [a.accountId, a.activityType, a.assetSymbol]));
     const routedCount = (accountId, type) => routed.filter(([id, t]) => id === accountId && (!type || t === type)).length;
     assert.deepEqual([...new Set(routed.map(([id]) => id))].sort(), ["account-1", "bank-1", "unset-1"]);
@@ -1183,16 +1323,27 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await setAccountList(allAccounts);
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
-    // When they can't be loaded, the read says so and shows no review, and the next read can load them.
+    // When they can't be loaded, the read says so and shows no review, with Try again, which reads
+    // them again without reading the PDF again.
     await hosted(() => { window.host.failAccounts = true; });
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
-    await frame.locator("#cas-password").fill("ABCDE1234F");
-    await readButton.click();
-    await frame.getByText("Couldn't load the accounts: Error: Accounts unavailable. Choose Read statement to try again.", { exact: true }).waitFor({ timeout: 180_000 });
+    await usePassword("ABCDE1234F");
+    await readButton.press("Enter");
+    const noAccounts = frame.getByRole("alert").filter({ hasText: /^Couldn't read your Wealthfolio accounts\./ });
+    await noAccounts.waitFor({ timeout: 180_000 });
+    assert.equal(await frame.getByText(/Accounts unavailable/).count(), 0, "Wealthfolio's own error goes to the log");
+    const accountsRetry = noAccounts.getByRole("button", { name: "Try again", exact: true });
+    await focused(accountsRetry, "Read statement, accounts not read");
     assert.equal(await transactionsHeading.count(), 0);
+    // Still failing, it says so again and keeps the focus.
+    const parsedOnce = await hosted(() => window.host.parsed);
+    await accountsRetry.press("Enter");
+    await noAccounts.waitFor();
+    await focused(accountsRetry, "Try again, accounts still not read");
     await hosted(() => { window.host.failAccounts = false; });
-    await readButton.click();
+    await accountsRetry.press("Enter");
     await transactionsHeading.waitFor({ timeout: 180_000 });
+    assert.equal(await hosted(() => window.host.parsed), parsedOnce, "Try again doesn't read the PDF again");
     await dSettled();
 
     // Skipping a fund leaves it out of this import, and forgets its fund once imported, keeping the
@@ -1212,7 +1363,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await transactionParts(), "10 to import · 26 waiting for earlier purchases · 3 in skipped funds");
     await hosted(() => { window.host.failDelete = true; });
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     await tab.frames()[1].waitForFunction(() => window.host.toasts.length);
     assert.deepEqual(await hosted(() => window.host.toasts), ["Couldn't forget the fund chosen before. It can come back the next time you read a statement."]);
     assert.deepEqual(await storage(), beforeIgnoredDetailed);
@@ -1224,7 +1375,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readStatement();
     await skipLiquid();
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     const { "isin:INFZ90K01LQ6": liquidChoice, ...withoutLiquid } = beforeIgnoredDetailed;
     assert.ok(liquidChoice);
     assert.deepEqual(await storage(), withoutLiquid);
@@ -1241,7 +1392,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await dSettled();
     await readyFund("Fund B").waitFor();
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     assert.equal(JSON.parse((await storage())["isin:INFZ90K01LQ6"]).symbol, "B");
     await restoreChoices(beforeIgnoredDetailed);
     // A fund in two folios is one question.
@@ -1274,15 +1425,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await cellsOf(readyFund("Fund INFZ90K01NF5")), [["1", "69.996"]]);
     assert.equal((await cellsOf(readyFund("Fund INFZ90K01OF7")))[0][0], "2");
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     const conversions = await hosted(() =>
       window.host.activities.filter((a) => a.activityType === "ADJUSTMENT").map((a) => [a.subtype, a.symbol, a.quantity, a.sourceGroupId]));
     assert.deepEqual(conversions.map((c) => c.slice(0, 3)), [["CONVERSION_OUT", "INFZ90K01OF7", "99.995"], ["CONVERSION_IN", "INFZ90K01NF5", "69.996"]]);
     assert.match(conversions[0][3], /^cas-importer-merger:[0-9a-f]{64}$/);
     assert.equal(conversions[1][3], conversions[0][3]);
-    for (const name of ["Fictiva Old Fund", "Fictiva New Fund"]) {
-      assert.equal(await resultUnits().filter({ hasText: name }).filter({ hasText: "Match" }).count(), 1, name);
-    }
+    // Both funds' units match, the old one's at zero.
+    assert.match(await unitsCheck(), /^✓ Checked in Wealthfolio: units match the statement for (the fund|all \d+ funds)\.$/);
     // Read again, it's in Wealthfolio, and can't be imported twice.
     await readStatement();
     await seeEvery();
@@ -1328,7 +1478,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await given.locator("td").last().getAttribute("rowspan"), "2");
     assert.deepEqual(await cellTexts(taken), ["2024-06-03", "Fictiva Shared Fund - Direct Plan - Growth", "transfer in", "20.000", "25.0000", "", "", ""]);
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     const transfers = await hosted(() =>
       window.host.activities.filter((a) => a.assetSymbol && a.activityType.startsWith("TRANSFER_"))
         .map((a) => [a.accountId, a.activityType, a.assetSymbol, a.quantity, a.unitPrice, a.amount ?? null, a.isExternal ?? null]));
@@ -1337,8 +1487,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ["account-1", "TRANSFER_OUT", "INFZ90K01SF6", "20.000", "25.0000", null, null],
       ["unset-1", "TRANSFER_IN", "INFZ90K01SF6", "20.000", "25.0000", null, null],
     ]);
-    assert.equal(await resultUnits().filter({ hasText: "Fictiva Gifted Fund" }).filter({ hasText: "Match" }).count(), 1);
-    assert.equal(await resultUnits().filter({ hasText: "Fictiva Shared Fund" }).filter({ hasText: "Match" }).count(), 2);
+    // The gifted and shared funds' units match in both accounts.
+    assert.match(await unitsCheck(), /^✓ Checked in Wealthfolio: units match the statement for (the fund|all \d+ funds)\.$/);
     // Read again, both are in Wealthfolio.
     await readStatement();
     await seeEvery();
@@ -1370,11 +1520,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // The payout is an ordinary redemption, at the segregated portfolio's NAV, with its cash.
     assert.deepEqual((await cellTexts(payouts)).slice(0, 7), ["2024-09-20", "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth", "sale", "1533.741", "0.6000", "", "920.2446"]);
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     const segregatedSent = await hosted(() =>
       window.host.activities.filter((a) => a.assetSymbol === "INFZ90K01S17" && a.activityType === "BUY").map((a) => [a.quantity, a.unitPrice ?? null, a.amount]));
     assert.deepEqual(segregatedSent, [["3067.468", null, "0"], ["0.013", null, "0"]]);
-    assert.equal(await resultUnits().filter({ hasText: "Segregated Portfolio 1" }).filter({ hasText: "Match" }).count(), 1);
+    assert.match(await unitsCheck(), /^✓ Checked in Wealthfolio: units match the statement for (the fund|all \d+ funds)\.$/);
     // Read again, the credits are in Wealthfolio.
     await readStatement();
     await seeEvery();
@@ -1434,7 +1584,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await dSettled();
     assert.match(await transactionParts(), /^13 to import · \d+ in funds whose rows don't add up, skipped by your answer$/);
     await importButton.click();
-    await imported(23).waitFor();
+    await imported(13);
     const afterGap = await hosted(() => window.host.activities);
     assert.deepEqual(afterGap.filter((a) => a.assetSymbol === "INFZ90K01FC8").map((a) => a.id), ["flexi-opening"]);
     assert.equal(afterGap.length, 24);
@@ -1455,7 +1605,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await amfiRow.getByText(/^Prices from AMFI · Change$/).waitFor();
     await amfiRow.getByText(`On your statement: ${detailed.liquid}`, { exact: true }).waitFor();
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     const schemeCode = await hosted(() => window.host.activities.find((a) => /^\d{6}$/.test(a.assetSymbol))?.assetSymbol);
     assert.ok(schemeCode);
     assert.equal(JSON.parse((await storage())["isin:INFZ90K01LQ6"]).providerId, "AMFI");
@@ -1550,7 +1700,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const anotherFile = frame.getByRole("button", { name: "Use another file", exact: true });
     const saveHoldings = frame.getByRole("button", { name: /^(Update|Save) holdings$/ });
     const footer = frame.locator("div.sticky.bottom-0");
-    const said = frame.locator("[role=status]");
+    // The Review screen's status region, which says what changed.
+    const said = frame.locator("[role=status][id$='-status']");
     const escaped = (text) => text.replace(/\s+/g, " ").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     // Each holding still to answer is a card in Questions for you, found by the name the statement prints.
     const question = (name) => frame.locator("section section").filter({ hasText: new RegExp(`On your statement: ${escaped(name)} ·`) });
@@ -1578,7 +1729,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       statementFile = file;
       await leaveReview();
       await frame.locator("#cas-file").setInputFiles(file);
-      await frame.locator("#cas-password").fill(password);
+      await usePassword(password);
       await frame.getByRole("button", { name: "Read statement", exact: true }).click();
       await reviewHeading.waitFor({ timeout: 180_000 });
       await settled();
@@ -1631,6 +1782,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
       await settled();
     };
+    // A price or set of details the save left, which the result lists with its retry.
+    const unfinishedLines = frame.getByText(/^The (price of .+ wasn't saved|statement's details for .+ weren't saved)\.$/);
     // The answer that replaces an account's holdings saved for the statement's date.
     const sameDay = (account, date = "31 Mar 2025") =>
       frame.getByRole("button", { name: `Replace them with this statement: ${account}'s holdings for ${date}`, exact: true });
@@ -1740,6 +1893,23 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await bondSearch.getAttribute("aria-invalid"), "true");
     assert.ok((await bondSearch.getAttribute("aria-describedby")).split(" ").includes(await nothingFound.getAttribute("id")));
     await said.getByText("Nothing found for “INEZ91A07012”. Check the code.", { exact: true }).waitFor();
+    // A search Wealthfolio rejects says so under its box, with Try again, and a line at the top of the
+    // Review screen says searching isn't working until a search answers again. Nothing found isn't that.
+    const searchDown = frame.getByText("Searching isn't working right now. Funds already matched aren't affected.", { exact: true });
+    assert.equal(await searchDown.count(), 0, "nothing found is an answer");
+    await hosted(() => { window.host.failSearchQueries = ["INEZ91A07012"]; });
+    await bondSearch.press("Enter");
+    const searchFailed = bondCard.getByText("The search didn't work.", { exact: true });
+    await searchFailed.waitFor();
+    await focused(bondSearch, "a typed search that failed");
+    assert.ok((await bondSearch.getAttribute("aria-describedby")).split(" ").includes(await searchFailed.getAttribute("id")));
+    await said.getByText("The search didn't work.", { exact: true }).waitFor();
+    await searchDown.waitFor();
+    assert.equal(await frame.getByText(/Search unavailable/).count(), 0, "Wealthfolio's own error goes to the log");
+    await hosted(() => { window.host.failSearchQueries = []; });
+    await bondCard.getByRole("button", { name: `Try again: the search for ${bond}`, exact: true }).click();
+    await nothingFound.waitFor();
+    await searchDown.waitFor({ state: "hidden" });
     // Bonds the search can't find use the statement's prices; the one it finds is used as found.
     // Placeholder Pharma is skipped, and the rest use their first result.
     await answerAll((name) => (name === "PLACEHOLDER PHARMA LIMITED" ? "skip" : /\b(NCD|BD)\b/.test(name) && name !== "DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33" ? "statement" : 0));
@@ -1781,11 +1951,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }));
     await pause("set:holdings-2");
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     await waiting();
     await anotherFile.click();
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-nsdl.pdf");
-    await frame.locator("#cas-password").fill("ABCDE1234F");
+    await usePassword("ABCDE1234F");
     const parsedBefore = await hosted(() => window.host.parsed);
     await frame.getByRole("button", { name: "Read statement", exact: true }).click();
     await tab.frames()[1].waitForFunction((n) => window.host.parsed > n, parsedBefore, { timeout: 180_000 });
@@ -1948,7 +2118,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Opening the page again reads Wealthfolio again.
     await hosted(() => { window.host.failGetProfileIds = ["asset-gilt"]; });
     await revisit();
-    await footer.getByText(/^Couldn't work out what will be saved: Error: Couldn't read the Wealthfolio profile of /).waitFor();
+    // Wealthfolio's own error isn't the add-on's to explain: the bar says what happened, and Try again.
+    await footer.getByText("We couldn't work out what will be saved. Nothing was saved.", { exact: true }).waitFor();
+    assert.equal(await footer.getByText(/Couldn't read the Wealthfolio profile|Profile unavailable/).count(), 0);
+    await said.getByText("We couldn't work out what will be saved. Nothing was saved.", { exact: true }).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
     await hosted(() => { window.host.failGetProfileIds = []; });
     await footer.getByRole("button", { name: "Try again", exact: true }).click();
@@ -1966,10 +2139,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await saveHoldings.press("Enter");
     await waiting();
     assert.equal(await said.textContent(), "Saving…");
-    await footer.getByText(/^Saving Demat…$/).waitFor();
+    await footer.getByText(/^Saving to Demat…$/).waitFor();
     await resume();
-    await frame.getByText("Saved 2 snapshots").waitFor();
-    await focused(frame.getByRole("alert").filter({ hasText: /^Saved 2 snapshots/ }), "Update holdings");
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    await focused(frame.getByText("Holdings saved", { exact: true }), "Update holdings");
     const savedTo = await hosted(() => ({ saves: window.host.saves, snapshots: window.host.snapshots }));
     assert.deepEqual(savedTo.saves.slice(savesBefore).map((s) => [s.accountId, s.date]).sort(), [["holdings-1", "2025-03-31"], ["holdings-2", "2025-03-31"]]);
     for (const [accountId, own] of [["holdings-1", isins("NSDL Demat Account")], ["holdings-2", [...isins("CDSL Demat Account"), "GILT"]]]) {
@@ -2212,7 +2385,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.failGetProfileIds = ["asset-INEZ90C01021"]; });
     await clickOutside();
     await resume();
-    await frame.getByText("Saved 2 snapshots").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     await stayedOutside("Update holdings");
     // The funds already tracked elsewhere are named after saving, apart from what was saved.
     await frame.getByText(/^1 fund already tracked in Mutual funds wasn't saved here too[.;]/).waitFor();
@@ -2229,7 +2402,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         assert.equal(entry.ids?.[ref], isin === "INEZ90C01021" ? undefined : `asset-${isin}`);
       }
     }
-    await frame.getByText("Some import history could not be saved", { exact: true }).waitFor();
+    // Two accounts were saved, and only one's history wasn't: the line names it.
+    await frame.getByText(/^Holdings saved in (Demat|Fund folios), but the import history couldn't be saved\. The next import may not know which holdings this statement added\.$/).waitFor();
     const indexes = Object.entries(await storage()).filter(([key]) => key.startsWith("holdings-sources:"));
     assert.ok(indexes.some(([, value]) => Object.values(JSON.parse(value)).some((keys) => keys.includes(unindexedAside))));
     await hosted((key) => { window.host.storage.delete(key); }, unindexedAside);
@@ -2369,7 +2543,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText(doubleWarning, { exact: true }).count(), 2, "Ready and the footer both warn");
     const keptBeforeSave = await hosted(() => ({ saves: window.host.saves.length, snapshot: window.host.snapshots["holdings-1"]["2025-03-31"] }));
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     await frame.getByText("Demat: the holdings already saved for 31 Mar 2025 were kept; nothing changed there.", { exact: true }).waitFor();
     await frame.getByText(doubleWarning, { exact: true }).waitFor();
     assert.deepEqual(await hosted((n) => window.host.saves.slice(n).map((s) => s.accountId), keptBeforeSave.saves), ["holdings-2"]);
@@ -2424,7 +2598,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await textFits(footer.locator("[tabindex='-1']").first(), "mixed-save footer summary at 320 px");
     await reviewFits("mixed-save review at 320 px");
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     await textFits(frame.getByText(`${longAccount}: the holdings already saved for 31 Mar 2025 were kept; nothing changed there.`, { exact: true }), "kept receipt at 320 px");
     await textFits(frame.getByText(doubleWarning.replace(/^Demat /, `${longAccount} `), { exact: true }), "double-count result warning at 320 px");
     await reviewFits("kept-account result at 320 px");
@@ -2493,7 +2667,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await sameDay("Demat").dispatchEvent("click");
       await sameDay("Fund folios").dispatchEvent("click");
       await saveHoldings.click();
-      await frame.getByText("Saved 2 snapshots").waitFor();
+      await frame.getByText("Holdings saved", { exact: true }).waitFor();
       return (await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => [h.symbol, h.quantity]);
     };
     await reread();
@@ -2532,7 +2706,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await ready(flexiName).waitFor();
     await replaceBoth();
     await saveHoldings.click();
-    await frame.getByText("Saved 2 snapshots").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01FC8").quantity, "2892.104");
     await reread();
     // Asked as one card: its answers name the holding after their visible text, for screen readers.
@@ -2570,7 +2744,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Removed");
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await saveHoldings.click();
-    await frame.getByText("Saved 2 snapshots").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.symbol), ["GILT", "INFZ90K01LQ6", "INFZ90K01BA1"]);
     // Removed with the earlier import's record, so the next review has nothing to ask.
     await reread();
@@ -2587,7 +2761,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01LQ6"), "Kept");
     await replaceBoth();
     await saveHoldings.click();
-    await frame.getByText("Saved 2 snapshots").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
 
     // Once that fund is no longer listed, the remembered import still asks about it, also after its
@@ -2627,8 +2801,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await focused(sold.getByRole("heading"), "Change answer, a holding not on the statement");
     await sold.getByRole("button", { name: "Set it to zero on 31 Mar: Fund INFZ90K01LQ6 in Fund folios", exact: true }).click();
     await footer.getByText("Fund INFZ90K01LQ6 set to zero.", { exact: true }).waitFor();
+    await hosted(() => { window.host.failSnapshotAccounts = ["holdings-2"]; });
     await saveHoldings.click();
-    await frame.getByText("Saved 2 snapshots").waitFor();
+    await frame.getByText("Holdings saved in 1 of 2 accounts", { exact: true }).waitFor();
+    assert.ok((await snapshot("holdings-2", "2025-03-31")).holdings.some((h) => h.assetId === "asset-INFZ90K01LQ6"));
+    const savedBeforeRareRetry = await hosted(() => window.host.saves.length);
+    // Returning to a partial result must not change the snapshot approved by the rare answers.
+    await revisit();
+    await hosted(() => { window.host.failSnapshotAccounts = []; });
+    await frame.getByRole("button", { name: "Try again: Fund folios", exact: true }).click();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    assert.deepEqual(await hosted((n) => window.host.saves.slice(n).map((s) => s.accountId), savedBeforeRareRetry), ["holdings-2"]);
     assert.deepEqual(
       (await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.assetId ?? h.symbol),
       ["asset-gilt", "asset-INFZ90K01BA1"],
@@ -2708,7 +2891,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await replaceBoth();
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await saveHoldings.click();
-    await frame.getByText("Saved 2 snapshots").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.deepEqual((await snapshot("holdings-1", "2025-03-31")).holdings.map((h) => h.symbol), ["INEZ92A01013", "INFZ91T01NF4", "INFZ91T01GE1", "INEZ92A07036", "INEZ93A08016"]);
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].averageCost, "12");
     assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.symbol), ["GILT", "EARLIER", "PROVIDER", "INFZ90K01BA1"]);
@@ -2766,7 +2949,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await replaceBoth();
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await saveHoldings.click();
-    await frame.getByText("Saved 2 snapshots").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.equal((await snapshot("holdings-1", "2025-04-30")).holdings[0].averageCost, "20");
     assert.equal(await hosted(() => window.host.quotes["asset-INEZ90B01015"]), undefined);
     assert.equal(JSON.parse((await storage())["isin:INEZ90B01015"]).manual, undefined);
@@ -2808,7 +2991,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readHoldings();
     await frame.getByText("NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I, NPS account (PRAN XXXXXXXX9001): No units on the statement.", { exact: true }).waitFor();
     const npsCard = question(scheme);
-    await npsCard.getByText("Nothing found for its name. Search by its name below, or use the price on the statement.", { exact: true }).waitFor();
+    await npsCard.getByText("Nothing found by its name. Search by its name below, or use the price on the statement.", { exact: true }).waitFor();
     // A card without funds never recommends AMFI.
     assert.equal(await frame.getByText(/^AMFI (isn't|may not be) added/).count(), 0);
     await openParts();
@@ -2844,7 +3027,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await statusOf(await snapshotTable("Fund folios"), scheme), "New");
     await sameDay("Fund folios").dispatchEvent("click");
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     const pension = (await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I");
     assert.deepEqual([pension.quantity, pension.name, pension.instrumentType, pension.dataSource, pension.exchangeMic ?? null], ["40", scheme, "EQUITY", "MANUAL", null]);
     const npsHost = await hosted(() => ({ quotes: window.host.quotes["pension-created-007"], asset: window.host.assets["pension-created-007"] }));
@@ -2862,7 +3045,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await ready(scheme).getByText(/^Prices from the statement · chosen before/).waitFor();
     await sameDay("Fund folios").dispatchEvent("click");
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.deepEqual(await hosted(() => window.host.quotes["pension-created-007"].map((q) => [q.id, q.timestamp, q.close])), npsHost.quotes.map((q) => [q.id, q.timestamp, q.close]));
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").assetId, "pension-created-007");
 
@@ -2877,7 +3060,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await setCost(ready(scheme), "500");
     await sameDay("Demat", "30 Apr 2025").dispatchEvent("click");
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.equal((await snapshot("holdings-1", "2025-04-30")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").assetId, "pension-created-007");
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").quantity, "40");
     assert.deepEqual(await hosted(() => window.host.quotes["pension-created-007"].map((q) => [q.timestamp.slice(0, 10), q.close, q.id])), [
@@ -2908,7 +3091,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     // A failed lookup cannot treat an unheld MARKET asset as a new manual-priced one. Opening the page
     // again reads Wealthfolio again.
-    const cantWorkOut = (pattern) => footer.getByText(new RegExp(`^Couldn't work out what will be saved: Error: ${pattern}`));
+    // The bar says the plan couldn't be worked out, with the add-on's own reason when it has one.
+    const cantWorkOut = (why) => ({ waitFor: async () => {
+      await footer.getByText("We couldn't work out what will be saved. Nothing was saved.", { exact: true }).waitFor();
+      if (why) await footer.getByText(why).waitFor();
+    } });
+    const unpriced = /^Couldn't check how .+ is priced in Wealthfolio, which saving needs to keep its prices\.$/;
     for (const failure of ["search", "profile"]) {
       await hosted((failure) => {
         window.host.failSearchQueries = failure === "search" ? ["NPS-TEST-E-TIER-I"] : [];
@@ -2923,7 +3111,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       } else {
         await revisit();
       }
-      await cantWorkOut("Couldn't verify pricing for ").waitFor();
+      await cantWorkOut(unpriced).waitFor();
       assert.equal(await saveHoldings.isDisabled(), true);
       assert.equal(await hosted(() => window.host.saves.length), saves);
       assert.equal(await hosted(() => window.host.pricingModes["NPS-TEST-E-TIER-I"]), "MARKET");
@@ -2935,7 +3123,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await ready(scheme).waitFor();
     assert.equal(await frame.getByText(priced, { exact: true }).count(), 0);
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     const unheld = await hosted(() => ({ asset: window.host.assets["pension-created-007"], mode: window.host.pricingModes["NPS-TEST-E-TIER-I"] }));
     assert.equal(unheld.mode, "MARKET");
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].dataSource, undefined);
@@ -2944,7 +3132,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     ]);
     assert.deepEqual(unheld.asset.metadata.custom, { keep: true });
     assert.equal(unheld.asset.metadata.casStatement.scheme, scheme);
-    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    assert.equal(await unfinishedLines.count(), 0);
 
     // An observed MARKET mode remains usable when the extra lookup fails.
     await hosted(() => {
@@ -2954,7 +3142,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readHoldings();
     await ready(scheme).waitFor();
     assert.equal(await frame.getByText(priced, { exact: true }).count(), 0);
-    assert.equal(await footer.getByText(/^Couldn't work out/).count(), 0);
+    assert.equal(await footer.getByText(/^We couldn't work out/).count(), 0);
     await hosted(() => { window.host.failSearchQueries = []; });
 
     // A manual asset held only elsewhere still needs its ID to keep the quote's notes.
@@ -2975,7 +3163,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       const saves = await hosted(() => window.host.saves.length);
       await revisit();
       // The other account's holding can't be matched without its profile, so that stops it first.
-      await cantWorkOut(failure === "profile" ? "Couldn't read the Wealthfolio profile of My pension: .+ Try again\\." : "Couldn't verify pricing for ").waitFor();
+      await cantWorkOut(failure === "profile" ? undefined : unpriced).waitFor();
       assert.equal(await saveHoldings.isDisabled(), true);
       assert.equal(await hosted(() => window.host.saves.length), saves);
       assert.equal(await hosted(() => window.host.quotes["pension-created-007"][0].notes), "Keep the other account's quote notes");
@@ -3013,7 +3201,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.failGetProfileIds = ["market-profile-011"];
     });
     await revisit();
-    await cantWorkOut("Couldn't verify pricing for ").waitFor();
+    await cantWorkOut(unpriced).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
     await hosted(() => { window.host.failGetProfileIds = []; });
     await revisit();
@@ -3021,7 +3209,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await sameDay("Demat").dispatchEvent("click");
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     const marketProfile = await hosted(() => window.host.assets["market-profile-011"]);
     assert.deepEqual(marketProfile, {
       symbol: "NPS-TEST-M-TIER-I", exchangeMic: "XLON", instrumentType: "EQUITY", name: "Provider pension",
@@ -3029,7 +3217,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       providerConfig: { preferred_provider: "YAHOO", overrides: { YAHOO: { symbol: "PENSION.L" } } },
       metadata: { custom: { keep: 42 }, casStatement: { earlier: "kept", scheme: marketScheme, fundManager: "TEST PENSION FUND LIMITED", tier: "I", assetClass: "E" } },
     });
-    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    assert.equal(await unfinishedLines.count(), 0);
 
     // A missing ordinary remembered ID is dropped, then its fields find the existing asset.
     await hosted(() => {
@@ -3047,12 +3235,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await ready("Provider pension").waitFor();
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, undefined);
     assert.equal(await hosted(() => window.host.assets["deleted-profile-012"]), undefined);
     assert.equal(await hosted(() => window.host.pricingModes["NPS-TEST-M-TIER-I"]), "MARKET");
     assert.equal(await hosted(() => window.host.quotes["market-profile-011"]), undefined);
-    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    assert.equal(await unfinishedLines.count(), 0);
     await hosted(() => { window.host.failGetProfileIds = []; });
 
     // ECNQUOTE, like MUTUALFUND above, is an older provider label for a canonical EQUITY asset.
@@ -3071,19 +3259,19 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await sameDay("Demat").dispatchEvent("click");
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.equal((await snapshot("holdings-1", "2025-03-31")).holdings[0].assetId, "market-profile-011");
     // A type label the add-on doesn't know still finds the one asset with that symbol and exchange.
     await relabel("SOMETHING_NEW");
     await readHoldings();
     await ready("Provider pension").getByText(priced, { exact: true }).waitFor();
-    assert.equal(await footer.getByText(/Couldn't verify pricing/).count(), 0);
+    assert.equal(await footer.getByText(/^We couldn't work out/).count(), 0);
     // Legacy untyped assets are returned as OTHER; their exact remembered match still wins.
     await hosted(() => { delete window.host.assets["market-profile-011"].instrumentType; });
     await relabel("OTHER");
     await readHoldings();
     await ready("Provider pension").getByText(priced, { exact: true }).waitFor();
-    assert.equal(await footer.getByText(/Couldn't verify pricing/).count(), 0);
+    assert.equal(await footer.getByText(/^We couldn't work out/).count(), 0);
     await hosted(() => { window.host.assets["market-profile-011"].instrumentType = "EQUITY"; });
 
     // A failed first account can already have written prices. Repair known ones; a new asset the failed
@@ -3119,13 +3307,20 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.failGetProfileIds = ["pension-g-009"]; });
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
-    await frame.getByText("Some import history could not be saved", { exact: true }).waitFor();
-    await frame.getByText("Wealthfolio didn't save these snapshots", { exact: true }).waitFor();
-    await frame.getByText("Demat: Error: Snapshot storage unavailable after writing quotes", { exact: true }).waitFor();
-    await frame.getByText(/Fund folios, NPS TRUST- A\/C TEST PENSION FUND LIMITED SCHEME G - TIER I: Wealthfolio may value it at its average cost/).waitFor();
-    await frame.getByText(/Fund folios, NPS TRUST- A\/C TEST PENSION FUND LIMITED SCHEME G - TIER I: the statement's details/).waitFor();
-    assert.equal(await frame.getByText(/FAILURE TEST BOND: Wealthfolio may value it/).count(), 0);
+    // Each account says what was saved and what wasn't; so does each price, set of details and the
+    // import history that didn't reach Wealthfolio, each with its own retry.
+    await frame.getByText("Holdings saved in 1 of 2 accounts", { exact: true }).waitFor();
+    await frame.locator("li").getByText(/^Saved \d+ holdings? in Fund folios on 31 May\.$/).waitFor();
+    const dematLine = frame.getByText(/^Demat's \d+ holdings? on 31 May (wasn't|weren't) saved\.$/);
+    await dematLine.waitFor();
+    const historyLine = frame.getByText(/^Holdings saved, but the import history couldn't be saved\. The next import may not know which holdings this statement added\.$/);
+    await historyLine.waitFor();
+    const gScheme = "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME G - TIER I";
+    await frame.getByText(`The price of ${gScheme} on 31 May wasn't saved.`, { exact: true }).waitFor();
+    const gDetails = frame.getByText(`The statement's details for ${gScheme} weren't saved.`, { exact: true });
+    await gDetails.waitFor();
+    assert.equal(await frame.getByText(/^The price of FAILURE TEST BOND/).count(), 0);
+    assert.equal(await frame.getByText(/Snapshot storage unavailable/).count(), 0, "Wealthfolio's own error goes to the log");
     const partial = await hosted(() => ({ quotes: window.host.quotes, assets: window.host.assets, snapshots: window.host.snapshots }));
     assert.equal(partial.snapshots["holdings-1"]["2025-05-31"], undefined);
     assert.equal(partial.snapshots["holdings-2"]["2025-05-31"].holdings.length, 2);
@@ -3135,14 +3330,42 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(partial.assets["pension-g-009"].metadata, undefined);
     assert.equal(partial.assets["pension-c-010"].metadata.casStatement.assetClass, "E");
 
+    // The price is retried on its own, once its asset can be read; the details still aren't saved.
+    await hosted(() => { window.host.failQuoteIds = []; window.host.failGetProfileIds = []; });
+    await frame.getByRole("button", { name: `Retry saving the price: ${gScheme}`, exact: true }).press("Enter");
+    const gPriced = `The price of ${gScheme} on 31 May was saved.`;
+    await frame.locator("li").getByText(gPriced, { exact: true }).waitFor();
+    await focused(frame.locator("li[tabindex='-1']").filter({ hasText: gPriced }), "Retry saving the price");
+    assert.equal(await hosted(() => window.host.quotes["pension-g-009"].find((q) => q.timestamp.startsWith("2025-05-31")).close), 25.5);
+    await gDetails.waitFor();
+    // Retrying the details while they still fail says so, and keeps them for another try.
+    await frame.getByRole("button", { name: `Retry saving the details: ${gScheme}`, exact: true }).press("Enter");
+    await said.getByText(`The statement's details for ${gScheme} still weren't saved.`, { exact: true }).waitFor();
+    await gDetails.waitFor();
+    await hosted(() => { window.host.failProfileIds = []; });
+    await frame.getByRole("button", { name: `Retry saving the details: ${gScheme}`, exact: true }).press("Enter");
+    await frame.locator("li").getByText(`The statement's details for ${gScheme} were saved.`, { exact: true }).waitFor();
+    assert.equal(await hosted(() => window.host.assets["pension-g-009"].metadata.casStatement.assetClass), "E");
+    // The import history, then Demat's snapshot alone: Fund folios isn't saved again.
+    await frame.getByRole("button", { name: "Try again: save the import history", exact: true }).press("Enter");
+    await frame.locator("[id$='-result-history']").getByText("The import history was saved.").waitFor();
+    await focused(frame.locator("[id$='-result-history']"), "Try again, import history");
+    const savedAccountsBefore = await hosted(() => window.host.saves.map((s) => s.accountId));
+    await hosted(() => { window.host.failSnapshotAccounts = []; });
+    await frame.getByRole("button", { name: "Try again: Demat", exact: true }).press("Enter");
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    assert.equal(await dematLine.count(), 0);
+    assert.deepEqual((await hosted(() => window.host.saves.map((s) => s.accountId))).slice(savedAccountsBefore.length), ["holdings-1"]);
+
     // Re-importing retries each incomplete write and reuses the already-created assets.
     await hosted(() => { window.host.failSnapshotAccounts = []; window.host.failQuoteIds = []; window.host.failProfileIds = []; window.host.failGetProfileIds = []; });
     await readHoldings();
     await sameDay("Fund folios", "31 May 2025").dispatchEvent("click");
+    await sameDay("Demat", "31 May 2025").dispatchEvent("click");
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 2 snapshots").waitFor();
-    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    assert.equal(await unfinishedLines.count(), 0);
     assert.equal(await hosted(() => window.host.quotes["failed-bond-008"].find((q) => q.timestamp.startsWith("2025-05-31")).close), 15);
     assert.equal(await hosted(() => window.host.quotes["pension-g-009"].find((q) => q.timestamp.startsWith("2025-05-31")).close), 25.5);
     assert.equal(await hosted(() => window.host.assets["pension-g-009"].metadata.casStatement.assetClass), "E");
@@ -3197,8 +3420,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await changePanelOf().getByRole("button", { name: /^None of these: use the price on the statement for / }).click();
     await corporateRow().getByText(/^Prices from the statement · chosen by you/).waitFor();
     const giltCard = question(gilt);
-    await giltCard.getByText("The statement prints no ISIN for it, so Yahoo Finance searched its name. AMFI can't search by name.", { exact: true }).waitFor();
-    await giltCard.getByText("Nothing found for its name. Search by its fund code below, or use the price on the statement.", { exact: true }).waitFor();
+    await giltCard.getByText("No ISIN is printed for it, so its name was searched on Yahoo Finance. You can also search below with a code from its factsheet.", { exact: true }).waitFor();
+    await giltCard.getByText("Nothing found by its name. Search by its fund code below, or use the price on the statement.", { exact: true }).waitFor();
     await answer(gilt, "statement");
     await answerAll();
     await settled();
@@ -3208,10 +3431,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await setCost(giltRow(), "40000");
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
-    await frame.getByText("Some prices or details weren't saved", { exact: true }).waitFor();
-    await frame.getByText(`Fund folios, ${gilt}: Wealthfolio may value it at its average cost on 2025-03-31. Enter its price for 2025-03-31 on its asset page.`, { exact: true }).waitFor();
-    await frame.getByText(`Fund folios, ${corporate}: the statement's details (its name and identifiers, a bond's coupon, maturity and face value, or an NPS scheme's fund manager and tier) aren't on its asset. Importing the statement again retries.`, { exact: true }).waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    await frame.getByText(`The price of ${gilt} on 31 Mar wasn't saved.`, { exact: true }).waitFor();
+    await frame.getByText(`The statement's details for ${corporate} weren't saved.`, { exact: true }).waitFor();
     const statementFunds = () => hosted(() => ({
       holdings: window.host.snapshots["holdings-2"]["2025-03-31"].holdings, assets: window.host.assets, quotes: window.host.quotes,
       modes: window.host.pricingModes, storage: Object.fromEntries(window.host.storage),
@@ -3254,7 +3476,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // The next import finds both choices and assets again, and finishes the incomplete writes.
     await hosted(() => { window.host.failQuoteIds = []; window.host.failProfileIds = []; });
-    const saveFolios = async (saved = "Saved 1 snapshot") => {
+    const saveFolios = async (saved = "Holdings saved") => {
       await sameDay("Fund folios").dispatchEvent("click");
       await zeroNotListed();
       await saveHoldings.click();
@@ -3266,7 +3488,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await giltRow().getByText(/^Prices from the statement · chosen before/).waitFor();
     await giltRow().getByText(/^Purchase cost ₹40,000, from your earlier holdings · Edit$/).waitFor();
     await saveFolios();
-    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    assert.equal(await unfinishedLines.count(), 0);
     const againFunds = await statementFunds();
     assert.deepEqual(["INFZ91T01CB6", "MF-KFINTECH-TGLDG"].map((symbol) => againFunds.holdings.find((h) => h.symbol === symbol).assetId), ["fund-priced-014", "fund-priced-015"]);
     assert.equal(Object.values(againFunds.assets).filter((a) => ["INFZ91T01CB6", "MF-KFINTECH-TGLDG"].includes(a.symbol)).length, 2);
@@ -3397,7 +3619,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await changePanelOf().getByRole("button", { name: /^(None of these: use|Use) the price on the statement for / }).click();
     await ready(textiles).getByText(/^Prices from the statement · chosen by you/).waitFor();
     const smallCapCard = question(smallCap);
-    await smallCapCard.getByText("Nothing found for the ISIN printed for it or its name. Search by its fund code below, or use the price on the statement.", { exact: true }).waitFor();
+    await smallCapCard.getByText("Nothing found by the ISIN printed for it or its name. Search by its fund code below, or use the price on the statement.", { exact: true }).waitFor();
     // With no option on the statement, a result's option is no warning; another plan is.
     await smallCapCard.getByText(/^On your statement: PRETEND SMALL CAP FUND - DIRECT PLAN · Direct plan · 100\.000 units$/).waitFor();
     await searchIn(smallCapCard, "Pretend Small Cap");
@@ -3417,8 +3639,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await setCost(ready(textiles), "4000");
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot").waitFor();
-    assert.equal(await frame.getByText("Some prices or details weren't saved", { exact: true }).count(), 0);
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    assert.equal(await unfinishedLines.count(), 0);
     const pretend = await hosted(() => ({
       holdings: window.host.snapshots["holdings-1"]["2025-04-30"].holdings, assets: window.host.assets, quotes: window.host.quotes, modes: window.host.pricingModes,
     }));
@@ -3464,9 +3686,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await cutRow.getByText("Statement: Direct · Growth. Chosen: Regular · IDCW. Different plan and option.", { exact: true }).waitFor();
 
     // A detailed statement keeps the fund confirmed for it instead of using the asset priced from statements.
-    // This copy has no password, so it reads with the box empty, and Remember the password keeps the saved one.
+    // This copy has no password, so it reads with the box empty, and the saved password stays.
     await leaveReview();
-    assert.equal(await remember.getAttribute("aria-checked"), "true");
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
     const beforeDetailedCopy = await hosted(() => ({ activities: window.host.activities, rejectLine: window.host.rejectLine, storage: [...window.host.storage] }));
     await hosted(() => {
@@ -3476,7 +3697,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const readNoPassword = async () => {
       await leaveDetailed();
       await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-no-password.pdf");
-      await frame.locator("#cas-password").fill("");
+      await usePassword("");
       await frame.getByRole("button", { name: "Read statement", exact: true }).click();
       await transactionsHeading.waitFor({ timeout: 180_000 });
       await dSettled();
@@ -3489,7 +3710,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Its search doesn't offer the asset priced from statements, whether by ISIN or by name.
     await detailedCorporate.getByRole("button", { name: "Change: Fund 0P0000TBCB", exact: true }).click();
     const detailedChange = frame.locator("[data-focus-first]");
-    await detailedChange.getByText("Nothing found for the ISIN printed for it or its name. Search by its fund code below.", { exact: true }).waitFor();
+    await detailedChange.getByText("Nothing found by the ISIN printed for it or its name. Search by its fund code below.", { exact: true }).waitFor();
     assert.equal(await detailedChange.getByRole("radio").count(), 0);
     const corporateCode = detailedChange.getByRole("textbox", { name: `Search by fund code for ${corporate}`, exact: true });
     await corporateCode.fill("INFZ91T01CB6");
@@ -3500,7 +3721,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await detailedCorporate.waitFor({ state: "detached" });
     await answerFunds();
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     assert.deepEqual(await corporateStored(), { symbol: "INFZ91T01CB6", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: corporate, statementPrices: true });
     await hosted(() => { window.host.activities = []; });
     await readNoPassword();
@@ -3510,7 +3731,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await corporateQuestion.getByRole("button", { name: `Use this fund: Fund 0P0000TBCB, for ${corporate}`, exact: true }).click();
     await dSettled();
     await importButton.click();
-    await imported().waitFor();
+    await imported();
     const reconfirmed = await corporateStored();
     assert.deepEqual([reconfirmed.symbol, reconfirmed.statementPrices, reconfirmed.transactions.symbol, reconfirmed.transactions.exchangeMic], [
       "INFZ91T01CB6", true, "0P0000TBCB", "XBOM",
@@ -3578,11 +3799,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText(/^Fund INFZ90K01LQ6 differs/).count(), 0);
     assert.equal(await saveHoldings.isDisabled(), true);
     assert.equal(await accountData(), beforeComparing);
-    // A comparison that can't read Wealthfolio's activities says so; opening the page again compares again.
+    // A comparison that can't read Wealthfolio's activities offers the planning retry, keeping the statement.
     await hosted(() => { window.host.failHistory = true; });
     await revisit();
-    await balancedGroup.getByText("Fund INFZ90K01BA1: couldn't compare. Couldn't read Wealthfolio's activities: Error: History unavailable", { exact: true }).waitFor();
+    await footer.getByText("We couldn't work out what will be saved. Nothing was saved.", { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/History unavailable/).count(), 0);
     await hosted(() => { window.host.failHistory = false; });
+    await footer.getByRole("button", { name: "Try again", exact: true }).click();
+    await balancedGroup.getByText(/^Fund INFZ90K01BA1 differs: Mutual funds, Not set has 3,400\.000 units/).waitFor();
     // The next read finds Not set archived, so it isn't compared: Wealthfolio shows add-ons none of its activities.
     await editAccounts({ "unset-1": { isArchived: true } });
     await readHoldings();
@@ -3609,12 +3833,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await revisit();
     await readHoldings();
     await choose("investor", "Fund folios (INR)");
-    // With AMFI off, Questions for you says so above its cards, and offers Market data settings. Once
-    // that's opened, I've added AMFI: check looks again; AMFI on, the funds are searched again, find
-    // AMFI's schemes and are confirmed without a click.
+    // With AMFI off, Questions for you says so above its cards, and offers Market data settings. They
+    // were opened from the banner before, so I've added AMFI: check is offered already; AMFI on, the
+    // funds are searched again, find AMFI's schemes and are confirmed without a click.
     await frame.getByText(/^AMFI isn't added, so 6 funds were only searched on Yahoo Finance and need you\. Add AMFI to match them for you\.$/).waitFor();
     assert.equal(await frame.getByText(/found automatically on AMFI/).count(), 0);
-    assert.equal(await frame.getByRole("button", { name: "I've added AMFI: check" }).count(), 0);
+    assert.equal(await frame.getByRole("button", { name: "I've added AMFI: check" }).count(), 1);
     await frame.getByRole("button", { name: "Open Market data settings", exact: true }).click();
     assert.deepEqual(await hosted(() => window.host.navigations), ["/settings/market-data"]);
     await hosted(() => { window.host.amfi = true; });
@@ -3641,7 +3865,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("1 fund found automatically on AMFI. Change any that look wrong.", { exact: true }).waitFor();
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     const summaryAmfi = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     const amfiSnapshot = await snapshot("holdings-2", "2025-03-31");
     assert.equal(amfiSnapshot.holdings.length, 1);
@@ -3669,7 +3893,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await sameDay("Fund folios").dispatchEvent("click");
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     const summaryExisting = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
     assert.equal(summaryExisting.assetId, `asset-${summaryAmfi.symbol}`);
     assert.equal(summaryExisting.providerSymbol, undefined);
@@ -3718,7 +3942,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await sameDay("Fund folios").dispatchEvent("click");
     await zeroNotListed();
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
     const keptSnapshot = await snapshot("holdings-2", "2025-03-31");
     assert.deepEqual(keptSnapshot.holdings, preservedSnapshot.holdings);
     assert.deepEqual(keptSnapshot.cash, preservedSnapshot.cash);
@@ -3793,9 +4017,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await footer.getByText(new RegExp(`^Create the Wealthfolio account ${escaped(folioAccount)} and save \\d+ holdings? on 31 Mar 2025\\.`)).waitFor();
     await hosted((name) => { window.host.failCreate = [name]; }, folioAccount);
     await saveHoldings.click();
-    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
-    await frame.getByText(`Wealthfolio didn't create the account ${folioAccount}`, { exact: true }).waitFor();
-    await frame.getByText(`${folioAccount}: Error: Accounts can't be created right now. Nothing was saved for it.`, { exact: true }).waitFor();
+    await frame.getByText("Holdings saved in 1 of 2 accounts", { exact: true }).waitFor();
+    // Each account says what was saved there and what wasn't, with Try again for the one that wasn't.
+    const notCreatedLine = frame.getByText(new RegExp(`^${escaped(folioAccount)} couldn't be created, so its \\d+ holdings? on 31 Mar (wasn't|weren't) saved\\.$`));
+    await notCreatedLine.waitFor();
+    await frame.locator("li").getByText(/^Created Family funds and saved \d+ holdings? on 31 Mar\.$/).waitFor();
+    assert.equal(await frame.getByText(/can't be created right now/).count(), 0, "Wealthfolio's own error goes to the log");
     // In the order the statement lists what goes to them: the folio comes first.
     assert.deepEqual(await creates(), [folioAccount, "Family funds"]);
     assert.deepEqual(await hosted(() => window.host.creates[1]), {
@@ -3804,9 +4031,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await rememberedIds(), ["created-2"]);
     assert.deepEqual(Object.keys(await hosted(() => window.host.snapshots)), ["created-2"]);
     await hosted(() => { window.host.failCreate = []; });
-    await frame.getByRole("button", { name: "Try again", exact: true }).click();
-    await frame.getByText("Saved 2 snapshots", { exact: true }).waitFor();
-    assert.equal(await frame.getByText(/^Wealthfolio didn't create/).count(), 0);
+    await frame.getByRole("button", { name: `Try again: ${folioAccount}`, exact: true }).press("Enter");
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    await focused(frame.locator("li[tabindex='-1']").filter({ hasText: `Created ${folioAccount} and saved` }), "Try again, created");
+    assert.equal(await notCreatedLine.count(), 0);
     assert.deepEqual(await creates(), [folioAccount, "Family funds", folioAccount]);
     assert.deepEqual((await rememberedIds()).sort(), ["created-2", "created-3"]);
     assert.deepEqual(Object.keys(await hosted(() => window.host.snapshots)).sort(), ["created-2", "created-3"]);
@@ -3840,14 +4068,22 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // When the only new account isn't created, nothing is saved or remembered and the review stays.
     await hosted(() => { window.host.failCreate = ["Mutual funds 2"]; });
     await saveHoldings.click();
-    await frame.getByText("Mutual funds 2: Error: Accounts can't be created right now. Nothing was saved.", { exact: true }).waitFor();
-    await focused(frame.locator("div[tabindex='-1']").filter({ hasText: /^Wealthfolio didn't create the account Mutual funds 2/ }), "Not created");
+    await frame.getByText("Mutual funds 2 couldn't be created, so nothing was saved.", { exact: true }).waitFor();
+    await focused(frame.locator("div[tabindex='-1']").filter({ hasText: /^Mutual funds 2 couldn't be created, so nothing was saved\./ }), "Not created");
     assert.deepEqual(await rememberedIds(), []);
     assert.deepEqual(await hosted(() => window.host.snapshots), {});
     await reviewHeading.waitFor();
-    await hosted(() => { window.host.failCreate = []; });
+    // Created on Try again, but its snapshot isn't saved: its own Try again saves into it, without
+    // creating another.
+    await hosted(() => { window.host.failCreate = []; window.host.failSnapshotAccounts = ["created-2"]; });
     await frame.getByRole("button", { name: "Try again saving holdings", exact: true }).click();
-    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await frame.getByText("No holdings were saved", { exact: true }).waitFor();
+    await frame.getByText(/^Mutual funds 2's \d+ holdings? on 31 Mar (wasn't|weren't) saved\.$/).waitFor();
+    await hosted(() => { window.host.failSnapshotAccounts = []; });
+    await frame.getByRole("button", { name: "Try again: Mutual funds 2", exact: true }).click();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    await frame.locator("li").getByText(/^Created Mutual funds 2 and saved \d+ holdings? on 31 Mar\.$/).waitFor();
+    assert.deepEqual(await creates(), ["Mutual funds 2", "Mutual funds 2"]);
     assert.deepEqual(await rememberedIds(), ["created-2"]);
     await leaveReview();
 
@@ -3870,22 +4106,26 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await dFooter.getByText(/^Create the Wealthfolio account Mutual funds \(BHAVYA R TESTWALA\) and import 1 transaction for 1 fund into it\.$/).waitFor();
     const createButton = dFooter.getByRole("button", { name: /^Create 2 accounts and import \d+ transactions$/ });
     await createButton.click();
-    await frame.getByText("Wealthfolio didn't create the account Mutual funds (BHAVYA R TESTWALA)", { exact: true }).waitFor();
-    await frame.getByText("Mutual funds (BHAVYA R TESTWALA): Error: Accounts can't be created right now. 1 transaction for it wasn't imported.", { exact: true }).waitFor();
+    const otherNotCreated = frame.getByText("Mutual funds (BHAVYA R TESTWALA) couldn't be created, so BHAVYA R TESTWALA's 1 transaction wasn't imported.", { exact: true });
+    await otherNotCreated.waitFor();
+    await frame.getByText(/^\d+ of \d+ transactions imported$/).waitFor();
+    await frame.getByText(/^1 of \d+ transactions for Mutual funds \(new\) weren't imported\. Try again for Mutual funds \(BHAVYA R TESTWALA\)\.$/).waitFor();
+    assert.equal(await frame.getByRole("button", { name: "Try again: Mutual funds", exact: true }).count(), 0, "retry the missing recipient account");
+    assert.equal(await frame.locator("[id$='-result-units']").count(), 0, "neither account received the whole gift");
     // The gift between the two investors' folios: its transfers, not the one from a folio the statement doesn't include.
     const giftSides = () => hosted(() => window.host.activities.filter((a) => a.activityType.startsWith("TRANSFER_") && a.assetSymbol && !a.isExternal)
       .map((a) => [a.accountId, a.activityType, a.sourceGroupId ? "linked" : ""]));
     // Everything else went in; neither side of the gift did.
-    await imported().waitFor();
     assert.deepEqual(await giftSides(), []);
     assert.deepEqual(await creates(), ["Mutual funds", "Mutual funds (BHAVYA R TESTWALA)"]);
     assert.deepEqual(await rememberedIds(), ["created-1"]);
     await hosted(() => { window.host.failCreate = []; });
-    await frame.getByRole("button", { name: "Try again", exact: true }).click();
-    await frame.getByText(/^Wealthfolio didn't create/).waitFor({ state: "detached" });
+    await frame.getByRole("button", { name: "Try again: Mutual funds (BHAVYA R TESTWALA)", exact: true }).click();
+    await otherNotCreated.waitFor({ state: "detached" });
+    await frame.getByText("1 transaction imported into Mutual funds (BHAVYA R TESTWALA) (new)", { exact: true }).waitFor();
     assert.deepEqual(await creates(), ["Mutual funds", "Mutual funds (BHAVYA R TESTWALA)", "Mutual funds (BHAVYA R TESTWALA)"]);
     assert.deepEqual(await giftSides(), [["created-1", "TRANSFER_OUT", "linked"], ["created-3", "TRANSFER_IN", "linked"]]);
-    await imported().waitFor();
+    await imported();
     assert.deepEqual((await rememberedIds()).sort(), ["created-1", "created-3"]);
     assert.deepEqual(await hosted(() => window.host.creates.map((c) => c.trackingMode)), ["TRANSACTIONS", "TRANSACTIONS", "TRANSACTIONS"]);
     await hosted(() => Object.assign(window.host, { gifts: false, otherInvestorFolio: "" }));
@@ -3895,50 +4135,89 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     await leaveReview();
 
-    await frame.getByRole("button", { name: "Forget the saved password" }).click();
-    await frame.getByRole("button", { name: "Forget the saved password" }).waitFor({ state: "hidden" });
+    if (!(await passwordBox.count())) await frame.getByRole("button", { name: "Use a different password" }).click();
+    await frame.getByRole("button", { name: "Forget saved password" }).click();
+    await frame.getByRole("button", { name: "Forget saved password" }).waitFor({ state: "hidden" });
     assert.deepEqual((await host()).secrets, []);
 
-    // A parser that stops, hits a fatal Python error, never starts or never answers says so. The
-    // form stays usable, and the next read starts a new parser.
+    // A parser that stops, hits a fatal Python error, never starts or never answers says so in plain
+    // words, with Try again, which starts a new parser and reads the same file with the password
+    // typed, without choosing either again.
     await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
-    await frame.locator("#cas-password").fill("ABCDE1234F");
+    await usePassword("ABCDE1234F");
     const workers = () => hosted(() => window.host.workers);
-    const failRead = async (fault, message, control = readButton) => {
+    const couldntFinish = frame.getByRole("alert").filter({ hasText: /^We couldn't finish reading this PDF\. Nothing was saved\./ });
+    const readerRetry = couldntFinish.getByRole("button", { name: "Try again", exact: true });
+    const failRead = async (fault, control = readButton) => {
       await hosted((fault) => window.host.breakWorkers(fault), fault);
       const before = await workers();
       await control.press("Enter");
-      await frame.getByText(message, { exact: true }).waitFor({ timeout: 180_000 });
+      await couldntFinish.waitFor({ timeout: 180_000 });
+      assert.equal(await frame.getByText(/The parser/).count(), 0, "the parser's own words go to the log");
       await frame.locator("#cas-file:enabled").waitFor();
-      assert.equal(await readButton.isDisabled(), false, fault);
-      await focused(control, `A read that failed with ${fault}`);
+      await focused(readerRetry, `A read that failed with ${fault}`);
+      assert.equal(await fileInput.evaluate((input) => input.files[0]?.name), "made-up-cas.pdf");
+      assert.equal(await passwordBox.inputValue(), "ABCDE1234F");
       return (await workers()) - before;
     };
     const readAfterFault = async () => {
       await hosted(() => window.host.breakWorkers(""));
       const before = await hosted(() => ({ workers: window.host.workers, parsed: window.host.parsed }));
-      await readButton.click();
+      await readerRetry.press("Enter");
       await tab.frames()[1].waitForFunction((n) => window.host.parsed > n, before.parsed, { timeout: 180_000 });
       // The statement opens its Review screen; the next read starts from the file form again.
       await transactionsHeading.waitFor({ timeout: 180_000 });
       assert.equal(await workers(), before.workers + 1, "a new parser");
-      assert.equal(await frame.getByText("Couldn't read the statement", { exact: true }).count(), 0);
       await leaveDetailed();
+      assert.equal(await couldntFinish.count(), 0);
       await frame.locator("#cas-file:enabled").waitFor();
       await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
-      await frame.locator("#cas-password").fill("ABCDE1234F");
+      await usePassword("ABCDE1234F");
     };
-    const stopped = "The parser stopped. Try reading the statement again.";
-    assert.equal(await failRead("stop", stopped), 0);
+    assert.equal(await failRead("stop"), 0);
     await readAfterFault();
-    assert.equal(await failRead("stop", stopped), 0);
+    assert.equal(await failRead("stop"), 0);
     // The stopped parser's replacement never gets Python's files.
-    assert.equal(await failRead("no-ready", "The parser didn't start in time. Try reading the statement again."), 1);
+    assert.equal(await failRead("no-ready"), 1);
     await readAfterFault();
-    assert.equal(await failRead("fatal", stopped), 0);
+    assert.equal(await failRead("fatal"), 0);
     await readAfterFault();
-    assert.equal(await failRead("no-reply", "The parser didn't finish reading this PDF in time. Try reading it again.", passwordBox), 0);
+    assert.equal(await failRead("no-reply", passwordBox), 0);
     await readAfterFault();
+
+    // A file that isn't a CAS says so, with Choose another file in place of Read statement; a new file
+    // clears it.
+    await frame.locator("#cas-file").setInputFiles({ name: "not-a-cas.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 not a statement") });
+    await readButton.press("Enter");
+    const notCas = frame.getByRole("alert").filter({ hasText: /^We couldn't read this as a CAS from CAMS, KFintech, NSDL or CDSL\. Nothing was saved\./ });
+    await notCas.waitFor({ timeout: 180_000 });
+    const chooseAnother = notCas.getByRole("button", { name: "Choose another file", exact: true });
+    await focused(chooseAnother, "Read statement, not a CAS");
+    assert.equal(await readButton.count(), 0);
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
+    await notCas.waitFor({ state: "detached" });
+    await readButton.waitFor();
+
+    // A saved password that no longer opens the statement says so, and asks for its password in its
+    // field, which takes the focus. The saved one stays, for other statements.
+    await hosted(() => { window.host.secrets.set("statement-password", "an-old-password"); });
+    // Opened afresh, the add-on reads the saved password again.
+    await hosted(() => window.host.reopen());
+    await frame.getByText("Using your saved password", { exact: true }).waitFor();
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
+    await readButton.press("Enter");
+    const staleSaved = frame.getByText("Your saved password didn't open this PDF. Type its password.", { exact: true });
+    await staleSaved.waitFor({ timeout: 180_000 });
+    await focused(passwordBox, "Read statement, saved password stale");
+    assert.ok((await passwordBox.getAttribute("aria-describedby")).split(" ").includes(await staleSaved.getAttribute("id")));
+    assert.equal(await passwordBox.inputValue(), "");
+    assert.deepEqual((await host()).secrets, [["statement-password", "an-old-password"]]);
+    await frame.getByRole("checkbox", { name: "Remember this password (replaces the saved one)" }).waitFor({ state: "attached" });
+    await passwordBox.fill("ABCDE1234F");
+    await passwordBox.press("Enter");
+    await transactionsHeading.waitFor({ timeout: 180_000 });
+    assert.deepEqual((await host()).secrets, [["statement-password", "an-old-password"]], "not replaced unless asked");
+    await leaveDetailed();
   } catch (error) {
     failed = true;
     console.log(`  FAILED: ${error.stack}`);

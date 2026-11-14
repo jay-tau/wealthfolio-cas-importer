@@ -12,6 +12,7 @@ export function ReviewHeader({
   title,
   lines,
   changes,
+  unfinished = false,
   discard,
   onAnother,
   onDiscard,
@@ -23,6 +24,8 @@ export function ReviewHeader({
   lines: ReactNode[];
   /** The review's changes, which Use another file asks before discarding; 0 once it's done. */
   changes: number;
+  /** Leaving would discard retries and the answers they need. */
+  unfinished?: boolean;
   /** Whether the discard question is open. */
   discard: boolean;
   /** Use another file, when there's nothing to discard, or Discard and choose another file. */
@@ -37,7 +40,7 @@ export function ReviewHeader({
         <h2 id={ids.heading} tabIndex={-1} className="text-xl font-semibold">
           {title}
         </h2>
-        <LinkButton id={ids.another} type="button" onClick={() => (changes > 0 ? onDiscard() : onAnother())}>
+        <LinkButton id={ids.another} type="button" onClick={() => (changes > 0 || unfinished ? onDiscard() : onAnother())}>
           Use another file
         </LinkButton>
       </div>
@@ -48,7 +51,7 @@ export function ReviewHeader({
       ))}
       {discard && (
         <Alert variant="warning" role="group" aria-labelledby={ids.discard}>
-          <AlertTitle id={ids.discard}>Discard your {plural(changes, "change")} and choose another file?</AlertTitle>
+          <AlertTitle id={ids.discard}>{unfinished ? "Leave this unfinished import and choose another file?" : <>Discard your {plural(changes, "change")} and choose another file?</>}</AlertTitle>
           <AlertDescription>
             <div className="flex flex-wrap gap-2">
               <Button id={ids.keep} type="button" onClick={onKeep}>

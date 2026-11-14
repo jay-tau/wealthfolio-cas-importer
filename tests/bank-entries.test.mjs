@@ -9,6 +9,7 @@ import {
   outsideSpending,
   readEntryFacts,
   recheckEntries,
+  recheckLink,
   reuseBankEntry,
 } from "../src/cas/bank-entries.ts";
 import { mapStatement } from "../src/cas/mapping.ts";
@@ -33,6 +34,7 @@ const statement = (transactions) => ({
   file_type: "CAMS",
   parse_warnings: [],
 });
+
 const asset = { symbol: "a", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND" };
 /** A new transaction with its cash to and from the bank account. */
 const transaction = (transactions) => {
@@ -227,8 +229,9 @@ describe("linking a ticked entry", () => {
     const facts = (await readEntryFacts(reads(spending, list), [row])).get(row.id);
     spending.calls.length = 0;
     const activities = activitiesApi(fail);
-    const result = await reuseBankEntry({ activities, spending }, t, row, facts);
-    return { result, steps: activities.calls.map(([name]) => name), unassigned: spending.calls.map(([, id, kind]) => [id, kind]) };
+    const logged = [];
+    const result = await reuseBankEntry({ activities, spending, logger: { warn: (message) => logged.push(message) } }, t, row, facts);
+    return { result, steps: activities.calls.map(([name]) => name), unassigned: spending.calls.map(([, id, kind]) => [id, kind]), logged };
   };
 
   test("an entry changed into a transfer loses its split and its spending or income category, and keeps a savings one", async () => {
@@ -241,6 +244,9 @@ describe("linking a ticked entry", () => {
     assert.deepEqual(spent.unassigned, [[withdrawal.id, "expense"]]);
     assert.deepEqual(spent.result, {
       error: undefined,
+      stage: undefined,
+      fundId: "fund-leg",
+      converted: true,
       changes: [
         "Its split across 2 spending categories was deleted.",
         "Its spending category was removed.",
@@ -280,7 +286,9 @@ describe("linking a ticked entry", () => {
     assert.deepEqual(noContext.unassigned, [[withdrawal.id, "expense"], [withdrawal.id, "income"]]);
     assert.deepEqual(noContext.result.changes, ["Any split it had across spending categories was deleted."]);
     assert.deepEqual(noContext.result.warnings, ["spending", "income"].map((word) =>
-      `Couldn't remove its ${word} category, if it has one: Error: Activity account is not opted into spending tracking. A transfer isn't ${word}: remove it in Wealthfolio.`));
+      `Couldn't remove its ${word} category, if it has one. A transfer isn't ${word}: remove it in Wealthfolio.`));
+    assert.equal(noContext.logged.length, 2);
+    assert.ok(noContext.logged.every((message) => message.includes("Activity account is not opted into spending tracking")));
   });
 
   test("a later step that fails: what changed before it is still said", async () => {
@@ -294,6 +302,17 @@ describe("linking a ticked entry", () => {
     const retained = (word, unknown = false) =>
       `Its ${word} category${unknown ? ", if it has one," : ""} wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio.`;
     assert.deepEqual(unlinked.result.warnings, [retained("spending")]);
+    assert.deepEqual([unlinked.result.stage, unlinked.result.fundId, unlinked.result.converted], ["link", "fund-leg", true]);
+    // A retry goes on from the link: the transfer isn't added again, nor the entry changed again, and
+    // the category goes once they're linked.
+    const facts = (await readEntryFacts(reads(spendingApi({ rows: [withdrawal], ...options }), synced), [withdrawal])).get(withdrawal.id);
+    const spending = spendingApi({ rows: [withdrawal], ...options });
+    const activities = activitiesApi("");
+    const retried = await reuseBankEntry({ activities, spending, logger: { warn() {} } }, purchase, withdrawal, facts, { fundId: unlinked.result.fundId, converted: true });
+    assert.deepEqual(activities.calls.map(([name]) => name), ["linkTransfer"]);
+    assert.deepEqual(activities.calls[0].slice(1), [withdrawal.id, "fund-leg"]);
+    assert.deepEqual(spending.calls.map(([, id, kind]) => [id, kind]), [[withdrawal.id, "expense"]]);
+    assert.deepEqual([retried.stage, retried.warnings], [undefined, []]);
     // A category alone is still reported, including income and unreadable categories.
     const deposit = entry("DEPOSIT", "3000.00", "2023-06-01");
     for (const [row, t, spending, warnings] of [
@@ -315,7 +334,8 @@ describe("linking a ticked entry", () => {
     const kept = await reuse({ row: withdrawal, spending: { ...options, fail: { unassign: ["expense"] } } });
     assert.equal(kept.result.error, undefined);
     assert.deepEqual(kept.result.changes, ["Its split across 1 spending category was deleted."]);
-    assert.deepEqual(kept.result.warnings, ["Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio."]);
+    assert.deepEqual(kept.result.warnings, ["Couldn't remove its spending category. A transfer isn't spending: remove it in Wealthfolio."]);
+    assert.match(kept.logged[0], /refused/);
   });
 });
 
@@ -396,5 +416,99 @@ describe("right before importing", () => {
     // Marked as edited since: the sync already leaves it alone.
     const edited = { ...withdrawal, isUserModified: true };
     assert.deepEqual((await recheck({ shownRows: [withdrawal], nowRows: [edited], list: synced })).stale, []);
+  });
+});
+
+describe("before retrying a bank link", () => {
+  const recheck = async ({ before, now = before, from = {}, fund, pair, fundPair, spendingThen = {}, spendingNow = spendingThen, fail = "" }) => {
+    const shown = (await readEntryFacts(reads(spendingApi({ rows: [before], ...spendingThen }), accounts), [before])).get(before.id);
+    const fetched = [];
+    const paired = [];
+    const api = {
+      ...reads(spendingApi({ rows: now ? [now] : [], ...spendingNow }), accounts),
+      activities: {
+        getAll: async (accountId) => {
+          fetched.push(accountId);
+          if (fail === "rows") throw new Error("made-up row read failure");
+          return [now, fund].filter((r) => r?.accountId === accountId);
+        },
+        getTransferPair: async (id) => {
+          paired.push(id);
+          if (fail === "pair") throw new Error("made-up pair read failure");
+          return (id === before.id ? pair : fundPair) ?? null;
+        },
+      },
+    };
+    return { ...(await recheckLink(api, purchase, before, shown, from)), fetched, paired };
+  };
+  const fundRow = () => entry("TRANSFER_IN", String(purchase.transaction.cash.amount), "2023-04-10", { id: "fund-leg", accountId: ACCOUNT });
+
+  test("unchanged entries resume from the saved transfer and conversion", async () => {
+    const before = entry("WITHDRAWAL", "5000.00", "2023-04-08");
+    const untouched = await recheck({ before });
+    assert.equal(untouched.row, before);
+    assert.equal(untouched.linked, false);
+    assert.deepEqual(untouched.fetched, [BANK]);
+    assert.deepEqual(untouched.paired, []);
+    const fund = fundRow();
+    for (const converted of [false, true]) {
+      const now = converted ? { ...before, activityType: "TRANSFER_OUT", isUserModified: true } : before;
+      const result = await recheck({ before, now, fund, from: { fundId: fund.id, converted } });
+      assert.equal(result.row, now);
+      assert.equal(result.linked, false);
+      assert.deepEqual(result.fetched, [BANK, ACCOUNT]);
+      assert.deepEqual(result.paired, converted ? [before.id, fund.id] : [fund.id]);
+    }
+  });
+
+  test("changed or missing bank entries stop a retry, including changes within the original matching tolerance", async () => {
+    const before = entry("WITHDRAWAL", "5000.00", "2023-04-08");
+    for (const changed of [
+      null, { amount: "4000.00" }, { amount: "5000.02" }, { activityType: "TRANSFER_OUT" },
+      { accountId: ACCOUNT }, { date: "2023-04-09T00:00:00+00:00" }, { currency: "USD" }, { status: "PENDING" },
+    ]) {
+      await assert.rejects(recheck({ before, now: changed && { ...before, ...changed } }), /The bank entry changed since the import/);
+    }
+    await assert.rejects(recheck({ before, from: { fundId: "fund-leg", converted: true }, fund: fundRow() }), /The bank entry changed since the import/);
+  });
+
+  test("changed, missing or linked fund transfers stop a retry", async () => {
+    const before = entry("WITHDRAWAL", "5000.00", "2023-04-08");
+    const from = { fundId: "fund-leg" };
+    for (const changed of [
+      null, { amount: "4000.00" }, { accountId: BANK }, { date: "2023-04-09T00:00:00+00:00" },
+      { activityType: "DEPOSIT" }, { currency: "USD" }, { assetSymbol: "A" }, { status: "PENDING" },
+    ]) {
+      await assert.rejects(recheck({ before, from, fund: changed && { ...fundRow(), ...changed } }), /The fund account's transfer changed since the import/);
+    }
+    await assert.rejects(recheck({ before, from, fund: fundRow(), fundPair: { transferOut: { id: "elsewhere" }, transferIn: { id: from.fundId } } }), /already linked with another transfer/);
+  });
+
+  test("a link to this import's own transfer is already done; a different link stops the retry", async () => {
+    const before = entry("WITHDRAWAL", "5000.00", "2023-04-08");
+    const now = { ...before, activityType: "TRANSFER_OUT", isUserModified: true };
+    const fund = fundRow();
+    const from = { fundId: fund.id, converted: true };
+    const pair = { transferOut: now, transferIn: fund };
+    const result = await recheck({ before, now, fund, from, pair, fundPair: pair });
+    assert.equal(result.linked, true);
+    const elsewhere = { transferOut: now, transferIn: { id: "elsewhere" } };
+    await assert.rejects(recheck({ before, now, fund, from, pair: elsewhere }), /already linked with another transfer/);
+  });
+
+  test("new spending consequences need consent, including categories added after this import converted the entry", async () => {
+    const before = entry("WITHDRAWAL", "5000.00", "2023-04-08");
+    const spendingNow = { assignments: [assignment(before.id, "spending_categories")] };
+    await assert.rejects(recheck({ before, spendingNow }), /The bank entry's spending details changed since the import/);
+    const now = { ...before, activityType: "TRANSFER_OUT", isUserModified: true };
+    await assert.rejects(recheck({ before, now, fund: fundRow(), from: { fundId: "fund-leg", converted: true }, spendingNow }), /The bank entry's spending details changed since the import/);
+    assert.equal((await recheck({ before, now, fund: fundRow(), from: { fundId: "fund-leg", converted: true }, spendingThen: spendingNow })).linked, false);
+  });
+
+  test("a failed row or pair read has a plain retry message and does not change progress", async () => {
+    const before = entry("TRANSFER_OUT", "5000.00", "2023-04-08");
+    for (const fail of ["rows", "pair"]) {
+      await assert.rejects(recheck({ before, fail }), /We couldn't check the bank entries again\. Nothing more was changed\. Try again\./);
+    }
   });
 });

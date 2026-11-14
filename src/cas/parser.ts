@@ -7,12 +7,18 @@ import workerSource from "./worker.js?raw";
 
 const RUNTIME = "assets/runtime/";
 
-export type CasErrorKind = "password" | "unsupported" | "parse" | "runtime";
+/** "accounts": the statement was read, but Wealthfolio's accounts couldn't be. */
+export type CasErrorKind = "password" | "unsupported" | "parse" | "runtime" | "accounts";
 
+/**
+ * Why a statement couldn't be read. The message is for the log; `reason`, when there is one, says in
+ * plain words why the statement couldn't be read as a CAS, for the line under the error.
+ */
 export class CasError extends Error {
   constructor(
     readonly kind: CasErrorKind,
     message: string,
+    readonly reason?: string,
   ) {
     super(message);
   }
@@ -27,6 +33,7 @@ interface RuntimeFiles {
 type ParseReply = { id: number; json: string } | { id: number; errorType: string };
 
 const STOPPED = "The parser stopped. Try reading the statement again.";
+const KINDS: Record<string, string> = { CAMS: "CAMS", KFINTECH: "KFintech" };
 
 /**
  * casparser running under Pyodide in a Worker. Starting it loads about 18 MB of packaged
@@ -144,14 +151,19 @@ export class CasParser {
     // NSDL/CDSL results have no `cas_type` and a different shape.
     const data = JSON.parse(reply.json) as Statement;
     if ("cas_type" in data && data.cas_type !== "DETAILED" && data.cas_type !== "SUMMARY") {
-      throw new CasError("unsupported", `Couldn't tell whether this ${data.file_type} statement is detailed or a summary.`);
+      const what = `Couldn't tell whether this ${data.file_type} statement is detailed or a summary.`;
+      throw new CasError("unsupported", what, `We couldn't tell whether this ${KINDS[data.file_type] ?? data.file_type} statement is detailed or a summary.`);
     }
     // casparser leaves the period's dates empty when it can't find them, rather than failing.
     try {
       statementDay(data.statement_period.from);
       statementDay(data.statement_period.to);
     } catch {
-      throw new CasError("parse", "casparser couldn't read this statement's date or period, so it can't be imported.");
+      throw new CasError(
+        "parse",
+        "casparser couldn't read this statement's date or period, so it can't be imported.",
+        "We couldn't find its date or the period it covers.",
+      );
     }
     return data;
   }

@@ -69,6 +69,9 @@ const host = {
   // What `accounts.create` was asked for, and the names it refuses.
   creates: [] as Record<string, unknown>[],
   failCreate: [] as string[],
+  // The step of using a bank entry that fails: adding the fund account's transfer, changing the
+  // entry into a transfer, linking the two, or returning the successful link's answer.
+  failLinkStep: "" as "" | "create" | "update" | "link" | "answer",
   storage: new Map<string, string>(),
   secrets: new Map<string, string>(),
   activities: [] as ActivityDetails[],
@@ -610,8 +613,18 @@ const api = {
     import: async (rows: ActivityImport[]) => {
       await wait("import");
       if (host.failImport) throw new Error("Import unavailable");
+      // Wealthfolio validates the whole batch before saving any row or creating any asset.
+      if (rows.some((r) => r.lineNumber === host.rejectLine)) {
+        return {
+          activities: rows.map((r) => r.lineNumber === host.rejectLine
+            ? { ...r, isValid: false, errors: { symbol: ["The fund could not be created."] } }
+            : r),
+          importRunId: "run",
+          summary: { total: rows.length, imported: 0, skipped: 1, duplicates: 0, assetsCreated: 0, success: false },
+        };
+      }
       const skipped = (r: ActivityImport) => r.lineNumber === host.skipLine && !r.forceImport;
-      const accepted = rows.filter((r) => r.lineNumber !== host.rejectLine && !skipped(r));
+      const accepted = rows.filter((r) => !skipped(r));
       // The import creates a new fund with no exchange as it is.
       for (const r of accepted) {
         if (r.symbol && !r.exchangeMic) {
@@ -631,13 +644,12 @@ const api = {
       const total = rows.length;
       const summary = { total, imported: accepted.length, skipped: total - accepted.length, duplicates: rows.filter(skipped).length, assetsCreated: 0, success: true };
       return {
-        activities: rows.map((r) => r.lineNumber === host.rejectLine
-          ? { ...r, errors: { symbol: ["The fund could not be created."] } }
-          : skipped(r) ? { ...r, duplicateOfId: "earlier-trade" } : r),
+        activities: rows.map((r) => skipped(r) ? { ...r, duplicateOfId: "earlier-trade" } : r),
         importRunId: "run", summary,
       };
     },
     create: async (activity: ActivityCreate) => {
+      if (host.failLinkStep === "create") throw new Error("Transfers can't be added right now");
       const row = {
         ...stored({ ...activity, date: String(activity.activityDate), symbol: "" } as unknown as ActivityImport, 0),
         // create receives stored fields directly, without the import bridge's namespace changes.
@@ -650,6 +662,7 @@ const api = {
     // Only what the add-on changes. Like Wealthfolio 3.13.0, a change of type, account or amount
     // deletes the activity's spending splits, and any update marks it as edited by the user.
     update: async (activity: ActivityUpdate) => {
+      if (host.failLinkStep === "update") throw new Error("Activities can't be changed right now");
       host.updates.push(activity);
       const row = host.activities.find((a) => a.id === activity.id)!;
       const amount = activity.amount === undefined ? row.amount : String(activity.amount);
@@ -659,12 +672,22 @@ const api = {
       Object.assign(row, { activityType: activity.activityType, comment: activity.comment ?? undefined, isUserModified: true });
       return row;
     },
-    getTransferPair: async (id: string) => (host.linked.includes(id) ? {} : null),
+    getTransferPair: async (id: string) => {
+      const pair = host.links.find((ids) => ids.includes(id));
+      if (!pair) return host.linked.includes(id) ? {} : null;
+      const rows = pair.map((key) => host.activities.find((a) => a.id === key)!);
+      return {
+        transferOut: { ...rows.find((a) => a.activityType === "TRANSFER_OUT")! },
+        transferIn: { ...rows.find((a) => a.activityType === "TRANSFER_IN")! },
+      };
+    },
     // Linking marks both legs as edited by the user.
     linkTransfer: async (a: string, b: string) => {
+      if (host.failLinkStep === "link") throw new Error("Transfers can't be linked right now");
       host.links.push([a, b]);
       host.linked.push(a, b);
       for (const row of host.activities) if (row.id === a || row.id === b) row.isUserModified = true;
+      if (host.failLinkStep === "answer") throw new Error("The link's answer failed");
       return [];
     },
   },
