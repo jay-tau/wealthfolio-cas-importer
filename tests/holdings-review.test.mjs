@@ -1723,6 +1723,28 @@ const settle = async (run) => {
   await run.flush();
 };
 
+test("excluding every source after a failed refresh drops obsolete questions and allows Finish", async () => {
+  const { run, api, saved } = sameDate([source("X", [holding("ISINX")])]);
+  await run.flush();
+  assert.ok(find(run, "AskCard"));
+  api.portfolio.getHoldings = async () => { throw new Error("made-up failed refresh"); };
+  run.update({ visit: {} });
+  await run.flush();
+  find(run, "SaveTo").onChange(investorKey("TEST"), LEFT_OUT);
+  await run.flush();
+  assert.equal(find(run, "AskCard"), undefined);
+  const footer = find(run, "Footer");
+  assert.equal(footer.action.label, "Finish");
+  assert.equal(footer.action.disabled, false);
+  assert.equal(footer.go, undefined);
+  const notices = [];
+  run.update({ onAnother: (notice) => notices.push(notice) });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  assert.deepEqual(notices, ["Finished: nothing from made-up.pdf was saved."]);
+  assert.deepEqual(saved, []);
+});
+
 test("refreshing saved holdings reopens the same-date and holding questions", async () => {
   const x = source("X", [holding("ISINX")]);
   const { run, api } = sameDate([x]);

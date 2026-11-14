@@ -854,7 +854,7 @@ export function DetailedImport({
 
   // The questions only some imports ask, from the plan as last worked out, so a card stays while an
   // answer works the plan out again: funds whose rows don't add up, then possible duplicates.
-  const shown = current ?? prepared;
+  const shown = current ?? (prepared?.questionSignature === questionSignature ? prepared : null);
   const staleQuestions = shown?.questionSignature !== questionSignature;
   const shownById = new Map((shown?.existing ?? []).map((a) => [a.id, a]));
   const onDay = (date: Date | string | undefined) => {

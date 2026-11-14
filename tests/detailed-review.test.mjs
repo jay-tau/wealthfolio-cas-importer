@@ -270,6 +270,31 @@ test("rare questions keep their cards and answers while an answer works the plan
   assert.deepEqual([b.duplicates, b.importedDuplicates, b.skippedDuplicates, b.unbalanced], [0, 1, 1, 0]);
 });
 
+test("excluding every folio after a failed refresh drops obsolete questions and allows Finish", async () => {
+  const { run, api, keys, imported, departures } = setup({ entries: [], change(data) {
+    const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));
+    scheme.close = String(Number(scheme.close_calculated) + 1);
+    return data;
+  } });
+  api.activities.checkImport = async (rows) => rows.map((r) => ({ ...r, duplicateOfId: "made-up-existing" }));
+  await run.flush();
+  assert.ok(askCards(run).some((c) => c.title.includes("don't add up")));
+  assert.ok(askCards(run).some((c) => c.title.includes("may already be")));
+  api.activities.getAll = async () => { throw new Error("made-up failed refresh"); };
+  run.update({ visit: {} });
+  await run.flush();
+  saveTo(run).onChange(keys.pan, choices.LEFT_OUT);
+  await run.flush();
+  assert.deepEqual(askCards(run), []);
+  const action = find(run, "Footer").action;
+  assert.equal(action.label, "Finish");
+  assert.equal(action.disabled, false);
+  assert.equal(find(run, "Footer").go, undefined);
+  action.onClick();
+  assert.deepEqual(departures, ["Finished: nothing from made-up.pdf was imported."]);
+  assert.deepEqual(imported, []);
+});
+
 test("a remembered bank account that tracks holdings asks again, and the import waits for it", async () => {
   const { run, keys } = setup({ remembered: { pan: undefined, [choices.panKey("ABCDE1234F")]: "mf", [choices.bankKey(choices.panKey("ABCDE1234F"))]: "demat" } });
   await run.flush();

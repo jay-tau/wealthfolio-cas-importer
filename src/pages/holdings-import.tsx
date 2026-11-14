@@ -1027,7 +1027,7 @@ export function HoldingsImport({
 
   // The questions only some imports ask, from the plan as last worked out: an account's holdings
   // already saved for the statement's date first, then each holding the user must decide on.
-  const askPlans = (current ?? prepared)?.plans ?? [];
+  const askPlans = ((current ?? prepared)?.plans ?? []).filter((plan) => destinations.includes(plan.accountId));
   /** A position's name, as the Review screen shows it: a fund's without its plan and option. */
   const nameOf = (p: PlannedPosition) => {
     if (!p.lines.length) return FUND_SYMBOL.test(p.existing?.symbol ?? p.asset?.symbol ?? "") ? fundName(p.name) || p.name : p.name;
