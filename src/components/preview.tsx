@@ -17,6 +17,8 @@ import {
 } from "@wealthfolio/ui";
 import { useEffect, useRef } from "react";
 import type { Reused, StaleEntry } from "../cas/bank-entries";
+import { type NotCreated, NotCreatedAlert } from "./holdings-preview";
+import { WrapButton } from "./review/parts";
 import { format } from "../cas/decimal";
 import type { Mapping } from "../cas/mapping";
 import {
@@ -234,6 +236,9 @@ export function ImportResult({
   closing,
   links,
   accounts,
+  notCreated = [],
+  waiting = () => "",
+  retry,
 }: {
   result: ImportActivitiesResult;
   /** The rows sent, to tell Wealthfolio's surprises apart. */
@@ -241,6 +246,12 @@ export function ImportResult({
   closing: FundUnits[];
   links: BankLink[];
   accounts: Account[];
+  /** New accounts Wealthfolio didn't create. */
+  notCreated?: NotCreated[];
+  /** What waits for one of them. */
+  waiting?: (account: NotCreated) => string;
+  /** Creates them and imports what waits. */
+  retry?: () => void;
 }) {
   // Shown in place of the preview and its Import button, which had the focus: the summary takes it,
   // unless the user moved it while the import ran.
@@ -281,6 +292,12 @@ export function ImportResult({
               {(summary as { errorMessage?: string }).errorMessage ?? "Wealthfolio rejected the import."}
             </AlertDescription>
           </Alert>
+        )}
+        <NotCreatedAlert accounts={notCreated} what={waiting} />
+        {retry && (
+          <WrapButton type="button" variant="outline" className="justify-self-start" onClick={retry}>
+            Try again
+          </WrapButton>
         )}
         {failed.length > 0 && (
           <Alert variant="destructive">

@@ -136,6 +136,9 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
       );
   };
 
+  // Accounts a save created join the ones read, so their remembered choices count.
+  const created = (made: Account[]) => setAllAccounts((all) => all && [...all, ...made.filter((a) => !all.some((b) => b.id === a.id))]);
+
   const another = (said?: string) => {
     clear();
     setResets((n) => n + 1);
@@ -182,6 +185,7 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
                 for (const [key, value] of picked) chooseAccount(key, value);
                 for (const [key, choice] of funds) chooseFund(key, choice);
               }}
+              onCreated={created}
               onAnother={another}
             />
           )}
@@ -205,6 +209,7 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
                 for (const [key, value] of picked) chooseAccount(key, value);
                 for (const [key, choice] of funds) chooseFund(key, choice, true);
               }}
+              onCreated={created}
               onAnother={another}
             />
           )}

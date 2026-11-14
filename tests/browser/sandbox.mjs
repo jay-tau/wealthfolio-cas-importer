@@ -429,14 +429,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual((await host()).storage, []);
 
     // The PAN's box offers only active, unarchived accounts that track transactions, which in
-    // Wealthfolio include NOT_SET, or not importing them.
+    // Wealthfolio include NOT_SET, a new account, numbered past the Mutual funds Wealthfolio has, or
+    // not importing them. With accounts that fit, the new one isn't preselected.
     assert.match(await fundsSelect().textContent(), /Choose an account/);
     await dFooter.getByText("6 questions left before importing.", { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Go to the next question" }).click();
     await focused(fundsSelect(), "Go to the next question, the account first");
     await fundsSelect().click();
     await frame.getByRole("option", { name: "Not set (INR)" }).waitFor();
-    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["Mutual funds (INR)", "Savings (INR)", "Not set (INR)", "Don't import them"]);
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["Mutual funds (INR)", "Savings (INR)", "Not set (INR)", "New: Mutual funds 2", "Don't import them"]);
     await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
     await dSettled();
     // Its bank account is optional, None at first, and says what it's for.
@@ -698,6 +699,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await resetBank();
     await readStatement();
     await bankSelect().click();
+    await frame.getByRole("option", { name: "Not set (INR)", exact: true }).waitFor();
     // The same accounts as the funds' box: those that track transactions.
     assert.deepEqual(await frame.getByRole("option").allTextContents(), ["None: don't add bank transfers", "Mutual funds (INR)", "Savings (INR)", "Not set (INR)"]);
     await frame.getByRole("option", { name: "Savings (INR)" }).click();
@@ -1089,19 +1091,26 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
-    // Each read loads the accounts again. With none left that tracks transactions, Save to says to add
-    // one and read again, and the next read offers it.
+    // Each read loads the accounts again. With none left that tracks transactions, Save to offers a new
+    // account, numbered past the hidden Mutual funds; it isn't preselected while a remembered choice
+    // asks to choose again. The next read offers the account added meanwhile too.
     await saveChoices([[panKey, "account-1"], [testbridgeKey, "unset-1"], [bankKey, "bank-1"]]);
     await editAccounts({ "account-1": { isActive: false }, "unset-1": { isArchived: true }, "bank-1": { trackingMode: "HOLDINGS" } });
     await readStatement();
-    await frame.getByText("No account tracks transactions. Add one in Wealthfolio, set to track transactions, then read the statement again.", { exact: true }).waitFor();
-    await dFooter.getByText("No account can take these transactions yet.", { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^No account (can|tracks)/).count(), 0);
+    await fundsBox().getByText(chooseAgain("Mutual funds, which is hidden in Wealthfolio"), { exact: true }).waitFor();
+    assert.match(await fundsSelect().textContent(), /Choose an account/);
+    await fundsSelect().click();
+    await frame.getByRole("option", { name: "New: Mutual funds 2", exact: true }).waitFor();
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New: Mutual funds 2", "Don't import them"]);
+    await tab.keyboard.press("Escape");
+    await frame.getByRole("option").first().waitFor({ state: "detached" });
     assert.equal(await importButton.isDisabled(), true);
     await editAccounts({ "new-1": { name: "New funds", trackingMode: "TRANSACTIONS" } });
     await readStatement();
     await fundsSelect().click();
     await frame.getByRole("option", { name: "New funds (INR)", exact: true }).waitFor();
-    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New funds (INR)", "Don't import them"]);
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New funds (INR)", "New: Mutual funds 2", "Don't import them"]);
     await frame.getByRole("option", { name: "New funds (INR)", exact: true }).click();
     await dSettled();
     await setAccountList(allAccounts);
@@ -1927,35 +1936,44 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeIgnored);
 
-    // With no account left that tracks holdings, Save to says to add one and read again, and still
-    // says why each choice is ignored. Each read loads the accounts again, so the next one offers it.
+    // With no account left that tracks holdings, each select offers a new account, and still says why
+    // each choice is ignored, so nothing is preselected. Each read loads the accounts again, so the
+    // next one offers the account added meanwhile too.
     await saveChoices([[nsdlKey, "holdings-1"], [cdslKey, "holdings-1"]]);
     const withDemat = await storage();
     const beforeHidden = await accountList();
     await editAccounts({ "holdings-1": { isActive: false }, "holdings-2": { isActive: false } });
     await readHoldings();
-    await frame.getByText("No account can hold these yet", { exact: true }).waitFor();
-    await frame.getByText("No account tracks holdings. To save these holdings, add one in Wealthfolio, set to track holdings, then read the statement again.", { exact: true }).waitFor();
-    assert.equal(await investorSelect.count(), 0);
-    const card = await frame.getByRole("alert").filter({ hasText: /^No account can hold these yet/ }).innerText();
+    assert.equal(await frame.getByText(/^No account (can|tracks)/).count(), 0);
+    await openParts();
     for (const [label, note] of [
       ["ANANYA R TESTWALA's holdings", unavailable("Fund folios, which is hidden in Wealthfolio")],
       [nsdlTitle, unavailable("Demat, which is hidden in Wealthfolio")],
       [cdslTitle, unavailable("Demat, which is hidden in Wealthfolio")],
     ]) {
-      assert.ok(card.includes(`${label}\n${note}`) || card.includes(`${label}\n\n${note}`), `${label}: ${card}`);
+      const select = label === "ANANYA R TESTWALA's holdings" ? investorSelect : sourceSelect(label);
+      assert.match(await select.textContent(), /Choose an account/, label);
+      // The note follows its select.
+      const next = await select.evaluate((element, note) => {
+        const shown = [...document.querySelectorAll("p")].find((p) => p.textContent === note && element.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING);
+        return !!shown;
+      }, note);
+      assert.ok(next, `${label}: ${note}`);
     }
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
-    await footer.getByText("No account can hold these yet.", { exact: true }).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
+    await investorSelect.click();
+    await frame.getByRole("option", { name: "New: NSDL Demat", exact: true }).waitFor();
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New: NSDL Demat", "Don't save them"]);
+    await tab.keyboard.press("Escape");
+    await frame.getByRole("option").first().waitFor({ state: "detached" });
     await editAccounts({ "new-2": { name: "New demat", trackingMode: "HOLDINGS" } });
     await readHoldings();
-    assert.equal(await frame.getByText("No account can hold these yet", { exact: true }).count(), 0);
     await openParts();
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
     await investorSelect.click();
     await frame.getByRole("option", { name: "New demat (INR)", exact: true }).waitFor();
-    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New demat (INR)", "Don't save them"]);
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New demat (INR)", "New: NSDL Demat", "Don't save them"]);
     await frame.getByRole("option", { name: "New demat (INR)", exact: true }).click();
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 2);
     // Restored, they're offered again.
@@ -3290,7 +3308,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ];
     });
     await readHoldings("tests/fixtures/made-up-summary-cams.pdf");
-    await frame.getByText("No account can hold these yet", { exact: true }).waitFor();
+    // The account chosen last time is hidden, so it's chosen again; a new account isn't preselected.
+    assert.match(await investorSelect.textContent(), /Choose an account/);
+    await frame.getByText(unavailable("Fund folios, which is hidden in Wealthfolio"), { exact: true }).waitFor();
     await answerAll();
     const accountData = () => hosted(() => JSON.stringify({
       saves: window.host.saves, snapshots: window.host.snapshots, activities: window.host.activities,
@@ -3312,7 +3332,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.frames()[1].waitForFunction(() => window.host.navigations.at(-1) === "/accounts/unset-1");
     // The Liquid fund, which no such account holds, isn't compared.
     assert.equal(await frame.getByText(/^Fund INFZ90K01LQ6 differs/).count(), 0);
-    assert.equal(await footer.getByText("No account can hold these yet.", { exact: true }).count(), 1);
+    assert.equal(await saveHoldings.isDisabled(), true);
     assert.equal(await accountData(), beforeComparing);
     // A comparison that can't read Wealthfolio's activities says so; opening the page again compares again.
     await hosted(() => { window.host.failHistory = true; });
@@ -3457,6 +3477,173 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(keptSnapshot.cash, preservedSnapshot.cash);
     assert.deepEqual(await hosted((code) => window.host.quotes[`asset-${code}`], summaryAmfi.symbol), liquidQuotes);
     await hosted(() => { window.host.summaryMisread = []; });
+
+    // A new profile: Save to proposes an account when none fits, created only when the import is
+    // saved, and remembered once it exists (#214). AMFI confirms every fund here.
+    const beforeNewAccounts = await hosted(() => ({
+      accounts: window.host.accounts, storage: [...window.host.storage], snapshots: window.host.snapshots, activities: window.host.activities,
+      assets: window.host.assets, quotes: window.host.quotes, modes: window.host.pricingModes, saves: window.host.saves,
+      rejectLine: window.host.rejectLine, skipLine: window.host.skipLine,
+    }));
+    const freshProfile = (accounts = []) => hosted((accounts) => {
+      Object.assign(window.host, {
+        accounts, snapshots: {}, activities: [], assets: {}, quotes: {}, pricingModes: {}, creates: [], failCreate: [], rejectLine: undefined, skipLine: undefined,
+      });
+      window.host.storage.clear();
+    }, accounts);
+    const creates = () => hosted(() => window.host.creates.map((c) => c.name));
+    const rememberedIds = async () => Object.values(await storage()).filter((value) => /^created-/.test(value));
+    const newLine = frame.getByText(/^New · Wealthfolio account, created when you save ·/);
+    await freshProfile();
+    // A depository statement's account is named after the depository.
+    for (const [file, name] of [["tests/fixtures/made-up-cdsl.pdf", "CDSL Demat"], ["tests/fixtures/made-up-nsdl.pdf", "NSDL Demat"]]) {
+      await readHoldings(file);
+      assert.equal((await investorSelect.textContent()).trim(), `New: ${name}`, file);
+      await newLine.first().waitFor();
+      assert.equal(await frame.getByText(/^No account (can|tracks)/).count(), 0);
+    }
+    await readHoldings("tests/fixtures/made-up-summary-cams.pdf");
+    assert.equal((await investorSelect.textContent()).trim(), "New: Mutual funds");
+    await investorSelect.click();
+    await frame.getByRole("option", { name: "Don't save them", exact: true }).waitFor();
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New: Mutual funds", "Don't save them"]);
+    await tab.keyboard.press("Escape");
+    await frame.getByRole("option").first().waitFor({ state: "detached" });
+    await footer.getByText(/^Create the Wealthfolio account Mutual funds and save \d+ holdings on 31 Mar 2025\./).waitFor();
+    assert.equal(await saveHoldings.textContent(), "Save holdings");
+
+    // Rename edits the name in place: 2 to 50 characters, trimmed. While it's open, saving waits.
+    await frame.getByRole("button", { name: "Rename the new account Mutual funds: ANANYA R TESTWALA's holdings", exact: true }).click();
+    const nameField = frame.getByRole("textbox", { name: "Name of the new account: ANANYA R TESTWALA's holdings", exact: true });
+    await focused(nameField, "Rename");
+    assert.equal(await nameField.inputValue(), "Mutual funds");
+    await footer.getByText("Save or cancel the new account name first.", { exact: true }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
+    for (const [typed, error] of [["", "Enter an account name."], [" X ", "Use at least 2 characters."], ["x".repeat(51), "Use at most 50 characters."]]) {
+      await nameField.fill(typed);
+      await nameField.press("Enter");
+      // Announced, and tied to the field.
+      await said.getByText(error, { exact: true }).waitFor();
+      assert.equal(await nameField.getAttribute("aria-invalid"), "true");
+      assert.equal(await frame.locator(`#${await nameField.getAttribute("aria-describedby")}`).textContent(), error);
+      await focused(nameField, error);
+    }
+    // Escape cancels, and the focus goes back to Rename.
+    await nameField.press("Escape");
+    await focused(frame.getByRole("button", { name: "Rename the new account Mutual funds: ANANYA R TESTWALA's holdings", exact: true }), "Cancel");
+    await frame.getByRole("button", { name: "Rename the new account Mutual funds: ANANYA R TESTWALA's holdings", exact: true }).click();
+    await nameField.fill("  Family funds ");
+    await frame.getByRole("button", { name: "Save name: ANANYA R TESTWALA's holdings", exact: true }).click();
+    await said.getByText("The new account will be called Family funds.", { exact: true }).waitFor();
+    await focused(frame.getByRole("button", { name: "Rename the new account Family funds: ANANYA R TESTWALA's holdings", exact: true }), "Saved name");
+    assert.equal((await investorSelect.textContent()).trim(), "New: Family funds");
+    assert.equal(await saveHoldings.isDisabled(), false);
+
+    // A folio sent to an account of its own gets one, named after it. One Wealthfolio doesn't create
+    // saves nothing and isn't remembered; the others are saved. Try again creates only that one.
+    const folioAccount = "Fictiva Mutual Fund folio 91234567 / 12";
+    await choose(liquidFolio, `New: ${folioAccount}`);
+    await footer.getByText(new RegExp(`^Create the Wealthfolio account ${escaped(folioAccount)} and save \\d+ holdings? on 31 Mar 2025\\.`)).waitFor();
+    await hosted((name) => { window.host.failCreate = [name]; }, folioAccount);
+    await saveHoldings.click();
+    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    await frame.getByText(`Wealthfolio didn't create the account ${folioAccount}`, { exact: true }).waitFor();
+    await frame.getByText(`${folioAccount}: Error: Accounts can't be created right now. Nothing was saved for it.`, { exact: true }).waitFor();
+    // In the order the statement lists what goes to them: the folio comes first.
+    assert.deepEqual(await creates(), [folioAccount, "Family funds"]);
+    assert.deepEqual(await hosted(() => window.host.creates[1]), {
+      name: "Family funds", accountType: "SECURITIES", currency: "INR", isDefault: false, isActive: true, trackingMode: "HOLDINGS",
+    });
+    assert.deepEqual(await rememberedIds(), ["created-2"]);
+    assert.deepEqual(Object.keys(await hosted(() => window.host.snapshots)), ["created-2"]);
+    await hosted(() => { window.host.failCreate = []; });
+    await frame.getByRole("button", { name: "Try again", exact: true }).click();
+    await frame.getByText("Saved 2 snapshots", { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^Wealthfolio didn't create/).count(), 0);
+    assert.deepEqual(await creates(), [folioAccount, "Family funds", folioAccount]);
+    assert.deepEqual((await rememberedIds()).sort(), ["created-2", "created-3"]);
+    assert.deepEqual(Object.keys(await hosted(() => window.host.snapshots)).sort(), ["created-2", "created-3"]);
+    assert.deepEqual(await hosted(() => window.host.accounts.map((a) => [a.id, a.name, a.trackingMode])), [
+      ["created-2", "Family funds", "HOLDINGS"], ["created-3", folioAccount, "HOLDINGS"],
+    ]);
+    // The next statement preselects them.
+    await readHoldings();
+    assert.equal((await investorSelect.textContent()).trim(), "Family funds (INR)");
+    await frame.getByText("Chosen last time.", { exact: true }).waitFor();
+    await openParts();
+    assert.equal((await sourceSelect(liquidFolio).textContent()).trim(), `${folioAccount} (INR)`);
+    assert.equal(await newLine.count(), 0);
+
+    // With accounts that track holdings but none remembered, nothing is preselected: choosing where to
+    // save is a question, and the new account stays offered.
+    await hosted(() => window.host.storage.clear());
+    await readHoldings();
+    assert.match(await investorSelect.textContent(), /Choose an account/);
+    await frame.getByRole("button", { name: /^\d+ questions?$/ }).waitFor();
+    assert.equal(await saveHoldings.isDisabled(), true);
+    await investorSelect.click();
+    await frame.getByRole("option", { name: "Don't save them", exact: true }).waitFor();
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["Family funds (INR)", `${folioAccount} (INR)`, "New: Mutual funds", "Don't save them"]);
+    await tab.keyboard.press("Escape");
+    await frame.getByRole("option").first().waitFor({ state: "detached" });
+    // A name an existing account has, here an archived one, gets a number.
+    await freshProfile([{ id: "old-mf", name: "mutual FUNDS", currency: "INR", isActive: true, isArchived: true, trackingMode: "HOLDINGS" }]);
+    await readHoldings();
+    assert.equal((await investorSelect.textContent()).trim(), "New: Mutual funds 2");
+    // When the only new account isn't created, nothing is saved or remembered and the review stays.
+    await hosted(() => { window.host.failCreate = ["Mutual funds 2"]; });
+    await saveHoldings.click();
+    await frame.getByText("Mutual funds 2: Error: Accounts can't be created right now. Nothing was saved.", { exact: true }).waitFor();
+    await focused(frame.locator("div[tabindex='-1']").filter({ hasText: /^Wealthfolio didn't create the account Mutual funds 2/ }), "Not created");
+    assert.deepEqual(await rememberedIds(), []);
+    assert.deepEqual(await hosted(() => window.host.snapshots), {});
+    await reviewHeading.waitFor();
+    await hosted(() => { window.host.failCreate = []; });
+    await frame.getByRole("button", { name: "Try again saving holdings", exact: true }).click();
+    await frame.getByText("Saved 1 snapshot", { exact: true }).waitFor();
+    assert.deepEqual(await rememberedIds(), ["created-2"]);
+    await leaveReview();
+
+    // A family's detailed statement: an account for each investor, the second named for them. A gift
+    // from one to the other waits whole while the receiving account isn't created; Try again creates it
+    // and imports both sides together, which Wealthfolio links.
+    await freshProfile();
+    await hosted(() => Object.assign(window.host, { gifts: true, otherInvestorFolio: "93456789", failCreate: ["Mutual funds (BHAVYA R TESTWALA)"] }));
+    await readStatement();
+    await answerFunds();
+    assert.equal((await fundsSelect().textContent()).trim(), "New: Mutual funds");
+    assert.equal((await fundsSelect(otherInvestor).textContent()).trim(), "New: Mutual funds (BHAVYA R TESTWALA)");
+    // A bank account is one Wealthfolio has: none here.
+    await bankSelect().click();
+    await frame.getByRole("option", { name: "None: don't add bank transfers", exact: true }).waitFor();
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["None: don't add bank transfers"]);
+    await tab.keyboard.press("Escape");
+    await frame.getByRole("option").first().waitFor({ state: "detached" });
+    await dFooter.getByText(/^Create the Wealthfolio account Mutual funds and import \d+ transactions for \d+ funds into it\.$/).waitFor();
+    await dFooter.getByText(/^Create the Wealthfolio account Mutual funds \(BHAVYA R TESTWALA\) and import 1 transaction for 1 fund into it\.$/).waitFor();
+    const createButton = dFooter.getByRole("button", { name: /^Create 2 accounts and import \d+ transactions$/ });
+    await createButton.click();
+    await frame.getByText("Wealthfolio didn't create the account Mutual funds (BHAVYA R TESTWALA)", { exact: true }).waitFor();
+    await frame.getByText("Mutual funds (BHAVYA R TESTWALA): Error: Accounts can't be created right now. 1 transaction for it wasn't imported.", { exact: true }).waitFor();
+    // The gift between the two investors' folios: its transfers, not the one from a folio the statement doesn't include.
+    const giftSides = () => hosted(() => window.host.activities.filter((a) => a.activityType.startsWith("TRANSFER_") && a.assetSymbol && !a.isExternal)
+      .map((a) => [a.accountId, a.activityType, a.sourceGroupId ? "linked" : ""]));
+    // Everything else went in; neither side of the gift did.
+    await imported().waitFor();
+    assert.deepEqual(await giftSides(), []);
+    assert.deepEqual(await creates(), ["Mutual funds", "Mutual funds (BHAVYA R TESTWALA)"]);
+    assert.deepEqual(await rememberedIds(), ["created-1"]);
+    await hosted(() => { window.host.failCreate = []; });
+    await frame.getByRole("button", { name: "Try again", exact: true }).click();
+    await frame.getByText(/^Wealthfolio didn't create/).waitFor({ state: "detached" });
+    assert.deepEqual(await creates(), ["Mutual funds", "Mutual funds (BHAVYA R TESTWALA)", "Mutual funds (BHAVYA R TESTWALA)"]);
+    assert.deepEqual(await giftSides(), [["created-1", "TRANSFER_OUT", "linked"], ["created-3", "TRANSFER_IN", "linked"]]);
+    await imported().waitFor();
+    assert.deepEqual((await rememberedIds()).sort(), ["created-1", "created-3"]);
+    assert.deepEqual(await hosted(() => window.host.creates.map((c) => c.trackingMode)), ["TRANSACTIONS", "TRANSACTIONS", "TRANSACTIONS"]);
+    await hosted(() => Object.assign(window.host, { gifts: false, otherInvestorFolio: "" }));
+    await leaveDetailed();
+    await hosted((state) => Object.assign(window.host, { ...state, storage: new Map(state.storage), creates: [], failCreate: [] }), beforeNewAccounts);
     await hosted(() => { window.host.amfi = false; });
 
     await leaveReview();

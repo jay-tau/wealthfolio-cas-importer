@@ -36,6 +36,7 @@ before(async () => {
     ...(await server.ssrLoadModule("/src/components/review/bank-check.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/save-to-detailed.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/funds-ready.tsx")),
+    ...(await server.ssrLoadModule("/src/components/account-choices.tsx")),
   };
 });
 after(() => server?.close());
@@ -194,12 +195,25 @@ test("one fund's Ready and Not included Change controls have distinct names", ()
   assert.ok(text("NotIncludedDetailed", leftOut).includes("Fictiva Fund · Change"));
 });
 
+test("Rename distinguishes equal new account names by the investor or source they belong to", () => {
+  const labels = ["A. Investor's funds", "B. Investor's funds"];
+  const markup = renderToStaticMarkup(createElement("div", null, ...labels.map((label, i) =>
+    createElement(components.NewAccountLine, {
+      key: i, proposed: { id: `new-account:${i}`, name: "Family funds" }, label,
+      ids: { rename: `rename-${i}`, field: `field-${i}` }, onRename() {}, onDraft() {}, onSave() {}, onCancel() {},
+    })))).replaceAll("&#x27;", "'");
+  const names = [...markup.matchAll(/aria-label="(Rename[^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(names, labels.map((label) => `Rename the new account Family funds: ${label}`));
+  assert.equal((markup.match(/>Rename<\/button>/g) ?? []).length, 2);
+});
+
 test("bank choices and folio disclosures distinguish PAN boxes whose investors have the same name", () => {
   const boxes = ["ABCDE1234F", "PQRST5678G"].map((pan) => ({
     key: pan, name: "A. Investor", title: `A. Investor (PAN ${pan})'s funds`, pan: true, folios: [],
   }));
   const props = {
     boxes, targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }],
+    proposed: (key) => ({ id: `new-account:${key}`, name: "Mutual funds 2" }), newLine: () => null,
     values: Object.fromEntries(boxes.flatMap((box) => [[box.key, "mf"], [`bank-${box.key}`, ""]])),
     ignored: {}, conflicts: new Set(), remembered: "none", open: {}, onOpen() {}, onChange() {}, checks: () => null, partId: "save-to",
   };
@@ -452,8 +466,10 @@ test("the detailed Review screen's heading names the period, statement, investor
   assert.ok(shown.includes(" CAMS statement · ANANYA R TESTWALA · made-up.pdf "));
   // Closed schemes are left out: 7 schemes, 2 of them closed.
   assert.ok(shown.includes(" 5 funds "));
-  // With no account that tracks transactions, Save to says so.
-  assert.ok(shown.includes(" No account can take these transactions yet "));
+  // With no account that tracks transactions, Save to proposes a new one, created on import.
+  assert.ok(!shown.includes("No account"), shown);
+  assert.ok(shown.includes(" ANANYA R TESTWALA's funds New: Mutual funds "), shown);
+  assert.ok(shown.includes(" New · Wealthfolio account, created when you save · Rename "), shown);
   const accounts = [{ id: "mf", name: "Mutual funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false }];
   const one = text("DetailedImport", detailedReview(cams, { accounts, allAccounts: accounts }));
   assert.ok(one.includes(" ANANYA R TESTWALA's funds "));
@@ -478,8 +494,10 @@ test("the Review screen's heading names the statement, its investor and file, an
   assert.ok(shown.includes(" Saves what you held on 31 Mar 2025, not your purchases and sales. "));
   const count = components.holdingItems(components.readHoldings(nsdl)).length;
   assert.ok(shown.includes(` ${count} holdings `), String(count));
-  // With no account that tracks holdings, Save to says so.
-  assert.ok(shown.includes(" No account can hold these yet "));
+  // With no account that tracks holdings, Save to proposes a new one, created on saving.
+  assert.ok(!shown.includes("No account"), shown);
+  assert.ok(shown.includes(" ANANYA R TESTWALA's holdings New: NSDL Demat "), shown);
+  assert.ok(shown.includes(" New · Wealthfolio account, created when you save · Rename "), shown);
   const summary = JSON.parse(await readFile("tests/fixtures/made-up-summary-cams.json", "utf8"));
   assert.ok(text("HoldingsImport", review(summary)).includes(" CAMS summary statement · "));
 });

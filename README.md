@@ -26,9 +26,10 @@ screen shows, in this order:
 - **Save to**: one box per PAN, named by the investor ("A. Investor's funds"), with the Wealthfolio
   account that tracks transactions their funds go to, or "Don't import them", and **Bank account for
   purchases and payouts (optional)**: "None: don't add bank transfers", the first time, or an account
-  (see [Bank account](#bank-account)). The choices made last time are preselected. Under **Save part
-  of it to another account**, each folio can go to another account or "Don't import", and have its own
-  bank account. A folio printed without a PAN has a box of its own. A remembered account that's hidden,
+  (see [Bank account](#bank-account)). The choices made last time are preselected; with no account
+  that tracks transactions, a new one is, created when you import (see [New accounts](#new-accounts)).
+  Under **Save part of it to another account**, each folio can go to another account, a new one of its
+  own or "Don't import", and have its own bank account. A folio printed without a PAN has a box of its own. A remembered account that's hidden,
   archived, no longer listed or tracks holdings asks you to choose again, and so does a bank account
   that's also the funds' account. Closed schemes, with no units at either end and nothing to import,
   are skipped.
@@ -63,9 +64,11 @@ screen shows, in this order:
 - **Before importing**: possible duplicates, with **Import it anyway**, and funds whose rows don't add
   up, with **Import this fund anyway**, each left out unless ticked and saying what ticking does.
 - A bar that stays at the bottom: what's left before importing, or what will be imported ("Import
-  136 transactions for 8 funds into **Mutual funds**."), which funds' units won't match the statement
-  afterwards, and how each bank account's movements go, with **See every transaction**, which shows
-  each activity with its cash and status, and **Import 136 transactions**. With nothing to import, it
+  136 transactions for 8 funds into **Mutual funds**.", or "Create the Wealthfolio account **Mutual
+  funds** and import 136 transactions for 8 funds into it." for a new account), which funds' units
+  won't match the statement afterwards, and how each bank account's movements go, with **See every
+  transaction**, which shows each activity with its cash and status, and **Import 136 transactions**
+  (**Create account and import 136 transactions** with a new account). With nothing to import, it
   says why ("Nothing new: every transaction on this statement is already in Wealthfolio.") and has
   **Finish**.
 
@@ -327,10 +330,11 @@ Review screen shows, in this order:
 - **Save to**: one Wealthfolio account that tracks holdings for all of the investor's holdings, or
   "Don't save them". The one chosen last time is preselected. Under **Save part of it to another
   account**, each folio, demat account and National Pension System (NPS) account can go to another
-  account, or "Don't save". Demat accounts are named by their broker, a summary statement's folios by
-  their fund house and number, and an NPS account by its PRAN as printed, masked. Changing where
-  something goes drops the questions and edits that only it needed. With no account that tracks
-  holdings, it says to add one in Wealthfolio and read the statement again.
+  account, a new one of its own, or "Don't save". Demat accounts are named by their broker, a summary
+  statement's folios by their fund house and number, and an NPS account by its PRAN as printed,
+  masked. Changing where something goes drops the questions and edits that only it needed. With no
+  account that tracks holdings, a new one is preselected, created when you save (see
+  [New accounts](#new-accounts)).
 - **Questions for you**: each holding with no confirmed asset, as one card with what the statement
   prints, why it's asked, its results, and **Search by fund code** (**Search by ISIN** for shares and
   bonds). A share's results on the two Indian exchanges are named as **National Stock Exchange (NSE)**
@@ -353,10 +357,11 @@ Review screen shows, in this order:
   tick or a choice of their own. An undecided keep or remove, and replacing a snapshot already saved
   for the date, count as questions. A statement row left out by default there has **Change** too.
 - A bar that stays at the bottom: what's left before saving, or what will be saved ("Update
-  **Demat** to 31 Jul 2026 with 10 holdings from this statement. Its other holdings and cash stay.")
-  with **See Demat's holdings on 31 Jul 2026 after saving**, the missing costs with **Add costs**,
-  and **Update holdings** or **Save holdings**. With nothing to save, it's **Finish**. While a cost or
-  Change is open, saving waits until you save or cancel it.
+  **Demat** to 31 Jul 2026 with 10 holdings from this statement. Its other holdings and cash stay.",
+  or "Create the Wealthfolio account **CDSL Demat** and save 10 holdings on 31 Jul 2026." for a new
+  account) with **See Demat's holdings on 31 Jul 2026 after saving**, the missing costs with **Add
+  costs**, and **Update holdings** or **Save holdings**. With nothing to save, it's **Finish**. While
+  a cost, Change or a new account's Rename is open, saving waits until you save or cancel it.
 
 Each account's snapshot is worked out again as you answer, from reads of Wealthfolio that are
 repeated when you open the add-on's page again. A fund confirmed for a detailed statement is already
@@ -551,6 +556,41 @@ profile can't be read. Choose **Try again**.
 Wealthfolio counts units added or removed between two snapshots as money put in or taken out, at
 the later snapshot's prices.
 
+## New accounts
+
+When Wealthfolio has no account a statement can go to, **Save to** proposes one and preselects it:
+"New: Mutual funds" for a detailed statement or a CAMS or KFintech summary statement, and "New: CDSL
+Demat" or "New: NSDL Demat" for a depository statement. A family's detailed statement proposes one
+for each investor, the second and later named for them ("New: Mutual funds (B. Investor)"), and a
+folio printed without a PAN gets one too. Each folio, demat account and NPS account under **Save part
+of it to another account** can go to a new account of its own, named after it ("New: Fictiva Mutual
+Fund folio 7712045", "New: Testbridge Securities demat"); a bank account is always one Wealthfolio
+has. A name another account has, in any case and even archived, gets a number ("Mutual funds 2"),
+and every name fits Wealthfolio's 2 to 50 characters, shortened if it has to be.
+
+Nothing is created until you save or import. Under the select, "New · Wealthfolio account, created
+when you save · **Rename**" changes the name first: 2 to 50 characters, trimmed, with the focus back
+on Rename once it's saved or cancelled. While Rename is open, the bar says "Save or cancel the new
+account name first." and saving waits. The account is a securities account in rupees, not the
+default, that tracks holdings for a summary or depository statement and transactions for a detailed
+one, with no provider link. It's created before anything is saved in it, and remembered for its
+investor, PAN, folio, demat account or PRAN once it exists, so the next statement preselects it
+("Chosen last time").
+
+When Wealthfolio has accounts that fit but none was chosen before, nothing is preselected and
+choosing where to save is a question; the new account stays in the list. A remembered account that's
+hidden, archived, no longer listed or tracks the wrong thing asks you to choose again, with the new
+account offered but not preselected, so a second account isn't made beside one you may still use.
+
+If Wealthfolio doesn't create an account, nothing that needs it is saved and it isn't remembered.
+Everything else is saved, and the result says which account wasn't created, with **Try again**; when
+nothing else was saved, the review stays as it was, saying so. Try again creates only the accounts
+still missing, and saves into one created before whose save failed, never creating a second. A
+transaction that needs a missing account waits whole, with both sides of a gift between two
+investors' accounts and a trade's bank transfer, so they go in together, as Wealthfolio links
+transfers only within one import. Wealthfolio checks a new account's transactions once it's created,
+just before they're imported: one it refuses stays out and is listed with its reason.
+
 ## What the add-on keeps
 
 - In Wealthfolio's add-on storage, which device sync copies to your other devices: the account and
@@ -603,10 +643,12 @@ pick the zip and allow the permissions it asks for.
 
 To update it, install the new version's zip the same way. When it asks for permissions the installed
 version didn't, Wealthfolio lists them for you to allow, and the release notes say which and why;
-Wealthfolio's own add-on updates don't install such a version. Spending's `getContext` and the
-activities functions `searchCashActivities` and `unassignCategory` are such permissions: the add-on
-uses them to say what reusing a bank entry changes, and to remove a linked entry's spending or income
-category (see [Bank account](#bank-account)).
+Wealthfolio's own add-on updates don't install such a version, so updating means allowing them and
+installing again. Spending's `getContext` and the activities functions `searchCashActivities` and
+`unassignCategory` are such permissions: the add-on uses them to say what reusing a bank entry
+changes, and to remove a linked entry's spending or income category (see
+[Bank account](#bank-account)). So is `create` among the accounts functions, which creates a proposed
+new account when you save (see [New accounts](#new-accounts)).
 
 Older versions refuse to install it. Wealthfolio 3.12.0's desktop app shows no message: after
 **Approve & install**, the dialog closes and the add-on isn't installed.

@@ -1,5 +1,6 @@
 import type { Account } from "@wealthfolio/addon-sdk";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@wealthfolio/ui";
+import { Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@wealthfolio/ui";
+import { LinkButton } from "./review/parts";
 
 /**
  * A remembered account that can't be chosen now: its name, unless Wealthfolio no longer lists it,
@@ -27,9 +28,18 @@ const SAME_AS_PAN = "same-as-pan";
  */
 const WRAP_ANYWHERE = { overflowWrap: "anywhere" } as const;
 
+/** An account the add-on proposes, created when the import is saved: its select value and name. */
+export interface Proposed {
+  id: string;
+  name: string;
+}
+/** How a select lists a proposed account, and names it in Same as above. */
+export const newLabel = (proposed: Proposed) => `New: ${proposed.name}`;
+
 export function AccountSelect({
   id,
   accounts,
+  proposed,
   value,
   onChange,
   inherit,
@@ -40,6 +50,8 @@ export function AccountSelect({
 }: {
   id: string;
   accounts: Account[];
+  /** A new account to offer after the existing ones. */
+  proposed?: Proposed;
   /** Empty inherits when `inherit` is given; null shows that nothing is chosen yet. */
   value: string | null | undefined;
   onChange: (accountId: string) => void;
@@ -58,6 +70,7 @@ export function AccountSelect({
     ...(inherit ? [{ value: SAME_AS_PAN, label: inherit }] : []),
     ...(leaveOutFirst ? out : []),
     ...accounts.map((a) => ({ value: a.id, label: `${a.name} (${a.currency})` })),
+    ...(proposed ? [{ value: proposed.id, label: newLabel(proposed) }] : []),
     ...(leaveOutFirst ? [] : out),
   ];
   return (
@@ -86,5 +99,86 @@ export function AccountSelect({
         ))}
       </SelectContent>
     </Select>
+  );
+}
+
+/** An open Rename: the name as typed, and what's wrong with it once Save was pressed. */
+export interface Renaming {
+  key: string;
+  draft: string;
+  error?: string;
+}
+
+/**
+ * Under a select showing a proposed account: what it is, and Rename, which edits its name in place.
+ * `ids.rename` takes the focus back after Save or Cancel; `ids.field` gets it when Rename opens.
+ */
+export function NewAccountLine({
+  proposed,
+  label,
+  ids,
+  editing,
+  onRename,
+  onDraft,
+  onSave,
+  onCancel,
+}: {
+  proposed: Proposed;
+  /** What the account is for, for screen readers: "A. Investor's holdings". */
+  label: string;
+  ids: { rename: string; field: string };
+  editing?: Renaming;
+  onRename: () => void;
+  onDraft: (draft: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+}) {
+  if (!editing) {
+    return (
+      <p className="text-muted-foreground w-full text-sm">
+        New · Wealthfolio account, created when you save ·{" "}
+        <LinkButton id={ids.rename} type="button" aria-label={`Rename the new account ${proposed.name}: ${label}`} onClick={onRename}>
+          Rename
+        </LinkButton>
+      </p>
+    );
+  }
+  const errorId = `${ids.field}-error`;
+  return (
+    <div className="grid w-full gap-1.5">
+      <Label htmlFor={ids.field} className="font-medium">
+        Name of the new account<span className="sr-only">: {label}</span>
+      </Label>
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          id={ids.field}
+          className="w-72 max-w-full"
+          autoComplete="off"
+          spellCheck={false}
+          value={editing.draft}
+          aria-invalid={editing.error ? true : undefined}
+          aria-describedby={editing.error ? errorId : undefined}
+          onChange={(event) => onDraft(event.target.value)}
+          onKeyDown={(event) => {
+            // The focus moves to Rename, which the key's keypress would then press.
+            if (event.key !== "Enter" && event.key !== "Escape") return;
+            event.preventDefault();
+            if (event.key === "Enter") onSave();
+            else onCancel();
+          }}
+        />
+        <Button type="button" size="sm" onClick={onSave}>
+          Save name<span className="sr-only">: {label}</span>
+        </Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onCancel}>
+          Cancel<span className="sr-only"> renaming: {label}</span>
+        </Button>
+      </div>
+      {editing.error && (
+        <p id={errorId} className="text-destructive text-sm">
+          {editing.error}
+        </p>
+      )}
+    </div>
   );
 }

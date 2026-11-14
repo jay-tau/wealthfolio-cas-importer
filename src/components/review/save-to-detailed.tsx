@@ -1,10 +1,11 @@
 import type { Account } from "@wealthfolio/addon-sdk";
-import { Alert, AlertDescription, AlertTitle, Label } from "@wealthfolio/ui";
+import { Label } from "@wealthfolio/ui";
 import type { ReactNode } from "react";
 import type { CasFolio } from "../../cas/types";
 import { bankKey, folioKey, LEFT_OUT, NO_BANK } from "../../lib/choices";
+import { isProposed } from "../../lib/new-accounts";
 import { plural } from "../../lib/plural";
-import { AccountSelect, ChooseAgain, type Ignored } from "../account-choices";
+import { AccountSelect, ChooseAgain, type Ignored, newLabel, type Proposed } from "../account-choices";
 import { Disclosure } from "./parts";
 
 /** One investor's funds, by PAN, or a folio printed without a PAN, which goes by itself. */
@@ -33,12 +34,15 @@ export const folioName = (folio: CasFolio) => `${folio.amc} folio ${folio.folio}
  * Where a detailed statement's transactions go: one box per PAN, named by the investor, with the
  * account for its funds and the bank account for their purchases and payouts, and under Save part of
  * it to another account, each folio's own account and bank account. A folio without a PAN has a box
- * of its own. Each select's id is its choice's storage key. `checks` gives the bank matches shown
- * right under the bank choice that set them.
+ * of its own. Each funds' select offers a new account of its own, created when the transactions are
+ * imported; bank accounts are existing ones. Each select's id is its choice's storage key. `checks`
+ * gives the bank matches shown right under the bank choice that set them.
  */
 export function SaveToDetailed({
   boxes,
   targets,
+  proposed,
+  newLine,
   values,
   ignored,
   conflicts,
@@ -52,7 +56,11 @@ export function SaveToDetailed({
   boxes: FundsBox[];
   /** Accounts transactions can go to today: active, unarchived, tracking transactions. */
   targets: Account[];
-  /** Each key's choice as its select shows it: an account ID, `LEFT_OUT`, `NO_BANK`, "" for Same as above or None, null for none yet. */
+  /** The new account each funds' select offers, by key, until it's created. */
+  proposed: (key: string) => Proposed | undefined;
+  /** What's under a select that shows its new account, by key, with what the account is for. */
+  newLine: (key: string, label: string) => ReactNode;
+  /** Each key's choice as its select shows it: an account ID, a proposed account's, `LEFT_OUT`, `NO_BANK`, "" for Same as above or None, null for none yet. */
   values: Record<string, string | null>;
   /** Remembered choices that are ignored, by key. */
   ignored: Record<string, Ignored>;
@@ -67,25 +75,18 @@ export function SaveToDetailed({
   checks: (bankChoiceKey: string) => ReactNode;
   partId: string;
 }) {
-  const nameOf = (id: string | null | undefined) => targets.find((a) => a.id === id)?.name;
+  const nameOf = (key: string) => {
+    const id = values[key];
+    const account = proposed(key);
+    if (isProposed(id)) return account && newLabel(account);
+    return targets.find((a) => a.id === id)?.name;
+  };
+  const isNew = (key: string) => isProposed(values[key]) && values[key] === proposed(key)?.id;
   const heading = (
     <h3 id={`${partId}-heading`} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
       Save to
     </h3>
   );
-  if (targets.length === 0) {
-    return (
-      <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
-        {heading}
-        <Alert variant="warning">
-          <AlertTitle>No account can take these transactions yet</AlertTitle>
-          <AlertDescription>
-            <p>No account tracks transactions. Add one in Wealthfolio, set to track transactions, then read the statement again.</p>
-          </AlertDescription>
-        </Alert>
-      </section>
-    );
-  }
   const why = (key: string, mode: string) => <ChooseAgain ignored={ignored[key]} mode={mode} />;
   const conflict = (key: string) =>
     conflicts.has(key) && (
@@ -116,9 +117,9 @@ export function SaveToDetailed({
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       {heading}
       {boxes.map((box) => {
-        const account = values[box.key] === LEFT_OUT ? "Don't import" : nameOf(values[box.key]);
+        const account = values[box.key] === LEFT_OUT ? "Don't import" : nameOf(box.key);
         const bank = values[bankKey(box.key)];
-        const bankName = bank === "" || bank === NO_BANK ? "None" : nameOf(bank);
+        const bankName = bank === "" || bank === NO_BANK ? "None" : nameOf(bankKey(box.key));
         return (
           <div key={box.key} role="group" aria-labelledby={`${partId}-${box.key}-title`} className="grid gap-3 rounded-lg border p-4">
             <div className="grid gap-1">
@@ -129,12 +130,14 @@ export function SaveToDetailed({
                 <AccountSelect
                   id={box.key}
                   accounts={targets}
+                  proposed={proposed(box.key)}
                   value={values[box.key]}
                   onChange={(id) => onChange(box.key, id)}
                   leaveOut={LEFT_OUT}
                   leaveOutLabel="Don't import them"
                 />
               </div>
+              {isNew(box.key) && newLine(box.key, box.title)}
               {why(box.key, NOT_TRANSACTIONS)}
             </div>
             {bankChoice(
@@ -177,6 +180,7 @@ export function SaveToDetailed({
                               <AccountSelect
                                 id={key}
                                 accounts={targets}
+                                proposed={proposed(key)}
                                 value={values[key]}
                                 onChange={(id) => onChange(key, id)}
                                 inherit={`Same as above${account ? ` (${account})` : ""}`}
@@ -184,6 +188,7 @@ export function SaveToDetailed({
                                 leaveOutLabel="Don't import"
                               />
                             </div>
+                            {isNew(key) && newLine(key, folioName(folio))}
                             {why(key, NOT_TRANSACTIONS)}
                           </div>
                           {bankChoice(

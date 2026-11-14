@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { after, afterEach, before, test } from "node:test";
 import { createServer } from "vite";
+import { proposedId } from "../src/lib/new-accounts.ts";
 
 let server;
 let HoldingsImport;
@@ -1349,4 +1350,350 @@ test("the saved result reports an unnamed fund listing even when its statement h
   await run.flush();
   const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
   assert.match(textOf(run.tree), /Chosen listing's plan and option are unknown\./);
+});
+
+// Accounts proposed when none fits, created when the holdings are saved.
+const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : node === false ? "" : String(node ?? "");
+/**
+ * A review where Wealthfolio has `accounts` (none by default, as in a new profile) and remembers
+ * nothing. Wealthfolio creates each account asked for, except names in `refuse`; the add-on's page
+ * adds them to its accounts and keeps what's remembered, as the import page does.
+ */
+function withNewAccounts(sources, { accounts = [], refuse = new Set() } = {}) {
+  const context = setup(sources);
+  const { props, api } = context;
+  Object.assign(props, { accounts, allAccounts: accounts, accountChoices: {} });
+  const asked = [];
+  const saved = [];
+  const remembers = [];
+  let next = 0;
+  api.accounts = {
+    create: async (payload) => {
+      asked.push(payload);
+      if (refuse.has(payload.name)) throw new Error(`made-up refusal of ${payload.name}`);
+      return { id: `created-${++next}`, ...payload, isArchived: false, group: null };
+    },
+  };
+  api.snapshots.save = async (accountId, holdings) => { saved.push({ accountId, holdings: holdings.length }); };
+  api.storage.set = async () => {};
+  api.query = { invalidateQueries() {} };
+  props.onCreated = (made) => context.run.update({ accounts: [...props.accounts, ...made], allAccounts: [...props.allAccounts, ...made] });
+  props.onRemember = (r) => {
+    remembers.push(r);
+    context.run.update({ accountChoices: { ...props.accountChoices, ...Object.fromEntries(r.accounts) } });
+  };
+  return { ...context, asked, saved, remembers };
+}
+const footerText = (run) => find(run, "Footer").lines.map(textOf);
+const NEW_LINE = "New · Wealthfolio account, created when you save · Rename";
+
+test("a new profile proposes the depository's account, creates it on saving and only then remembers it", async () => {
+  const { run, asked, saved, remembers } = withNewAccounts([source("X", [holding("ISINX")])]);
+  await run.flush();
+  const saveTo = find(run, "SaveTo");
+  const investor = investorKey("TEST");
+  assert.equal(saveTo.values[investor], proposedId(investor));
+  assert.deepEqual(saveTo.proposed(investor), { id: proposedId(investor), name: "NSDL Demat" });
+  // Its own account for the demat account, offered under Save part of it to another account.
+  assert.equal(saveTo.proposed(sourceKey(saveTo.sources[0])).name, "X demat");
+  assert.equal(saveTo.values[sourceKey(saveTo.sources[0])], "");
+  const line = saveTo.newLine(investor, "Made-up Investor's holdings");
+  assert.equal(textOf(line.type(line.props)), NEW_LINE);
+  assert.deepEqual(footerText(run)[0], "Create the Wealthfolio account NSDL Demat and save 1 holding on 31 Mar 2025.See NSDL Demat's holdings on 31 Mar 2025 after saving");
+  assert.equal(find(run, "Footer").action.label, "Save holdings");
+  assert.equal(find(run, "Footer").action.disabled, false);
+  assert.deepEqual(remembers, []);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked, [{ name: "NSDL Demat", accountType: "SECURITIES", currency: "INR", isDefault: false, isActive: true, trackingMode: "HOLDINGS" }]);
+  assert.deepEqual(saved, [{ accountId: "created-1", holdings: 1 }]);
+  // The review's choices first, with no new account among them; the new account once it's created.
+  assert.deepEqual(remembers.map((r) => r.accounts), [[], [[investor, "created-1"]]]);
+  const result = find(run, "HoldingsResult");
+  assert.deepEqual(result.result.saved.map((s) => s.accountId), ["created-1"]);
+  assert.equal(result.accounts.find((a) => a.id === "created-1").name, "NSDL Demat");
+  assert.equal(result.retry, undefined);
+});
+
+test("with accounts that track holdings but none remembered, nothing is preselected, and the new one stays offered", async () => {
+  const accounts = [{ id: "A", name: "NSDL Demat", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run, asked } = withNewAccounts([source("X", [holding("ISINX")])], { accounts });
+  await run.flush();
+  const saveTo = find(run, "SaveTo");
+  const investor = investorKey("TEST");
+  assert.equal(saveTo.values[investor], null);
+  // The name an existing account has gets a number.
+  assert.equal(saveTo.proposed(investor).name, "NSDL Demat 2");
+  assert.deepEqual(footerText(run), ["1 question left before saving."]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  saveTo.onChange(investor, proposedId(investor));
+  await run.flush();
+  assert.match(footerText(run)[0], /^Create the Wealthfolio account NSDL Demat 2 and save 1 holding on 31 Mar 2025\./);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat 2"]);
+});
+
+test("a remembered account wins over a new one", async () => {
+  const accounts = [{ id: "A", name: "Demat", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run, props, asked } = withNewAccounts([source("X", [holding("ISINX")])], { accounts });
+  props.accountChoices = { [investorKey("TEST")]: "A" };
+  await run.flush();
+  assert.equal(find(run, "SaveTo").values[investorKey("TEST")], "A");
+  assert.equal(find(run, "SaveTo").remembered, true);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked, []);
+});
+
+test("a source sent to its own new account gets one; one Wealthfolio doesn't create saves nothing, and Try again creates only it", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const refuse = new Set(["Y demat"]);
+  const { run, asked, saved, remembers } = withNewAccounts([x, y], { refuse });
+  await run.flush();
+  const investor = investorKey("TEST");
+  find(run, "SaveTo").onChange(sourceKey(y), proposedId(sourceKey(y)));
+  await run.flush();
+  assert.deepEqual(footerText(run).map((line) => line.replace(/See .*$/, "")), [
+    "Create the Wealthfolio account NSDL Demat and save 1 holding on 31 Mar 2025.",
+    "Create the Wealthfolio account Y demat and save 1 holding on 31 Mar 2025.",
+    "Purchase cost missing for 2 · Add costs",
+  ]);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat", "Y demat"]);
+  assert.deepEqual(saved, [{ accountId: "created-1", holdings: 1 }]);
+  // Only the created account is remembered: Y's choice isn't, so the next statement asks again.
+  assert.deepEqual(remembers.at(-1).accounts, [[investor, "created-1"]]);
+  let result = find(run, "HoldingsResult");
+  assert.deepEqual(result.notCreated.map((n) => [n.name, n.error]), [["Y demat", "Error: made-up refusal of Y demat"]]);
+  assert.ok(result.retry);
+  refuse.clear();
+  result.retry();
+  await run.flush();
+  // Y's account only: NSDL Demat is never created twice.
+  assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat", "Y demat", "Y demat"]);
+  assert.deepEqual(saved, [{ accountId: "created-1", holdings: 1 }, { accountId: "created-2", holdings: 1 }]);
+  assert.deepEqual(remembers.at(-1).accounts, [[sourceKey(y), "created-2"]]);
+  result = find(run, "HoldingsResult");
+  assert.deepEqual(result.result.saved.map((s) => s.accountId), ["created-1", "created-2"]);
+  assert.deepEqual(result.notCreated, []);
+  assert.equal(result.retry, undefined);
+});
+
+test("an account created but not saved into gets the snapshot on Try again, without another account", async () => {
+  const { run, api, asked, saved } = withNewAccounts([source("X", [holding("ISINX")])]);
+  let fail = true;
+  const save = api.snapshots.save;
+  api.snapshots.save = async (...args) => {
+    if (fail) throw new Error("made-up snapshot failure");
+    return save(...args);
+  };
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  let result = find(run, "HoldingsResult");
+  assert.deepEqual(result.result.failed, [{ accountId: "created-1", error: "Error: made-up snapshot failure" }]);
+  fail = false;
+  result.retry();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat"]);
+  assert.deepEqual(saved, [{ accountId: "created-1", holdings: 1 }]);
+  result = find(run, "HoldingsResult");
+  assert.deepEqual(result.result.failed, []);
+  assert.deepEqual(result.result.saved.map((s) => s.accountId), ["created-1"]);
+});
+
+test("retrying a failed snapshot replaces its repaired-price warning and keeps another account's warning", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const { run, props, api, asked } = withNewAccounts([x, y]);
+  for (const h of [x.holdings[0], y.holdings[0]]) {
+    Object.assign(props.fundChoices[holdingKey(h)].fund, { assetId: h.isin, manual: true, statementPrices: true });
+  }
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id, instrumentExchangeMic: "XBOM", quoteMode: "MANUAL" });
+  let fail = true;
+  const save = api.snapshots.save;
+  api.snapshots.save = async (...args) => {
+    if (fail && args[0] === "created-1") throw new Error("made-up snapshot failure");
+    return save(...args);
+  };
+  const repaired = [];
+  api.quotes = {
+    getHistory: async () => [],
+    update: async (id) => {
+      if (fail) throw new Error("made-up price failure");
+      repaired.push(id);
+    },
+  };
+  await run.flush();
+  find(run, "SaveTo").onChange(sourceKey(y), proposedId(sourceKey(y)));
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  let result = find(run, "HoldingsResult");
+  assert.deepEqual(result.result.failed.map((f) => f.accountId), ["created-1"]);
+  assert.deepEqual(result.result.unfinished.map((f) => [f.accountId, f.what]), [["created-1", "price"], ["created-2", "price"]]);
+  fail = false;
+  result.retry();
+  await run.flush();
+  result = find(run, "HoldingsResult");
+  assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat", "Y demat"]);
+  assert.deepEqual(repaired, ["ISINX"]);
+  assert.deepEqual(result.result.failed, []);
+  assert.deepEqual(result.result.unfinished.map((f) => [f.accountId, f.what]), [["created-2", "price"]]);
+});
+
+test("when the only new account isn't created, nothing is saved or remembered for it and the review stays", async () => {
+  const refuse = new Set(["NSDL Demat"]);
+  const { run, asked, saved, remembers } = withNewAccounts([source("X", [holding("ISINX")])], { refuse });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(find(run, "HoldingsResult"), undefined);
+  assert.deepEqual(saved, []);
+  assert.deepEqual(remembers.map((r) => r.accounts), [[]]);
+  const alert = find(run, "NotCreatedAlert");
+  assert.deepEqual(alert.accounts.map((a) => a.name), ["NSDL Demat"]);
+  assert.equal(alert.what(alert.accounts[0]), "Nothing was saved.");
+  // Its Try again saves the review again.
+  refuse.clear();
+  const tryAgain = nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Try again");
+  tryAgain.props.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat", "NSDL Demat"]);
+  assert.deepEqual(saved, [{ accountId: "created-1", holdings: 1 }]);
+  assert.deepEqual(remembers.at(-1).accounts, [[investorKey("TEST"), "created-1"]]);
+});
+
+test("Rename edits the new account's name in place, by Wealthfolio's rule, and saving waits for it", async () => {
+  const { run, asked } = withNewAccounts([source("X", [holding("ISINX")])]);
+  const focused = [];
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  await run.flush();
+  const investor = investorKey("TEST");
+  const line = () => find(run, "SaveTo").newLine(investor, "Made-up Investor's holdings").props;
+  line().onRename();
+  await run.flush();
+  assert.deepEqual(line().editing, { key: investor, draft: "NSDL Demat" });
+  assert.equal(focused.at(-1), line().ids.field);
+  assert.deepEqual(footerText(run), ["Save or cancel the new account name first."]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  assert.equal(find(run, "Footer").go.label, "Go to it");
+  assert.equal(find(run, "ReviewHeader").changes, 1);
+  for (const [draft, error] of [["  ", "Enter an account name."], [" X ", "Use at least 2 characters."], ["x".repeat(51), "Use at most 50 characters."]]) {
+    line().onDraft(draft);
+    await run.flush();
+    line().onSave();
+    await run.flush();
+    assert.equal(line().editing.error, error, draft);
+    assert.equal(focused.at(-1), line().ids.field);
+  }
+  // Cancel leaves the name as it was.
+  line().onCancel();
+  await run.flush();
+  assert.equal(line().editing, undefined);
+  assert.equal(focused.at(-1), line().ids.rename);
+  assert.equal(find(run, "SaveTo").proposed(investor).name, "NSDL Demat");
+  line().onRename();
+  await run.flush();
+  line().onDraft("  My demat  ");
+  await run.flush();
+  line().onSave();
+  await run.flush();
+  assert.equal(line().editing, undefined);
+  assert.equal(focused.at(-1), line().ids.rename);
+  assert.equal(find(run, "SaveTo").proposed(investor).name, "My demat");
+  assert.match(footerText(run)[0], /^Create the Wealthfolio account My demat and save 1 holding/);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["My demat"]);
+});
+
+test("choosing an existing account closes an open Rename of the new one", async () => {
+  const accounts = [{ id: "A", name: "Demat", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run } = withNewAccounts([source("X", [holding("ISINX")])], { accounts });
+  await run.flush();
+  const investor = investorKey("TEST");
+  find(run, "SaveTo").onChange(investor, proposedId(investor));
+  await run.flush();
+  find(run, "SaveTo").newLine(investor, "holdings").props.onRename();
+  await run.flush();
+  assert.deepEqual(footerText(run), ["Save or cancel the new account name first."]);
+  find(run, "SaveTo").onChange(investor, "A");
+  await run.flush();
+  assert.equal(find(run, "SaveTo").newLine(investor, "holdings").props.editing, undefined);
+  assert.equal(find(run, "Footer").action.disabled, false);
+});
+
+test("an open Rename keeps its footer message and Go to it when a planning read fails", async () => {
+  const accounts = [{ id: "A", name: "Demat", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run, api } = withNewAccounts([source("X", [holding("ISINX")])], { accounts });
+  api.portfolio.getHoldings = async () => { throw new Error("made-up read failure"); };
+  await run.flush();
+  const investor = investorKey("TEST");
+  find(run, "SaveTo").onChange(investor, proposedId(investor));
+  await run.flush();
+  assert.match(footerText(run)[0], /made-up read failure/);
+  const line = () => find(run, "SaveTo").newLine(investor, "Made-up Investor's holdings").props;
+  line().onRename();
+  await run.flush();
+  assert.deepEqual(footerText(run), ["Save or cancel the new account name first."]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  assert.equal(find(run, "Footer").go.label, "Go to it");
+  line().onCancel();
+  await run.flush();
+  assert.match(footerText(run)[0], /made-up read failure/);
+  assert.equal(find(run, "Footer").go.label, "Try again");
+});
+
+test("Try again after an account isn't created waits for the same answers as saving, such as replacing a snapshot", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const accounts = [{ id: "A", name: "Demat", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run, api, saved } = withNewAccounts([x, y], { accounts, refuse: new Set(["NSDL Demat", "Y demat"]) });
+  // Demat already has holdings saved for the statement's date.
+  api.snapshots.getAll = async (id) => (id === "A" ? [{ id: "A-2025-03-31", snapshotDate: "2025-03-31", source: "MANUAL_ENTRY" }] : []);
+  await run.flush();
+  const investor = investorKey("TEST");
+  find(run, "SaveTo").onChange(investor, proposedId(investor));
+  await run.flush();
+  find(run, "SaveTo").onChange(sourceKey(y), proposedId(sourceKey(y)));
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(find(run, "HoldingsResult"), undefined);
+  const tryAgain = () => nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Try again");
+  assert.equal(tryAgain().props.disabled, false);
+  // X now goes to Demat, whose snapshot of that day it would replace: saving waits for that answer.
+  find(run, "SaveTo").onChange(sourceKey(x), "A");
+  await run.flush();
+  assert.deepEqual(find(run, "NotCreatedAlert").accounts.map((a) => a.name), ["Y demat"]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  assert.equal(tryAgain().props.disabled, true);
+  tryAgain().props.onClick();
+  await run.flush();
+  assert.deepEqual(saved, []);
+});
+
+test("the creation retry and planning retry have different accessible names", async () => {
+  const accounts = [{ id: "A", name: "Demat", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run, api, saved } = withNewAccounts([source("X", [holding("ISINX")])], { accounts, refuse: new Set(["NSDL Demat"]) });
+  await run.flush();
+  find(run, "SaveTo").onChange(investorKey("TEST"), proposedId(investorKey("TEST")));
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.ok(find(run, "NotCreatedAlert"));
+  api.portfolio.getHoldings = async () => { throw new Error("made-up planning failure"); };
+  // Revisiting refreshes planning reads while the failed proposal is still selected.
+  run.update({ visit: {} });
+  await run.flush();
+  assert.match(footerText(run)[0], /made-up planning failure/);
+  const retry = nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Try again");
+  assert.equal(retry.props.disabled, true);
+  assert.equal(find(run, "Footer").go.label, "Try again");
+  assert.equal(retry.props["aria-label"], "Try again saving holdings");
+  assert.deepEqual(saved, []);
 });
