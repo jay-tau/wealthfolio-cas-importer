@@ -220,6 +220,31 @@ describe("bank entries", () => {
     for (const [description, house] of [["NACH HDFCLIFE INSURANCE PREMIUM", "HDFC"], ["NACH ICICIPRULIFE PREMIUM", "ICICI Prudential"], ["LIC INSURANCE PREMIUM", "LIC"]]) {
       assert.equal(describes(description, `${house} Mutual Fund`), undefined);
     }
+    // A fund house's word run together with anything but a fund suffix is another company's: an insurer's, a broker's.
+    for (const [description, house] of [
+      ["NACH HDFCLIFE", "HDFC"], ["NACH ICICIPRULIFE", "ICICI Prudential"], ["ACH HDFCERGO", "HDFC"],
+      ["ICICILOMBARD GIC", "ICICI Prudential"], ["SBILIFE", "SBI"], ["SBICARD", "SBI"], ["KOTAKLIFE", "Kotak Mahindra"],
+      ["AXISMAXLIFE", "Axis"], ["TATAAIA", "Tata"], ["BAJAJALLIANZ", "Bajaj"], ["HDFCSEC", "HDFC"], ["ICICIDIRECT", "ICICI Prudential"],
+      ["NEFT SBIN0001234", "SBI"], ["HDFCINDIAMF", "HDFC"],
+    ]) {
+      assert.equal(describes(description, `${house} Mutual Fund`), undefined, description);
+    }
+    for (const [description, house] of [
+      ["NACH HDFC LIFE", "HDFC"], ["SBI LIFE POLICY", "SBI"], ["HDFC ERGO", "HDFC"], ["ICICI LOMBARD", "ICICI Prudential"],
+      ["NACH SBI CARD", "SBI"], ["NEFT HDFC SEC", "HDFC"], ["UPI ICICI DIRECT", "ICICI Prudential"], ["NACH TATA AIA", "Tata"],
+      ["NACH BAJAJ ALLIANZ", "Bajaj"], ["NEFT KOTAK MAHINDRA BANK LTD", "Kotak Mahindra"], ["NEFT KOTAK MAHINDRABANK", "Kotak Mahindra"],
+      ["ADITYA BIRLA SUN LIFE INSURANCE", "Aditya Birla Sun Life"],
+    ]) {
+      assert.equal(describes(description, `${house} Mutual Fund`), undefined, description);
+    }
+    for (const [description, house] of [
+      ["ICICIPRUAMC SIP", "ICICI Prudential"], ["SBIMF SIP", "SBI"], ["NACH KOTAK MAHINDRA MF", "Kotak Mahindra"], ["HDFCMFSIP", "HDFC"],
+      ["NACH NIPPONINDIAMF", "Nippon India"], ["ACH MIRAEASSET", "Mirae Asset"], ["AXISMF", "Axis"], ["KOTAKMF", "Kotak Mahindra"],
+      ["DSPMF", "DSP"], ["UTIMF", "UTI"], ["PPFAS", "PPFAS"], ["ADITYABIRLASUNLIFEMF", "Aditya Birla Sun Life"],
+      ["HDFC DIRECT SIP", "HDFC"], ["ICICI PRU DIRECT SIP", "ICICI Prudential"],
+    ]) {
+      assert.equal(describes(description, `${house} Mutual Fund`), "house", description);
+    }
     assert.equal(describes("NACH ADITYA BIRLA SUN LIFE SIP", "Aditya Birla Sun Life Mutual Fund"), "house");
     assert.equal(describes("NACH HDFCLIFE INSURANCE PREMIUM MF", "HDFC Mutual Fund"), "funds");
     assert.equal(describes("LIC INSURANCE PREMIUM mutual fund", "LIC Mutual Fund"), "funds");
@@ -253,13 +278,19 @@ describe("bank entries", () => {
       [[true, 0, 0, 0, false, "Same day, but it doesn't name a fund house: check it"]]);
   });
 
-  test("an insurance premium starts unticked even with a unique exact same-day match and no spending split", () => {
-    const entries = [entry("insurance", "WITHDRAWAL", "5000.00", "2023-04-10", "NACH HDFCLIFE INSURANCE PREMIUM")];
-    const { plan } = planFor(data, { existing: entries, bank: BANK });
-    const facts = new Map([["insurance", { converts: true, inSpending: true, spending: { splitCategories: 0, kinds: [] }, synced: false }]]);
-    const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts, amcOf: () => "HDFC Mutual Fund" });
-    assert.deepEqual(pairs.map((p) => [p.exact, p.days, p.otherEntries, p.otherTransactions, p.splits, p.strong, p.reason]),
-      [[true, 0, 0, 0, false, false, "Same day, but it doesn't name a fund house: check it"]]);
+  test("other group companies start unticked even with a unique exact same-day match and no spending split", () => {
+    for (const [description, house] of [
+      ["NACH HDFCLIFE INSURANCE PREMIUM", "HDFC"], ["NACH HDFCLIFE", "HDFC"], ["NACH ICICIPRULIFE", "ICICI Prudential"],
+      ["NACH SBI CARD", "SBI"], ["NEFT HDFC SEC", "HDFC"], ["UPI ICICI DIRECT", "ICICI Prudential"],
+      ["NACH TATA AIA", "Tata"], ["NACH BAJAJ ALLIANZ", "Bajaj"], ["NEFT KOTAK MAHINDRABANK", "Kotak Mahindra"],
+    ]) {
+      const entries = [entry("other-company", "WITHDRAWAL", "5000.00", "2023-04-10", description)];
+      const { plan } = planFor(data, { existing: entries, bank: BANK });
+      const facts = new Map([["other-company", { converts: true, inSpending: true, spending: { splitCategories: 0, kinds: [] }, synced: false }]]);
+      const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts, amcOf: () => `${house} Mutual Fund` });
+      assert.deepEqual(pairs.map((p) => [p.exact, p.days, p.otherEntries, p.otherTransactions, p.splits, p.strong, p.reason]),
+        [[true, 0, 0, 0, false, false, "Same day, but it doesn't name a fund house: check it"]], description);
+    }
   });
 
   test("Bank in a fund house's name does not tick an unrelated bank payment", () => {

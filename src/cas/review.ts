@@ -249,17 +249,38 @@ const GENERIC = new Set([
 export const houseWords = (amc: string) =>
   amc.toUpperCase().split(/[^A-Z0-9]+/).filter((word) => word.length >= 3 && !GENERIC.has(word));
 
+/** What can follow a fund house's word in one run of letters and still name it: "ICICIPRU", "HDFCMF", "SBIMFSIP". */
+const HOUSE_SUFFIX = /^(PRU(DENTIAL)?)?(MF|MUTUAL(FUNDS?)?|AMC|AM|FUNDS?)?(SIP)?$/;
+/** Other-company words, unless the fund house's own name has them, as Sun Life's does. */
+const OTHER_COMPANY = new Set([
+  "INSURANCE", "INSURANCES", "PREMIUM", "POLICY", "LIFE", "ERGO", "LOMBARD", "GENERAL", "GIC", "ASSURANCE",
+  "CARD", "CARDS", "SEC", "SECURITIES", "AIA", "ALLIANZ",
+]);
+
 /**
  * What a bank entry's description says about whom it paid or was paid by: the fund house, by a word
- * of its name (a longer word can start a run of letters, as in "ICICIPRU"), not when it's a bank's
- * name ("HDFC BANK"); or mutual funds in general ("MF", "mutual fund").
+ * of its name, alone or run together with a fund suffix as in "ICICIPRU" (not "HDFCLIFE" or
+ * "HDFCBANK"), not when its words name a bank ("HDFC BANK", "KOTAK MAHINDRA BANK") and not in an
+ * insurance premium's description; or mutual funds in general ("MF", "mutual fund").
  */
 export function describes(description: string | null | undefined, amc: string): "house" | "funds" | undefined {
   const tokens = (description ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
   const words = houseWords(amc);
+  // Keep India and Asset only in this house's joined name: NIPPONINDIAMF, MIRAEASSET.
+  const joined = amc.toUpperCase().split(/[^A-Z0-9]+/).filter((word) => words.includes(word) || word === "INDIA" || word === "ASSET").join("");
+  const names = words.length ? [...words, joined] : words;
+  const isWord = (token: string) => words.includes(token);
+  // The house's words, possibly several in a row, then BANK: a bank of the same name.
+  const bankAfter = (i: number) => {
+    let j = i + 1;
+    while (j < tokens.length && isWord(tokens[j])) j++;
+    return tokens[j]?.startsWith("BANK") || words.some((word) => tokens[j]?.startsWith(`${word}BANK`));
+  };
   const named = tokens.some((token, i) =>
-    tokens[i + 1] !== "BANK" && words.some((word) => !token.startsWith(`${word}BANK`) && (token === word || (word.length >= 4 && token.startsWith(word)))));
-  if (named && !tokens.includes("INSURANCE") && !tokens.includes("PREMIUM")) return "house";
+    !bankAfter(i) && names.some((word) => token.startsWith(word) && HOUSE_SUFFIX.test(token.slice(word.length))));
+  // ICICI DIRECT is its broker; DIRECT elsewhere can be a fund's plan.
+  const otherCompany = tokens.some((token, i) => (OTHER_COMPANY.has(token) && !isWord(token)) || (token === "ICICI" && tokens[i + 1] === "DIRECT"));
+  if (named && !otherCompany) return "house";
   if (tokens.includes("MF") || /MUTUAL\s*FUNDS?\b/i.test(description ?? "")) return "funds";
   return undefined;
 }
