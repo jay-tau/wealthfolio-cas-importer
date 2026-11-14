@@ -1,4 +1,4 @@
-Source: https://github.com/pyodide/pyodide/blob/b1e4fcc2488962f6360a97f19b9982d6fdb5d16f/src/js/vendor/stackframe/LICENSE (tag 314.0.7 = commit b1e4fcc2488962f6360a97f19b9982d6fdb5d16f)
+Source: https://github.com/pyodide/pyodide/blob/f37a18559ae11c5f371beb1c9462a13a663fc461/src/js/vendor/stackframe/LICENSE (tag 314.0.8 = commit f37a18559ae11c5f371beb1c9462a13a663fc461)
 ==============================================================================
 
 Copyright (c) 2017 Eric Wendelin and other contributors

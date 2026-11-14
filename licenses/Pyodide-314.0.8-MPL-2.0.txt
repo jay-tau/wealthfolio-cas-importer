@@ -1,4 +1,4 @@
-Source: https://github.com/pyodide/pyodide/blob/b1e4fcc2488962f6360a97f19b9982d6fdb5d16f/LICENSE (tag 314.0.7 = commit b1e4fcc2488962f6360a97f19b9982d6fdb5d16f)
+Source: https://github.com/pyodide/pyodide/blob/f37a18559ae11c5f371beb1c9462a13a663fc461/LICENSE (tag 314.0.8 = commit f37a18559ae11c5f371beb1c9462a13a663fc461)
 Also: https://github.com/pyodide/hiwire/blob/6a1e67280a15d929ebeceee54a6358c9c8d5f697/LICENSE (hiwire commit 6a1e67280a15, byte-identical text; hiwire is linked into pyodide.asm.wasm)
 ==============================================================================
 
