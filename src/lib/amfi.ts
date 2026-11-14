@@ -14,18 +14,6 @@ export const fromAmfi = (result: Result) => result.providerId === AMFI;
 /** An asset Wealthfolio already has, priced from another source. */
 export const pricedElsewhere = (result: Result) => !!result.existingAssetId && !fromAmfi(result);
 
-/**
- * The result to preselect: AMFI's when there's one, unless Wealthfolio already has the fund priced
- * from another source, since picking AMFI's would add a second asset for it. Otherwise the only
- * result. An automatic name search preselects nothing: the shorter name can match other plans and options.
- */
-export function preselected(results: Result[], byName: boolean): number | undefined {
-  if (byName) return undefined;
-  const amfi = results.flatMap((result, i) => (fromAmfi(result) ? [i] : []));
-  if (amfi.length === 1 && !results.some(pricedElsewhere)) return amfi[0];
-  return results.length === 1 ? 0 : undefined;
-}
-
 /** Whether AMFI is on in Wealthfolio's Settings → Market data, or "unknown" when Wealthfolio doesn't say. */
 export type AmfiStatus = "on" | "off" | "unknown";
 

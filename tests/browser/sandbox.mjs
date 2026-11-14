@@ -275,30 +275,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await waiting();
     assert.equal(await frame.locator("#cas-file").isDisabled(), true);
     assert.equal(await frame.getByRole("button", { name: "Reading…", exact: true }).isDisabled(), true);
-    assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
+    assert.equal(await frame.getByRole("heading", { name: /^Transactions, / }).count(), 0);
     await resume();
-    await frame.getByText(/2 folios, 7 schemes, 78 rows\. Skipping 2 closed schemes, with no units and nothing to import\./).waitFor({ timeout: 180_000 });
-    await focused(passwordBox, "PDF password");
+    await frame.getByRole("heading", { name: "Transactions, 1 Apr 2023 to 31 Mar 2025", exact: true }).waitFor({ timeout: 180_000 });
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
 
-    await frame.getByLabel("PAN ABCDE1234F", { exact: true }).click();
-    // Only accounts that track transactions, which in Wealthfolio include NOT_SET.
-    await frame.getByRole("option", { name: "Not set (INR)" }).waitFor();
-    assert.equal(await frame.getByRole("option", { name: "Demat (INR)" }).count(), 0);
-    assert.equal(await frame.getByRole("option", { name: "Fund folios (INR)" }).count(), 0);
-    await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
-    await frame.getByText("Same as PAN (Mutual funds)").first().waitFor();
-    // Closed schemes get no fund section, so no search either.
-    assert.equal(await frame.locator("section").count(), 5);
-    assert.equal(await frame.getByText(/Midcap|Gilt/).count(), 0);
-    // A fund's or other holding's section while it needs a choice, and its row once it's confirmed or
-    // left out. The row doesn't show the ISIN, so a holding is found by its name as the statement
-    // prints it, which ends the names of all its controls.
-    const holding = (name) => {
-      const escaped = name.replace(/\s+/g, " ").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      return frame.locator("section, li").filter({ has: frame.getByRole("button", { name: new RegExp(` for ${escaped}(, [a-zA-Z ]+ \\d+)?$`) }) });
-    };
-    // The funds on the made-up detailed statement that aren't closed.
+    // A detailed statement's transactions go to accounts that track transactions, on one Review
+    // screen: where they go, what needs an answer, what will be imported and what won't, and one button.
+    // The funds on the made-up detailed statement that aren't closed, as it prints them.
     const detailed = {
       flexi: "Fictiva Flexi Cap Fund - Direct Plan - Growth",
       liquid: "Fictiva Liquid Fund - Direct Plan - Growth",
@@ -306,629 +290,578 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       corporate: "Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout",
       overnight: "Testbridge Overnight Fund - Direct Plan - Growth",
     };
-    // The Overnight fund has no ISIN, so its name is searched without "Fund", the plan and option when it's first shown.
-    const noIsin = holding(detailed.overnight);
-    await frame.locator("section").filter({ hasText: "No ISIN printed" }).locator("h3").getByText(detailed.overnight).waitFor();
-    await noIsin.getByText(`No ISIN on the statement; showing results for "Testbridge Overnight". These results can be other funds. Pick one with the statement's fund name, plan and option, or leave this fund out.`).waitFor();
-    assert.equal(await noIsin.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Overnight");
-    assert.equal(await noIsin.getByRole("radio").count(), 1);
-    assert.equal(await noIsin.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
-    // Each section has a live region for its search's progress, count and notes. The searches every
-    // section starts by itself stay quiet until the focus has been in the section's search.
-    const outcome = (section) => section.locator("[aria-live]");
-    assert.equal(await outcome(noIsin).getAttribute("aria-live"), "off");
-    assert.equal(await outcome(noIsin).getAttribute("aria-atomic"), "true");
-    assert.match(await outcome(noIsin).textContent(), /^1 result\.No ISIN on the statement; showing results for "Testbridge Overnight"\./);
-    // Each section repeats the same controls, so their names say which fund, share, bond or NPS scheme
-    // they're for: each name is in its section, and only once on the page.
-    const namedFor = async (section, controls) => {
-      // A row has no heading: its controls are named for the statement's name as it's given.
-      const item = await section.locator("h3").count() ? await section.locator("h3").textContent() : undefined;
-      for (const [role, name] of controls(item)) {
-        await section.getByRole(role, { name, exact: true }).waitFor({ state: "attached" });
-        assert.equal(await section.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
-        assert.equal(await frame.getByRole(role, { name, exact: true }).count(), 1, `${role} ${name}`);
+    const investor = "ANANYA R TESTWALA";
+    const fictivaFolio = "Fictiva Mutual Fund folio 91234567 / 12";
+    const testbridgeFolio = "Testbridge Mutual Fund folio 1040012345";
+    const transactionsHeading = frame.getByRole("heading", { name: /^Transactions, / });
+    const dFooter = frame.locator("div.sticky.bottom-0");
+    // The footer's summary, which takes the focus once every question is answered.
+    const dSummary = dFooter.locator("[tabindex='-1']");
+    const dSaid = frame.locator("p[role=status]");
+    const importButton = dFooter.getByRole("button", { name: /^Import( \d+ transactions?)?$/ });
+    const literal = (text) => text.replace(/\s+/g, " ").trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const storage = async () => Object.fromEntries((await host()).storage);
+    const saveChoices = (choices) => hosted((choices) => {
+      for (const [key, id] of choices) window.host.storage.set(key, id);
+    }, choices);
+    const restoreChoices = (saved) => hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, saved);
+    // The window is taller than the frame, so a select's list opened near the frame's bottom stays in view.
+    const sizeFrame = async (width) => {
+      await tab.setViewportSize({ width: 1280, height: 1000 });
+      await tab.evaluate((width) => {
+        Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
+      }, width);
+    };
+    // Lets React render what a click or a host change started.
+    const painted = () => hosted(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    // Waits until each fund is looked up and what will be imported is worked out.
+    const dSettled = async () => {
+      await painted();
+      await dFooter.getByText(/^Looking up \d+ funds?…$/).waitFor({ state: "detached" });
+      await frame.getByRole("heading", { name: "Transactions in this statement", exact: true }).waitFor();
+    };
+    // Leaves the review for the file form, discarding what it changed.
+    const leaveDetailed = async () => {
+      const another = frame.getByRole("button", { name: "Use another file", exact: true });
+      if (!(await another.count())) return;
+      await another.click();
+      const discard = frame.getByRole("button", { name: "Discard and choose another file" });
+      if (await discard.count()) await discard.click();
+      await transactionsHeading.waitFor({ state: "detached" });
+    };
+    const readStatement = async (file = "tests/fixtures/made-up-cas.pdf") => {
+      await leaveDetailed();
+      await frame.locator("#cas-file").setInputFiles(file);
+      await frame.locator("#cas-password").fill("ABCDE1234F");
+      await readButton.click();
+      await transactionsHeading.waitFor({ timeout: 180_000 });
+      await dSettled();
+    };
+    // Save to: a box per PAN, named by its investor, with Save part of it to another account for its folios.
+    const fundsSelect = (who = investor) => frame.getByRole("combobox", { name: `${who}'s funds`, exact: true });
+    const fundsBox = (who = investor) => frame.getByRole("group", { name: `${who}'s funds`, exact: true });
+    // The bank account's select, named for its box.
+    const bankSelect = (title = `${investor}'s funds`) =>
+      frame.getByRole("combobox", { name: new RegExp(`^Bank account for purchases and payouts \\(optional\\)\\s*:\\s*${literal(title)}$`) });
+    const folioSelect = (folio) => frame.getByRole("combobox", { name: new RegExp(`^${literal(folio)}( · \\d+ funds?)?$`) });
+    const folioBankSelect = (folio) => frame.getByRole("combobox", { name: `Bank account for ${folio}`, exact: true });
+    const partToggle = (title = `${investor}'s funds`) => frame.getByRole("button", { name: `Save part of it to another account: ${title}`, exact: true });
+    const openPart = async (title) => {
+      const toggle = partToggle(title);
+      if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+    };
+    const pickOption = async (select, option) => {
+      await select.click();
+      await frame.getByRole("option", { name: option, exact: true }).click();
+      await dSettled();
+    };
+    const chooseAgain = (account) => `Chosen before: ${account}, so choose again.`;
+    const unavailable = chooseAgain;
+    const missing = chooseAgain("an account that's no longer available");
+    // Questions for you: a card per fund still to confirm, found by the name the statement prints.
+    const fundQuestion = (name) => frame.locator("section section").filter({ hasText: new RegExp(`On your statement: ${literal(name)} ·`) });
+    const fundQuestions = frame.locator("section section").filter({ has: frame.getByRole("heading", { name: "Which fund is this?", exact: true }) });
+    const statementNameOf = async (card) =>
+      (await card.locator("p").first().innerText()).replace(/^On your statement:\s*/, "").replace(/\s+·.*$/s, "");
+    // Answers a fund's question with its only result, a result picked by position, or Skip.
+    const useResult = async (name, how = 0) => {
+      const card = fundQuestion(name);
+      await card.getByText(/Searching…/).waitFor({ state: "detached" });
+      if (how === "skip") {
+        await card.getByRole("button", { name: /^Skip this fund: / }).click();
+      } else {
+        const single = card.getByRole("button", { name: /^Use this fund: / });
+        if (await single.count()) {
+          await single.click();
+        } else {
+          await card.getByRole("radio").nth(how).dispatchEvent("click");
+          await card.getByRole("button", { name: /^Use this fund for / }).click();
+        }
       }
+      await card.waitFor({ state: "detached" });
     };
-    for (const section of await frame.locator("section").all()) {
-      await namedFor(section, (fund) => [
-        ["textbox", `Search for ${fund}`],
-        ["button", `Search for ${fund}`],
-        ["button", `Use this fund for ${fund}`],
-        ["button", `Leave this fund out for ${fund}`],
-      ]);
-    }
-    await namedFor(noIsin, (fund) => [["radiogroup", `Search results for ${fund}`]]);
-    assert.equal(await noIsin.locator("h3").textContent(), detailed.overnight);
-    assert.equal(await frame.locator("section").first().locator("h3").textContent(), detailed.flexi);
-    const firstFund = holding(detailed.flexi);
-    // With AMFI not added in Settings → Market data, the search for a fund's ISIN or for the name of one
-    // printed without it finds no AMFI result. While any fund's does, its card recommends AMFI once,
-    // directly below the card's intro and in no fund's section. Other search terms say nothing about AMFI.
-    const fundsIntro = "Check that each fund found matches the statement's name, plan and option, then choose Use this fund. This is only needed the first time: the add-on remembers each fund you confirm.";
-    const amfiNote = "We recommend AMFI for daily fund prices. Before confirming, add it in Settings → Market data if it isn't on. In each fund's search box, enter its ISIN or AMFI scheme code and press Search.";
-    const amfiNoteShown = async (intro = fundsIntro) => {
-      await frame.getByText(amfiNote, { exact: true }).waitFor();
-      assert.equal(await frame.getByText(amfiNote, { exact: true }).count(), 1);
-      assert.equal(await frame.locator("section").getByText(amfiNote, { exact: true }).count(), 0);
-      assert.equal(await frame.getByText(intro, { exact: true }).locator("xpath=following-sibling::*[1]").textContent(), amfiNote);
-      assert.equal(await frame.getByText(/No AMFI result/).count(), 0);
+    const answerFunds = async (how = () => 0) => {
+      while (await fundQuestions.count()) {
+        const name = await statementNameOf(fundQuestions.first());
+        await useResult(name, how(name));
+      }
+      await dSettled();
     };
-    const noAmfiNote = async () => {
-      // Search-result DOM can appear before the effect reports its condition to the card.
-      await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-      await frame.getByText(amfiNote, { exact: true }).waitFor({ state: "detached" });
+    // Ready to import: a row per fund in an account, with Change named for it.
+    const readyFund = (text) => frame.getByRole("row").filter({ has: frame.getByRole("button", { name: /^Change: / }) }).filter({ hasText: text });
+    const readyFunds = frame.getByRole("row").filter({ has: frame.getByRole("button", { name: /^Change: / }) });
+    // Each cell's text, its lines apart: the harness has no CSS to put them on lines of their own.
+    const cellsOf = (rows) => rows.evaluateAll((all) => all.map((row) => [...row.querySelectorAll("td")].map((td) =>
+      [...td.childNodes].map((node) => node.textContent.trim()).filter(Boolean).join(" "))));
+    const transactionsBox = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Transactions in this statement", exact: true }) });
+    const transactionParts = () => transactionsBox.locator("p").nth(1).innerText();
+    const notIncluded = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Not included in this import", exact: true }) });
+    const beforeImporting = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Before importing", exact: true }) });
+    // See every transaction: today's activity table, read-only, above the footer.
+    const everyTable = frame.getByRole("table", { name: "Every transaction on this statement", exact: true });
+    const seeEvery = async () => {
+      const toggle = dFooter.getByRole("button", { name: "See every transaction", exact: true });
+      if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+      await everyTable.waitFor();
     };
-    await amfiNoteShown();
-    const search = firstFund.getByRole("textbox", { name: /^Search for / });
-    const useFund = firstFund.getByRole("button", { name: "Use this fund" });
-    // A fund's plan and option are badges beside its name, its search results and its confirmed choice.
-    // Each name gets badges only for its own fields. Beside a result or choice, a field warns only
-    // when both names give it and it differs.
+    const resultUnits = () => frame.locator("table").last().locator("tbody tr");
+    const imported = (count) => frame.getByText(new RegExp(`^Imported ${count ?? "(\\d+)"} of ${count ?? "\\1"} activit(y|ies)`));
     const badges = (locator) => locator.locator("[data-slot=badge]").evaluateAll((all) => all.map((b) => `${b.textContent} ${b.dataset.variant}`));
-    const nameBadges = (section) => badges(section.locator("h3").locator("xpath=.."));
-    const resultBadges = (section) => section.getByRole("radiogroup").locator("label").evaluateAll((labels) =>
-      labels.map((label) => [...label.querySelectorAll("[data-slot=badge]")].map((b) => `${b.textContent} ${b.dataset.variant}`)));
-    const choiceBadges = (section) => badges(section.getByText("Confirmed", { exact: true }).locator("xpath=.."));
-    // The codes behind each result, under its Details.
-    const resultCodes = (section) => section.getByRole("radiogroup").locator("details p").allTextContents();
-    // A holding confirmed to use the statement's prices says so, and its Details has its symbol.
-    const statementPriced = async (section, symbol, type) => {
-      await section.getByText("Confirmed", { exact: true }).waitFor();
-      await section.getByText("Statement prices", { exact: true }).waitFor();
-      assert.equal(await section.locator("details p").textContent(), `Symbol ${symbol} · Type ${type} · Currency INR`);
-    };
-    assert.deepEqual(await nameBadges(firstFund), ["Direct secondary", "Growth secondary"]);
-    assert.deepEqual(await nameBadges(holding(detailed.corporate)), ["Regular secondary", "IDCW secondary"]);
-    assert.deepEqual(await nameBadges(frame.locator("section").filter({ hasText: "IDCW Reinvestment" })), ["Direct secondary", "IDCW secondary"]);
-    await search.fill("Fictiva Flexi Cap");
-    await search.press("Enter");
-    await firstFund.getByRole("radio").nth(4).waitFor({ state: "attached" });
-    assert.equal(await outcome(firstFund).getAttribute("aria-live"), "polite");
-    assert.equal(await outcome(firstFund).textContent(), "5 results.");
-    assert.deepEqual(await resultBadges(firstFund), [
-      ["Direct secondary", "Growth secondary"],
-      ["Regular warning-subtle", "IDCW warning-subtle"],
-      ["Direct secondary"],
-      [],
-      ["Growth secondary"],
-    ]);
-    await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
-    await firstFund.getByRole("button", { name: "Use this fund", disabled: false }).press("Enter");
-    await firstFund.getByText("Confirmed", { exact: true }).waitFor();
-    await focused(firstFund.getByRole("button", { name: /^Change the / }), "Use this fund");
-    assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", "Regular warning-subtle", "IDCW warning-subtle"]);
-    // A confirmed fund is a row of its own, without the statement's name when the chosen one is the
-    // same fund's, whatever the plan and option.
-    assert.equal(await firstFund.evaluate((row) => row.tagName), "LI");
-    assert.equal(await firstFund.locator("h3").count(), 0);
-    assert.equal(await firstFund.getByText(/^On the statement: /).count(), 0);
-    await firstFund.getByRole("button", { name: /^Change the / }).press("Enter");
-    await focused(search, "Change");
-    assert.equal(await outcome(firstFund).getAttribute("aria-live"), "polite", "a section opened again announces its own search");
-    for (const [index, expected] of [[2, ["Direct secondary"]], [3, []], [4, ["Growth secondary"]]]) {
-      await search.fill("Fictiva Flexi Cap");
-      await search.press("Enter");
-      await firstFund.getByRole("radio").nth(4).waitFor({ state: "attached" });
-      await firstFund.getByRole("radio").nth(index).dispatchEvent("click");
-      await useFund.click();
-      await firstFund.getByText("Confirmed", { exact: true }).waitFor();
-      assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", ...expected]);
-      await firstFund.getByRole("button", { name: /^Change the / }).click();
-    }
-    // Under its name, each result says where its prices come from; its codes are behind Details.
-    // Yahoo names some funds only by their ticker: such a result says it's unnamed, keeps its ticker
-    // to tell it apart, and takes no name, plan or option from the statement.
-    const firstName = await firstFund.locator("h3").textContent();
-    await search.fill("Fictiva Flexi Cap Yahoo");
-    await search.press("Enter");
-    await firstFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    assert.deepEqual(await firstFund.getByRole("radiogroup").locator("label").allTextContents(), [
-      "Fictiva Flexi Cap Dir Gr Direct Growth Yahoo Finance",
-      "Unnamed Yahoo listing (0P0000FFC2.BO) Plan and option unknown Yahoo Finance",
-    ]);
-    assert.deepEqual(await resultBadges(firstFund), [["Direct secondary", "Growth secondary"], ["Plan and option unknown warning-subtle"]]);
-    assert.deepEqual(await resultCodes(firstFund), [
-      "Symbol 0P0000FFC1 · Exchange XBOM · Type MUTUALFUND · Currency INR",
-      "Symbol 0P0000FFC2 · Exchange XBOM · Type MUTUALFUND · Currency INR",
-    ]);
-    // Each Details is named for its result, for screen readers, and opens and closes from the
-    // keyboard without picking the result.
-    const resultDetails = firstFund.getByRole("radiogroup").locator("details");
-    assert.deepEqual(await resultDetails.locator("summary").evaluateAll((all) => all.map((s) => [s.textContent, s.getAttribute("aria-label")])), [
-      ["Details", `Details of Fictiva Flexi Cap Dir Gr, Yahoo Finance, for ${firstName}`],
-      ["Details", `Details of Unnamed Yahoo listing (0P0000FFC2.BO), Yahoo Finance, for ${firstName}`],
-    ]);
-    const unnamedSummary = resultDetails.nth(1).locator("summary");
-    await unnamedSummary.focus();
-    await unnamedSummary.press("Enter");
-    assert.equal(await resultDetails.nth(1).evaluate((d) => d.open), true);
-    await unnamedSummary.press(" ");
-    assert.equal(await resultDetails.nth(1).evaluate((d) => d.open), false);
-    assert.deepEqual(await firstFund.getByRole("radio").evaluateAll((all) => all.map((r) => r.getAttribute("aria-checked"))), ["false", "false"]);
-    // Confirmed, it's shown the same way.
-    await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
-    await useFund.click();
-    await firstFund.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(firstFund), ["Confirmed success-subtle", "Plan and option unknown warning-subtle"]);
-    assert.match(await firstFund.getByText("Confirmed", { exact: true }).locator("xpath=..").textContent(), /^ConfirmedUnnamed Yahoo listing \(0P0000FFC2\.BO\) Plan and option unknownChange/);
-    await firstFund.getByText("Yahoo Finance", { exact: true }).waitFor();
-    assert.equal(await firstFund.locator("details summary").getAttribute("aria-label"), `Details of the fund confirmed for ${firstName}`);
-    assert.equal(await firstFund.locator("details p").textContent(), "Symbol 0P0000FFC2 · Exchange XBOM · Type MUTUALFUND · Currency INR");
-    await firstFund.getByRole("button", { name: /^Change the / }).click();
-    // Same displayed names, including unnamed listings, stay distinct for screen readers.
-    for (const [query, name, badges] of [
-      ["Fictiva Flexi Cap exchanges", "Fictiva Flexi Cap Dir Gr", "Direct Growth"],
-      ["Fictiva Flexi Cap unnamed", "Unnamed Yahoo listing (FICTIVA)", "Plan and option unknown"],
-    ]) {
-      await search.fill(query);
-      await search.press("Enter");
-      await firstFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
-      assert.deepEqual(await resultCodes(firstFund), [
-        "Symbol FICTIVA · Exchange XBOM · Type MUTUALFUND · Currency INR",
-        "Symbol FICTIVA · Exchange XNSE · Type MUTUALFUND · Currency INR",
-      ]);
-      for (const number of [1, 2]) {
-        assert.equal(await firstFund.getByRole("radio", { name: `${name} ${badges} Yahoo Finance, listing ${number}`, exact: true }).count(), 1);
-        assert.equal(await resultDetails.nth(number - 1).locator("summary").getAttribute("aria-label"), `Details of ${name}, listing ${number}, Yahoo Finance, for ${firstName}`);
-      }
-      await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
-      await useFund.click();
-      await firstFund.getByText("Confirmed", { exact: true }).waitFor();
-      assert.equal(await firstFund.locator("details p").textContent(), "Symbol FICTIVA · Exchange XNSE · Type MUTUALFUND · Currency INR");
-      await firstFund.getByRole("button", { name: /^Change the / }).click();
-    }
-    await search.fill("MULTI");
-    await search.press("Enter");
-    await firstFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    // The other funds' searches still find no AMFI result.
-    await amfiNoteShown();
-    assert.equal(await useFund.isDisabled(), true, "multiple matches require a selected result");
-    await firstFund.getByRole("radio").nth(1).dispatchEvent("click");
-    assert.equal(await useFund.isDisabled(), false);
-    await pause("market");
-    await search.fill("WAIT");
-    await search.press("Enter");
-    await waiting();
-    assert.equal(await outcome(firstFund).textContent(), "Searching…");
-    assert.equal(await useFund.isDisabled(), true, "a new search cannot confirm old results");
-    assert.equal(await firstFund.getByRole("radio").count(), 0);
-    // Fail a newer search, then deliver the older response: neither can restore stale results.
-    await tab.frames()[1].evaluate(() => { window.host.pause = ""; });
-    await search.fill("FAIL");
-    await search.press("Enter");
-    await firstFund.getByText(/The search failed/).waitFor();
-    assert.equal(await outcome(firstFund).textContent(), "The search failed: Error: Search unavailable");
-    await resume();
-    assert.equal(await useFund.isDisabled(), true);
-    await search.fill("INFZ91T01CB6");
-    await search.press("Enter");
-    await outcome(firstFund).getByText("Nothing found. Try the fund's name.", { exact: true }).waitFor();
-    assert.equal(await outcome(firstFund).textContent(), "Nothing found. Try the fund's name.");
-    await search.fill(expected.folios[0].schemes[0].isin);
-    await search.press("Enter");
-    // The Corporate Bond fund's ISIN finds nothing, so its name is searched without "Fund", the plan and option.
-    const byName = holding(detailed.corporate);
-    await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond".').waitFor();
-    assert.equal(await byName.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Corporate Bond");
-    await byName.getByRole("radio").first().waitFor({ state: "attached" });
-    assert.equal(await byName.getByRole("button", { name: "Use this fund" }).isDisabled(), true, "a name match needs picking");
-    // A late name fallback cannot replace a newer typed search or restore its message.
-    const nameSearch = byName.getByRole("textbox", { name: /^Search for / });
-    await pause("Testbridge Corporate Bond");
-    await nameSearch.fill("INFZ91T01CB6");
-    await nameSearch.press("Enter");
-    await waiting();
-    await tab.frames()[1].evaluate(() => { window.host.pause = ""; });
-    await nameSearch.fill("NEWER");
-    await nameSearch.press("Enter");
-    await byName.getByText("Fund NEWER").waitFor();
-    await resume();
-    await nameSearch.press("Tab");
-    assert.equal(await byName.getByText("Fund NEWER").count(), 1, "the newer result survives the old fallback");
-    assert.equal(await byName.getByText(/Nothing found for the ISIN/).count(), 0, "the message belongs to the newer search");
-    assert.equal(await byName.getByRole("button", { name: "Use this fund" }).isDisabled(), false);
-    await nameSearch.fill("INFZ91T01CB6");
-    await nameSearch.press("Enter");
-    await byName.getByText('Nothing found for the ISIN; showing results for "Testbridge Corporate Bond".').waitFor();
-    assert.equal(await outcome(byName).getAttribute("aria-live"), "polite");
-    assert.match(await outcome(byName).textContent(), /^1 result\.Nothing found for the ISIN; showing results for "Testbridge Corporate Bond"\./);
-    await byName.getByRole("radio").first().dispatchEvent("click");
-    await noIsin.getByRole("radio").first().dispatchEvent("click");
-    // Each fund confirmed leaves the sections for the list of rows after them, in the statement's order.
-    for (let open = 5; open > 0; open--) {
-      const section = frame.locator("section").first();
-      await section.getByRole("radio").first().waitFor();
-      await section.getByRole("button", { name: "Use this fund" }).click();
-      await frame.locator("section").nth(open - 1).waitFor({ state: "detached" });
-    }
-    const rows = frame.getByRole("listitem").filter({ has: frame.getByRole("button", { name: /^(Change the|Choose an?) / }) });
-    assert.equal(await rows.count(), 5);
-    for (const [i, name] of [detailed.flexi, detailed.liquid, detailed.balanced, detailed.corporate, detailed.overnight].entries()) {
-      await namedFor(rows.nth(i), () => [["button", `Change the fund for ${name}`]]);
-      assert.equal(await rows.nth(i).getByText("Confirmed", { exact: true }).count(), 1);
-      // The fake host's names aren't the statement's, so each row gives the statement's too.
-      assert.equal(await rows.nth(i).getByText(`On the statement: ${name}`, { exact: true }).count(), 1);
-    }
-    assert.equal(await frame.getByText(/^\d+ funds? matched from AMFI/).count(), 0, "AMFI isn't added");
-    // Once no open fund search lacks an AMFI result, the note goes.
-    await noAmfiNote();
-    const searches = await tab.frames()[1].evaluate(() => window.host.searches);
-    assert.ok(!searches.some((query) => /INFZ90K01MC|INFZ91T01GL/.test(query)), searches.join(" "));
-    assert.ok(searches.includes("INFZ91T01CB6") && searches.includes("Testbridge Corporate Bond"), searches.join(" "));
-    assert.ok(searches.includes("Testbridge Overnight"), searches.join(" "));
-    assert.ok(!searches.some((query) => query.includes(" - ")), "full scheme names are never searched");
-    // Remembered: the PAN's account and the five funds, with no PAN or folio number in a key.
-    const saved = (await host()).storage;
-    const keys = saved.map(([key]) => key);
-    assert.equal(keys.length, 6);
-    assert.ok(keys.every((key) => /^(pan|fund):[0-9a-f]{64}$|^isin:INFZ9/.test(key)), keys.join(" "));
-    assert.ok(keys.every((key) => /^[A-Za-z0-9_.:-]{1,128}$/.test(key)));
-    for (const folio of expected.folios) {
-      assert.ok(!JSON.stringify(saved).includes(folio.folio));
-      assert.ok(!folio.PAN || !JSON.stringify(saved).includes(folio.PAN));
-    }
+    const inUsd = "The statement's prices and amounts are in rupees, but this asset is quoted in USD. Check that it's the right listing.";
+    const quotedIn = (locator) => locator.getByText(/^The statement's prices and amounts are in rupees, but /);
+    await sizeFrame(1000);
+    await dSettled();
 
-    await frame.getByRole("button", { name: "Preview the import" }).press("Enter");
-    // The Flexi Cap fund starts with units the fake host has no history for.
-    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    await focused(frame.getByRole("button", { name: "Preview the import" }), "Preview the import");
-    // A status line beside the button reads out the work that locks the page, and the counts once the preview is ready.
-    const pageStatus = frame.getByRole("button", { name: /^Preview the / }).locator("xpath=..").getByRole("status");
-    assert.equal(await pageStatus.textContent(), "The preview is ready: 13 new transactions, 0 already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import.");
-    await frame.getByText(/starts with 1250\.000 units bought before 01-Apr-2023/).waitFor();
-    // Rechecking removes the old preview and locks every input until its answer arrives.
-    await pause("check");
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await waiting();
-    assert.equal(await pageStatus.textContent(), "Preparing the preview…");
-    assert.equal(await frame.getByRole("button", { name: "Import 23 activities" }).count(), 0);
-    assert.equal(await frame.locator("#cas-file").isDisabled(), true);
-    assert.equal(await frame.getByLabel("PAN ABCDE1234F", { exact: true }).isDisabled(), true);
-    assert.equal(await remember.isDisabled(), true);
-    assert.equal(await frame.getByRole("button", { name: /^Change the / }).first().isDisabled(), true);
-    await resume();
-    // A failed import keeps the preview, and its alert says why: the status line doesn't say it's ready again.
-    await tab.frames()[1].evaluate(() => { window.host.failImport = true; });
-    await frame.getByRole("button", { name: "Import 23 activities", disabled: false }).press("Enter");
+    // The heading says which transactions, from which statement and file. While a statement is
+    // reviewed, its file form and the page's AMFI banner make way for it.
+    await frame.getByText(`CAMS statement · ${investor} · made-up-cas.pdf`, { exact: true }).waitFor();
+    assert.equal(await frame.locator("#cas-file").isVisible(), false);
+    assert.equal(await amfiBanner.count(), 0);
+    // Closed schemes need no account or fund: no question, row or count for them.
+    assert.equal(await frame.getByText(/Midcap|Gilt/).count(), 0);
+    await frame.getByText("5 funds", { exact: true }).waitFor();
+    const questionChip = frame.getByRole("button", { name: /^\d+ questions?$/ });
+    assert.equal(await questionChip.textContent(), "6 questions");
+    assert.equal(await fundQuestions.count(), 5);
+    // Wealthfolio doesn't say whether AMFI is on, so the funds whose ISIN found nothing on AMFI say so once.
+    await frame.getByText(/^AMFI may not be added, so 4 funds were only searched on Yahoo Finance and need you\. Add AMFI to match them for you\.$/).waitFor();
+    // Nothing is remembered until the import.
+    assert.deepEqual((await host()).storage, []);
+
+    // The PAN's box offers only active, unarchived accounts that track transactions, which in
+    // Wealthfolio include NOT_SET, or not importing them.
+    assert.match(await fundsSelect().textContent(), /Choose an account/);
+    await dFooter.getByText("6 questions left before importing.", { exact: true }).waitFor();
+    await dFooter.getByRole("button", { name: "Go to the next question" }).click();
+    await focused(fundsSelect(), "Go to the next question, the account first");
+    await fundsSelect().click();
+    await frame.getByRole("option", { name: "Not set (INR)" }).waitFor();
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["Mutual funds (INR)", "Savings (INR)", "Not set (INR)", "Don't import them"]);
+    await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
+    await dSettled();
+    // Its bank account is optional, None at first, and says what it's for.
+    assert.equal((await bankSelect().textContent()).trim(), "None: don't add bank transfers");
+    const bankHint = await bankSelect().getAttribute("aria-describedby");
+    assert.equal(await frame.locator(`[id="${bankHint}"]`).textContent(), "Purchases transfer from this account; sales and cash dividends transfer back to it.");
+    await frame.getByText("Used again for your next statement.", { exact: true }).waitFor();
+
+    // Each fund's question asks which fund it is; answering one moves the focus to the next one's
+    // heading, and the last answer to the footer's summary.
+    await dFooter.getByText("5 questions left before importing.", { exact: true }).waitFor();
+    await dFooter.getByRole("button", { name: "Go to the next question" }).click();
+    await focused(fundQuestion(detailed.flexi).getByRole("heading"), "Go to the next question");
+    await fundQuestion(detailed.flexi).getByText(/· Direct plan · Growth · 2,892\.104 units$/).waitFor();
+    const order = [detailed.flexi, detailed.liquid, detailed.balanced, detailed.corporate, detailed.overnight];
+    for (const [i, name] of order.entries()) {
+      await fundQuestion(name).getByRole("button", { name: `Use this fund: Fund ${["INFZ90K01FC8", "INFZ90K01LQ6", "INFZ90K01BA1", "0P0000TBCB", "0P0000TONF"][i]}, for ${name}`, exact: true }).press("Enter");
+      if (i < order.length - 1) await focused(fundQuestion(order[i + 1]).getByRole("heading"), `answering ${name}`);
+    }
+    await focused(dSummary, "the last answer");
+    await dSaid.getByText("All questions answered. Ready to import.", { exact: true }).waitFor();
+    await dSettled();
+    const detailedSearches = await hosted(() => window.host.searches);
+    assert.ok(!detailedSearches.some((query) => /INFZ90K01MC|INFZ91T01GL/.test(query)), detailedSearches.join(" "));
+    assert.ok(detailedSearches.includes("INFZ91T01CB6") && detailedSearches.includes("Testbridge Corporate Bond"), detailedSearches.join(" "));
+    assert.ok(detailedSearches.includes("Testbridge Overnight"), detailedSearches.join(" "));
+    assert.ok(!detailedSearches.some((query) => query.includes(" - ")), "full scheme names are never searched");
+    assert.deepEqual((await host()).storage, [], "still nothing remembered");
+
+    // Ready to import: each fund with new transactions, its price source and Change, its new
+    // transactions and its units after the import.
+    await frame.getByRole("heading", { name: "Ready to import (4)", exact: true }).waitFor();
+    assert.deepEqual(await cellsOf(readyFunds), [["3", "8.053"], ["4", "3,540.293"], ["4", "9,511.738"], ["2", "10.201"]]);
+    assert.deepEqual(await frame.getByRole("columnheader").allTextContents(), ["Fund", "New transactions", "Units after import"]);
+    const liquidFundRow = readyFund("Fund INFZ90K01LQ6");
+    await liquidFundRow.getByText(`On your statement: ${detailed.liquid}`, { exact: true }).waitFor();
+    await liquidFundRow.getByText(/^Prices from FAKE · chosen by you · Change$/).waitFor();
+    await liquidFundRow.getByRole("button", { name: "Change: Fund INFZ90K01LQ6", exact: true }).waitFor();
+    // The Flexi Cap fund starts with units Wealthfolio doesn't have, so its transactions wait, with How to fix.
+    const earlier = notIncluded.locator("div.rounded-lg").filter({ hasText: /^Earlier purchases needed/ });
+    assert.equal(
+      (await earlier.locator("span").first().innerText()).replace(/\s+/g, " "),
+      "Earlier purchases needed: Fund INFZ90K01FC8 starts with 1,250.000 units bought before this statement, so its 26 transactions wait.",
+    );
+    await earlier.getByRole("button", { name: "How to fix: Fund INFZ90K01FC8", exact: true }).click();
+    await earlier.getByText(
+      "Read an earlier CAMS statement that includes its first purchase, or add the 1,250.000 units in Wealthfolio as a buy with their cost and date. Then read this statement again: transactions already imported are skipped.",
+      { exact: true },
+    ).waitFor();
+    // The statement's transactions, by what happens to them; the parts add up.
+    assert.equal((await transactionsBox.locator("p").first().innerText()).trim(), "39 transactions, Apr 2023 to Mar 2025");
+    assert.equal(await transactionParts(), "13 to import · 26 waiting for earlier purchases");
+    await frame.getByText("5 funds", { exact: true }).waitFor();
+    await frame.getByText("4 ready", { exact: true }).waitFor();
+    await frame.getByText("1 not included", { exact: true }).waitFor();
+    assert.equal(await questionChip.count(), 0);
+    await dFooter.getByText("Import 13 transactions for 4 funds into Mutual funds.", { exact: true }).waitFor();
+    assert.equal(await importButton.textContent(), "Import 13 transactions");
+    // See every transaction opens today's table, read-only.
+    await seeEvery();
+    const liquidPurchase = everyTable.getByRole("row").filter({ hasText: "2023-05-05" }).filter({ hasText: detailed.liquid });
+    assert.deepEqual((await liquidPurchase.locator("td").allTextContents()).map((t) => t.trim()).slice(0, 9), [
+      "2023-05-05", detailed.liquid, "purchase", "9.747", "2564.8812", "1.25", "25001.1470564", "deposit 25001.1470564", "New",
+    ]);
+    assert.equal(await everyTable.getByRole("checkbox").count(), 0, "read-only");
+
+    // A failed import keeps the review, and says why.
+    await hosted(() => { window.host.failImport = true; });
+    await importButton.click();
     await frame.getByText("The import failed: Error: Import unavailable", { exact: true }).waitFor();
-    await focused(frame.getByRole("button", { name: "Import 23 activities" }), "Import 23 activities, failed");
-    assert.equal(await pageStatus.textContent(), "");
-    await tab.frames()[1].evaluate(() => { window.host.failImport = false; });
+    await transactionsHeading.waitFor();
+    await hosted(() => { window.host.failImport = false; });
+    // While it imports, the page is locked and the status says so; the result takes the focus.
     await pause("import");
-    await frame.getByRole("button", { name: "Import 23 activities", disabled: false }).press("Enter");
+    await importButton.press("Enter");
     await waiting();
-    assert.equal(await pageStatus.textContent(), "Importing…");
-    assert.equal(await frame.getByRole("button", { name: "Preview the import" }).isDisabled(), true);
-    assert.equal(await frame.locator("#cas-file").isDisabled(), true);
-    assert.equal(await remember.isDisabled(), true);
+    await dSaid.getByText("Importing…", { exact: true }).waitFor();
+    assert.equal(await dFooter.getByRole("button", { name: "Importing…" }).isDisabled(), true);
+    assert.equal(await fundsSelect().isDisabled(), true);
     await resume();
-    await frame.getByText("Imported 23 of 23 activities").waitFor();
-    await focused(frame.getByRole("alert").filter({ hasText: /^Imported 23 of 23 activities/ }), "Import 23 activities");
-    assert.equal(await pageStatus.textContent(), "");
-    const units = frame.locator("table").last().locator("tbody tr");
-    assert.equal(await units.count(), 5);
-    assert.equal(await units.filter({ hasText: "Match" }).count(), 4);
+    await imported(23).waitFor();
+    await focused(frame.getByRole("alert").filter({ hasText: /^Imported 23 of 23 activities/ }), "Import 13 transactions");
+    // The closing units of the funds it imported into, each matching the statement.
+    assert.equal(await resultUnits().count(), 4);
+    assert.equal(await resultUnits().filter({ hasText: "Match" }).count(), 4);
     assert.deepEqual(
       await frame.locator("table").last().getByRole("columnheader").allTextContents(),
       ["Fund", "Units in the statement", "Units in Wealthfolio", "Status"],
     );
+    // Remembered once imported: the PAN's account and the five funds, with no PAN or folio number in a key.
+    const firstChoices = await storage();
+    const firstKeys = Object.keys(firstChoices);
+    assert.equal(firstKeys.length, 6, firstKeys.join(" "));
+    assert.ok(firstKeys.every((key) => /^(pan|fund):[0-9a-f]{64}$|^isin:INFZ9/.test(key)), firstKeys.join(" "));
+    assert.ok(firstKeys.every((key) => /^[A-Za-z0-9_.:-]{1,128}$/.test(key)));
+    for (const folio of expected.folios) {
+      assert.ok(!JSON.stringify(firstChoices).includes(folio.folio));
+      assert.ok(!folio.PAN || !JSON.stringify(firstChoices).includes(folio.PAN));
+    }
+    const panKey = await hosted(() => [...window.host.storage.keys()].find((key) => key.startsWith("pan:")));
+    assert.equal(firstChoices[panKey], "account-1");
+    const allImported = await hosted(() => window.host.activities);
 
-    // A second import of the same statement finds everything.
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    // Each transaction's "Import anyway" says which one it is for, and each name is on the page once.
-    const importAnyway = frame.getByRole("checkbox", { name: /^Import anyway for the / });
-    assert.equal(await importAnyway.count(), 13);
-    for (const name of await importAnyway.evaluateAll((all) => all.map((box) => box.closest("label").textContent))) {
-      assert.equal(await frame.getByRole("checkbox", { name, exact: true }).count(), 1, name);
-    }
-    await frame.getByRole("checkbox", {
-      name: "Import anyway for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001.1470564, folio 91234567 / 12, transaction 1",
-      exact: true,
-    }).waitFor({ state: "attached" });
-    // Equal purchases of the same fund in two folios have their own IDs: the other folio's are new
-    // and go in without "Import anyway". Then each has one, with a distinct name.
-    const beforeTwins = await tab.frames()[1].evaluate(() => window.host.activities.length);
-    await tab.frames()[1].evaluate(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
-    await readButton.press("Enter");
-    await frame.getByText(/3 folios, 8 schemes, 83 rows\./).waitFor({ timeout: 180_000 });
-    await focused(readButton, "Read statement");
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^\d+ new transactions?, 13 already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
-    const twins = frame.getByRole("checkbox", { name: /^Import anyway for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001\.1470564,/ });
-    assert.equal(await twins.count(), 1);
-    await frame.getByRole("button", { name: /^Import \d+ activit(y|ies)$/ }).click();
-    await frame.getByText(/^Imported (\d+) of \1 activit(y|ies)/).waitFor();
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
-    await twins.nth(1).waitFor({ state: "attached" });
-    assert.equal(await twins.count(), 2);
-    for (const name of await twins.evaluateAll((all) => all.map((box) => box.closest("label").textContent))) {
-      assert.equal(await frame.getByRole("checkbox", { name, exact: true }).count(), 1, name);
-    }
-    await tab.frames()[1].evaluate((length) => {
-      window.host.sharedIsin = "";
-      window.host.activities.length = length;
-    }, beforeTwins);
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).isDisabled(), true);
-    // Statements are in rupees. A result or a confirmed fund quoted in another currency has a warning
-    // badge with its currency and a line saying so, and so has each of its fund's transactions in the
-    // preview. A result in rupees, the other funds and their transactions say nothing about currency.
-    const inUsd = "The statement's prices and amounts are in rupees, but this asset is quoted in USD. Check that it's the right listing.";
-    const usdRowNote = "The statement's prices and amounts are in rupees, but DMCB is quoted in USD. Check that it's the right listing.";
-    const quotedIn = (locator) => locator.getByText(/^The statement's prices and amounts are in rupees, but /);
-    const usdResults = ["Democorp Bank ADR USD FAKE " + inUsd, "Democorp Bank Ltd FAKE"];
-    const usdCodes = ["Symbol DMCB · Exchange XNYS · Type EQUITY · Currency USD", "Symbol DEMOCORPBK · Exchange XNSE · Type EQUITY · Currency INR"];
-    const usdFund = holding(detailed.liquid);
-    const usdSearch = usdFund.getByRole("textbox", { name: /^Search for / });
-    await usdFund.getByRole("button", { name: /^Change the / }).click();
-    await usdSearch.fill("Democorp Bank");
-    await usdSearch.press("Enter");
-    await usdFund.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    assert.deepEqual(await usdFund.locator("label").allTextContents(), usdResults);
-    assert.deepEqual(await resultCodes(usdFund), usdCodes);
-    assert.deepEqual(await resultBadges(usdFund), [["USD warning-subtle"], []]);
-    assert.equal(await quotedIn(frame).count(), 1);
-    // A warning, not a block.
-    await usdFund.getByRole("radio").first().dispatchEvent("click");
-    await usdFund.getByRole("button", { name: "Use this fund", disabled: false }).click();
-    await usdFund.getByText("Confirmed", { exact: true }).waitFor();
-    assert.deepEqual(await choiceBadges(usdFund), ["Confirmed success-subtle", "USD warning-subtle"]);
-    assert.equal(await usdFund.getByText(usdCodes[0], { exact: true }).count(), 1);
-    assert.equal(await usdFund.getByText("FAKE", { exact: true }).count(), 1);
-    assert.equal(await usdFund.getByText(inUsd, { exact: true }).count(), 1);
-    assert.equal(await quotedIn(frame).count(), 1);
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^\d+ new transactions?, \d+ already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    const previewRows = frame.locator("table").last().locator("tbody tr");
-    const usdRows = previewRows.filter({ hasText: "Fictiva Liquid Fund - Direct Plan - Growth" });
-    assert.ok(await usdRows.count() > 0);
-    assert.equal(await usdRows.filter({ has: frame.getByText(usdRowNote, { exact: true }) }).count(), await usdRows.count());
-    assert.equal(await quotedIn(previewRows).count(), await usdRows.count());
-    // Back to the fund's own listing for the checks that follow: its ISIN's only result, preselected.
-    await usdFund.getByRole("button", { name: /^Change the / }).click();
-    await usdFund.getByRole("button", { name: "Use this fund", disabled: false }).click();
-    await usdFund.getByText("Confirmed", { exact: true }).waitFor();
-    assert.equal(await quotedIn(frame).count(), 0);
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    assert.equal(await quotedIn(frame).count(), 0);
-    // So it does when activities show display codes other than the funds' symbols: each fund goes by
-    // the symbol and exchange on its asset's profile.
-    const renameFunds = (prefix) => tab.frames()[1].evaluate((prefix) => {
+    // Read again, everything is in Wealthfolio: nothing is new, and Finish leaves the review.
+    await readStatement();
+    await frame.getByText("Chosen last time.", { exact: true }).waitFor();
+    assert.match(await fundsSelect().textContent(), /^Mutual funds \(INR\)$/);
+    assert.equal(await fundQuestions.count(), 0);
+    await frame.getByRole("heading", { name: "Ready to import (0)", exact: true }).waitFor();
+    // A line for each fund with nothing new, with Change.
+    const nothingNewLines = async () => (await frame.getByText(/^Nothing new for /).allTextContents()).map((text) => text.replace(/\s*Change$/, ""));
+    assert.deepEqual(await nothingNewLines(), ["Fund INFZ90K01LQ6", "Fund INFZ90K01BA1", "Fund 0P0000TBCB", "Fund 0P0000TONF"].map((name) => `Nothing new for ${name}.`));
+    await frame.getByRole("button", { name: `Change: ${detailed.liquid}, nothing new`, exact: true }).waitFor();
+    assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
+    await dFooter.getByText("Nothing is ready to import. See the transactions left out or waiting above.", { exact: true }).waitFor();
+    await dFooter.getByRole("button", { name: "Finish", exact: true }).click();
+    await frame.getByText("Finished: nothing from made-up-cas.pdf was imported.", { exact: true }).waitFor();
+    await transactionsHeading.waitFor({ state: "detached" });
+    assert.deepEqual(await storage(), firstChoices);
+
+    // Activities show an asset's display code: each fund goes by the symbol and exchange on its
+    // asset's profile, which must still be the fund's, with its type. Wealthfolio's reads are kept until
+    // the page is opened again or Try again.
+    const renameFunds = (prefix) => hosted((prefix) => {
       for (const a of window.host.activities) if (a.assetId) a.assetSymbol = `${prefix}${a.symbol}`;
     }, prefix);
+    const cantWorkOutImport = (pattern) => dFooter.getByText(new RegExp(`^Couldn't work out what will be imported: Error: ${pattern}`));
+    const tryAgain = dFooter.getByRole("button", { name: "Try again", exact: true });
     await renameFunds("My ");
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    // A symbol-only match must have the import's type too, or new rows could reach another asset.
-    await tab.frames()[1].evaluate(() => {
+    await readStatement();
+    assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
+    await hosted(() => {
       const a = window.host.activities.find((a) => a.assetId);
       window.host.assets[a.assetId] = { symbol: a.symbol, exchangeMic: a.exchangeMic, instrumentType: "METAL" };
     });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
-    await tab.frames()[1].evaluate(() => { delete window.host.assets[window.host.activities.find((a) => a.assetId).assetId].instrumentType; });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/The type of .+ isn't set in Wealthfolio/).waitFor();
-    await tab.frames()[1].evaluate(() => { delete window.host.assets[window.host.activities.find((a) => a.assetId).assetId]; });
+    await revisit();
+    await cantWorkOutImport("The symbol, exchange or type of Fund INFZ90K01LQ6 changed in Wealthfolio\\. Choose Change beside the fund and confirm it again\\.").waitFor();
+    assert.equal(await importButton.isDisabled(), true);
+    await hosted(() => { delete window.host.assets[window.host.activities.find((a) => a.assetId).assetId].instrumentType; });
+    await tryAgain.click();
+    await cantWorkOutImport("The type of Fund INFZ90K01LQ6 isn't set in Wealthfolio\\. Set its type there, then choose Change beside the fund and confirm it again\\.").waitFor();
+    await hosted(() => { delete window.host.assets[window.host.activities.find((a) => a.assetId).assetId]; });
+    // A profile that can't be read stops the plan instead of offering the trades again.
+    await hosted(() => { window.host.failGetProfileIds = [window.host.activities.find((a) => a.assetId).assetId]; });
+    await tryAgain.press("Enter");
+    await cantWorkOutImport("Couldn't read a Wealthfolio asset's profile: Error: Profile unavailable\\. Try again\\. If the asset was deleted, choose Change beside its fund and pick its replacement\\.").waitFor();
+    // Try again stays, busy, while it works the plan out again, so it keeps the focus when that fails
+    // again; once the plan is worked out, the focus goes to the bar's summary.
+    await focused(tryAgain, "Try again, failed again");
+    await hosted(() => { window.host.failGetProfileIds = []; });
+    await tryAgain.press("Enter");
+    await dSettled();
+    await focused(frame.locator("[id$='-summary']"), "Try again, worked out");
+    assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
     await renameFunds("");
 
-    // A profile failure stops a symbol-only match instead of offering the trade again.
-    await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = [window.host.activities.find((a) => a.assetId).assetId]; });
-    await frame.getByRole("button", { name: "Preview the import" }).press("Enter");
-    await frame.getByText(/Couldn't read a Wealthfolio asset's profile/).waitFor();
-    await focused(frame.getByRole("button", { name: "Preview the import" }), "Preview the import, failed");
-    assert.equal(await frame.getByRole("button", { name: "Import 0 activities" }).count(), 0);
-    await tab.frames()[1].evaluate((symbol) => { window.host.failGetProfileIds = []; window.host.assets["chosen-fund"] = { symbol, exchangeMic: "XBOM" }; }, expected.folios[0].schemes[0].isin);
-    // Search lists an untyped asset as OTHER, but symbol-based imports cannot target it.
-    await firstFund.getByRole("button", { name: /^Change the / }).click();
-    await firstFund.getByRole("textbox", { name: /^Search for / }).fill(expected.folios[0].schemes[0].isin);
-    await firstFund.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await firstFund.getByRole("radio").first().dispatchEvent("click");
-    await firstFund.getByRole("button", { name: "Use this fund" }).click();
-    await firstFund.getByText("Confirmed").waitFor();
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/The type of .+ isn't set in Wealthfolio\. Set its type there/).waitFor();
-    assert.equal(await frame.getByText(/^\d+ new transactions?, \d+ already in Wealthfolio/).count(), 0);
-    // Set its type and confirm it again, then change its identity and remove it entirely.
-    await tab.frames()[1].evaluate(() => { window.host.assets["chosen-fund"].instrumentType = "EQUITY"; });
-    await firstFund.getByRole("button", { name: /^Change the / }).click();
-    await firstFund.getByRole("textbox", { name: /^Search for / }).fill(expected.folios[0].schemes[0].isin);
-    await firstFund.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await firstFund.getByRole("radio").first().dispatchEvent("click");
-    await firstFund.getByRole("button", { name: "Use this fund" }).click();
-    await firstFund.getByText("Confirmed").waitFor();
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^\d+ new transactions, \d+ already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    assert.equal(await frame.getByText(/changed in Wealthfolio/).count(), 0);
-    await tab.frames()[1].evaluate(() => { window.host.assets["chosen-fund"].symbol = "B2"; });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
-    // A fresh confirmation of the same ID for another scheme cannot hide the stale one.
-    await byName.getByRole("button", { name: /^Change the / }).click();
-    await byName.getByRole("textbox", { name: /^Search for / }).fill("B2");
-    await byName.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await byName.getByRole("radio").first().dispatchEvent("click");
-    await byName.getByRole("button", { name: "Use this fund" }).click();
-    await byName.getByText("Confirmed").waitFor();
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
-    await byName.getByRole("button", { name: /^Change the / }).click();
-    await byName.getByRole("textbox", { name: /^Search for / }).fill("Testbridge Corporate Bond");
-    await byName.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await byName.getByRole("radio").first().dispatchEvent("click");
-    await byName.getByRole("button", { name: "Use this fund" }).click();
-    await byName.getByText("Confirmed").waitFor();
-    await tab.frames()[1].evaluate((symbol) => { Object.assign(window.host.assets["chosen-fund"], { symbol, instrumentType: "METAL" }); }, expected.folios[0].schemes[0].isin);
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/The symbol, exchange or type of .+ changed in Wealthfolio/).waitFor();
-    await tab.frames()[1].evaluate(() => { delete window.host.assets["chosen-fund"]; });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/If the asset was deleted, choose its replacement under Funds/).waitFor();
-    // Reconfirm the original symbol-only choice for the remaining checks.
-    await firstFund.getByRole("button", { name: /^Change the / }).click();
-    await firstFund.getByRole("textbox", { name: /^Search for / }).fill(expected.folios[0].schemes[0].isin);
-    await firstFund.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await firstFund.getByRole("radio").first().dispatchEvent("click");
-    await firstFund.getByRole("button", { name: "Use this fund" }).click();
-    await firstFund.getByText("Confirmed").waitFor();
+    // Equal purchases of the same fund in two folios have their own IDs: the other folio's are new,
+    // with no possible duplicate, and the fund's row counts both folios' units.
+    await hosted(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
+    await readStatement();
+    assert.equal(await fundQuestions.count(), 0);
+    assert.deepEqual(await cellsOf(readyFund("Fund INFZ90K01LQ6")), [["3 3 imported before", "16.106"]]);
+    assert.equal(await beforeImporting.count(), 0);
+    await importButton.click();
+    await imported(6).waitFor();
+    await readStatement();
+    assert.equal(await transactionParts(), "16 imported before, skipped · 26 waiting for earlier purchases");
+    await hosted((rows) => {
+      window.host.sharedIsin = "";
+      window.host.activities = rows;
+    }, allImported);
 
-    // With a bank account chosen, the deposits and withdrawals imported before are the transactions' cash.
-    const bankChoice = frame.getByLabel("Bank account for PAN ABCDE1234F");
-    const beforeBank = await host();
-    await bankChoice.click();
-    assert.equal(await frame.getByRole("option", { name: "Demat (INR)" }).count(), 0);
-    await frame.getByRole("option", { name: "Savings (INR)" }).click();
-    await frame.getByText("Same as PAN (Savings)").first().waitFor();
-    const [[bankKey, bankId]] = (await host()).storage.filter(([key]) => !beforeBank.storage.some(([other]) => other === key));
-    assert.match(bankKey, /^bank-pan:[0-9a-f]{64}$/);
-    assert.equal(bankId, "bank-1");
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    await frame.getByText("Wealthfolio already has this transfer in, as a deposit.").first().waitFor();
-
-    // Otherwise purchases, redemptions and payouts come with transfers from and to the bank account,
-    // and a withdrawal it already has can stand in for one; a transfer already linked can't.
-    await tab.frames()[1].evaluate(() => {
-      const bankRow = (id, activityType, amount, date, comment) => ({
-        id, accountId: "bank-1", activityType, subtype: null, status: "POSTED", date: `${date}T00:00:00+00:00`, quantity: null,
-        unitPrice: null, amount, fee: null, currency: "INR", needsReview: false, comment, assetId: "", assetSymbol: "",
-      });
-      window.host.activities = [
-        bankRow("bank-neft", "WITHDRAWAL", "25000.00", "2023-05-04", "NEFT FICTIVA MF"),
-        bankRow("bank-linked", "TRANSFER_IN", "7276.48", "2023-12-28", "IDCW"),
-      ];
-      window.host.linked = ["bank-linked"];
+    // A purchase Wealthfolio has without the add-on's row ID, but without its cash, may be another:
+    // it's skipped unless chosen under Before importing, which says what that does.
+    await hosted(() => {
+      const buy = window.host.activities.find((a) => a.activityType === "BUY" && a.assetSymbol === "INFZ90K01LQ6" && a.date.startsWith("2024-06-20"));
+      delete buy.sourceRecordId;
+      window.host.activities = window.host.activities.filter((a) => !(a.activityType === "DEPOSIT" && a.date.startsWith("2024-06-20")));
     });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    await frame.getByText(
-      "Savings has a withdrawal of 25000.00 on 2023-05-04 (NEFT FICTIVA MF). If you use it, the add-on changes it into a transfer out and links it with this transfer in.",
-    ).waitFor();
-    const reuseBankRow = frame.getByRole("checkbox", {
-      name: "Use it instead of a new transfer out for the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth, 25001.1470564, folio 91234567 / 12, transaction 1",
-      exact: true,
-    });
-    assert.equal(await reuseBankRow.count(), 1);
-    const bankRows = await tab.frames()[1].evaluate(() => window.host.activities);
-    // A trade rejected or skipped after preview must leave its chosen bank row and fund cash alone.
-    for (const outcome of ["rejectLine", "skipLine"]) {
-      await tab.frames()[1].evaluate(([rows, outcome]) => {
-        window.host.activities = rows;
-        window.host[outcome] = 1;
-      }, [bankRows, outcome]);
-      await frame.getByRole("button", { name: "Preview the import" }).click();
-      await reuseBankRow.waitFor({ state: "attached" });
-      await reuseBankRow.dispatchEvent("click");
-      await frame.getByRole("button", { name: "Import 30 activities" }).click();
-      await frame.getByText("Imported 29 of 30 activities").waitFor();
-      await frame.getByText(/The trade wasn't imported, so the bank's row was left as it is\./).waitFor();
-      const unchanged = await tab.frames()[1].evaluate(() => ({
-        bank: window.host.activities.find((a) => a.id === "bank-neft"),
-        fundRows: window.host.activities.filter((a) => a.accountId === "account-1" && a.date.startsWith("2023-05-05")),
-        links: window.host.links,
-      }));
-      assert.deepEqual(unchanged, { bank: bankRows[0], fundRows: [], links: [] });
-      await tab.frames()[1].evaluate(() => {
-        window.host.rejectLine = undefined;
-        window.host.skipLine = undefined;
-      });
-    }
-    await tab.frames()[1].evaluate((rows) => { window.host.activities = rows; }, bankRows);
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await reuseBankRow.waitFor({ state: "attached" });
-    await frame.getByRole("button", { name: "Import 32 activities" }).waitFor();
-    await reuseBankRow.dispatchEvent("click");
-    await frame.getByRole("button", { name: "Import 30 activities" }).click();
-    await frame.getByText("Imported 30 of 30 activities").waitFor();
-    await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
-    const banked = await tab.frames()[1].evaluate(() => ({ activities: window.host.activities, links: window.host.links }));
-    const byId = Object.fromEntries(banked.activities.map((a) => [a.id, a]));
-    assert.equal(banked.links.length, 1);
-    const [[bankRowId, fundLegId]] = banked.links;
-    assert.equal(bankRowId, "bank-neft");
-    assert.deepEqual(
-      [byId["bank-neft"].activityType, byId["bank-neft"].comment, byId["bank-neft"].amount],
-      ["TRANSFER_OUT", "NEFT FICTIVA MF", "25000.00"],
-    );
-    const fundLeg = byId[fundLegId];
-    assert.deepEqual(
-      [fundLeg.accountId, fundLeg.activityType, fundLeg.amount, fundLeg.date.slice(0, 10)],
-      ["account-1", "TRANSFER_IN", "25001.1470564", "2023-05-05"],
-    );
-    const count = (accountId, type) => banked.activities.filter((a) => a.accountId === accountId && a.activityType === type).length;
-    assert.deepEqual(
-      [count("bank-1", "TRANSFER_OUT"), count("bank-1", "TRANSFER_IN"), count("account-1", "TRANSFER_IN"), count("account-1", "TRANSFER_OUT")],
-      [4, 6, 4, 5],
-    );
-    assert.equal(count("account-1", "DEPOSIT"), 1, "the switch's purchase keeps its deposit");
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
+    await readStatement();
+    const duplicate = beforeImporting.getByRole("checkbox", { name: /^Import it anyway\s*:\s*Fund INFZ90K01LQ6 · Purchase · 20 Jun 2024 · ₹[\d,.]+$/ });
+    await duplicate.waitFor({ state: "attached" });
+    await beforeImporting.getByText("Wealthfolio already has this purchase, entered by hand or imported without the add-on's row ID.", { exact: true }).waitFor();
+    await beforeImporting.getByText("Skipped unless you tick it. Two equal purchases on one day can both be real.", { exact: true }).waitFor();
+    assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, skipped unless chosen under “Before importing” · 26 waiting for earlier purchases");
+    await dFooter.getByRole("button", { name: "Finish", exact: true }).waitFor();
+    await duplicate.dispatchEvent("click");
+    await beforeImporting.getByText("It's imported as a second purchase.", { exact: true }).waitFor();
+    await dSettled();
+    // Imported, its units count too: the fund's row says so and doesn't fold away, and so does the footer.
+    await readyFund("Fund INFZ90K01LQ6").getByText("After import: 11.359 units · Statement: 8.053. Includes the second purchase you chose.", { exact: true }).waitFor();
+    assert.deepEqual(await cellsOf(readyFund("Fund INFZ90K01LQ6")), [["1 2 imported before", "11.359"]]);
+    await dFooter.getByText("Import 1 transaction for 1 fund into Mutual funds.", { exact: true }).waitFor();
+    await dFooter.getByText("1 fund's units won't match the statement after importing: Fund INFZ90K01LQ6.", { exact: true }).waitFor();
+    assert.equal(await transactionParts(), "1 to import · 12 imported before, skipped · 26 waiting for earlier purchases");
+    await importButton.click();
+    await imported(2).waitFor();
+    const forced = await hosted(() => window.host.activities.filter((a) => a.date.startsWith("2024-06-20")).map((a) => [a.activityType, a.assetSymbol]));
+    assert.deepEqual(forced, [["BUY", "INFZ90K01LQ6"], ["BUY", "INFZ90K01LQ6"], ["DEPOSIT", ""]]);
 
-    // Before a bank row is ticked, the preview says what reusing it changes besides its type and
-    // link: its spending split and category, and corrections from a synced account. Right before
-    // importing, the rows ticked are read again, and one that changed stops the import.
+    // An import Wealthfolio rejects a row of, whose closing units then can't be read: what the
+    // holdings checks below start from.
+    await hosted(() => { window.host.activities = []; });
+    await readStatement();
+    await pause("import");
+    await importButton.press("Enter");
+    await waiting();
+    await clickOutside();
+    await hosted(() => {
+      window.host.rejectLine = 1;
+      window.host.failHistory = true;
+    });
+    await resume();
+    await frame.getByText("Imported 22 of 23 activities").waitFor();
+    await frame.getByText("Wealthfolio rejected rows", { exact: true }).waitFor();
+    await frame.getByText(/The fund could not be created/).waitFor();
+    await frame.getByText(/The import finished, but the closing units couldn't be checked/).waitFor();
+    await stayedOutside("Import 13 transactions");
+    assert.equal(await frame.getByText(/The import failed/).count(), 0);
+    const baseline = await hosted(() => ({ activities: window.host.activities, storage: [...window.host.storage] }));
+    await hosted(() => {
+      window.host.rejectLine = undefined;
+      window.host.failHistory = false;
+    });
+
+    // With a bank account, purchases transfer from it, and sales and cash dividends back to it. Entries
+    // it already has can be those transfers: one check per bank account, a question under the bank
+    // choice that set it, with each pair's evidence; only strong evidence starts ticked.
+    const bankEntry = (id, activityType, amount, date, comment) => ({
+      id, accountId: "bank-1", activityType, subtype: null, status: "POSTED", date: `${date}T00:00:00+00:00`, quantity: null,
+      unitPrice: null, amount, fee: null, currency: "INR", needsReview: false, comment, assetId: "", assetSymbol: "",
+    });
+    const bankEntries = [
+      bankEntry("bank-neft", "WITHDRAWAL", "25000.00", "2023-05-04", "NEFT FICTIVA MF"),
+      bankEntry("bank-self", "WITHDRAWAL", "100000.00", "2023-07-03", "UPI/CASH TO SELF"),
+      bankEntry("bank-idcw", "DEPOSIT", "7276.48", "2023-12-28", "IDCW"),
+      bankEntry("bank-late", "DEPOSIT", "6848.45", "2024-07-03", "TESTBRIDGE MF IDCW"),
+      bankEntry("bank-ach", "WITHDRAWAL", "20000.00", "2023-08-14", "ACH TESTBRIDGE MF"),
+      bankEntry("bank-nach", "WITHDRAWAL", "20000.00", "2023-08-15", "NACH TESTBRIDGE"),
+      // Already linked with another transfer, so it can't be used.
+      bankEntry("bank-linked", "TRANSFER_IN", "7276.48", "2023-12-28", "IDCW"),
+    ];
     const resetBank = (spending = {}) => hosted(([rows, spending]) => {
       window.host.activities = structuredClone(rows);
       window.host.links = [];
       window.host.linked = ["bank-linked"];
       window.host.updates = [];
       Object.assign(window.host.spending, { enabled: false, accountIds: [], splits: {}, assignments: {}, unassigned: [], failUnassign: [], searches: [] }, spending);
-    }, [bankRows, spending]);
-    const previewBank = async (counts = /^13 new transactions, 0 already in Wealthfolio/) => {
-      await frame.getByRole("button", { name: "Preview the import" }).click();
-      await frame.getByText(counts).waitFor({ timeout: 30_000 });
-      await reuseBankRow.waitFor({ state: "attached" });
-    };
+    }, [bankEntries, spending]);
+    const savingsCheck = fundsBox().locator("section").filter({ has: frame.getByRole("heading", { name: /already in Savings looks? like/ }) });
+    const pairBox = (start) => savingsCheck.getByRole("checkbox", { name: new RegExp(`^${literal(start)}`) });
+    const pairItem = (text) => savingsCheck.locator("li").filter({ hasText: text });
+    const neftPair = "Fund INFZ90K01LQ6 Purchase · 5 May 2023 · ₹25,000, from Savings Savings: NEFT FICTIVA MF · 4 May 2023 · −₹25,000";
+    const savingsLabel = `${investor}'s funds · Savings`;
+    const linkSelected = savingsCheck.getByRole("button", { name: new RegExp(`^Link \\d+ selected: ${literal(savingsLabel)}$`) });
+    const newTransfers = savingsCheck.getByRole("button", { name: `Create new transfers instead: ${savingsLabel}`, exact: true });
+    const follows = (first, second) => first.evaluate((a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING), second);
+    const allAccounts = await accountList();
+    await resetBank();
+    await readStatement();
+    await bankSelect().click();
+    // The same accounts as the funds' box: those that track transactions.
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["None: don't add bank transfers", "Mutual funds (INR)", "Savings (INR)", "Not set (INR)"]);
+    await frame.getByRole("option", { name: "Savings (INR)" }).click();
+    await dSettled();
+    await savingsCheck.getByRole("heading", { name: "5 entries already in Savings look like these purchases and payouts", exact: true }).waitFor();
+    assert.ok(await follows(bankSelect(), await savingsCheck.elementHandle()), "right under the bank choice");
+    await savingsCheck.getByText(
+      "Linking uses the existing bank entry for this payment or payout, so it's counted once. Ticked: exact amount within a day, a unique match, and the description names the fund house or mentions mutual funds.",
+      { exact: true },
+    ).waitFor();
+    // Every pair at once: the fund, its movement and direction, and the bank entry, ticked only on
+    // strong evidence, and the reason in words.
+    for (const [name, ticked, reason] of [
+      [neftPair, true, "1 day apart · names the fund house"],
+      ["Fund 0P0000TBCB Purchase · 3 Jul 2023 · ₹1,00,000, from Savings Savings: UPI/CASH TO SELF · 3 Jul 2023 · −₹1,00,000", false, "Same day, but it doesn't name a fund house: check it"],
+      ["Fund 0P0000TBCB Cash dividend · 28 Dec 2023 · ₹7,276.48, to Savings Savings: IDCW · 28 Dec 2023 · +₹7,276.48", false, "Same day, but it doesn't name a fund house: check it"],
+      ["Fund 0P0000TBCB Cash dividend · 28 Jun 2024 · ₹6,848.45, to Savings Savings: TESTBRIDGE MF IDCW · 3 Jul 2024 · +₹6,848.45", false, "5 days apart: check it"],
+      ["Fund 0P0000TONF Purchase · 14 Aug 2023 · ₹20,000, from Savings Savings: ACH TESTBRIDGE MF · 14 Aug 2023 · −₹20,000", false, "2 entries match: check it"],
+    ]) {
+      const box = pairBox(name);
+      assert.equal(await box.count(), 1, name);
+      assert.equal(await box.getAttribute("aria-checked"), String(ticked), name);
+      await savingsCheck.locator("li").filter({ has: frame.getByRole("checkbox", { name: new RegExp(`^${literal(name)}`) }) }).getByText(reason, { exact: true }).waitFor();
+    }
+    assert.equal(await savingsCheck.getByRole("checkbox").count(), 5);
     const outsideSpending = "Changing a withdrawal or deposit into a transfer deletes any split across spending categories, also one saved before Spending was turned off for its account.";
+    assert.equal(await savingsCheck.getByText(outsideSpending, { exact: true }).count(), 1);
+    await savingsCheck.getByText("Linking changes each withdrawal or deposit into a transfer, linked with the fund account's.", { exact: true }).waitFor();
+    // What creating new transfers does, said before the choice.
+    const unlinked = "Unlinked purchases get new transfers from Savings; unlinked cash dividends get new transfers back to it. If an entry above is that payment or payout, the new transfer would count it twice.";
+    await savingsCheck.getByText(unlinked, { exact: true }).waitFor();
+    assert.equal(await frame.locator(`[id="${await newTransfers.getAttribute("aria-describedby")}"]`).textContent(), unlinked);
+    assert.equal(await linkSelected.textContent(), "Link 1 selected");
+    // It's a question until it's answered.
+    assert.equal(await questionChip.textContent(), "1 question");
+    await dFooter.getByText("1 question left: the payment check before importing.", { exact: true }).waitFor();
+    await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
+    await focused(savingsCheck.getByRole("heading"), "Go to the question, the payment check");
+    await pairBox(neftPair).dispatchEvent("click");
+    assert.equal(await linkSelected.textContent(), "Link 0 selected");
+    assert.equal(await linkSelected.isDisabled(), true);
+    await pairBox(neftPair).dispatchEvent("click");
+    await pairBox("Fund 0P0000TBCB Purchase").dispatchEvent("click");
+    assert.equal(await linkSelected.textContent(), "Link 2 selected");
+    await pairBox("Fund 0P0000TBCB Purchase").dispatchEvent("click");
+    // Create new transfers instead answers it: a receipt with Change answer, and the focus on the summary.
+    await newTransfers.press("Enter");
+    const notLinked = "Not linked: all 5 payments and payouts get new transfers with Savings";
+    await fundsBox().getByText(notLinked, { exact: true }).waitFor();
+    await focused(dSummary, "Create new transfers instead");
+    await dSaid.getByText(`${notLinked}. All questions answered. Ready to import.`, { exact: true }).waitFor();
+    await dFooter.getByText(`${investor}'s purchases transfer from Savings, and sales and payouts back to it: 9 get new transfers.`, { exact: true }).waitFor();
+    // Change answer asks again, with the ticks as they were.
+    await fundsBox().getByRole("button", { name: `Change answer: ${notLinked}: ${savingsLabel}`, exact: true }).click();
+    await focused(savingsCheck.getByRole("heading"), "Change answer, the payment check");
+    assert.equal(await pairBox(neftPair).getAttribute("aria-checked"), "true");
+    await linkSelected.click();
+    const oneLinked = "1 of 5 payments and payouts linked to entries already in Savings; the rest get new transfers";
+    await fundsBox().getByText(oneLinked, { exact: true }).waitFor();
+    await dFooter.getByText(`${investor}'s purchases transfer from Savings, and sales and payouts back to it: 1 uses an entry already there, 8 get new transfers.`, { exact: true }).waitFor();
+    await seeEvery();
+    const linkedCash = everyTable.getByRole("row").filter({ hasText: "2023-05-05" }).filter({ hasText: detailed.liquid }).locator("td").nth(7);
+    assert.equal((await linkedCash.textContent()).trim(), "transfer in 25001.1470564from Savings, using an entry already there");
+    // A trade Wealthfolio rejects or skips leaves its chosen bank entry and the fund's cash alone.
+    const linkedImport = async () => {
+      await readStatement();
+      // Remembered once imported.
+      if ((await bankSelect().textContent()).trim() !== "Savings (INR)") await pickOption(bankSelect(), "Savings (INR)");
+      await linkSelected.click();
+      await importButton.click();
+    };
+    for (const outcome of ["rejectLine", "skipLine"]) {
+      await resetBank();
+      await hosted((outcome) => { window.host[outcome] = 1; }, outcome);
+      await linkedImport();
+      await frame.getByText("Imported 29 of 30 activities").waitFor();
+      await frame.getByText(/The trade wasn't imported, so the bank's entry was left as it is\./).waitFor();
+      const unchanged = await hosted(() => ({
+        bank: window.host.activities.find((a) => a.id === "bank-neft"),
+        fundRows: window.host.activities.filter((a) => a.accountId === "account-1" && a.date.startsWith("2023-05-05")),
+        links: window.host.links,
+      }));
+      assert.deepEqual(unchanged, { bank: bankEntries[0], fundRows: [], links: [] });
+      await hosted(() => {
+        window.host.rejectLine = undefined;
+        window.host.skipLine = undefined;
+      });
+    }
+    // The bank account is remembered with the rest, and preselected.
+    const bankKey = `bank-${panKey}`;
+    assert.match(bankKey, /^bank-pan:[0-9a-f]{64}$/);
+    assert.equal((await storage())[bankKey], "bank-1");
+    // Linked: the trade, then the fund account's transfer, the bank entry changed into a transfer, and the link.
+    await resetBank();
+    await linkedImport();
+    await imported(30).waitFor();
+    await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
+    const banked = await hosted(() => ({ activities: window.host.activities, links: window.host.links }));
+    const byId = Object.fromEntries(banked.activities.map((a) => [a.id, a]));
+    assert.equal(banked.links.length, 1);
+    const [[bankRowId, fundLegId]] = banked.links;
+    assert.equal(bankRowId, "bank-neft");
+    assert.deepEqual([byId["bank-neft"].activityType, byId["bank-neft"].comment, byId["bank-neft"].amount], ["TRANSFER_OUT", "NEFT FICTIVA MF", "25000.00"]);
+    const fundLeg = byId[fundLegId];
+    assert.deepEqual([fundLeg.accountId, fundLeg.activityType, fundLeg.amount, fundLeg.date.slice(0, 10)], ["account-1", "TRANSFER_IN", "25001.1470564", "2023-05-05"]);
+    const bankCount = (accountId, type) => banked.activities.filter((a) => a.accountId === accountId && a.activityType === type).length;
+    assert.deepEqual(
+      [bankCount("bank-1", "TRANSFER_OUT"), bankCount("bank-1", "TRANSFER_IN"), bankCount("account-1", "TRANSFER_IN"), bankCount("account-1", "TRANSFER_OUT")],
+      [4, 6, 4, 5],
+    );
+    assert.equal(bankCount("account-1", "DEPOSIT"), 1, "the switch's purchase keeps its deposit");
+    await readStatement();
+    assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
+    assert.equal(await savingsCheck.count(), 0);
+
+    // Before a pair is linked, it says what linking changes besides its type and link: its spending
+    // split and category, and corrections from a synced account. One with a split never starts ticked.
     const syncedNote = "Savings is synced. Once linked, later corrections to this entry from the sync won't change it.";
     const splitNote = "This entry is split across 2 spending categories. Changing it into a transfer deletes the split.";
     const categoryNote = "Its spending category is removed: a transfer isn't spending.";
-    const liquidPurchase = "the 2023-05-05 purchase of Fictiva Liquid Fund - Direct Plan - Growth";
-    // Spending off, in an account synced through Wealthfolio Connect: one note above the matches, and the synced one on the row.
+    const twoSplits = { "bank-neft": [{ taxonomyId: "spending_categories", categoryId: "food" }, { taxonomyId: "spending_categories", categoryId: "rent" }] };
+    // Spending off, in an account synced through Wealthfolio Connect: one note above the pairs, and the synced one on each pair.
     await editAccounts({ "bank-1": { provider: "SNAPTRADE", providerAccountId: "connect-1" } });
     await resetBank();
-    await previewBank();
-    await frame.getByText(outsideSpending, { exact: true }).waitFor();
-    await frame.getByText(syncedNote, { exact: true }).waitFor();
+    await readStatement();
+    assert.equal(await savingsCheck.getByText(outsideSpending, { exact: true }).count(), 1);
+    await pairItem("NEFT FICTIVA MF").getByText(syncedNote, { exact: true }).waitFor();
     assert.equal(await frame.getByText(/^This entry is split|category is removed|^Couldn't check/).count(), 0);
     assert.deepEqual(await hosted(() => window.host.spending.searches), []);
-    // In Spending, a split and a category added after the preview stop the import; a comment edited is kept.
+    // In Spending, a split known before keeps it unticked, and its reason says why.
+    await resetBank({ enabled: true, accountIds: ["bank-1"], splits: twoSplits });
+    await readStatement();
+    await pairItem("NEFT FICTIVA MF").getByText(splitNote, { exact: true }).waitFor();
+    assert.equal(await pairBox(neftPair).getAttribute("aria-checked"), "false");
+    await pairItem("NEFT FICTIVA MF").getByText("1 day apart · names the fund house, but linking deletes its split across spending categories: check it", { exact: true }).waitFor();
+    assert.equal(await savingsCheck.getByText(outsideSpending).count(), 0);
+    // A split and a category added after it's linked stop the import, which then shows the entry as it is.
     await resetBank({ enabled: true, accountIds: ["bank-1"] });
-    await previewBank();
-    assert.equal(await frame.getByText(outsideSpending).count(), 0);
-    assert.equal(await frame.getByText(splitNote).count(), 0);
-    await frame.getByText(syncedNote, { exact: true }).waitFor();
-    await reuseBankRow.dispatchEvent("click");
+    await readStatement();
+    assert.equal(await pairBox(neftPair).getAttribute("aria-checked"), "true");
+    await linkSelected.click();
     await hosted(() => {
       window.host.spending.splits["bank-neft"] = [{ taxonomyId: "spending_categories", categoryId: "food" }, { taxonomyId: "spending_categories", categoryId: "rent" }];
       window.host.spending.assignments["bank-neft"] = [{ taxonomyId: "spending_categories", categoryId: "investing" }, { taxonomyId: "savings_categories", categoryId: "sip" }];
       window.host.activities.find((a) => a.id === "bank-neft").comment = "NEFT FICTIVA MF SIP";
     });
     const rowsBefore = await hosted(() => window.host.activities.length);
-    await frame.getByRole("button", { name: "Import 30 activities" }).click();
-    await frame.getByText("Nothing was imported: bank entries you chose changed").waitFor();
+    await importButton.click();
+    await frame.getByText("Nothing was imported: bank entries you chose changed", { exact: true }).waitFor();
+    const liquidPurchaseName = `the 2023-05-05 purchase of ${detailed.liquid}`;
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), chosen for ${liquidPurchase}, changed: ${splitNote} ${categoryNote}`,
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), chosen for ${liquidPurchaseName}, changed: ${splitNote} ${categoryNote}`,
       { exact: true },
     ).waitFor();
     assert.deepEqual(await hosted(() => [window.host.activities.length, window.host.updates, window.host.links]), [rowsBefore, [], []]);
-    // The preview shows the row as it is now, still ticked; the next Import goes ahead.
-    await frame.getByText("Savings has a withdrawal of 25000.00 on 2023-05-04 (NEFT FICTIVA MF SIP).", { exact: false }).waitFor();
-    await frame.getByText(splitNote, { exact: true }).waitFor();
-    await frame.getByText(categoryNote, { exact: true }).waitFor();
-    assert.equal(await reuseBankRow.isChecked(), true);
-    await frame.getByRole("button", { name: "Import 30 activities" }).click();
-    await frame.getByText("Imported 30 of 30 activities").waitFor();
+    await dSettled();
+    // The check keeps its answer, with the entry as it is now, which the alert disclosed: the next
+    // Import goes ahead.
+    await fundsBox().getByRole("button", { name: /^Change answer: 1 of / }).waitFor();
+    await importButton.click();
+    await imported(30).waitFor();
     await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF SIP), for ${liquidPurchase}: Its split across 2 spending categories was deleted. Its spending category was removed. Later corrections to it from the sync won't change it.`,
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF SIP), for the 2023-05-05 purchase of ${detailed.liquid}: Its split across 2 spending categories was deleted. Its spending category was removed. Later corrections to it from the sync won't change it.`,
       { exact: true },
     ).waitFor();
     const reusedRow = await hosted(() => ({
@@ -942,680 +875,437 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       [reusedRow.row.activityType, reusedRow.row.comment, reusedRow.row.isUserModified, reusedRow.splits, reusedRow.assignments, reusedRow.unassigned, reusedRow.updates],
       ["TRANSFER_OUT", "NEFT FICTIVA MF SIP", true, undefined, [{ taxonomyId: "savings_categories", categoryId: "sip" }], [["bank-neft", "expense"]], [["bank-neft", "TRANSFER_OUT", "NEFT FICTIVA MF SIP"]]],
     );
-    // A row deleted after the preview stops the import too, and its transaction then gets a new transfer.
+    // An entry deleted after it's linked stops the import too; without it, the check is asked again.
     await resetBank({ enabled: true, accountIds: ["bank-1"] });
-    await previewBank();
-    await reuseBankRow.dispatchEvent("click");
+    await readStatement();
+    await linkSelected.click();
     await hosted(() => { window.host.activities = window.host.activities.filter((a) => a.id !== "bank-neft"); });
-    await frame.getByRole("button", { name: "Import 30 activities" }).click();
+    await importButton.click();
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), chosen for ${liquidPurchase}, is no longer in Wealthfolio, so the transaction now comes with a new transfer out.`,
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), chosen for ${liquidPurchaseName}, is no longer in Wealthfolio, so the transaction now comes with a new transfer out.`,
       { exact: true },
     ).waitFor();
-    assert.equal(await reuseBankRow.count(), 0);
-    await frame.getByRole("button", { name: "Import 32 activities" }).click();
-    await frame.getByText("Imported 32 of 32 activities").waitFor();
-    // A category Wealthfolio won't remove leaves the row linked, with a warning.
+    await savingsCheck.getByRole("heading", { name: "4 entries already in Savings look like these purchases and payouts", exact: true }).waitFor();
+    await dFooter.getByText("1 question left: the payment check before importing.", { exact: true }).waitFor();
+    await newTransfers.click();
+    await importButton.click();
+    await imported(32).waitFor();
+    // A category Wealthfolio won't remove leaves the entry linked, with a warning.
     await resetBank({ enabled: true, accountIds: ["bank-1"], failUnassign: ["bank-neft"] });
     await hosted(() => { window.host.spending.assignments["bank-neft"] = [{ taxonomyId: "spending_categories", categoryId: "investing" }]; });
-    await previewBank();
-    await frame.getByText(categoryNote, { exact: true }).waitFor();
-    await reuseBankRow.dispatchEvent("click");
-    await frame.getByRole("button", { name: "Import 30 activities" }).click();
+    await readStatement();
+    await pairItem("NEFT FICTIVA MF").getByText(categoryNote, { exact: true }).waitFor();
+    assert.equal(await pairBox(neftPair).getAttribute("aria-checked"), "true", "a category alone doesn't stop the tick");
+    await linkSelected.click();
+    await importButton.click();
     await frame.getByText("Linked 1 of 1 bank row you chose with its transaction.").waitFor();
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), for ${liquidPurchase}: Later corrections to it from the sync won't change it. Couldn't remove its spending category: Error: Category unavailable. A transfer isn't spending: remove it in Wealthfolio.`,
+      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), for the 2023-05-05 purchase of ${detailed.liquid}: Later corrections to it from the sync won't change it. Couldn't remove its spending category: Error: Category unavailable. A transfer isn't spending: remove it in Wealthfolio.`,
       { exact: true },
     ).waitFor();
-    // A row ticked for a possible duplicate that isn't imported isn't read again.
-    const earlierTrade = banked.activities.find((a) => a.accountId === "account-1" && a.activityType === "BUY" && a.date.startsWith("2023-05-05"));
-    await resetBank({ enabled: true, accountIds: ["bank-1"] });
-    await hosted((trade) => { window.host.activities.push(trade); }, earlierTrade);
-    await previewBank(/^12 new transactions, 0 already in Wealthfolio, 1 possible duplicate/);
-    await reuseBankRow.dispatchEvent("click");
-    const searched = await hosted(() => window.host.spending.searches.length);
-    await hosted(() => { window.host.activities = window.host.activities.filter((a) => a.id !== "bank-neft"); });
-    await frame.getByRole("button", { name: "Import 29 activities" }).click();
-    await frame.getByText("Imported 29 of 29 activities").waitFor();
-    assert.equal(await hosted(() => window.host.spending.searches.length), searched);
     await editAccounts({ "bank-1": { provider: undefined, providerAccountId: undefined } });
+    // Back to None, which forgets the bank account once the review is finished.
     await resetBank();
-    await hosted((rows) => { window.host.activities = rows; }, banked.activities);
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, 13 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    // Back to outside Wealthfolio, which forgets the choice.
-    await bankChoice.click();
-    await frame.getByRole("option", { name: "Outside Wealthfolio" }).click();
-    await frame.getByText("Same as PAN (Outside Wealthfolio)").first().waitFor();
+    await hosted((rows) => { window.host.activities = rows; }, allImported);
+    await readStatement();
+    assert.equal((await bankSelect().textContent()).trim(), "Savings (INR)");
+    assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
+    await pickOption(bankSelect(), "None: don't add bank transfers");
+    await dFooter.getByRole("button", { name: "Finish", exact: true }).click();
     await tab.frames()[1].waitForFunction((key) => !window.host.storage.has(key), bankKey);
-    assert.deepEqual(await host(), beforeBank);
+    const beforeIgnoredDetailed = await storage();
+    assert.deepEqual(beforeIgnoredDetailed, firstChoices);
 
-    // Selecting a file clears the previous statement and preview, even before the next read.
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-mismatch.pdf");
-    await frame.getByText("Preview", { exact: true }).waitFor({ state: "hidden" });
-    assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
+    // A folio's own bank account has its own check, under that folio's choice, here with the PAN's None.
+    await resetBank({ enabled: true, accountIds: ["bank-1"] });
+    await hosted((entry) => { window.host.activities = [entry]; }, bankEntry("bank-tb", "DEPOSIT", "7276.48", "2023-12-28", "TESTBRIDGE MF IDCW"));
+    await readStatement();
+    await openPart();
+    const [fictivaKey, testbridgeKey] = await Promise.all([fictivaFolio, testbridgeFolio].map((folio) => folioSelect(folio).getAttribute("id")));
+    assert.match(fictivaKey, /^folio:[0-9a-f]{64}$/);
+    assert.equal((await folioBankSelect(fictivaFolio).textContent()).trim(), "Same as above (None)");
+    await pickOption(folioBankSelect(testbridgeFolio), "Savings (INR)");
+    const payoutCheck = fundsBox().locator("section").filter({ has: frame.getByRole("heading", { name: "1 entry already in Savings looks like this payout", exact: true }) });
+    await payoutCheck.waitFor();
+    assert.ok(await follows(folioBankSelect(testbridgeFolio), await payoutCheck.elementHandle()), "under the folio's bank choice");
+    assert.ok(!(await follows(payoutCheck, await folioBankSelect(testbridgeFolio).elementHandle())));
+    await payoutCheck.getByText("Unlinked cash dividends get new transfers to Savings. If an entry above is that payout, the new transfer would count it twice.", { exact: true }).waitFor();
+    await payoutCheck.getByText("Same day · names the fund house", { exact: true }).waitFor();
+    // Not importing the PAN's funds leaves a folio that's still imported, and its check.
+    await pickOption(fundsSelect(), "Don't import them");
+    await pickOption(folioSelect(testbridgeFolio), "Not set (INR)");
+    assert.equal((await folioSelect(fictivaFolio).textContent()).trim(), "Same as above (Don't import)");
+    await payoutCheck.waitFor();
+    await notIncluded.getByText("Not imported (1)", { exact: true }).waitFor();
+    assert.equal(await transactionParts(), "6 to import · 33 in folios not imported");
+    await dFooter.getByText("1 question left: the payment check before importing.", { exact: true }).waitFor();
+    await payoutCheck.getByRole("button", { name: `Link 1 selected: ${savingsLabel}`, exact: true }).click();
+    await fundsBox().getByText("The payout is linked to an entry already in Savings", { exact: true }).waitFor();
+    await dFooter.getByText("Import 6 transactions for 2 funds into Not set.", { exact: true }).waitFor();
+    await dFooter.getByText(`${investor}'s purchases transfer from Savings, and sales and payouts back to it: 1 uses an entry already there, 5 get new transfers.`, { exact: true }).waitFor();
+    await leaveDetailed();
+    assert.deepEqual(await storage(), beforeIgnoredDetailed, "discarded");
 
-    // A fund whose rows don't add up to its closing balance is left out, even with its opening units in
-    // Wealthfolio, unless the user imports it anyway.
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
-    await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
-    assert.equal(await frame.getByText("Confirmed", { exact: true }).count(), 5);
-    const flexiOpening = {
-      id: "flexi-opening", accountId: "account-1", activityType: "BUY", subtype: null, status: "POSTED",
-      date: "2023-03-01T00:00:00+00:00", quantity: "1250", unitPrice: "40", amount: "50000", fee: null, currency: "INR",
-      needsReview: false, comment: null, assetId: "asset-INFZ90K01FC8", assetSymbol: "INFZ90K01FC8", exchangeMic: "XBOM",
-    };
-    await tab.frames()[1].evaluate((opening) => { window.host.activities = [opening]; }, flexiOpening);
-    const gap = /^Fictiva Flexi Cap Fund - Direct Plan - Growth, folio 91234567 \/ 12: The rows take the unit balance from 1250 to 2798\.066, but the statement's closing balance is 2892\.104, 94\.038 units apart/;
-    const leftOutAlert = frame.getByRole("alert").filter({ hasText: /^Left out/ });
-    const anywayAlert = frame.getByRole("alert").filter({ hasText: /^Imported anyway/ });
-    const importFlexi = frame.getByRole("checkbox", {
-      name: "Import this fund anyway for Fictiva Flexi Cap Fund - Direct Plan - Growth, folio 91234567 / 12",
-      exact: true,
-    });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    await leftOutAlert.getByText(gap).waitFor();
-    assert.equal(await importFlexi.getAttribute("aria-checked"), "false");
-    // Each tick previews again, and the new preview's checkbox takes the focus back.
-    await importFlexi.press("Space");
-    await frame.getByText(/^38 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    await anywayAlert.getByText(gap).waitFor();
-    await focused(anywayAlert.getByRole("checkbox"), "Import this fund anyway");
-    assert.equal(await leftOutAlert.getByText(gap).count(), 0);
-    await frame.getByRole("button", { name: "Import 73 activities" }).waitFor();
-    await importFlexi.press("Space");
-    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    await leftOutAlert.getByText(gap).waitFor();
-    await focused(leftOutAlert.getByRole("checkbox"), "Import this fund anyway, unticked");
-    assert.equal(await anywayAlert.count(), 0);
-    // A tick whose preview fails shows no checkbox, so its error takes the focus, and a later preview
-    // leaves the checkbox's focus alone.
-    await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = ["asset-INFZ90K01FC8"]; });
-    await importFlexi.press("Space");
-    await frame.getByText(/^Couldn't prepare the preview/).waitFor();
-    await focused(frame.getByRole("alert").filter({ hasText: /^Something went wrong/ }), "Import this fund anyway, failed");
-    await tab.frames()[1].evaluate(() => { window.host.failGetProfileIds = []; });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^38 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    assert.equal(await importFlexi.evaluate((box) => box === document.activeElement), false);
-    await pause("check");
-    await importFlexi.press("Space");
-    await waiting();
-    await clickOutside();
-    await resume();
-    await frame.getByText(/^13 new transactions, 0 already in Wealthfolio/).waitFor({ timeout: 30_000 });
-    await stayedOutside("Import this fund anyway");
-    await frame.getByRole("button", { name: "Import 23 activities" }).click();
-    await frame.getByText("Imported 23 of 23 activities").waitFor();
-    const afterGap = await tab.frames()[1].evaluate(() => window.host.activities);
-    assert.deepEqual(afterGap.filter((a) => a.assetSymbol === "INFZ90K01FC8").map((a) => a.id), ["flexi-opening"]);
-    assert.equal(afterGap.length, 24);
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
-    assert.equal(await frame.getByText("Confirmed", { exact: true }).count(), 5);
-    await tab.frames()[1].evaluate(() => { window.host.activities = []; });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await pause("import");
-    await frame.getByRole("button", { name: "Import 23 activities" }).press("Enter");
-    await waiting();
-    await clickOutside();
-    await tab.frames()[1].evaluate(() => {
-      window.host.rejectLine = 1;
-      window.host.failHistory = true;
-    });
-    await resume();
-    await frame.getByText("Imported 22 of 23 activities").waitFor();
-    await frame.getByText("Wealthfolio rejected rows", { exact: true }).waitFor();
-    await frame.getByText(/The fund could not be created/).waitFor();
-    await frame.getByText(/The import finished, but the closing units couldn't be checked/).waitFor();
-    await stayedOutside("Import 23 activities");
-    assert.equal(await frame.getByText(/The import failed/).count(), 0);
-
-    // Reads the selected statement again; storage reads wait until the previous one has gone.
-    const readAgain = async () => {
-      await pause("storage");
-      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-      await waiting();
-      assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
-      await resume();
-      await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
-    };
-    const storage = async () => Object.fromEntries((await host()).storage);
-    const confirmed = () => frame.getByText("Confirmed", { exact: true }).count();
-    const undecided = async (section) => {
-      await section.getByRole("textbox", { name: /^Search for / }).waitFor();
-      assert.equal(await section.getByText("Confirmed", { exact: true }).count(), 0);
-      assert.equal(await section.getByText("Left out", { exact: true }).count(), 0);
-    };
-    const leaveOut = async (section) => {
-      await section.getByRole("button", { name: /^Change the / }).click();
-      await section.getByRole("button", { name: "Leave this fund out" }).click();
-      await section.getByText("Left out", { exact: true }).waitFor();
-    };
-    // Confirms the first result for each fund with these ISINs, whose sections go once they're confirmed.
-    const confirmFirst = async (isins) => {
-      for (const isin of isins) {
-        const section = frame.locator("section").filter({ hasText: `ISIN ${isin}` });
-        await section.getByRole("radio").first().waitFor({ state: "attached" });
-        await section.getByRole("radio").first().dispatchEvent("click");
-        await section.getByRole("button", { name: "Use this fund" }).click();
-        await section.waitFor({ state: "detached" });
-      }
-    };
-    // Confirms the first result for every holding that still needs a choice, each in a section of its own until then.
-    const useFirstResults = async () => {
-      for (let open = await frame.locator("section").count(); open > 0; open--) {
-        const section = frame.locator("section").first();
-        await section.getByRole("radio").first().waitFor({ state: "attached" });
-        await section.getByRole("radio").first().click();
-        await section.getByRole("button", { name: /^Use this / }).click();
-        await frame.locator("section").nth(open - 1).waitFor({ state: "detached" });
-      }
-    };
-    // Leaves out every fund that still needs a choice, each in a section of its own until then.
-    const leaveOutOthers = async () => {
-      for (let open = await frame.locator("section").count(); open > 0; open--) {
-        await frame.locator("section").first().getByRole("button", { name: "Leave this fund out" }).click();
-        await frame.locator("section").nth(open - 1).waitFor({ state: "detached" });
-      }
-    };
-
-    // A remembered PAN or folio account that tracks holdings is ignored, and its row says why. The
-    // folio's own account needs choosing again, even to go with its PAN.
-    const panAccount = frame.getByLabel("PAN ABCDE1234F", { exact: true });
-    const fictiva = frame.getByLabel("Fictiva Mutual Fund, folio 91234567 / 12", { exact: true });
-    const accountKeys = [await panAccount.getAttribute("id"), await fictiva.getAttribute("id")];
-    const beforeHoldings = await storage();
-    await tab.frames()[1].evaluate(([pan, folio]) => {
-      window.host.storage.set(pan, "holdings-1");
-      window.host.storage.set(folio, "holdings-2");
-    }, accountKeys);
-    await readAgain();
-    const reason = ", which tracks holdings. Transactions imported there wouldn't change its holdings, so choose again.";
-    await frame.getByText(`Chosen before: Demat${reason}`, { exact: true }).waitFor();
-    await frame.getByText(`Chosen before: Fund folios${reason}`, { exact: true }).waitFor();
-    const previewButton = frame.getByRole("button", { name: "Preview the import" });
-    assert.equal(await previewButton.isDisabled(), true);
-    assert.match(await panAccount.textContent(), /Choose an account/);
-    await panAccount.click();
-    await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
-    assert.equal(await frame.getByText(/^Chosen before: Demat/).count(), 0);
-    assert.equal(await previewButton.isDisabled(), true, "the folio's own account needs choosing again");
-    assert.match(await fictiva.textContent(), /Choose an account/);
-    await fictiva.click();
-    await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).click();
-    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.equal(await previewButton.isDisabled(), false);
-    await tab.frames()[1].waitForFunction(([pan, folio]) =>
-      window.host.storage.get(pan) === "account-1" && !window.host.storage.has(folio), accountKeys);
-    assert.deepEqual(await storage(), beforeHoldings);
-
-    // Folio bank choices override a stale PAN default, and unused defaults cannot report a conflict.
-    const beforeBankValidation = await storage();
-    const bankFolios = expected.folios.map((f) => frame.getByLabel(`Bank account for ${f.amc}, folio ${f.folio}`, { exact: true }));
-    await tab.frames()[1].evaluate((key) => { window.host.storage.set(key, "holdings-1"); }, bankKey);
-    await readAgain();
-    assert.equal(await previewButton.isDisabled(), true);
-    await bankFolios[0].click();
-    await frame.getByRole("option", { name: "Outside Wealthfolio", exact: true }).click();
-    assert.equal(await previewButton.isDisabled(), true, "the other folio still inherits the stale default");
-    await bankFolios[1].click();
-    await frame.getByRole("option", { name: "Savings (INR)" }).click();
-    assert.equal(await previewButton.isDisabled(), false);
-    await bankChoice.click();
-    await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
-    assert.equal(await previewButton.isDisabled(), false);
-    assert.equal(await frame.getByText(/This is also the account for the funds/).count(), 0);
-
-    // A folio whose funds are all left out cannot block the other folio's valid import.
-    await bankFolios[0].click();
-    await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).click();
-    assert.equal(await previewButton.isDisabled(), true);
-    for (const name of [detailed.flexi, detailed.liquid, detailed.balanced]) await leaveOut(holding(name));
-    assert.equal(await previewButton.isDisabled(), false);
-    await tab.frames()[1].evaluate((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeBankValidation);
-    await readAgain();
-    assert.deepEqual(await storage(), beforeBankValidation);
-
-    // Remembered accounts that are hidden, archived or no longer listed are ignored too, and their rows
-    // say why. A folio's own choice needs making again, even to go with its PAN.
-    const testbridge = frame.getByLabel("Testbridge Mutual Fund, folio 1040012345", { exact: true });
-    const [testbridgeKey, ...folioBankKeys] = await Promise.all([testbridge, ...bankFolios].map((select) => select.getAttribute("id")));
-    const rowOf = (select) => frame.locator("div.justify-between").filter({ has: select });
-    const unavailable = (account) => `Chosen before: ${account}, so choose again.`;
-    const missing = unavailable("an account that's no longer available");
-    const pick = async (select, option) => {
-      await select.click();
-      await frame.getByRole("option", { name: option, exact: true }).click();
-    };
-    const saveChoices = (choices) => tab.frames()[1].evaluate((choices) => {
-      for (const [key, id] of choices) window.host.storage.set(key, id);
-    }, choices);
-    const restoreChoices = async (saved) => {
-      await tab.frames()[1].evaluate((saved) => { window.host.storage = new Map(Object.entries(saved)); }, saved);
-      await readAgain();
-      assert.deepEqual(await storage(), saved);
-    };
-    const beforeUnavailable = await storage();
-    const hiddenFunds = unavailable("Hidden funds, which is hidden in Wealthfolio");
-    const oldFunds = unavailable("Old funds, which is archived in Wealthfolio");
-    await saveChoices([[accountKeys[1], "hidden-1"], [testbridgeKey, "gone-1"], [folioBankKeys[0], "archived-2"], [folioBankKeys[1], "hidden-1"], [bankKey, "bank-1"]]);
-    await readAgain();
-    await rowOf(fictiva).getByText(hiddenFunds, { exact: true }).waitFor();
-    await rowOf(testbridge).getByText(missing, { exact: true }).waitFor();
-    await rowOf(bankFolios[0]).getByText(oldFunds, { exact: true }).waitFor();
-    await rowOf(bankFolios[1]).getByText(hiddenFunds, { exact: true }).waitFor();
-    assert.equal(await frame.getByText(/^Chosen before:/).count(), 4);
-    for (const select of [fictiva, testbridge, ...bankFolios]) assert.match(await select.textContent(), /Choose an account/);
-    assert.match(await panAccount.textContent(), /Mutual funds/);
-    assert.match(await bankChoice.textContent(), /Savings/);
-    assert.equal(await previewButton.isDisabled(), true);
-    await fictiva.click();
-    await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).waitFor();
-    assert.equal(await frame.getByRole("option", { name: /^(Hidden|Old) (funds|demat) / }).count(), 0);
-    await frame.getByRole("option", { name: "Same as PAN (Mutual funds)" }).click();
-    await pick(testbridge, "Not set (INR)");
-    assert.equal(await previewButton.isDisabled(), true, "the folios' bank accounts need choosing again");
-    await pick(bankFolios[0], "Outside Wealthfolio");
-    assert.equal(await previewButton.isDisabled(), true, "so does the other folio's, even to go with the PAN");
-    await pick(bankFolios[1], "Same as PAN (Savings)");
-    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.equal(await previewButton.isDisabled(), false);
-    // Each folio's rows go to the accounts chosen now: Fictiva's with deposits and withdrawals in
-    // Mutual funds, Testbridge's in Not set, with transfers from and to Savings.
-    const beforeImport = await tab.frames()[1].evaluate(() =>
-      ({ activities: window.host.activities, failHistory: window.host.failHistory, rejectLine: window.host.rejectLine }));
-    await tab.frames()[1].evaluate(() => {
+    // A family statement: a box per PAN, named by its investor, and a group of ready funds for each.
+    const otherInvestor = "BHAVYA R TESTWALA";
+    await hosted(() => {
+      window.host.otherInvestorFolio = "1040012345";
       window.host.activities = [];
-      window.host.failHistory = false;
-      window.host.rejectLine = undefined;
     });
-    await previewButton.click();
-    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
-    await frame.getByText(/^Imported (\d+) of \1 activities/).waitFor();
-    const routed = await tab.frames()[1].evaluate(() => window.host.activities.map((a) => [a.accountId, a.activityType, a.assetSymbol]));
-    const rowCount = (accountId, type) => routed.filter(([id, t]) => id === accountId && (!type || t === type)).length;
+    await readStatement();
+    await frame.getByText(`CAMS statement · ${investor} and ${otherInvestor} · made-up-cas.pdf`, { exact: true }).waitFor();
+    assert.match(await fundsSelect(otherInvestor).textContent(), /Choose an account/);
+    await frame.getByText("Chosen last time where there was one.", { exact: true }).waitFor();
+    await pickOption(fundsSelect(otherInvestor), "Not set (INR)");
+    assert.deepEqual(await frame.locator("th[scope=colgroup]").allTextContents(), [`${investor} → Mutual funds`, `${otherInvestor} → Not set`]);
+    await dFooter.getByText("Import 7 transactions for 2 funds into Mutual funds.", { exact: true }).waitFor();
+    await dFooter.getByText("Import 6 transactions for 2 funds into Not set.", { exact: true }).waitFor();
+    await hosted(() => { window.host.otherInvestorFolio = ""; });
+    await leaveDetailed();
+
+    // A remembered account that tracks holdings is ignored, and its choice says why; so is a bank
+    // account that does. Go to the question goes to each in turn.
+    await saveChoices([[panKey, "holdings-1"], [bankKey, "holdings-1"]]);
+    await readStatement();
+    await fundsBox().getByText(chooseAgain("Demat, which tracks holdings. Transactions imported there wouldn't change its holdings"), { exact: true }).waitFor();
+    await fundsBox().getByText(chooseAgain("Demat, which tracks holdings. Transfers imported there wouldn't change its cash"), { exact: true }).waitFor();
+    assert.match(await fundsSelect().textContent(), /Choose an account/);
+    assert.match(await bankSelect().textContent(), /Choose an account/);
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
+    await focused(fundsSelect(), "Go to the question, a funds account chosen before");
+    await pickOption(fundsSelect(), "Mutual funds (INR)");
+    assert.equal(await frame.getByText(/^Chosen before: Demat, which tracks holdings\. Transactions/).count(), 0);
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
+    await focused(bankSelect(), "Go to the question, a bank account chosen before");
+    await pickOption(bankSelect(), "None: don't add bank transfers");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    await importButton.click();
+    await imported(23).waitFor();
+    assert.deepEqual(await storage(), beforeIgnoredDetailed, "the choices made in their place");
+
+    // Remembered folio accounts that are hidden, archived or no longer listed are ignored too, inside
+    // Save part of it to another account, which Go to the question opens. Their choices need making
+    // again, even to go with the PAN's.
+    const hiddenFunds = chooseAgain("Hidden funds, which is hidden in Wealthfolio");
+    const oldFunds = chooseAgain("Old funds, which is archived in Wealthfolio");
+    await saveChoices([[fictivaKey, "hidden-1"], [testbridgeKey, "gone-1"], [`bank-${fictivaKey}`, "archived-2"], [`bank-${testbridgeKey}`, "hidden-1"], [bankKey, "bank-1"]]);
+    await hosted(() => { window.host.activities = []; });
+    await readStatement();
+    await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
+    await focused(folioSelect(fictivaFolio), "Go to the question, a folio's account");
+    assert.equal(await partToggle().getAttribute("aria-expanded"), "true");
+    assert.equal(await fundsBox().getByText(hiddenFunds, { exact: true }).count(), 2);
+    await fundsBox().getByText(missing, { exact: true }).waitFor();
+    await fundsBox().getByText(oldFunds, { exact: true }).waitFor();
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 4);
+    for (const select of [folioSelect(fictivaFolio), folioSelect(testbridgeFolio), folioBankSelect(fictivaFolio), folioBankSelect(testbridgeFolio)]) {
+      assert.match(await select.textContent(), /Choose an account/);
+    }
+    assert.match(await fundsSelect().textContent(), /Mutual funds/);
+    assert.match(await bankSelect().textContent(), /Savings/);
+    await folioSelect(fictivaFolio).click();
+    await frame.getByRole("option", { name: "Same as above (Mutual funds)" }).waitFor();
+    assert.equal(await frame.getByRole("option", { name: /^(Hidden|Old) (funds|demat)/ }).count(), 0);
+    await frame.getByRole("option", { name: "Same as above (Mutual funds)" }).click();
+    await pickOption(folioSelect(testbridgeFolio), "Not set (INR)");
+    await pickOption(folioBankSelect(fictivaFolio), "None: don't add bank transfers");
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await pickOption(folioBankSelect(testbridgeFolio), "Same as above (Savings)");
+    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
+    assert.equal(await questionChip.count(), 0);
+    // Each folio's transactions go to the accounts chosen now: Fictiva's with deposits and withdrawals
+    // in Mutual funds, Testbridge's in Not set, with transfers from and to Savings.
+    await importButton.click();
+    await imported().waitFor();
+    const routed = await hosted(() => window.host.activities.map((a) => [a.accountId, a.activityType, a.assetSymbol]));
+    const routedCount = (accountId, type) => routed.filter(([id, t]) => id === accountId && (!type || t === type)).length;
     assert.deepEqual([...new Set(routed.map(([id]) => id))].sort(), ["account-1", "bank-1", "unset-1"]);
     for (const [id, , symbol] of routed.filter(([, , symbol]) => symbol)) {
       assert.equal(id, symbol.startsWith("INFZ90K01") ? "account-1" : "unset-1", symbol);
     }
-    assert.equal(rowCount("account-1", "TRANSFER_IN") + rowCount("account-1", "TRANSFER_OUT"), 0);
-    assert.ok(rowCount("account-1", "DEPOSIT") > 0 && rowCount("unset-1", "TRANSFER_IN") > 0);
+    assert.equal(routedCount("account-1", "TRANSFER_IN") + routedCount("account-1", "TRANSFER_OUT"), 0);
+    assert.ok(routedCount("account-1", "DEPOSIT") > 0 && routedCount("unset-1", "TRANSFER_IN") > 0);
     assert.deepEqual(
-      [rowCount("bank-1", "TRANSFER_OUT"), rowCount("bank-1", "TRANSFER_IN"), rowCount("bank-1")],
-      [rowCount("unset-1", "TRANSFER_IN"), rowCount("unset-1", "TRANSFER_OUT"), rowCount("unset-1", "TRANSFER_IN") + rowCount("unset-1", "TRANSFER_OUT")],
+      [routedCount("bank-1", "TRANSFER_OUT"), routedCount("bank-1", "TRANSFER_IN"), routedCount("bank-1")],
+      [routedCount("unset-1", "TRANSFER_IN"), routedCount("unset-1", "TRANSFER_OUT"), routedCount("unset-1", "TRANSFER_IN") + routedCount("unset-1", "TRANSFER_OUT")],
     );
-    await tab.frames()[1].evaluate((state) => Object.assign(window.host, state), beforeImport);
-    await restoreChoices(beforeUnavailable);
+    // Remembered as chosen: Same as above and None as the folios' own.
+    const routedChoices = await storage();
+    assert.deepEqual(
+      [routedChoices[fictivaKey], routedChoices[testbridgeKey], routedChoices[`bank-${fictivaKey}`], routedChoices[`bank-${testbridgeKey}`], routedChoices[bankKey]],
+      [undefined, "unset-1", "outside", undefined, "bank-1"],
+    );
+    await restoreChoices(beforeIgnoredDetailed);
 
     // So are the PAN's own: an archived account and a missing bank account. A folio that goes with
-    // them needs a choice, unless its funds are left out; folios with their own choices don't.
-    await saveChoices([[accountKeys[0], "archived-2"], [bankKey, "gone-1"], [accountKeys[1], "account-1"], [folioBankKeys[0], "outside"]]);
-    await readAgain();
-    await rowOf(panAccount).getByText(oldFunds, { exact: true }).waitFor();
-    await rowOf(bankChoice).getByText(missing, { exact: true }).waitFor();
+    // them needs a choice, unless it isn't imported; one with its own choices doesn't.
+    await saveChoices([[panKey, "archived-2"], [bankKey, "gone-1"], [fictivaKey, "account-1"], [`bank-${fictivaKey}`, "outside"]]);
+    await readStatement();
+    await fundsBox().getByText(oldFunds, { exact: true }).waitFor();
+    await fundsBox().getByText(missing, { exact: true }).waitFor();
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 2);
-    assert.match(await panAccount.textContent(), /Choose an account/);
-    assert.match(await bankChoice.textContent(), /Choose an account/);
-    for (const select of [testbridge, bankFolios[1]]) {
-      assert.match(await select.textContent(), /Same as PAN/);
-      assert.doesNotMatch(await select.textContent(), /\(/, "nothing is chosen for the PAN");
+    assert.match(await fundsSelect().textContent(), /Choose an account/);
+    assert.match(await bankSelect().textContent(), /Choose an account/);
+    await openPart();
+    for (const select of [folioSelect(testbridgeFolio), folioBankSelect(testbridgeFolio)]) {
+      assert.equal((await select.textContent()).trim(), "Same as above", "nothing is chosen for the PAN");
     }
-    assert.match(await fictiva.textContent(), /Mutual funds/);
-    assert.match(await bankFolios[0].textContent(), /Outside Wealthfolio/);
-    assert.equal(await previewButton.isDisabled(), true);
-    await pick(testbridge, "Mutual funds (INR)");
-    assert.equal(await previewButton.isDisabled(), true, "the folio's bank account still goes with the PAN");
-    await leaveOut(byName);
-    await leaveOut(noIsin);
-    assert.equal(await previewButton.isDisabled(), false);
+    assert.match(await folioSelect(fictivaFolio).textContent(), /^Mutual funds/);
+    assert.equal((await folioBankSelect(fictivaFolio).textContent()).trim(), "None: don't add bank transfers");
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await pickOption(folioSelect(testbridgeFolio), "Mutual funds (INR)");
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    // A folio waiting for its bank account has no ready rows to skip its funds from; not importing it
+    // leaves no question.
+    await pickOption(folioSelect(testbridgeFolio), "Don't import");
+    assert.equal(await questionChip.count(), 0);
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 2);
-    await restoreChoices(beforeUnavailable);
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
 
-    // A folio printed without a PAN has none to go with.
-    await tab.frames()[1].evaluate(() => { window.host.noPanFolio = "1040012345"; });
-    await saveChoices([[testbridgeKey, "hidden-1"], [folioBankKeys[1], "gone-1"]]);
-    await readAgain();
-    const noPan = frame.getByLabel("Testbridge Mutual Fund, folio 1040012345 (no PAN printed)", { exact: true });
-    await rowOf(noPan).getByText(hiddenFunds, { exact: true }).waitFor();
-    await rowOf(bankFolios[1]).getByText(missing, { exact: true }).waitFor();
-    assert.match(await noPan.textContent(), /Choose an account/);
-    assert.match(await bankFolios[1].textContent(), /Choose an account/);
-    assert.equal(await previewButton.isDisabled(), true);
-    await noPan.click();
+    // A folio printed without a PAN has a box of its own, with the folio's remembered choices.
+    await hosted(() => { window.host.noPanFolio = "1040012345"; });
+    await saveChoices([[testbridgeKey, "hidden-1"], [`bank-${testbridgeKey}`, "gone-1"]]);
+    await readStatement();
+    const noPanTitle = `${testbridgeFolio} (no PAN printed)`;
+    const noPanBox = frame.getByRole("group", { name: noPanTitle, exact: true });
+    const noPanSelect = frame.getByRole("combobox", { name: noPanTitle, exact: true });
+    await noPanBox.getByText(hiddenFunds, { exact: true }).waitFor();
+    await noPanBox.getByText(missing, { exact: true }).waitFor();
+    assert.match(await noPanSelect.textContent(), /Choose an account/);
+    assert.match(await bankSelect(noPanTitle).textContent(), /Choose an account/);
+    assert.equal(await partToggle(noPanTitle).count(), 0);
+    await noPanSelect.click();
     await frame.getByRole("option", { name: "Mutual funds (INR)" }).waitFor();
-    assert.equal(await frame.getByRole("option", { name: /^Same as PAN/ }).count(), 0);
+    assert.equal(await frame.getByRole("option", { name: /^Same as above/ }).count(), 0);
     await frame.getByRole("option", { name: "Mutual funds (INR)" }).click();
-    assert.equal(await previewButton.isDisabled(), true);
-    await pick(bankFolios[1], "Outside Wealthfolio");
+    await dSettled();
+    await pickOption(bankSelect(noPanTitle), "None: don't add bank transfers");
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.equal(await previewButton.isDisabled(), false);
-    await tab.frames()[1].evaluate(() => { window.host.noPanFolio = ""; });
-    await restoreChoices(beforeUnavailable);
+    assert.equal(await questionChip.count(), 0);
+    await hosted(() => { window.host.noPanFolio = ""; });
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
 
-    // Each read loads the accounts again, as Wealthfolio keeps the add-on's page loaded while they
-    // change. With none left that tracks transactions, the card says to add one and read again, and
-    // the next read offers it.
-    const beforeAccounts = await accountList();
-    await saveChoices([[accountKeys[0], "account-1"], [testbridgeKey, "unset-1"], [bankKey, "bank-1"]]);
+    // Each read loads the accounts again. With none left that tracks transactions, Save to says to add
+    // one and read again, and the next read offers it.
+    await saveChoices([[panKey, "account-1"], [testbridgeKey, "unset-1"], [bankKey, "bank-1"]]);
     await editAccounts({ "account-1": { isActive: false }, "unset-1": { isArchived: true }, "bank-1": { trackingMode: "HOLDINGS" } });
-    await readAgain();
-    const noTransactionAccount = "No account tracks transactions. Add one in Wealthfolio, set to track transactions, then choose Read statement again.";
-    await frame.getByText(noTransactionAccount, { exact: true }).waitFor();
-    await rowOf(panAccount).getByText(unavailable("Mutual funds, which is hidden in Wealthfolio"), { exact: true }).waitFor();
-    await rowOf(testbridge).getByText(unavailable("Not set, which is archived in Wealthfolio"), { exact: true }).waitFor();
-    await rowOf(bankChoice).getByText(unavailable("Savings, which tracks holdings. Transfers imported there wouldn't change its cash"), { exact: true }).waitFor();
-    assert.equal(await previewButton.isDisabled(), true);
+    await readStatement();
+    await frame.getByText("No account tracks transactions. Add one in Wealthfolio, set to track transactions, then read the statement again.", { exact: true }).waitFor();
+    await dFooter.getByText("No account can take these transactions yet.", { exact: true }).waitFor();
+    assert.equal(await importButton.isDisabled(), true);
     await editAccounts({ "new-1": { name: "New funds", trackingMode: "TRANSACTIONS" } });
-    await readAgain();
-    assert.equal(await frame.getByText(noTransactionAccount, { exact: true }).count(), 0);
-    assert.equal(await frame.getByText(/^Chosen before:/).count(), 3);
-    await panAccount.click();
+    await readStatement();
+    await fundsSelect().click();
     await frame.getByRole("option", { name: "New funds (INR)", exact: true }).waitFor();
-    assert.equal(await frame.getByRole("option").count(), 1);
+    assert.deepEqual(await frame.getByRole("option").allTextContents(), ["New funds (INR)", "Don't import them"]);
     await frame.getByRole("option", { name: "New funds (INR)", exact: true }).click();
-    await pick(testbridge, "Same as PAN (New funds)");
-    await pick(bankChoice, "Outside Wealthfolio");
-    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.equal(await previewButton.isDisabled(), false);
-    await tab.frames()[1].waitForFunction((key) => !window.host.storage.has(key), bankKey);
-    // Restored, they're offered again and the choices made before count.
-    await setAccountList(beforeAccounts);
-    await saveChoices([[accountKeys[0], "account-1"], [testbridgeKey, "unset-1"], [bankKey, "bank-1"]]);
-    await readAgain();
-    assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
-    assert.match(await panAccount.textContent(), /Mutual funds/);
-    assert.match(await testbridge.textContent(), /Not set/);
-    assert.match(await bankChoice.textContent(), /Savings/);
-    await restoreChoices(beforeUnavailable);
-    // When they can't be loaded, the read shows no choices, and the next read can load them.
-    await tab.frames()[1].evaluate(() => { window.host.failAccounts = true; });
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+    await dSettled();
+    await setAccountList(allAccounts);
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
+    // When they can't be loaded, the read says so and shows no review, and the next read can load them.
+    await hosted(() => { window.host.failAccounts = true; });
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
+    await frame.locator("#cas-password").fill("ABCDE1234F");
+    await readButton.click();
     await frame.getByText("Couldn't load the accounts: Error: Accounts unavailable. Choose Read statement to try again.", { exact: true }).waitFor({ timeout: 180_000 });
-    assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
-    await tab.frames()[1].evaluate(() => { window.host.failAccounts = false; });
-    await readAgain();
-    assert.equal(await frame.getByText(/^Couldn't load the accounts/).count(), 0);
+    assert.equal(await transactionsHeading.count(), 0);
+    await hosted(() => { window.host.failAccounts = false; });
+    await readButton.click();
+    await transactionsHeading.waitFor({ timeout: 180_000 });
+    await dSettled();
 
-    // Change alone keeps the saved fund, so reading again confirms it again.
-    const flexi = holding(detailed.flexi);
-    const remembered = await storage();
-    await flexi.getByRole("button", { name: /^Change the / }).click();
-    await flexi.getByRole("button", { name: "Leave this fund out" }).waitFor();
-    await readAgain();
-    await flexi.getByText("Fund INFZ90K01FC8").waitFor();
-    assert.equal(await confirmed(), 5);
-    assert.deepEqual(await storage(), remembered);
-
-    // Leaving it out forgets only its saved fund: reading again searches for it as if it were new,
-    // and keeps the other funds and the account.
-    await leaveOut(flexi);
-    const { "isin:INFZ90K01FC8": flexiFund, ...forgotten } = remembered;
-    assert.ok(flexiFund);
-    assert.deepEqual(await storage(), forgotten);
-    await readAgain();
-    await undecided(flexi);
-    assert.equal(await confirmed(), 4);
-    await frame.getByText("Same as PAN (Mutual funds)").first().waitFor();
-    assert.deepEqual(await storage(), forgotten);
-
-    // Choosing a fund after leaving it out doesn't bring the old one back; confirming another saves it.
-    await flexi.getByRole("button", { name: "Leave this fund out" }).press("Enter");
-    await namedFor(flexi, () => [["button", `Choose a fund for ${detailed.flexi}`]]);
-    await focused(flexi.getByRole("button", { name: "Choose a fund" }), "Leave this fund out");
-    await flexi.getByRole("button", { name: "Choose a fund" }).press("Enter");
-    await focused(flexi.getByRole("textbox", { name: /^Search for / }), "Choose a fund");
-    await flexi.getByRole("radio").first().waitFor({ state: "attached" });
-    assert.deepEqual(await storage(), forgotten);
-    await flexi.getByRole("textbox", { name: /^Search for / }).fill("MULTI");
-    await flexi.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await flexi.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    await flexi.getByRole("radio").nth(1).dispatchEvent("click");
-    await flexi.getByRole("button", { name: "Use this fund" }).click();
-    await flexi.getByText("Confirmed", { exact: true }).waitFor();
-    const chosen = await storage();
-    assert.equal(JSON.parse(chosen["isin:INFZ90K01FC8"]).symbol, "B");
-    // The same for the fund with no ISIN, saved under its registrar and scheme code.
-    const [noIsinKey] = Object.keys(chosen).filter((key) => key.startsWith("fund:"));
-    await leaveOut(noIsin);
-    const { [noIsinKey]: noIsinFund, ...noIsinForgotten } = chosen;
-    assert.ok(noIsinFund);
-    assert.deepEqual(await storage(), noIsinForgotten);
-    await readAgain();
-    await flexi.getByText("Fund B").waitFor();
-    await undecided(noIsin);
-    await noIsin.getByText(/^No ISIN on the statement; showing results for/).waitFor();
-    assert.equal(await confirmed(), 4);
-    assert.deepEqual(await storage(), noIsinForgotten);
-
-    // A deletion that fails keeps the fund saved and says it can come back; it stays left out for this read.
-    assert.deepEqual(await tab.frames()[1].evaluate(() => window.host.toasts), []);
-    await tab.frames()[1].evaluate(() => { window.host.failDelete = true; });
-    const balanced = holding(detailed.balanced);
-    await leaveOut(balanced);
+    // Skipping a fund leaves it out of this import, and forgets its fund once imported, keeping the
+    // other funds and the account. A failed deletion keeps the fund, and says it can come back.
+    const changePanelDetailed = frame.locator("[data-focus-first]");
+    const skipLiquid = async () => {
+      await readyFund("Fund INFZ90K01LQ6").getByRole("button", { name: "Change: Fund INFZ90K01LQ6", exact: true }).click();
+      await changePanelDetailed.getByRole("button", { name: `Skip this fund: ${detailed.liquid}`, exact: true }).click();
+      await readyFund("Fund INFZ90K01LQ6").waitFor({ state: "detached" });
+      await dSettled();
+    };
+    await hosted(() => { window.host.activities = []; });
+    await readStatement();
+    await skipLiquid();
+    await dSaid.getByText(`${detailed.liquid}: skipped.`, { exact: true }).waitFor();
+    await notIncluded.getByText("Skipped (1)", { exact: true }).waitFor();
+    assert.equal(await transactionParts(), "10 to import · 26 waiting for earlier purchases · 3 in skipped funds");
+    await hosted(() => { window.host.failDelete = true; });
+    await importButton.click();
+    await imported().waitFor();
     await tab.frames()[1].waitForFunction(() => window.host.toasts.length);
-    assert.deepEqual(await tab.frames()[1].evaluate(() => window.host.toasts), [
-      "Couldn't forget the fund chosen before. It can come back the next time you read a statement.",
-    ]);
-    assert.equal(await balanced.getByText("Left out", { exact: true }).count(), 1);
-    assert.deepEqual(await storage(), noIsinForgotten);
-    await tab.frames()[1].evaluate(() => {
+    assert.deepEqual(await hosted(() => window.host.toasts), ["Couldn't forget the fund chosen before. It can come back the next time you read a statement."]);
+    assert.deepEqual(await storage(), beforeIgnoredDetailed);
+    await hosted(() => {
       window.host.failDelete = false;
       window.host.toasts = [];
+      window.host.activities = [];
     });
-
-    // A fund in two folios has one section and one saved fund, so leaving it out forgets it for both.
-    await tab.frames()[1].evaluate(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
-    await readAgain();
-    await frame.getByText(/3 folios, 8 schemes, 83 rows\./).waitFor();
-    const liquid = holding(detailed.liquid);
-    await liquid.getByText("Confirmed", { exact: true }).waitFor();
-    assert.equal(await liquid.count(), 1);
-    // Its row says where the statement lists it, as its section does.
-    await liquid.getByText(`On the statement: ${detailed.liquid} · in 2 folios`, { exact: true }).waitFor();
-    assert.equal(await rows.count(), 4);
-    assert.equal(await frame.locator("section").count(), 1);
-    // The failed deletion left the Balanced Advantage fund saved, so it's back.
-    await balanced.getByText("Confirmed", { exact: true }).waitFor();
-    await leaveOut(liquid);
-    const { "isin:INFZ90K01LQ6": liquidFund, ...unshared } = noIsinForgotten;
-    assert.ok(liquidFund);
-    assert.deepEqual(await storage(), unshared);
-    await readAgain();
-    await undecided(liquid);
-    assert.equal(await confirmed(), 3);
-    await frame.getByText("Same as PAN (Mutual funds)").first().waitFor();
-    assert.deepEqual(await storage(), unshared);
-    assert.deepEqual(await tab.frames()[1].evaluate(() => window.host.toasts), []);
-    await tab.frames()[1].evaluate(() => { window.host.sharedIsin = ""; });
-
-    // A slow deletion must finish before a later confirmation is saved.
-    await pause("delete");
-    await leaveOut(flexi);
-    await waiting();
-    await flexi.getByRole("button", { name: "Choose a fund" }).click();
-    await flexi.getByRole("button", { name: "Use this fund" }).click();
-    await flexi.getByText("Confirmed", { exact: true }).waitFor();
-    await resume();
-    await tab.frames()[1].waitForFunction(() =>
-      JSON.parse(window.host.storage.get("isin:INFZ90K01FC8") ?? "null")?.symbol === "INFZ90K01FC8",
-    );
-
-    // A slow save must finish before leaving it out deletes it, and before a reread restores choices.
-    await flexi.getByRole("button", { name: /^Change the / }).click();
-    await pause("set");
-    await flexi.getByRole("button", { name: "Use this fund" }).click();
-    await waiting();
-    await leaveOut(flexi);
-    const parsed = await tab.frames()[1].evaluate(() => window.host.parsed);
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await tab.frames()[1].waitForFunction((previous) => window.host.parsed > previous, parsed, { timeout: 180_000 });
-    assert.equal(await frame.getByText("Accounts", { exact: true }).count(), 0);
-    await resume();
-    await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
-    await undecided(flexi);
-    const { "isin:INFZ90K01FC8": previousFund, ...afterSlowWrites } = unshared;
-    assert.ok(previousFund);
-    assert.deepEqual(await storage(), afterSlowWrites);
+    await readStatement();
+    await skipLiquid();
+    await importButton.click();
+    await imported().waitFor();
+    const { "isin:INFZ90K01LQ6": liquidChoice, ...withoutLiquid } = beforeIgnoredDetailed;
+    assert.ok(liquidChoice);
+    assert.deepEqual(await storage(), withoutLiquid);
+    // Read again, it's asked about as if it were new; a fund chosen then is saved.
+    await hosted(() => { window.host.activities = []; });
+    await readStatement();
+    assert.equal(await fundQuestions.count(), 1);
+    const liquidQuestion = fundQuestion(detailed.liquid);
+    await liquidQuestion.getByRole("textbox", { name: `Search by fund code for ${detailed.liquid}`, exact: true }).fill("MULTI");
+    await liquidQuestion.getByRole("button", { name: `Search for ${detailed.liquid}`, exact: true }).click();
+    await liquidQuestion.getByRole("radio").nth(2).waitFor({ state: "attached" });
+    await liquidQuestion.getByRole("radio").nth(2).dispatchEvent("click");
+    await liquidQuestion.getByRole("button", { name: `Use this fund for ${detailed.liquid}`, exact: true }).click();
+    await dSettled();
+    await readyFund("Fund B").waitFor();
+    await importButton.click();
+    await imported().waitFor();
+    assert.equal(JSON.parse((await storage())["isin:INFZ90K01LQ6"]).symbol, "B");
+    await restoreChoices(beforeIgnoredDetailed);
+    // A fund in two folios is one question.
+    await hosted(() => {
+      window.host.sharedIsin = "INFZ90K01LQ6";
+      window.host.activities = [];
+      window.host.storage.delete("isin:INFZ90K01LQ6");
+    });
+    await readStatement();
+    assert.equal(await fundQuestions.count(), 1);
+    await liquidQuestion.getByText(/· Direct plan · Growth · 16\.106 units · in 2 folios$/).waitFor();
+    await hosted(() => { window.host.sharedIsin = ""; });
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
 
     // A fund house's merger is one fund conversion: two lines with one status, both rows or neither.
-    const beforeMerger = await tab.frames()[1].evaluate(() =>
-      ({ activities: window.host.activities, failHistory: window.host.failHistory, rejectLine: window.host.rejectLine }));
-    const storageBeforeMerger = await storage();
-    await tab.frames()[1].evaluate(() => {
+    await hosted(() => {
       window.host.activities = [];
-      window.host.failHistory = false;
-      window.host.rejectLine = undefined;
       window.host.merger = true;
     });
-    await readAgain();
-    await confirmFirst(["INFZ90K01FC8", "INFZ90K01OF7", "INFZ90K01NF5"]);
-    await leaveOutOthers();
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    const leaving = frame.getByRole("row").filter({ hasText: "fund conversion out" });
-    const arriving = frame.getByRole("row").filter({ hasText: "fund conversion in" });
-    await leaving.waitFor({ timeout: 30_000 });
-    assert.deepEqual(await leaving.locator("td").allTextContents(), [
-      "2024-08-01", "Fictiva Old Fund - Direct Plan - Growth", "fund conversion out", "99.995", "", "", "", "", "New",
-    ]);
+    await readStatement();
+    await answerFunds();
+    await seeEvery();
+    const leaving = everyTable.getByRole("row").filter({ hasText: "fund conversion out" });
+    const arriving = everyTable.getByRole("row").filter({ hasText: "fund conversion in" });
+    const cellTexts = async (row) => (await row.locator("td").allTextContents()).map((text) => text.trim());
+    assert.deepEqual(await cellTexts(leaving), ["2024-08-01", "Fictiva Old Fund - Direct Plan - Growth", "fund conversion out", "99.995", "", "", "", "", "New"]);
     assert.equal(await leaving.locator("td").last().getAttribute("rowspan"), "2");
-    assert.deepEqual(await arriving.locator("td").allTextContents(), [
-      "2024-08-01", "Fictiva New Fund - Direct Plan - Growth", "fund conversion in", "69.996", "", "", "", "",
-    ]);
-    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
-    await frame.getByText(/^Imported \d+ of \d+ activities$/).waitFor();
-    const conversions = await tab.frames()[1].evaluate(() =>
-      window.host.activities.filter((a) => a.activityType === "ADJUSTMENT").map((a) => [a.subtype, a.symbol, a.quantity, a.sourceGroupId]),
-    );
+    assert.deepEqual(await cellTexts(arriving), ["2024-08-01", "Fictiva New Fund - Direct Plan - Growth", "fund conversion in", "69.996", "", "", "", ""]);
+    assert.deepEqual(await cellsOf(readyFund("Fund INFZ90K01NF5")), [["1", "69.996"]]);
+    assert.equal((await cellsOf(readyFund("Fund INFZ90K01OF7")))[0][0], "2");
+    await importButton.click();
+    await imported().waitFor();
+    const conversions = await hosted(() =>
+      window.host.activities.filter((a) => a.activityType === "ADJUSTMENT").map((a) => [a.subtype, a.symbol, a.quantity, a.sourceGroupId]));
     assert.deepEqual(conversions.map((c) => c.slice(0, 3)), [["CONVERSION_OUT", "INFZ90K01OF7", "99.995"], ["CONVERSION_IN", "INFZ90K01NF5", "69.996"]]);
     assert.match(conversions[0][3], /^cas-importer-merger:[0-9a-f]{64}$/);
     assert.equal(conversions[1][3], conversions[0][3]);
-    const mergerUnits = frame.locator("table").last().locator("tbody tr");
     for (const name of ["Fictiva Old Fund", "Fictiva New Fund"]) {
-      assert.equal(await mergerUnits.filter({ hasText: name }).filter({ hasText: "Match" }).count(), 1, name);
+      assert.equal(await resultUnits().filter({ hasText: name }).filter({ hasText: "Match" }).count(), 1, name);
     }
     // Read again, it's in Wealthfolio, and can't be imported twice.
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await leaving.getByText("Already in Wealthfolio", { exact: true }).waitFor({ timeout: 30_000 });
-    assert.equal(await leaving.getByText("Import anyway").count(), 0);
+    await readStatement();
+    await seeEvery();
+    await leaving.getByText("Already in Wealthfolio", { exact: true }).waitFor();
     // Moving the conversion to an unselected account keeps its group and blocks a second import.
-    await tab.frames()[1].evaluate(() => {
+    await hosted(() => {
       for (const a of window.host.activities) if (a.subtype?.startsWith("CONVERSION_")) a.accountId = "elsewhere";
     });
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await leaving.getByText(/^Wealthfolio has this conversion from an earlier import, changed since/).waitFor({ timeout: 30_000 });
-    assert.equal(await leaving.getByText("Import anyway").count(), 0);
-    assert.ok(await frame.getByRole("button", { name: "Import 0 activities", exact: true }).isDisabled());
-    await tab.frames()[1].evaluate((before) => Object.assign(window.host, before, { merger: false }), beforeMerger);
-    await restoreChoices(storageBeforeMerger);
-    await undecided(flexi);
+    await readStatement();
+    await seeEvery();
+    await leaving.getByText(/^Wealthfolio has this conversion from an earlier import, changed since/).waitFor();
+    await notIncluded.getByText(/Wealthfolio has this conversion from an earlier import, changed since/).first().waitFor();
+    await dFooter.getByRole("button", { name: "Finish", exact: true }).waitFor();
+    await hosted(() => { window.host.merger = false; });
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
 
     // A gift from a folio the statement doesn't include is an external transfer in. A gift between two
     // of its folios, in two accounts, is a transfer out and in: two lines with one status, which
     // Wealthfolio links. Neither has cash.
-    const beforeGifts = await tab.frames()[1].evaluate(() =>
-      ({ activities: window.host.activities, failHistory: window.host.failHistory, rejectLine: window.host.rejectLine }));
-    const storageBeforeGifts = await storage();
-    await tab.frames()[1].evaluate(() => {
+    await hosted(() => {
       window.host.activities = [];
-      window.host.failHistory = false;
-      window.host.rejectLine = undefined;
       window.host.gifts = true;
     });
-    await readAgain();
-    await confirmFirst(["INFZ90K01GF3", "INFZ90K01SF6"]);
-    await leaveOutOthers();
+    await readStatement();
+    await answerFunds();
     // In one account the units don't move, so neither side goes in.
-    await frame.getByRole("button", { name: "Preview the import" }).click();
     const sameAccount = "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported.";
-    await frame.getByText(new RegExp(`folio 92345678, 2024-06-03 Gifting of units-TO Folio No: 93456789: ${sameAccount}`)).waitFor({ timeout: 30_000 });
-    assert.equal(await frame.getByText(new RegExp(`folio 93456789, 2024-06-03 Gifting of units - From Folio No.92345678: ${sameAccount}`)).count(), 1);
-    await pick(frame.getByLabel("Fictiva Mutual Fund, folio 93456789", { exact: true }), "Not set (INR)");
-    await frame.getByRole("button", { name: "Preview the import" }).click();
+    await notIncluded.getByText(new RegExp(`${literal(sameAccount)}$`)).waitFor();
+    await openPart();
+    await pickOption(folioSelect("Fictiva Mutual Fund folio 93456789"), "Not set (INR)");
+    await seeEvery();
     // Purchases' cash can be a transfer too: go by the Activity column.
-    const activityRow = (fund, activity) => frame.getByRole("row").filter({ hasText: fund })
+    const activityRow = (fund, activity) => everyTable.getByRole("row").filter({ hasText: fund })
       .filter({ has: frame.locator("td:nth-child(3)", { hasText: new RegExp(`^${activity}$`) }) });
     const received = activityRow("Fictiva Gifted Fund", "transfer in");
     const given = activityRow("Fictiva Shared Fund", "transfer out");
     const taken = activityRow("Fictiva Shared Fund", "transfer in");
-    await given.waitFor({ timeout: 30_000 });
-    const cells = async (row) => (await row.locator("td").allTextContents()).map((text) => text.trim());
-    assert.deepEqual((await cells(received)).slice(0, 8), ["2024-06-04", "Fictiva Gifted Fund - Direct Plan - Growth", "transfer in", "10.000", "25.0000", "", "", ""]);
-    assert.match((await cells(received))[8], /^NewImported at NAV 25\.0000, the units' value on the day of the gift/);
-    assert.deepEqual((await cells(given)).slice(0, 8), ["2024-06-03", "Fictiva Shared Fund - Direct Plan - Growth", "transfer out", "20.000", "25.0000", "", "", ""]);
-    assert.match((await cells(given))[8], /^NewA gift to folio 93456789: Wealthfolio links this transfer out with that folio's transfer in/);
+    assert.deepEqual((await cellTexts(received)).slice(0, 8), ["2024-06-04", "Fictiva Gifted Fund - Direct Plan - Growth", "transfer in", "10.000", "25.0000", "", "", ""]);
+    assert.match((await cellTexts(received))[8], /^NewImported at NAV 25\.0000, the units' value on the day of the gift/);
+    assert.deepEqual((await cellTexts(given)).slice(0, 8), ["2024-06-03", "Fictiva Shared Fund - Direct Plan - Growth", "transfer out", "20.000", "25.0000", "", "", ""]);
+    assert.match((await cellTexts(given))[8], /^NewA gift to folio 93456789: Wealthfolio links this transfer out with that folio's transfer in/);
     assert.equal(await given.locator("td").last().getAttribute("rowspan"), "2");
-    assert.deepEqual(await cells(taken), ["2024-06-03", "Fictiva Shared Fund - Direct Plan - Growth", "transfer in", "20.000", "25.0000", "", "", ""]);
-    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
-    await frame.getByText(/^Imported \d+ of \d+ activities$/).waitFor();
-    const transfers = await tab.frames()[1].evaluate(() =>
+    assert.deepEqual(await cellTexts(taken), ["2024-06-03", "Fictiva Shared Fund - Direct Plan - Growth", "transfer in", "20.000", "25.0000", "", "", ""]);
+    await importButton.click();
+    await imported().waitFor();
+    const transfers = await hosted(() =>
       window.host.activities.filter((a) => a.assetSymbol && a.activityType.startsWith("TRANSFER_"))
-        .map((a) => [a.accountId, a.activityType, a.assetSymbol, a.quantity, a.unitPrice, a.amount ?? null, a.isExternal ?? null]),
-    );
+        .map((a) => [a.accountId, a.activityType, a.assetSymbol, a.quantity, a.unitPrice, a.amount ?? null, a.isExternal ?? null]));
     assert.deepEqual(transfers, [
       ["account-1", "TRANSFER_IN", "INFZ90K01GF3", "10.000", "25.0000", null, true],
       ["account-1", "TRANSFER_OUT", "INFZ90K01SF6", "20.000", "25.0000", null, null],
       ["unset-1", "TRANSFER_IN", "INFZ90K01SF6", "20.000", "25.0000", null, null],
     ]);
-    const giftUnits = frame.locator("table").last().locator("tbody tr");
-    assert.equal(await giftUnits.filter({ hasText: "Fictiva Gifted Fund" }).filter({ hasText: "Match" }).count(), 1);
-    assert.equal(await giftUnits.filter({ hasText: "Fictiva Shared Fund" }).filter({ hasText: "Match" }).count(), 2);
+    assert.equal(await resultUnits().filter({ hasText: "Fictiva Gifted Fund" }).filter({ hasText: "Match" }).count(), 1);
+    assert.equal(await resultUnits().filter({ hasText: "Fictiva Shared Fund" }).filter({ hasText: "Match" }).count(), 2);
     // Read again, both are in Wealthfolio.
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await received.getByText("Already in Wealthfolio", { exact: true }).waitFor({ timeout: 30_000 });
+    await readStatement();
+    await seeEvery();
+    await received.getByText("Already in Wealthfolio", { exact: true }).waitFor();
     await given.getByText("Already in Wealthfolio", { exact: true }).waitFor();
-    await tab.frames()[1].evaluate((before) => Object.assign(window.host, before, { gifts: false }), beforeGifts);
-    await restoreChoices(storageBeforeGifts);
-    await undecided(flexi);
+    await hosted(() => { window.host.gifts = false; });
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
 
     // A segregated portfolio's units are a purchase at a stand-in ₹0, marked as such, with no cash.
-    const beforeSegregated = await tab.frames()[1].evaluate(() =>
-      ({ activities: window.host.activities, failHistory: window.host.failHistory, rejectLine: window.host.rejectLine }));
-    const storageBeforeSegregated = await storage();
-    await tab.frames()[1].evaluate(() => {
+    await hosted(() => {
       window.host.activities = [];
-      window.host.failHistory = false;
-      window.host.rejectLine = undefined;
       window.host.segregated = true;
     });
-    await readAgain();
-    await confirmFirst(["INFZ90K01CR3", "INFZ90K01S17"]);
-    await leaveOutOthers();
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    const segregatedRows = frame.getByRole("row").filter({ hasText: "Fictiva Credit Risk Fund - Segregated Portfolio 1" });
-    await segregatedRows.first().waitFor({ timeout: 30_000 });
+    await readStatement();
+    await answerFunds();
+    await seeEvery();
+    const segregatedRows = everyTable.getByRole("row").filter({ hasText: "Fictiva Credit Risk Fund - Segregated Portfolio 1" });
     const credits = segregatedRows.filter({ has: frame.locator("td:nth-child(3)", { hasText: /^purchase$/ }) });
     const payouts = segregatedRows.filter({ has: frame.locator("td:nth-child(3)", { hasText: /^sale$/ }) });
     assert.equal(await credits.count(), 2);
     for (const [i, quantity] of ["3067.468", "0.013"].entries()) {
-      const creditCells = (await credits.nth(i).locator("td").allTextContents()).map((text) => text.trim());
+      const creditCells = await cellTexts(credits.nth(i));
       assert.deepEqual(creditCells.slice(0, 8), [
         "2024-02-16", "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth", "purchase", quantity, "", "", "0stand-in", "",
       ]);
       assert.match(creditCells[8], /^NewUnits credited in a segregated portfolio, imported at a stand-in cost of ₹0 with no cash\./);
     }
     // The payout is an ordinary redemption, at the segregated portfolio's NAV, with its cash.
-    const payout = (await payouts.locator("td").allTextContents()).map((text) => text.trim());
-    assert.deepEqual(payout.slice(0, 7), ["2024-09-20", "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth", "sale", "1533.741", "0.6000", "", "920.2446"]);
-    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
-    await frame.getByText(/^Imported \d+ of \d+ activities$/).waitFor();
-    const segregatedSent = await tab.frames()[1].evaluate(() =>
-      window.host.activities.filter((a) => a.assetSymbol === "INFZ90K01S17" && a.activityType === "BUY")
-        .map((a) => [a.quantity, a.unitPrice ?? null, a.amount]),
-    );
+    assert.deepEqual((await cellTexts(payouts)).slice(0, 7), ["2024-09-20", "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth", "sale", "1533.741", "0.6000", "", "920.2446"]);
+    await importButton.click();
+    await imported().waitFor();
+    const segregatedSent = await hosted(() =>
+      window.host.activities.filter((a) => a.assetSymbol === "INFZ90K01S17" && a.activityType === "BUY").map((a) => [a.quantity, a.unitPrice ?? null, a.amount]));
     assert.deepEqual(segregatedSent, [["3067.468", null, "0"], ["0.013", null, "0"]]);
-    const segregatedUnits = frame.locator("table").last().locator("tbody tr");
-    assert.equal(await segregatedUnits.filter({ hasText: "Segregated Portfolio 1" }).filter({ hasText: "Match" }).count(), 1);
+    assert.equal(await resultUnits().filter({ hasText: "Segregated Portfolio 1" }).filter({ hasText: "Match" }).count(), 1);
     // Read again, the credits are in Wealthfolio.
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await credits.first().getByText("Already in Wealthfolio", { exact: true }).waitFor({ timeout: 30_000 });
+    await readStatement();
+    await seeEvery();
     assert.equal(await credits.getByText("Already in Wealthfolio", { exact: true }).count(), 2);
     // A later statement lists only the payout: with the units in Wealthfolio before it starts, the
     // payout is a sale, with the caveat on its gain.
-    await tab.frames()[1].evaluate(() => {
+    await hosted(() => {
       window.host.segregated = "later";
       const all = window.host.activities;
       const sold = all.filter((a) => a.assetSymbol === "INFZ90K01S17" && a.activityType === "SELL");
@@ -1623,316 +1313,109 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.activities = all.filter((a) => !sold.includes(a) && !cash.includes(a)).map((a) =>
         (a.assetSymbol === "INFZ90K01S17" ? { ...a, date: "2023-03-01T00:00:00+00:00" } : a));
     });
-    await readAgain();
-    await leaveOutOthers();
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await payouts.getByText("New", { exact: true }).waitFor({ timeout: 30_000 });
+    await readStatement();
+    await seeEvery();
     assert.equal(await credits.count(), 0);
-    assert.match((await payouts.locator("td").last().textContent()).trim(), /^NewA payout from a segregated portfolio: Wealthfolio counts its gain against the cost it has for these units/);
-    await tab.frames()[1].evaluate((before) => Object.assign(window.host, before, { segregated: false }), beforeSegregated);
-    await restoreChoices(storageBeforeSegregated);
-    await undecided(flexi);
+    assert.match((await cellTexts(payouts)).at(-1), /^NewA payout from a segregated portfolio: Wealthfolio counts its gain against the cost it has for these units/);
+    await hosted(() => { window.host.segregated = false; });
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
 
-    // With AMFI off, the banner asks to add it, and the Funds card says nothing more about AMFI,
-    // though no fund's search finds AMFI's scheme. Once it's added, a fund whose ISIN finds exactly one
-    // AMFI result, in rupees, with no plan or option that differs from the statement's, is confirmed
-    // without a click and saved as Use this fund saves it. Funds confirmed before keep their choice,
-    // unsearched. Funds that still need a choice come first, each in its section; the confirmed ones
-    // follow, a row each, and the card says once how many were matched.
-    const beforeAmfi = await tab.frames()[1].evaluate(() => ({
-      activities: window.host.activities, assets: window.host.assets, storage: [...window.host.storage], searches: window.host.searches,
-      failHistory: window.host.failHistory, rejectLine: window.host.rejectLine, skipLine: window.host.skipLine,
-    }));
-    const rememberedBefore = await storage();
-    await tab.frames()[1].evaluate(() => {
+    // A fund whose rows don't add up to its closing balance is left out, even with its opening units in
+    // Wealthfolio, unless it's chosen under Before importing, which says what each choice does.
+    const flexiOpening = {
+      id: "flexi-opening", accountId: "account-1", activityType: "BUY", subtype: null, status: "POSTED",
+      date: "2023-03-01T00:00:00+00:00", quantity: "1250", unitPrice: "40", amount: "50000", fee: null, currency: "INR",
+      needsReview: false, comment: null, assetId: "asset-INFZ90K01FC8", assetSymbol: "INFZ90K01FC8", exchangeMic: "XBOM",
+    };
+    await hosted((opening) => { window.host.activities = [opening]; }, flexiOpening);
+    await readStatement("tests/fixtures/made-up-cas-mismatch.pdf");
+    await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
+    const importFlexi = beforeImporting.getByRole("checkbox", { name: /^Import this fund anyway\s*:\s*Fictiva Flexi Cap Fund - Direct Plan - Growth, folio 91234567 \/ 12$/ });
+    await importFlexi.waitFor({ state: "attached" });
+    await beforeImporting.getByText(
+      "The rows take the unit balance from 1250 to 2798.066, but the statement's closing balance is 2892.104, 94.038 units apart: a row was probably dropped or misread.",
+      { exact: true },
+    ).waitFor();
+    await beforeImporting.getByText("Its rows are left out unless you tick it.", { exact: true }).waitFor();
+    await notIncluded.getByText("Left out unless you choose otherwise under “Before importing” (1)", { exact: true }).waitFor();
+    assert.match(await transactionParts(), /^13 to import · \d+ in funds whose rows don't add up, left out unless chosen under “Before importing”$/);
+    await importFlexi.press("Space");
+    // Imported, its units won't match the statement: its row says so, and so does the footer.
+    await readyFund("Fund INFZ90K01FC8").getByText("After import: 2,798.066 units · Statement: 2,892.104. Imported with the difference you accepted.", { exact: true }).waitFor();
+    await dFooter.getByText("1 fund's units won't match the statement after importing: Fund INFZ90K01FC8.", { exact: true }).waitFor();
+    await beforeImporting.getByText("Its rows are imported: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.", { exact: true }).waitFor();
+    // Before importing stays while the plan is worked out again, so the checkbox keeps the focus.
+    await focused(importFlexi, "Import this fund anyway");
+    await importFlexi.press("Space");
+    await focused(importFlexi, "Import this fund anyway, unticked");
+    await readyFund("Fund INFZ90K01FC8").waitFor({ state: "detached" });
+    await dSettled();
+    await importButton.click();
+    await imported(23).waitFor();
+    const afterGap = await hosted(() => window.host.activities);
+    assert.deepEqual(afterGap.filter((a) => a.assetSymbol === "INFZ90K01FC8").map((a) => a.id), ["flexi-opening"]);
+    assert.equal(afterGap.length, 24);
+
+    // With AMFI added, a fund whose ISIN finds exactly one AMFI result, in rupees, whose plan and option
+    // don't differ from the statement's, is confirmed without a click, and its row says so. Wealthfolio's
+    // checkImport accepts it without an exchange, and its import creates the fund priced from AMFI.
+    await hosted(() => {
+      window.host.amfi = true;
       window.host.providers = "";
       window.host.activities = [];
-      window.host.failHistory = false;
-      window.host.rejectLine = undefined;
-      window.host.skipLine = undefined;
-      window.host.searches = [];
-      // Wealthfolio has the Flexi Cap fund, priced from Yahoo.
-      window.host.assets["yahoo-flexi"] = { symbol: "INFZ90K01FC8", exchangeMic: "XBOM", instrumentType: "EQUITY", name: "Yahoo Flexi Cap" };
+      window.host.storage.delete("isin:INFZ90K01LQ6");
     });
-    await revisit();
-    await amfiBanner.waitFor();
-    await readAgain();
-    const savedFund = (key) => tab.frames()[1].evaluate((key) => JSON.parse(window.host.storage.get(key) ?? "null"), key);
-    const liquidRow = holding(detailed.liquid);
-    const liquidResults = liquidRow.getByRole("radio");
-    // Whether Liquid's AMFI result, AMFI's scheme or the asset an import created from it, is preselected.
-    const amfiPicked = async () => (await liquidRow.locator("label").filter({ hasText: /AMFI$/ }).getByRole("radio").getAttribute("aria-checked")) === "true";
-    // AMFI's scheme's name, as a confirmed row shows it.
-    const amfiLabel = /^Scheme \d{6}$/;
-    const matched = frame.getByText(/^\d+ funds? matched from AMFI by (its|their) ISIN\./);
-    const matchedOne = "1 fund matched from AMFI by its ISIN. Change it if it looks wrong.";
-    for (const section of [liquidRow, flexi, noIsin]) await section.getByRole("radio").first().waitFor({ state: "attached" });
-    await noAmfiNote();
-    assert.equal(await liquidResults.count(), 1);
-    assert.equal(await matched.count(), 0);
-    await flexi.getByRole("textbox", { name: /^Search for / }).fill("MULTI");
-    // Once AMFI is added, Check again finds it on and the banner goes. In the same page, with the
-    // statement still read and every choice kept, the funds that have no choice yet are searched again
-    // as when first shown, and now find AMFI's scheme too. Liquid's ISIN finds Yahoo's result and then
-    // AMFI's, its only AMFI result, so it's confirmed without a click. Flexi Cap isn't: its search box
-    // has had the focus, and Wealthfolio has it priced from Yahoo. Funds confirmed before aren't searched.
-    const statementSummary = await frame.getByText(/ detailed statement for /).elementHandle();
-    const confirmedBefore = await confirmed();
-    await tab.frames()[1].evaluate(() => {
-      window.host.amfi = true;
-      window.host.searches = [];
-    });
-    await checkAgain.press("Enter");
-    await amfiBanner.waitFor({ state: "detached" });
-    await focused(fileInput, "Check again, AMFI added");
-    assert.equal(await amfiOutcome.textContent(), "AMFI is on.");
-    await matched.waitFor();
-    assert.equal(await matched.textContent(), matchedOne);
-    assert.equal(await matched.getAttribute("aria-live"), "polite");
-    await focused(fileInput, "a fund matched after Check again");
-    assert.equal(await statementSummary.evaluate((p) => p.isConnected), true, "the same page");
-    assert.equal(await confirmed(), confirmedBefore + 1);
-    assert.equal(await flexi.getByRole("textbox", { name: /^Search for / }).inputValue(), "INFZ90K01FC8");
-    await noIsin.getByRole("radio").first().waitFor({ state: "attached" });
-    assert.deepEqual((await hosted(() => window.host.searches)).sort(), ["INFZ90K01FC8", "INFZ90K01LQ6", "Testbridge Overnight"]);
-    // The fund printed without an ISIN finds no AMFI result, which AMFI's search never gives for a
-    // name, and with AMFI on, the card doesn't recommend it either.
-    await noAmfiNote();
-    await liquidRow.getByText(amfiLabel).waitFor();
-    await liquidRow.getByText("AMFI", { exact: true }).waitFor();
-    assert.match(await liquidRow.locator("details p").textContent(), /^Symbol \d{6} · Type MUTUALFUND · Currency INR$/);
-    assert.equal(await liquidRow.evaluate((row) => row.tagName), "LI");
-    assert.deepEqual(await choiceBadges(liquidRow), ["Confirmed success-subtle"]);
-    // AMFI's name isn't the statement's here, so the row gives that too.
-    assert.equal(await liquidRow.getByText(`On the statement: ${detailed.liquid}`, { exact: true }).count(), 1);
-    const amfiFund = await savedFund("isin:INFZ90K01LQ6");
-    assert.deepEqual(
-      [amfiFund.providerId, amfiFund.exchangeMic, amfiFund.providerSymbol, amfiFund.instrumentType, amfiFund.quoteCcy],
-      ["AMFI", undefined, amfiFund.symbol, "MUTUALFUND", "INR"],
-    );
-    // Flexi Cap and Overnight still need a choice, so their sections come first. The rows follow in
-    // the statement's order.
-    assert.deepEqual(await frame.locator("section h3").allTextContents(), [detailed.flexi, detailed.overnight]);
-    assert.deepEqual(
-      await rows.evaluateAll((all) => all.map((row) => row.querySelector("button").textContent)),
-      [detailed.liquid, detailed.balanced, detailed.corporate].map((name) => `Change the fund for ${name}`),
-    );
-    assert.ok(await rows.first().evaluate((row) =>
-      [...document.querySelectorAll("section")].every((section) => section.compareDocumentPosition(row) & Node.DOCUMENT_POSITION_FOLLOWING)));
-    // Change opens the fund's search again. It doesn't confirm the fund by itself, though AMFI's
-    // result is still the only AMFI result for the ISIN: it's preselected, the focus stays in the search, and
-    // the fund no longer counts as matched.
-    await liquidRow.getByRole("button", { name: /^Change the / }).press("Enter");
-    const liquidSearch = liquidRow.getByRole("textbox", { name: /^Search for / });
-    await focused(liquidSearch, "Change on a fund matched from AMFI");
-    await liquidResults.nth(1).waitFor({ state: "attached" });
-    assert.ok(await amfiPicked(), "AMFI's result is preselected");
-    await focused(liquidSearch, "Change, once its search is done");
-    assert.equal(await liquidRow.getByText("Confirmed", { exact: true }).count(), 0);
-    await matched.waitFor({ state: "detached" });
-    assert.deepEqual(await savedFund("isin:INFZ90K01LQ6"), amfiFund, "Change alone keeps the saved fund");
-    // Another result can be confirmed instead, then AMFI's again, by hand.
-    await liquidResults.first().dispatchEvent("click");
-    await liquidRow.getByRole("button", { name: "Use this fund", disabled: false }).press("Enter");
-    await focused(liquidRow.getByRole("button", { name: /^Change the / }), "Use this fund after Change");
-    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ90K01LQ6")).providerId === "FAKE");
-    await liquidRow.getByRole("button", { name: /^Change the / }).click();
-    await liquidResults.nth(1).waitFor({ state: "attached" });
-    await liquidRow.getByRole("button", { name: "Use this fund", disabled: false }).click();
-    await liquidRow.getByText(amfiLabel).waitFor();
-    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ90K01LQ6")).providerId === "AMFI");
-    assert.deepEqual(await savedFund("isin:INFZ90K01LQ6"), amfiFund);
-    assert.equal(await matched.count(), 0, "a fund confirmed by hand isn't counted");
-    // Picking AMFI's result for a fund Wealthfolio has priced from another source would add a second
-    // asset, so it isn't confirmed or preselected, and the card says how to switch the asset to AMFI instead.
-    await undecided(flexi);
-    await flexi.getByText(/^Wealthfolio already has this fund, priced from another source, and picking AMFI's result adds a second asset for it\./).waitFor();
-    assert.equal(await flexi.getByRole("button", { name: "Use this fund" }).isDisabled(), true);
-    await flexi.getByRole("radio").first().dispatchEvent("click");
-    await flexi.getByRole("button", { name: "Use this fund" }).click();
-    await flexi.getByText("Yahoo Flexi Cap").waitFor();
-    // When Wealthfolio doesn't say whether AMFI is on, the card's note is back: AMFI doesn't search
-    // names, so the note stays while the fund printed without an ISIN is the only one open, and goes
-    // once it's left out. Choosing a fund for it again searches again.
-    await undecided(noIsin);
-    await noAmfiNote();
-    await hosted(() => { window.host.providers = "fail"; });
-    await revisit();
-    await amfiNoteShown();
-    // A mounted search stops qualifying while it runs, and for a different query's results.
-    const overnightSearch = noIsin.getByRole("textbox", { name: /^Search for / });
-    await pause("market");
-    await overnightSearch.fill("MULTI");
-    await overnightSearch.press("Enter");
-    await waiting();
-    await noAmfiNote();
-    await resume();
-    await noIsin.getByRole("radio").nth(1).waitFor({ state: "attached" });
-    await noAmfiNote();
-    await overnightSearch.fill("Testbridge Overnight");
-    await overnightSearch.press("Enter");
-    await amfiNoteShown();
-    await noIsin.getByRole("button", { name: "Leave this fund out" }).click();
-    await noIsin.getByText("Left out", { exact: true }).waitFor();
-    await noAmfiNote();
-    await noIsin.getByRole("button", { name: "Choose a fund" }).click();
-    await amfiNoteShown();
-    await noIsin.getByRole("radio").first().dispatchEvent("click");
-    await noIsin.getByRole("button", { name: "Use this fund" }).click();
-    await noAmfiNote();
-    assert.equal(await confirmed(), 5);
-    const amfiSearches = await tab.frames()[1].evaluate(() => window.host.searches);
-    assert.ok(!amfiSearches.some((query) => /INFZ90K01BA1|INFZ91T01CB6/.test(query)), amfiSearches.join(" "));
-    for (const key of ["isin:INFZ90K01BA1", "isin:INFZ91T01CB6"]) assert.equal((await storage())[key], rememberedBefore[key], key);
-    // Wealthfolio's checkImport accepts a new fund chosen from AMFI without an exchange, and its
-    // import creates the fund priced from AMFI.
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^\d+ new transactions, 0 already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
-    await frame.getByRole("button", { name: /^Import \d+ activities$/ }).click();
-    await frame.getByText(/^Imported (\d+) of \1 activities/).waitFor();
-    assert.ok(await tab.frames()[1].evaluate((code) => window.host.activities.some((a) => a.assetSymbol === code), amfiFund.symbol));
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
-    // Searching the ISIN again resolves AMFI's scheme code to the asset the import created, which the
-    // search finds by an identifier, so a read without the saved choice confirms it without a click.
-    const forget = (...keys) => tab.frames()[1].evaluate((keys) => { for (const key of keys) window.host.storage.delete(key); }, keys);
-    await forget("isin:INFZ90K01LQ6");
-    await readAgain();
-    await liquidRow.getByText("Confirmed", { exact: true }).waitFor();
-    await liquidRow.getByText("AMFI", { exact: true }).waitFor();
-    assert.match(await liquidRow.locator("details p").textContent(), / · Type EQUITY · Currency INR$/);
-    await frame.getByText(matchedOne, { exact: true }).waitFor();
-    const existingAmfi = await savedFund("isin:INFZ90K01LQ6");
-    assert.ok(existingAmfi.assetId);
-    assert.equal(existingAmfi.providerSymbol, undefined);
-    // Its search lists it first, beside Yahoo's listing.
-    await liquidRow.getByRole("button", { name: /^Change the / }).click();
-    await liquidResults.nth(1).waitFor({ state: "attached" });
-    await noAmfiNote();
-    assert.equal(await liquidResults.count(), 2);
-    assert.match(await liquidRow.locator("label").first().textContent(), /AMFI$/);
-    assert.match((await resultCodes(liquidRow))[0], / · Type EQUITY · Currency INR$/);
-    assert.equal(await liquidResults.first().getAttribute("aria-checked"), "true");
-    await liquidRow.getByRole("button", { name: "Use this fund" }).click();
-    await liquidRow.getByText("Confirmed", { exact: true }).waitFor();
-    await frame.getByRole("button", { name: "Preview the import" }).click();
-    await frame.getByText(/^0 new transactions, \d+ already in Wealthfolio, 0 possible duplicates and 0 Wealthfolio can't import\./).waitFor({ timeout: 30_000 });
-
-    // Reads the statement while the search for this query waits.
-    const readPaused = async (query) => {
-      await pause(query);
-      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-      await tab.frames()[1].waitForFunction(() => window.host.resume, null, { timeout: 180_000 });
-      await frame.getByText("Accounts", { exact: true }).waitFor({ timeout: 180_000 });
-    };
-    // An answer that arrives once the fund is left out doesn't confirm it, nor does it confirm the
-    // search that Choose a fund starts again.
-    await forget("isin:INFZ90K01LQ6");
-    await readPaused("INFZ90K01LQ6");
-    await liquidRow.getByRole("button", { name: "Leave this fund out" }).click();
-    await liquidRow.getByText("Left out", { exact: true }).waitFor();
-    await liquidRow.getByRole("button", { name: "Choose a fund" }).click();
-    await resume();
-    await liquidResults.nth(1).waitFor({ state: "attached" });
-    await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.ok(await amfiPicked());
-    assert.equal(await liquidRow.getByText("Confirmed", { exact: true }).count(), 0);
-    assert.equal(await savedFund("isin:INFZ90K01LQ6"), null);
-    assert.equal(await matched.count(), 0);
-    // An answer that arrives while the focus is in the fund's section doesn't take the section away.
-    await readPaused("INFZ90K01LQ6");
-    await liquidSearch.focus();
-    await resume();
-    await liquidResults.nth(1).waitFor({ state: "attached" });
-    await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-    assert.ok(await amfiPicked());
-    assert.equal(await liquidRow.getByText("Confirmed", { exact: true }).count(), 0);
-    await focused(liquidSearch, "a fund's answer while the focus is in its section");
-    assert.equal(await matched.count(), 0);
-    // One that arrives while the focus is on another fund confirms it, and the focus stays where it is
-    // as the fund moves to the rows.
-    await readPaused("INFZ90K01LQ6");
-    const corporateChange = holding(detailed.corporate).getByRole("button", { name: /^Change the / });
-    await corporateChange.focus();
-    await resume();
-    await liquidRow.getByText("Confirmed", { exact: true }).waitFor();
-    await focused(corporateChange, "a fund matched while the focus is on another");
-    await frame.getByText(matchedOne, { exact: true }).waitFor();
-    // The card says how many once every search that can confirm a fund is done, so it's read out once.
-    await forget("isin:INFZ90K01LQ6", "isin:INFZ90K01BA1");
-    await readPaused("INFZ90K01BA1");
-    await liquidRow.getByText("Confirmed", { exact: true }).waitFor();
-    assert.equal(await matched.count(), 0);
-    await resume();
-    await holding(detailed.balanced).getByText("Confirmed", { exact: true }).waitFor();
-    await frame.getByText("2 funds matched from AMFI by their ISIN. Change any that look wrong.", { exact: true }).waitFor();
-    assert.equal(await matched.count(), 1);
-    // Leaving one out takes it out of the count.
-    await leaveOut(holding(detailed.balanced));
-    await frame.getByText(matchedOne, { exact: true }).waitFor();
-
-    // Not confirmed: AMFI's scheme quoted in dollars or with no currency, AMFI's name on another plan,
-    // and two AMFI schemes for one ISIN. Each is listed, and preselected when it's the only AMFI result.
-    await forget("isin:INFZ90K01FC8", "isin:INFZ90K01LQ6", "isin:INFZ90K01BA1", "isin:INFZ91T01CB6");
-    await tab.frames()[1].evaluate(() => {
-      const { listing, scheme } = window.host.make;
-      window.host.answers = {
-        INFZ90K01FC8: [listing("INFZ90K01FC8"), { ...scheme("INFZ90K01FC8"), currency: "USD" }],
-        INFZ90K01LQ6: [{ ...scheme("INFZ90K01LQ6"), currency: undefined }],
-        INFZ90K01BA1: [listing("INFZ90K01BA1"), { ...scheme("INFZ90K01BA1"), longName: "Fictiva Balanced Advantage Fund - Regular Plan - IDCW Reinvestment" }],
-        INFZ91T01CB6: [scheme("INFZ91T01CB6"), { ...scheme("INFZ91T01CB6"), symbol: "199999", canonicalSymbol: "199999", providerSymbol: "199999" }],
-      };
-    });
-    await readAgain();
-    for (const [name, preselect] of [[detailed.flexi, 1], [detailed.liquid, 0], [detailed.balanced, 1], [detailed.corporate, undefined]]) {
-      const section = holding(name);
-      await section.getByRole("radio").nth(preselect ?? 1).waitFor({ state: "attached" });
-      await undecided(section);
-      const checked = await section.getByRole("radio").evaluateAll((all) => all.map((radio) => radio.getAttribute("aria-checked") === "true"));
-      assert.deepEqual(checked.flatMap((on, i) => (on ? [i] : [])), preselect === undefined ? [] : [preselect], name);
-    }
-    assert.deepEqual(await resultBadges(holding(detailed.balanced)), [[], ["Regular warning-subtle", "IDCW secondary"]]);
-    assert.equal(await matched.count(), 0);
-
-    // With AMFI off, a saved asset priced from AMFI that the search finds by an identifier, here AMFI
-    // mapped to the ISIN, is still confirmed: Wealthfolio searches its assets either way. Not one it
-    // finds because its name has the ISIN, Yahoo's listing alone, or AMFI's scheme in the results of
-    // the name searched when the ISIN finds nothing.
-    await tab.frames()[1].evaluate(() => {
+    await readStatement();
+    await dSaid.getByText("1 fund found automatically on AMFI. No questions for you.", { exact: true }).waitFor();
+    await frame.getByText("1 fund found automatically on AMFI. Change any that look wrong.", { exact: true }).waitFor();
+    const amfiRow = readyFund(/^Scheme \d{6}/);
+    await amfiRow.getByText(/^Prices from AMFI · Change$/).waitFor();
+    await amfiRow.getByText(`On your statement: ${detailed.liquid}`, { exact: true }).waitFor();
+    await importButton.click();
+    await imported().waitFor();
+    const schemeCode = await hosted(() => window.host.activities.find((a) => /^\d{6}$/.test(a.assetSymbol))?.assetSymbol);
+    assert.ok(schemeCode);
+    assert.equal(JSON.parse((await storage())["isin:INFZ90K01LQ6"]).providerId, "AMFI");
+    // Without the saved choice, its ISIN finds the asset the import created, which confirms it again.
+    await hosted(() => { window.host.storage.delete("isin:INFZ90K01LQ6"); });
+    await readStatement();
+    await dSaid.getByText("1 fund found automatically on AMFI. No questions for you.", { exact: true }).waitFor();
+    await dFooter.getByRole("button", { name: "Finish", exact: true }).click();
+    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ90K01LQ6") ?? "null")?.assetId);
+    await hosted(() => {
       window.host.amfi = false;
-      window.host.answers = { "Testbridge Corporate Bond": [window.host.make.scheme("INFZ91T01CB6")] };
-      delete window.host.assets["yahoo-flexi"];
-      window.host.assets["amfi-flexi"] = {
-        symbol: "100123", exchangeMic: null, instrumentType: "EQUITY", name: "Fictiva Flexi Cap Fund - Direct Plan - Growth", providerId: "AMFI", aliases: ["INFZ90K01FC8"],
-      };
-      window.host.assets["amfi-balanced"] = {
-        symbol: "100456", exchangeMic: null, instrumentType: "EQUITY", name: "Scheme 100456, ISIN INFZ90K01BA1", providerId: "AMFI",
-      };
+      window.host.providers = "fail";
+      window.host.assets = {};
     });
-    await readAgain();
-    await flexi.getByText("Confirmed", { exact: true }).waitFor();
-    await frame.getByText(matchedOne, { exact: true }).waitFor();
-    assert.equal(await flexi.getByText(/^On the statement: /).count(), 0, "the asset has the statement's name");
-    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ90K01FC8") ?? "null")?.assetId === "amfi-flexi");
-    for (const name of [detailed.liquid, detailed.balanced, detailed.corporate]) {
-      await holding(name).getByRole("radio").first().waitFor({ state: "attached" });
-      await undecided(holding(name));
-    }
-    await holding(detailed.corporate).getByText(/^Nothing found for the ISIN; showing results for "Testbridge Corporate Bond"\./).waitFor();
-    // Nor is a search typed in, even for the ISIN once AMFI is added.
-    await tab.frames()[1].evaluate(() => { window.host.amfi = true; });
-    await liquidSearch.fill("INFZ90K01LQ6");
-    await liquidSearch.press("Enter");
-    await liquidRow.locator("label").filter({ hasText: /AMFI$/ }).waitFor();
-    assert.ok(await amfiPicked());
-    await undecided(liquidRow);
-    assert.equal(await confirmed(), 2);
-    await tab.frames()[1].evaluate((state) => {
+    await restoreChoices(beforeIgnoredDetailed);
+
+    // Below Tailwind's `sm` width, 320 px here, the ready funds are a stacked list, and nothing is wider
+    // than the frame: the check's buttons and the footer's stay in view.
+    await resetBank();
+    await readStatement();
+    await pickOption(bankSelect(), "Savings (INR)");
+    await sizeFrame(320);
+    const stackedFunds = frame.getByRole("list", { name: "Funds ready to import", exact: true });
+    await stackedFunds.waitFor();
+    await stackedFunds.getByText(/^New transactions: \d+/).first().waitFor();
+    assert.equal(await readyFunds.count(), 0);
+    for (const button of [linkSelected, newTransfers, importButton]) assert.ok(await button.isVisible());
+    assert.ok(await hosted(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "nothing past 320 px");
+    await sizeFrame(1000);
+    await leaveDetailed();
+
+    // A detailed statement read in the holdings checks below starts from the import above that
+    // Wealthfolio rejected a row of: its activities, and the account and two funds it chose.
+    await resetBank();
+    await setAccountList(allAccounts);
+    const holdingsStart = baseline.storage.filter(([key]) => key === panKey || key === "isin:INFZ90K01BA1" || key === "isin:INFZ91T01CB6");
+    assert.equal(holdingsStart.length, 3);
+    await hosted((state) => {
       window.host.amfi = false;
       window.host.answers = {};
       Object.assign(window.host, { ...state, storage: new Map(state.storage) });
-    }, beforeAmfi);
-
+    }, { activities: baseline.activities, assets: {}, storage: holdingsStart, searches: [], failHistory: true, rejectLine: 1, skipLine: undefined });
     // A summary or depository statement's holdings go to accounts that track holdings, as snapshots,
     // on one Review screen: where they're saved, what needs an answer, and what will be saved.
     const unindexedAside = `holdings-imported:${createHash("sha256")
@@ -3723,45 +3206,55 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveReview();
     assert.equal(await remember.getAttribute("aria-checked"), "true");
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
-    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-no-password.pdf");
-    await frame.locator("#cas-password").fill("");
-    await frame.getByRole("button", { name: "Read statement", exact: true }).click();
-    await frame.getByText(/2 folios, 7 schemes, 78 rows\./).waitFor({ timeout: 180_000 });
+    const beforeDetailedCopy = await hosted(() => ({ activities: window.host.activities, rejectLine: window.host.rejectLine, storage: [...window.host.storage] }));
+    await hosted(() => {
+      window.host.activities = [];
+      window.host.rejectLine = undefined;
+    });
+    const readNoPassword = async () => {
+      await leaveDetailed();
+      await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-no-password.pdf");
+      await frame.locator("#cas-password").fill("");
+      await frame.getByRole("button", { name: "Read statement", exact: true }).click();
+      await transactionsHeading.waitFor({ timeout: 180_000 });
+      await dSettled();
+    };
+    await readNoPassword();
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
-    const detailedCorporate = holding(detailed.corporate);
-    await detailedCorporate.getByText("Confirmed", { exact: true }).waitFor();
-    await detailedCorporate.getByText("Symbol 0P0000TBCB · Exchange XBOM · Type MUTUALFUND · Currency INR", { exact: true }).waitFor({ state: "attached" });
-    assert.equal(await frame.getByRole("button", { name: "Use the statement's prices" }).count(), 0);
-    await holding(detailed.flexi).getByText("Confirmed", { exact: true }).waitFor();
+    const detailedCorporate = readyFund("Fund 0P0000TBCB");
+    await detailedCorporate.getByText(/^Prices from FAKE · chosen before · Change$/).waitFor();
+    assert.equal(await frame.getByRole("button", { name: /the price on the statement/ }).count(), 0);
     // Its search doesn't offer the asset priced from statements, whether by ISIN or by name.
-    const withheld = "The asset that holdings imports price from statements for this fund isn't listed: detailed imports don't use the statement's prices.";
-    await detailedCorporate.getByRole("button", { name: /^Change the / }).click();
-    await detailedCorporate.getByText(withheld, { exact: true }).waitFor();
-    await detailedCorporate.getByText(`Nothing found for the ISIN or for "Testbridge Corporate Bond". Try another name or a ticker.`, { exact: true }).waitFor();
-    assert.equal(await detailedCorporate.getByRole("radio").count(), 0);
-    assert.equal(await detailedCorporate.getByRole("textbox", { name: /^Search for / }).inputValue(), "Testbridge Corporate Bond");
-    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).fill("INFZ91T01CB6");
-    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await detailedCorporate.getByText(`Nothing found for the ISIN or for "Testbridge Corporate Bond". Try another name or a ticker.`, { exact: true }).waitFor();
-    await detailedCorporate.getByText(withheld, { exact: true }).waitFor();
-    // Leaving the fund out, or confirming one, changes only the fund kept for detailed imports.
-    await detailedCorporate.getByRole("button", { name: "Leave this fund out" }).click();
-    await detailedCorporate.getByText("Left out", { exact: true }).waitFor();
-    await tab.frames()[1].waitForFunction(() => !JSON.parse(window.host.storage.get("isin:INFZ91T01CB6")).transactions);
+    await detailedCorporate.getByRole("button", { name: "Change: Fund 0P0000TBCB", exact: true }).click();
+    const detailedChange = frame.locator("[data-focus-first]");
+    await detailedChange.getByText("Nothing found for the ISIN printed for it or its name. Search by its fund code below.", { exact: true }).waitFor();
+    assert.equal(await detailedChange.getByRole("radio").count(), 0);
+    const corporateCode = detailedChange.getByRole("textbox", { name: `Search by fund code for ${corporate}`, exact: true });
+    await corporateCode.fill("INFZ91T01CB6");
+    await corporateCode.press("Enter");
+    await detailedChange.getByText("Nothing found for “INFZ91T01CB6”. Check the code.", { exact: true }).waitFor();
+    // Skipping the fund, or confirming one, changes only the fund kept for detailed imports, once imported.
+    await detailedChange.getByRole("button", { name: `Skip this fund: ${corporate}`, exact: true }).click();
+    await detailedCorporate.waitFor({ state: "detached" });
+    await answerFunds();
+    await importButton.click();
+    await imported().waitFor();
     assert.deepEqual(await corporateStored(), { symbol: "INFZ91T01CB6", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: corporate, statementPrices: true });
-    await detailedCorporate.getByRole("button", { name: /^Choose a fund / }).click();
-    await detailedCorporate.getByText(withheld, { exact: true }).waitFor();
-    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).fill("0P0000TBCB");
-    await detailedCorporate.getByRole("textbox", { name: /^Search for / }).press("Enter");
-    await detailedCorporate.getByRole("radio", { checked: true }).waitFor({ state: "attached" });
-    assert.equal(await detailedCorporate.getByText(withheld, { exact: true }).count(), 0);
-    await detailedCorporate.getByRole("button", { name: "Use this fund" }).click();
-    await detailedCorporate.getByText("Confirmed", { exact: true }).waitFor();
-    await tab.frames()[1].waitForFunction(() => JSON.parse(window.host.storage.get("isin:INFZ91T01CB6")).transactions);
+    await hosted(() => { window.host.activities = []; });
+    await readNoPassword();
+    const corporateQuestion = fundQuestion(corporate);
+    await corporateQuestion.getByRole("textbox", { name: `Search by fund code for ${corporate}`, exact: true }).fill("0P0000TBCB");
+    await corporateQuestion.getByRole("button", { name: `Search for ${corporate}`, exact: true }).click();
+    await corporateQuestion.getByRole("button", { name: `Use this fund: Fund 0P0000TBCB, for ${corporate}`, exact: true }).click();
+    await dSettled();
+    await importButton.click();
+    await imported().waitFor();
     const reconfirmed = await corporateStored();
     assert.deepEqual([reconfirmed.symbol, reconfirmed.statementPrices, reconfirmed.transactions.symbol, reconfirmed.transactions.exchangeMic], [
       "INFZ91T01CB6", true, "0P0000TBCB", "XBOM",
     ]);
+    await leaveDetailed();
+    await hosted((state) => Object.assign(window.host, { ...state, storage: new Map(state.storage) }), beforeDetailedCopy);
     await hosted(() => {
       window.host.summaryWithoutIsin = [];
       window.host.emptySearchQueries = [];
@@ -3992,9 +3485,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       const before = await hosted(() => ({ workers: window.host.workers, parsed: window.host.parsed }));
       await readButton.click();
       await tab.frames()[1].waitForFunction((n) => window.host.parsed > n, before.parsed, { timeout: 180_000 });
-      await frame.locator("#cas-file:enabled").waitFor();
+      // The statement opens its Review screen; the next read starts from the file form again.
+      await transactionsHeading.waitFor({ timeout: 180_000 });
       assert.equal(await workers(), before.workers + 1, "a new parser");
       assert.equal(await frame.getByText("Couldn't read the statement", { exact: true }).count(), 0);
+      await leaveDetailed();
+      await frame.locator("#cas-file:enabled").waitFor();
+      await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
+      await frame.locator("#cas-password").fill("ABCDE1234F");
     };
     const stopped = "The parser stopped. Try reading the statement again.";
     assert.equal(await failRead("stop", stopped), 0);

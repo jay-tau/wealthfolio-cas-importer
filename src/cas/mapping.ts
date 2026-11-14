@@ -84,9 +84,32 @@ export interface MappingWarning {
   unbalanced?: true;
 }
 
+/**
+ * Why a statement row isn't part of a transaction: its scheme has no account or fund (`unchosen`),
+ * starts with units Wealthfolio doesn't have (`opening`), is left out as a whole for another reason
+ * (`scheme`) or because its rows don't add up (`unbalanced`); it's a reversed row or its reversal
+ * (`reversal`); or the row itself can't be imported (`row`).
+ */
+export type LeftOutKind = "unchosen" | "opening" | "scheme" | "unbalanced" | "reversal" | "row";
+
+/**
+ * A statement row that records something, and what the import does with it: every row of the
+ * statement's schemes but event-only rows and charges added to a transaction. A merger's or a gift's
+ * two rows share their transaction.
+ */
+export interface RowOutcome {
+  folio: CasFolio;
+  scheme: CasScheme;
+  row: CasTransaction;
+  transaction?: MappedTransaction;
+  leftOut?: { kind: LeftOutKind; reason: string };
+}
+
 export interface Mapping {
   transactions: MappedTransaction[];
   warnings: MappingWarning[];
+  /** Each statement row's outcome, in the statement's order. */
+  outcomes: RowOutcome[];
 }
 
 const CURRENCY = "INR";
@@ -142,6 +165,8 @@ interface Scheme {
   target?: SchemeTarget;
   /** Leaves out the whole scheme. */
   problem?: string;
+  /** What `problem` is about. */
+  problemKind?: "unchosen" | "opening" | "scheme";
   /** How the rows miss the closing balance. Leaves out the scheme's rows unless `target.importUnbalanced`. */
   unbalanced?: string;
   entries: Entry[];
@@ -209,7 +234,10 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   }
   pairGifts(schemes, fails, input);
 
-  const mapping: Mapping = { transactions: [], warnings: [] };
+  const mapping: Mapping = { transactions: [], warnings: [], outcomes: [] };
+  // Each counted row's transaction, or why it's left out, resolved once every transaction is made.
+  const made = new Map<Entry, MappedTransaction>();
+  const counted: { entry: Entry; leftOut?: RowOutcome["leftOut"] }[] = [];
   let lineNumber = 0;
   const number = (activity: ActivityImport) => ({ ...activity, lineNumber: ++lineNumber });
   for (const state of schemes) {
@@ -219,44 +247,56 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
       mapping.warnings.push({ ...names, rows, message, leftOut });
     if (problem) {
       warn([], problem);
+      for (const entry of entries) if (!entry.attached) counted.push({ entry, leftOut: { kind: state.problemKind ?? "scheme", reason: problem } });
       continue;
     }
     const held = heldBack(state);
     if (unbalanced) {
       const message = held
-        ? `${unbalanced} None of this fund's rows are imported. Tick "Import this fund anyway" to list them below and check them against the PDF.`
+        ? `${unbalanced} None of this fund's rows are imported unless you choose to import it anyway, under Before importing: then check them against the PDF.`
         : `${unbalanced} Its rows are imported anyway: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`;
       mapping.warnings.push({ ...names, rows: [], message, leftOut: held, unbalanced: true });
     }
     for (const entry of entries) {
       const rows = [entry.row, ...entry.charges];
+      if (entry.attached) continue;
+      // A fund held back for rows that don't add up leaves out every row, for that reason.
+      const outcome = (leftOut?: RowOutcome["leftOut"]) => ({ entry, ...(held ? { leftOut: { kind: "unbalanced" as const, reason: unbalanced! } } : leftOut && { leftOut }) });
       if (entry.reverses) {
         const original = entry.reverses;
-        warn([original.row, ...original.charges, ...rows], reversalMessage(original, input));
-      } else if (entry.reversedBy || entry.attached) {
+        const message = reversalMessage(original, input);
+        warn([original.row, ...original.charges, ...rows], message);
+        counted.push({ ...outcome({ kind: "reversal", reason: message }), entry: original }, outcome({ kind: "reversal", reason: message }));
+      } else if (entry.reversedBy) {
         continue;
       } else if (held) {
         // A scheme left out still says how to correct earlier imports.
         if (entry.problem && entry.row.type === "REVERSAL") warn(rows, entry.problem);
+        counted.push(outcome());
       } else if (entry.problem) {
         warn(rows, entry.problem);
+        counted.push({ entry, leftOut: { kind: "row", reason: entry.problem } });
       } else if (entry.rows && entry.partner) {
+        counted.push({ entry });
         // The old fund's side carries both rows of the conversion.
         if (entry.row.type === "SWITCH_IN_MERGER") continue;
         const into = entry.partner;
         const [leaving, arriving] = [entry.rows, into.rows!];
-        mapping.transactions.push({
+        const transaction: MappedTransaction = {
           ...names,
           rows,
           activity: number(leaving.activity),
           arriving: { scheme: into.scheme.scheme.scheme, rows: [into.row, ...into.charges], activity: number(arriving.activity) },
           earlier: leaving.earlier && arriving.earlier && [...leaving.earlier, ...arriving.earlier],
-        });
+        };
+        mapping.transactions.push(transaction);
+        made.set(entry, transaction).set(into, transaction);
       } else if (entry.rows && entry.counterpart) {
+        counted.push({ entry });
         // The giving folio's side carries both rows of the transfer.
         if (entry.row.type === "GIFT_IN") continue;
         const into = entry.counterpart;
-        mapping.transactions.push({
+        const transaction: MappedTransaction = {
           ...names,
           rows,
           activity: number(entry.rows.activity),
@@ -266,22 +306,40 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
             rows: [into.row, ...into.charges],
             activity: number(into.rows!.activity),
           },
-        });
+        };
+        mapping.transactions.push(transaction);
+        made.set(entry, transaction).set(into, transaction);
         if (entry.rows.note) warn(rows, entry.rows.note, false);
       } else if (entry.rows) {
         const { activity, cash, bank, note, standIns } = entry.rows;
-        mapping.transactions.push({
+        const transaction: MappedTransaction = {
           ...names,
           rows,
           activity: number(activity),
           cash: cash && number(cash),
           bank: bank && number(bank),
           ...(standIns && { standIns }),
-        });
+        };
+        mapping.transactions.push(transaction);
+        made.set(entry, transaction);
+        counted.push({ entry });
         if (note) warn(rows, note, false);
+      } else {
+        // Not expected: every other row has a problem or rows.
+        counted.push({ entry, leftOut: { kind: "row", reason: "This row isn't imported." } });
       }
     }
   }
+  mapping.outcomes = counted.map(({ entry, leftOut }) => {
+    const { folio, scheme } = entry.scheme;
+    const transaction = leftOut ? undefined : made.get(entry);
+    return {
+      folio,
+      scheme,
+      row: entry.row,
+      ...(transaction ? { transaction } : { leftOut: leftOut ?? { kind: "row" as const, reason: "This row isn't imported." } }),
+    };
+  });
   return mapping;
 }
 
@@ -336,8 +394,10 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
   const state: Scheme = { folio, scheme, target, entries: [] };
   if (!target) {
     state.problem = "No Wealthfolio account or fund is chosen for this scheme, so its transactions are left out.";
+    state.problemKind = "unchosen";
   } else if (!isZero(dec(scheme.open)) && !target.openingCovered) {
     state.problem = `The statement starts with ${scheme.open} units bought before ${from}. Import that earlier history, or add the units with their original costs and dates, before this scheme's transactions.`;
+    state.problemKind = "opening";
   }
   // casparser's close_calculated is the opening units plus every row's units.
   const calculated = dec(scheme.close_calculated);
@@ -557,7 +617,7 @@ function pairGifts(schemes: Scheme[], fails: (entry: Entry) => boolean, input: M
     const problem = failed.length
       ? "The other side of this gift can't be imported, so neither side is."
       : confirmedFund(out.scheme) !== confirmedFund(into.scheme)
-        ? "The two sides of this gift are confirmed as different Wealthfolio assets, so neither side is imported. Confirm the same fund for both under Funds."
+        ? "The two sides of this gift are confirmed as different Wealthfolio assets, so neither side is imported. Choose Change beside each and confirm the same fund for both."
         : out.scheme.target!.accountId === into.scheme.target!.accountId
           ? [out, into].some((side) => side.rows && input.entered?.(side.rows.activity))
             ? "Both sides of this gift go to the same Wealthfolio account, so its units stay there and neither side is imported. Wealthfolio has a transfer or trade of these units on this day, which changes their cost and purchase dates: delete it, with its other side or cash."
@@ -599,7 +659,8 @@ function checkSegregated(schemes: Scheme[]) {
   for (const state of schemes.filter((s) => s.target && !s.problem && segregated(s))) {
     const other = schemes.find((s) => s.target && !segregated(s) && confirmedFund(s) === confirmedFund(state));
     if (other) {
-      state.problem = `This segregated portfolio is confirmed as the same Wealthfolio asset as ${other.scheme.scheme}, so its transactions are left out. Under Funds, confirm the segregated portfolio's own fund: search its ISIN or AMFI scheme code.`;
+      state.problem = `This segregated portfolio is confirmed as the same Wealthfolio asset as ${other.scheme.scheme}, so its transactions are left out. Choose Change on its fund and confirm the segregated portfolio's own fund: search its ISIN or AMFI scheme code.`;
+      state.problemKind = "scheme";
     }
   }
 }
@@ -698,7 +759,7 @@ function conversionRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["
     return "This merger's funds go to different Wealthfolio accounts, and a fund conversion stays in one, so neither half is imported.";
   }
   if (fundRef(other.asset.symbol, other.asset.exchangeMic) === fundRef(target.asset.symbol, target.asset.exchangeMic)) {
-    return "Both funds of this merger are confirmed as the same Wealthfolio asset, so neither half is imported. Confirm each scheme's own fund under Funds.";
+    return "Both funds of this merger are confirmed as the same Wealthfolio asset, so neither half is imported. Choose Change beside each and confirm each scheme's own fund.";
   }
   const [out, into] = leaving ? [entry, partner!] : [partner!, entry];
   const earlier = row.nav !== null && dec(row.nav).n > 0n

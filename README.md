@@ -13,37 +13,69 @@ Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0
 3.13.0) and Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on
 macOS.
 
-To import, pick the PDF and enter its password, if it has one, choose a Wealthfolio account that tracks
-transactions for each PAN (and, if you like, a different one for a folio), and confirm the
-Wealthfolio fund for each scheme; the
-add-on searches by the ISIN printed on the statement, and by the fund's name if the ISIN finds
-nothing or none is printed. Name-search results can be other funds: pick one with the statement's
-fund name, plan and option, or leave the fund out. Badges beside the statement's name, each result
-and the confirmed fund show the plan (Direct or Regular) and option (Growth, which some names call
-Cumulative, or IDCW, which older names call Dividend) that each name ends with, in spellings such
-as "Direct Plan - Growth", "Dir Gr" or Yahoo's "Reg Wk IDCW-R". A result's or confirmed fund's
-badge is a warning when the statement's name gives a different one. A name that doesn't give its
-plan or option has no badge for it, and no warning: the
-add-on doesn't guess it. Below each result's and the confirmed fund's name, grey text says where its
-prices come from: "AMFI", "Yahoo Finance", another provider's name as Wealthfolio's Market data
-settings give it, "Statement prices", "Priced by hand" for an asset in Wealthfolio whose prices are
-entered by hand, or "Unknown source". Its symbol,
-exchange, type and currency are under **Details**. A listing that Yahoo names only by its ticker, as
-it does some Indian funds, reads "Unnamed Yahoo listing" with the ticker and "Plan and option
-unknown"; Yahoo's other names for Indian funds are often abbreviated, and AMFI's (see
-[AMFI prices](#amfi-prices)) are full. Funds that still need a choice come first, each with its
-search; the confirmed and left-out ones follow, one row each, with **Change** or **Choose a fund** to
-search again. A confirmed fund's row gives the statement's name too when the fund's own name is
-another, such as an unnamed listing's, and where the statement lists it, such as "in 2 folios".
-Closed schemes, with no units at either end and
-nothing to import, are skipped. The preview lists every activity with its
-cash deposit or withdrawal (or [bank transfer](#bank-account)), the rows left out and why, and anything Wealthfolio already has. After
-the import, it compares each fund's units in Wealthfolio with the statement's closing balance.
-A fund whose rows don't add up to its closing balance is left out unless you tick "Import this
-fund anyway"; then check its rows against the PDF and add or correct the missing ones in
-Wealthfolio after importing. A fund the import adds to Wealthfolio gets the statement's name. When
-Wealthfolio then fetches the fund's profile, a name in it, such as a Yahoo listing's, replaces the
-statement's; a Yahoo listing without a name keeps it.
+To import, pick the PDF and enter its password, if it has one. Once the statement is read, one Review
+screen shows, in this order:
+
+- **Transactions, 1 Apr 2019 to 30 Jun 2026**, the statement's period, then the registrar, the
+  investor's name as printed ("A. Investor and B. Investor" for a family statement) and the file.
+  **Use another file** goes back to choosing a file, asking "Discard your 3 changes and choose
+  another file?" first if anything was answered, changed, chosen or typed. Nothing about the review is
+  remembered until you import or finish, so discarding drops it all.
+- The counts: funds, ready, not included, and questions. The question count goes to the first open
+  question.
+- **Save to**: one box per PAN, named by the investor ("A. Investor's funds"), with the Wealthfolio
+  account that tracks transactions their funds go to, or "Don't import them", and **Bank account for
+  purchases and payouts (optional)**: "None: don't add bank transfers", the first time, or an account
+  (see [Bank account](#bank-account)). The choices made last time are preselected. Under **Save part
+  of it to another account**, each folio can go to another account or "Don't import", and have its own
+  bank account. A folio printed without a PAN has a box of its own. A remembered account that's hidden,
+  archived, no longer listed or tracks holdings asks you to choose again, and so does a bank account
+  that's also the funds' account. Closed schemes, with no units at either end and nothing to import,
+  are skipped.
+- The bank matches, right under the bank account they're for, as a question: see
+  [Bank account](#bank-account).
+- **Questions for you**: each fund with no confirmed Wealthfolio fund, as one card with what the
+  statement prints, why it's asked, its results and **Search by fund code**, as on the
+  [holdings Review screen](#summary-and-depository-statements). The add-on searches by the ISIN
+  printed on the statement, and by the fund's name if the ISIN finds nothing or none is printed;
+  name-search results can be other funds. Each result says whether its plan and option (Direct or
+  Regular; Growth, which some names call Cumulative, or IDCW, which older names call Dividend) match
+  the statement's, in spellings such as "Direct Plan - Growth", "Dir Gr" or Yahoo's "Reg Wk IDCW-R". A
+  name that doesn't give its plan or option says so: the add-on doesn't guess it. **Use this fund**
+  confirms one, and **Skip this fund** leaves it out. The asset that holdings imports price from
+  statements isn't offered: detailed imports don't use the statement's prices. An answered question
+  becomes one line with **Change answer**.
+- **Ready to import**: each fund with new transactions, with its plan and option, where its prices
+  come from (and whether it was chosen before or by you) and **Change**, its **New transactions**
+  ("38 imported before" under them) and its **Units after import**: the units Wealthfolio has at the
+  statement's end, with what the import sends. A fund whose units then won't match the statement's
+  says so ("After import: 1,204.500 units · Statement: 1,250.000. Imported with the difference you
+  accepted.") and always shows; with more than five rows, only the first three, those and the ones
+  just changed show until **Show all**. A fund with nothing new is one line under the table. A family
+  statement's funds are grouped by investor and account ("A. Investor → Mutual funds").
+- **Not included in this import**: a fund that starts with units bought before the statement, which
+  Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**); funds you skipped;
+  folios set to "Don't import"; funds whose rows don't add up (below); and transactions left out, each
+  with why.
+- **Transactions in this statement**: how many there are, and what happens to each: to import,
+  imported before, waiting for your answers or for earlier purchases, in skipped funds or folios not
+  imported, or left out, with why. The parts add up to the total.
+- **Before importing**: possible duplicates, with **Import it anyway**, and funds whose rows don't add
+  up, with **Import this fund anyway**, each left out unless ticked and saying what ticking does.
+- A bar that stays at the bottom: what's left before importing, or what will be imported ("Import
+  136 transactions for 8 funds into **Mutual funds**."), which funds' units won't match the statement
+  afterwards, and how each bank account's movements go, with **See every transaction**, which shows
+  each activity with its cash and status, and **Import 136 transactions**. With nothing to import, it
+  says why ("Nothing new: every transaction on this statement is already in Wealthfolio.") and has
+  **Finish**.
+
+The plan is worked out again as you answer, from reads of Wealthfolio that are repeated when you open
+the add-on's page again. After the import, the result compares each imported fund's units in
+Wealthfolio with the statement's closing balance. A fund the import adds to Wealthfolio gets the
+statement's name. When Wealthfolio then fetches the fund's profile, a name in it, such as a Yahoo
+listing's, replaces the statement's; a Yahoo listing without a name keeps it. A fund whose rows don't
+add up to its closing balance is left out unless you tick **Import this fund anyway**; then check its
+rows against the PDF and add or correct the missing ones in Wealthfolio after importing.
 
 A purchase costs the statement's units × NAV plus stamp duty; a redemption pays units × NAV less
 STT and TDS. casparser says some older CAMS and KFintech layouts print no NAV column. casparser
@@ -69,7 +101,8 @@ match a row with the activity imported with its ID into the same account, even a
 you edit that activity, so equal transactions, such as the same purchase on one day in two folios,
 each go in once. Activities without these IDs, imported by version 2.2.0 or earlier or entered by
 hand, are compared with each row by their values, each with one row at most. Wealthfolio's own check
-can still report an equal row as a duplicate of such an activity; "Import anyway" imports it. Before
+can still report an equal row as a duplicate of such an activity; **Import it anyway**, under
+**Before importing**, imports it. Before
 Wealthfolio 3.12.0, Wealthfolio's check also missed the trades of a fund that an earlier import
 created. A fund whose statement starts with units needs
 those units in Wealthfolio first, from an earlier statement or entered by hand.
@@ -77,9 +110,9 @@ The units check counts posted account history, each activity on its day in Wealt
 setting (UTC if none is set); splits or option expiry in that history need review.
 Activities show an asset's display code, which can be changed, so rows and units go by the fund's
 asset ID, or for a fund confirmed without one, by the symbol and exchange on each asset's profile.
-When several assets have that symbol and exchange, the preview asks you to choose one under Funds.
-If a chosen asset was deleted or its symbol, exchange or type changed, confirm the fund again under Funds.
-If its type isn't set, set it in Wealthfolio before confirming it again.
+When several assets have that symbol and exchange, the Review screen asks you to choose Change beside the
+fund and pick one. If a chosen asset was deleted or its symbol, exchange or type changed, choose Change
+and confirm the fund again. If its type isn't set, set it in Wealthfolio before confirming it again.
 
 ### AMFI prices
 
@@ -99,20 +132,15 @@ AMFI** hides the banner until you open the page again. The add-on also checks ea
 page, and when its window gets the focus while AMFI isn't on. Once a check finds AMFI on, the banner
 goes, and each fund that has no choice yet is searched again as when it was first shown, so its
 search finds AMFI's scheme too. The statement stays read, and the funds confirmed or left out stay
-as they are. When Wealthfolio doesn't say whether AMFI is on, there's no banner. Instead, while the
-search for a fund's ISIN, or for the name of one printed without it, finds no AMFI result, the Funds
-card shows one note below its introduction: it recommends AMFI, says to add it in
-**Settings** → **Market data** if it isn't on, and to enter each fund's ISIN or AMFI scheme code in
-its search box and press **Search**.
+as they are. When Wealthfolio doesn't say whether AMFI is on, there's no banner.
 
-On a summary or depository statement's Review screen, the banner gives way to a note at the top of
-**Questions for you** while AMFI is off: "AMFI isn't added, so 9 funds were only searched on Yahoo
-Finance and need you" ("AMFI may not be added" when Wealthfolio doesn't say), counting the open
-questions about funds with a printed ISIN whose search found no AMFI result, with
-**Open Market data settings** and, once that's used, **I've added AMFI: check**. When AMFI turns on,
-those questions are searched again and answer themselves where AMFI's scheme is certain (below);
-answers already given stay. The screen then says how many funds AMFI matched and how many questions
-remain, and the focus goes to the next one.
+On the Review screen, the banner gives way to a note at the top of **Questions for you** while AMFI
+is off: "AMFI isn't added, so 9 funds were only searched on Yahoo Finance and need you" ("AMFI may
+not be added" when Wealthfolio doesn't say), counting the open questions about funds with a printed
+ISIN whose search found no AMFI result, with **Open Market data settings** and, once that's used,
+**I've added AMFI: check**. When AMFI turns on, those questions are searched again and answer
+themselves where AMFI's scheme is certain (below); answers already given stay. The screen then says
+how many funds AMFI matched and how many questions remain, and the focus goes to the next one.
 
 When a statement is read, or a check finds AMFI on and the funds are searched again, a fund without
 a remembered choice is confirmed without a click, and saved as **Use this fund** saves it, when the
@@ -121,58 +149,74 @@ result and nothing contradicts it: AMFI's scheme, or a saved asset with AMFI sel
 finds by an identifier, such as AMFI mapped to the ISIN, rather than because its symbol or name
 contains the ISIN; quoted in rupees; named, with no plan or option that differs from the statement's;
 and no saved asset with another provider selected, or none, among the results. An asset with AMFI
-selected can be confirmed even when automatic updates are off; the Funds card says **Priced by hand**,
-and a Review row says **Prices entered by hand**. Since
-Wealthfolio searches its own assets whether or not AMFI is on, such an asset is confirmed this way
-with AMFI off too. The Funds card, or the Review screen's Ready to save list, says once how many funds
-were matched this way, and each has **Change** on its row. Change or Choose a fund opens its search
-again, which then never confirms the fund by itself. Leaving a fund out keeps it left out for this read.
-On the Funds card, for an ISIN search, AMFI's result is preselected when it's the only AMFI result and
-no asset is priced from another source, and you confirm it as any other result; the Review screen
-never preselects a result. Results from Yahoo or any other provider, from the
+selected can be confirmed even when automatic updates are off; its Review row then says **Prices
+entered by hand**. Since Wealthfolio searches its own assets whether or not AMFI is on, such an asset
+is confirmed this way with AMFI off too. The Review screen's Ready list says once how many funds were
+matched this way, and each has **Change** on its row. Change opens its search again, which then never
+confirms the fund by itself. Skipping a fund keeps it skipped for this read. The Review screen never
+preselects a result. Results from Yahoo or any other provider, from the
 search for a fund's name when its ISIN finds nothing or none is printed, or from a search you type,
 are never confirmed this way. Neither is a fund whose search answers once the focus has been in its
-section, so the section doesn't go from under you.
+question, so the question doesn't go from under you.
 
 A fund Wealthfolio already has, priced from Yahoo or from statements, isn't switched: the add-on
-doesn't preselect AMFI's result for it, since picking that adds a second asset for the fund. To
+doesn't confirm AMFI's result for it by itself, since picking that adds a second asset for the fund. To
 price the asset Wealthfolio has from AMFI, edit it in Wealthfolio: under **Market data**, turn on
 **Automatic updates** if it's priced by hand, then choose AMFI as the preferred provider and map
 AMFI to the fund's ISIN or scheme code.
 
 ### Bank account
 
-If Wealthfolio also tracks the bank account a PAN's purchases are paid from, choose it under
-**Bank account** (a folio can have a different one, or none). Each purchase then comes with a transfer
-from that account to the funds' account, and each redemption or IDCW payout with a transfer back,
-which Wealthfolio links, instead of a deposit or withdrawal. Switches keep their deposit and
-withdrawal, since their money stays with the fund house; mergers, gifts, segregated portfolios' units
-and reinvested dividends have no cash row.
+If Wealthfolio also tracks the bank account a PAN's purchases are paid from, choose it under **Bank
+account for purchases and payouts (optional)** in its box (a folio can have a different one, or
+none). Purchases then transfer from that account to the funds' account, and redemptions and cash
+dividend payouts transfer back to it, which Wealthfolio links, instead of each coming with a deposit or
+withdrawal. Switches keep their deposit and withdrawal, since their money stays with the fund house;
+mergers, gifts, segregated portfolios' units and reinvested dividends have no cash row. The bar at the
+bottom says how they go: "A. Investor's purchases transfer from Savings account, and sales and payouts
+back to it: 4 use entries already there, 31 get new transfers."
 
 If the bank account already has the debit or credit, from a bank statement import for example, the
-preview offers to use it: a withdrawal or deposit (or a transfer not yet linked) within 7 days, for
-the transaction's amount to the paisa, with or without its stamp duty, STT or TDS. Tick it, and the
-add-on imports the trade, adds the funds' account's side of the transfer, changes the bank's
-withdrawal or deposit into a transfer and links the two. Transactions imported earlier with a deposit
-or withdrawal count as already in Wealthfolio, and the add-on leaves those rows as they are.
+Review screen asks about it right under the bank account it's for: "6 entries already in Savings
+account look like these purchases and payouts". It lists every purchase, SIP purchase, sale or cash
+dividend with the entry that may be its payment or payout: a withdrawal or deposit (or a transfer not
+yet linked) within 7 days, for the transaction's amount to the paisa, with or without its stamp duty,
+STT or TDS, each entry offered once, to the closest transaction. A pair starts ticked only when the
+evidence is strong: it's the only entry for that transaction and the only transaction for that entry,
+it's at most a day apart, and the entry's description names the fund house or says MF or mutual
+fund. Its reason says what was found ("Same day · names the fund house"); every other pair says what
+to check ("6 days apart, and it doesn't name a fund house: check it", "2 entries match: check it").
+**Link 4 selected** uses the ticked entries; **Create new transfers instead** uses none. Either way,
+the unlinked ones get new transfers, which would count a payment twice if an entry above is it. The
+answer becomes one line with **Change answer** ("4 of 6 payments and payouts linked to entries already
+in Savings account; the rest get new transfers"), and the import waits until it's given. Each box has
+one question per bank account, under the box's bank choice when that's its bank, otherwise under the
+first folio choice that sets it. Changing where something goes asks again only the questions whose
+pairs changed.
 
-Wealthfolio changes such an entry in other ways too, and the preview says so on it before you tick
+To link one, the add-on imports the trade, adds the funds' account's side of the transfer, changes the
+bank's withdrawal or deposit into a transfer and links the two. Transactions imported earlier with a
+deposit or withdrawal count as already in Wealthfolio, and the add-on leaves those rows as they are.
+
+Wealthfolio changes such an entry in other ways too, and the question says so on it before you link
 it:
 
 - In a bank account in Wealthfolio's **Spending**, changing a withdrawal or deposit into a transfer
-  deletes its split across spending categories. Wealthfolio's own screens ask before deleting it.
-  Once it's linked, the add-on removes its spending or income category, as Wealthfolio
-  does when it changes one into a linked transfer; a savings category stays. An entry that's already
-  a transfer keeps its split and categories.
+  deletes its split across spending categories. Wealthfolio's own screens ask before deleting it, and
+  such an entry, or one whose split couldn't be read, never starts ticked. Once it's linked, the
+  add-on removes its spending or income category, as Wealthfolio does when it changes one into a
+  linked transfer; a savings category stays. An entry that's already a transfer keeps its split and
+  categories.
 - Outside Spending, the add-on can't read an entry's split, and changing it into a transfer deletes
   any it has, also one saved before Spending was turned off for its account.
 - In a bank account synced through Wealthfolio Connect, changing or linking an entry marks it as
   edited by you, so later corrections to it from the sync no longer change it.
 
-Right before importing, the add-on reads the entries you ticked again. If one is gone, changed, or now
-needs a note the preview didn't give, nothing is imported: the preview shows the entries as they are
-now, and you choose Import again. The result names each entry whose split was deleted, whose category
-was removed or couldn't be, or that the sync no longer corrects, so you can check it in Wealthfolio.
+Right before importing, the add-on reads the entries you linked again. If one is gone, changed, or now
+needs a note the question didn't give, nothing is imported: the Review screen shows the entries as
+they are now, and you choose Import again. The result names each entry whose split was deleted, whose
+category was removed or couldn't be, or that the sync no longer corrects, so you can check it in
+Wealthfolio.
 
 ### Mergers
 
@@ -181,7 +225,7 @@ arriving in the other. The add-on matches the two rows within one folio on one d
 as a Wealthfolio fund conversion: the new fund's units keep the old units' cost and purchase dates,
 nothing is sold and no cash moves. Both rows go in together or not at all. If you leave either fund
 out, Wealthfolio can't import either row, or the merger lists stamp duty or another charge, which a
-conversion can't carry, the preview leaves out both and says why. A switch you asked for, such as
+conversion can't carry, the import leaves out both and says why under **Not included in this import**. A switch you asked for, such as
 from a Regular to a Direct plan or from Growth to IDCW, is a sale and a purchase, and is imported as
 one.
 
@@ -192,15 +236,15 @@ it open the affected account and choose **Recalculate History**.
 Version 1.2.0 and earlier imported a merger as a sale and a purchase, with a withdrawal and a
 deposit. The add-on finds those four rows and lists the merger as already in Wealthfolio. Replacing
 them with a conversion is up to you: delete the four rows in Wealthfolio, then read the statement
-again. If Wealthfolio has only some of them, the preview doesn't import the merger and says how to
+again. If Wealthfolio has only some of them, the import leaves out the merger and says how to
 correct it. A conversion changed in Wealthfolio after its import isn't imported again either; delete
 it there to import it as the statement has it. If the statement prints no NAV for the merger, the
 add-on can't fully compare it with an earlier import. Then a matching sale or purchase, or other
-unmatched cash in the funds' account on that day, leaves the merger out, and the preview says to
+unmatched cash in the funds' account on that day, leaves the merger out, and the Review screen says to
 check those rows in Wealthfolio.
 
 If you moved a conversion to an account and then archived that account, unarchive it before
-previewing that merger again. Wealthfolio hides archived activities from add-ons, but their groups
+reading that statement again. Wealthfolio hides archived activities from add-ons, but their groups
 can still cause the whole import to fail.
 
 ### Gifts
@@ -220,17 +264,17 @@ units at that day's NAV, with no cash:
   NAV, if at least one side names the other's folio and neither names a different one. In two
   Wealthfolio accounts, both go in together, and Wealthfolio links them: the receiving account keeps
   the costs and purchase dates Wealthfolio has for the giver's units. In one account the units don't
-  move, so the preview leaves out both. If you leave one side's folio or fund out, the other side is
+  move, so the import leaves out both. If you leave one side's folio or fund out, the other side is
   a gift on its own.
 
 Wealthfolio links a transfer in and a transfer out of the same day, symbol and value that are imported
-together in two accounts, whatever else they say. So the preview leaves out a gift that could be
+together in two accounts, whatever else they say. So the import leaves out a gift that could be
 linked with any gift but its own other side, both sides when one can't be imported or their units
 or NAV don't match, and a pair Wealthfolio has only one side of, or both sides but not linked to
 each other. It also leaves out a gift with stamp duty or another charge on its day, which a transfer
 can't carry, and one with no NAV. If Wealthfolio has a transfer, purchase or sale of the same units
 in the same account and fund on that day at another price or with a comment, such as one entered by
-hand, the preview leaves the gift out and names it. For both sides in one account it says when
+hand, the import leaves the gift out and names it. For both sides in one account it says when
 Wealthfolio has such a row, which changed the units' cost and purchase dates.
 
 ### Segregated portfolios
@@ -242,14 +286,14 @@ rows crediting its units as `SEGREGATION`. They print units but no amount or NAV
 reads a scheme as a segregated portfolio when its name has "Segregated Portfolio", or a dated note
 such as "(Segregated - 06032020)", as AMFI names UTI's, on a statement that starts after the credit
 too. A main fund's note counting its segregated portfolios, such as "(no. of segregated
-portfolio-1)", doesn't make it one. Confirm the segregated portfolio's own fund under **Funds**, by
-its ISIN or AMFI scheme code. When its ISIN finds nothing, or none is printed, the add-on searches
-its name with "Segregated Portfolio" and its number, or with the dated note's "Segregated" and date,
-not the main fund's name. A segregated portfolio confirmed as the same Wealthfolio asset as a fund
-that isn't one is left out, with its payouts.
+portfolio-1)", doesn't make it one. Confirm the segregated portfolio's own fund on the Review screen,
+in its question or through **Change**, by its ISIN or AMFI scheme code. When its ISIN finds nothing,
+or none is printed, the add-on searches its name with "Segregated Portfolio" and its number, or with
+the dated note's "Segregated" and date, not the main fund's name. A segregated portfolio confirmed as
+the same Wealthfolio asset as a fund that isn't one is left out, with its payouts.
 
-The add-on imports each credit as a purchase of its units with an amount of ₹0 and no cash, and the
-preview marks the ₹0 as a stand-in. It sends no unit price, which Wealthfolio would save as that day's
+The add-on imports each credit as a purchase of its units with an amount of ₹0 and no cash, and
+**See every transaction** marks the ₹0 as a stand-in. It sends no unit price, which Wealthfolio would save as that day's
 NAV of a fund priced by hand. For tax, the units cost the main portfolio units' cost × the segregated
 assets' NAV ÷ the whole portfolio's NAV just before segregation, and the main portfolio units' cost
 goes down by as much (section 49(2AG) and (2AH) of the Income-tax Act, 1961; section 73(1) of the
@@ -258,10 +302,10 @@ holding's cost to another fund, so the main fund keeps its whole cost there. Unl
 assets' share is zero, each fund's cost and later gains in Wealthfolio differ from those for tax.
 Wealthfolio also counts the units' holding period from the day they were credited; for tax, they're
 held from when the main portfolio's units were bought. Later payouts of the segregated portfolio, such
-as "Payment - Units Extinguished", are redemptions, and the preview notes that Wealthfolio counts
+as "Payment - Units Extinguished", are redemptions, and **See every transaction** notes that Wealthfolio counts
 their gain against the units' cost there, on later statements too.
 
-The preview leaves out a credit with a nonzero amount, whose meaning isn't known, and one with stamp duty,
+The import leaves out a credit with a nonzero amount, whose meaning isn't known, and one with stamp duty,
 STT or TDS on its day, which may be its own. It also leaves out the day's new credits when Wealthfolio
 has a purchase or transfer in of the fund in that account on that day that an earlier import doesn't
 account for, such as one entered by hand, perhaps for several credits at once, and names it.
