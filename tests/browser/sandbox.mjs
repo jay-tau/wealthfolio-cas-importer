@@ -533,8 +533,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Closed schemes need no account or fund: no question, row or count for them.
     assert.equal(await frame.getByText(/Midcap|Gilt/).count(), 0);
     await frame.getByText("5 funds", { exact: true }).waitFor();
-    const questionChip = frame.getByRole("button", { name: /^\d+ questions?$/ });
-    assert.equal(await questionChip.textContent(), "6 questions");
+    // The count includes the account choice under Save to, and says so; the questions section counts
+    // only its own cards, and is named for them.
+    const questionChip = frame.getByRole("button", { name: /^\d+ questions?(: |$)/ });
+    const accountAndFunds = "the account choice and 5 fund questions";
+    await frame.getByRole("button", { name: `6 questions: ${accountAndFunds}`, exact: true }).waitFor();
+    await dSaid.getByText(`6 questions for you: ${accountAndFunds}.`, { exact: true }).waitFor();
+    await frame.getByRole("heading", { name: "Fund questions · 5 of 5 left", exact: true }).waitFor();
     assert.equal(await fundQuestions.count(), 5);
     // Wealthfolio doesn't say whether AMFI is on, so the funds whose ISIN found nothing on AMFI say so once.
     await frame.getByText(/^AMFI may not be added, so 4 funds were only searched on Yahoo Finance and need you\. Add AMFI to match them for you\.$/).waitFor();
@@ -545,7 +550,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Wealthfolio include NOT_SET, a new account, numbered past the Mutual funds Wealthfolio has, or
     // not importing them. With accounts that fit, the new one isn't preselected.
     assert.match(await fundsSelect().textContent(), /Choose an account/);
-    await dFooter.getByText("6 questions left before importing.", { exact: true }).waitFor();
+    await dFooter.getByText(`6 questions left: ${accountAndFunds} before importing.`, { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Go to the next question" }).click();
     await focused(fundsSelect(), "Go to the next question, the account first");
     await fundsSelect().click();
@@ -562,6 +567,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Each fund's question asks which fund it is; answering one moves the focus to the next one's
     // heading, and the last answer to the footer's summary.
     await dFooter.getByText("5 questions left before importing.", { exact: true }).waitFor();
+    await frame.getByRole("button", { name: "5 questions", exact: true }).waitFor();
+    await frame.getByRole("heading", { name: "Questions for you · 5 of 5 left", exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Go to the next question" }).click();
     await focused(fundQuestion(detailed.flexi).getByRole("heading"), "Go to the next question");
     await fundQuestion(detailed.flexi).getByText(/· Direct plan · Growth · 2,892\.104 units$/).waitFor();
@@ -746,7 +753,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await duplicateCard.waitFor();
     await duplicateCard.getByText("On this statement: 20 Jun 2024 · Switch in · Fund INFZ90K01LQ6 · 3.306 units · ₹9,162.28", { exact: true }).waitFor();
     await duplicateCard.getByText("Already in Mutual funds: 20 Jun 2024 · Buy · INFZ90K01LQ6 · 3.306 units · ₹9,162.49 · entered by hand", { exact: true }).waitFor();
-    await duplicateCard.getByText("Two equal transactions on one day can both be real.", { exact: true }).waitFor();
+    // Their amounts differ, so they aren't called equal.
+    await duplicateCard.getByText("Two transactions on one day with the same units can both be real.", { exact: true }).waitFor();
     const skipDuplicate = duplicateCard.getByRole("button", { name: "Skip this transaction: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
     const importDuplicate = duplicateCard.getByRole("button", { name: "Import it as a second switch in: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
     await skipDuplicate.waitFor();
@@ -897,7 +905,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.locator(`[id="${await newTransfers.getAttribute("aria-describedby")}"]`).textContent(), unlinked);
     assert.equal(await linkSelected.textContent(), "Link 1 selected");
     // It's a question until it's answered.
-    assert.equal(await questionChip.textContent(), "1 question");
+    await frame.getByRole("button", { name: "1 question: the payment check", exact: true }).waitFor();
     await dFooter.getByText("1 question left: the payment check before importing.", { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
     await focused(savingsCheck.getByRole("heading"), "Go to the question, the payment check");
@@ -984,7 +992,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // Each step of using the entry that fails says what's in Wealthfolio and what isn't, and its Try
     // again goes on from that step: the fund account's transfer is never added twice.
-    const liquidLink = `Purchase of ${detailed.liquid} on 5 May 2023: `;
+    // The fund goes by the name the Review screen gives it: its chosen listing's.
+    const liquidLink = "Purchase of Fund INFZ90K01LQ6 on 5 May 2023: ";
     for (const [step, words, rest] of [
       ["create", "The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of 4 May 2023 wasn't linked.", ["create", "update", "link"]],
       ["update", "The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't changed into a transfer or linked.", ["update", "link"]],
@@ -1056,9 +1065,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const rowsBefore = await hosted(() => window.host.activities.length);
     await importButton.click();
     await frame.getByText("Nothing was imported: bank entries you chose changed", { exact: true }).waitFor();
-    const liquidPurchaseName = `the 2023-05-05 purchase of ${detailed.liquid}`;
+    // The entry's amount and day as its review card gives them, and the fund by the name the review gives it.
+    const liquidPurchaseName = "the purchase of Fund INFZ90K01LQ6 on 5 May 2023";
+    const neftWithdrawal = "The withdrawal of ₹25,000 on 4 May 2023 in Savings";
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), chosen for ${liquidPurchaseName}, changed: ${splitNote} ${categoryNote}`,
+      `${neftWithdrawal} (NEFT FICTIVA MF), chosen for ${liquidPurchaseName}, changed: ${splitNote} ${categoryNote}`,
       { exact: true },
     ).waitFor();
     assert.deepEqual(await hosted(() => [window.host.activities.length, window.host.updates, window.host.links]), [rowsBefore, [], []]);
@@ -1070,7 +1081,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await imported(13);
     await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF SIP), for the 2023-05-05 purchase of ${detailed.liquid}: Its split across 2 spending categories was deleted. Its spending category was removed. Later corrections to it from the sync won't change it.`,
+      `${neftWithdrawal} (NEFT FICTIVA MF SIP), for ${liquidPurchaseName}: Its split across 2 spending categories was deleted. Its spending category was removed. Later corrections to it from the sync won't change it.`,
       { exact: true },
     ).waitFor();
     const reusedRow = await hosted(() => ({
@@ -1091,7 +1102,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.activities = window.host.activities.filter((a) => a.id !== "bank-neft"); });
     await importButton.click();
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), chosen for ${liquidPurchaseName}, is no longer in Wealthfolio, so the transaction now comes with a new transfer out.`,
+      `${neftWithdrawal} (NEFT FICTIVA MF), chosen for ${liquidPurchaseName}, is no longer in Wealthfolio, so the transaction now comes with a new transfer out.`,
       { exact: true },
     ).waitFor();
     await savingsCheck.getByRole("heading", { name: "4 entries already in Savings look like these purchases and payouts", exact: true }).waitFor();
@@ -1109,7 +1120,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await importButton.click();
     await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
     await frame.getByText(
-      `The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF), for the 2023-05-05 purchase of ${detailed.liquid}: Later corrections to it from the sync won't change it. Couldn't remove its spending category. A transfer isn't spending: remove it in Wealthfolio.`,
+      `${neftWithdrawal} (NEFT FICTIVA MF), for ${liquidPurchaseName}: Later corrections to it from the sync won't change it. Couldn't remove its spending category. A transfer isn't spending: remove it in Wealthfolio.`,
       { exact: true },
     ).waitFor();
     await editAccounts({ "bank-1": { provider: undefined, providerAccountId: undefined } });
@@ -1180,12 +1191,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await fundsBox().getByText(chooseAgain("Demat, which tracks holdings. Transfers imported there wouldn't change its cash"), { exact: true }).waitFor();
     assert.match(await fundsSelect().textContent(), /Choose an account/);
     assert.match(await bankSelect().textContent(), /Choose an account/);
-    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await dFooter.getByText("1 question left: the account choice before importing.", { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
     await focused(fundsSelect(), "Go to the question, a funds account chosen before");
     await pickOption(fundsSelect(), "Mutual funds (INR)");
     assert.equal(await frame.getByText(/^Chosen before: Demat, which tracks holdings\. Transactions/).count(), 0);
-    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await dFooter.getByText("1 question left: the account choice before importing.", { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
     await focused(bankSelect(), "Go to the question, a bank account chosen before");
     await pickOption(bankSelect(), "None: don't add bank transfers");
@@ -1220,7 +1231,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("option", { name: "Same as above (Mutual funds)" }).click();
     await pickOption(folioSelect(testbridgeFolio), "Not set (INR)");
     await pickOption(folioBankSelect(fictivaFolio), "None: don't add bank transfers");
-    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await dFooter.getByText("1 question left: the account choice before importing.", { exact: true }).waitFor();
     await pickOption(folioBankSelect(testbridgeFolio), "Same as above (Savings)");
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
     assert.equal(await questionChip.count(), 0);
@@ -1263,9 +1274,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }
     assert.match(await folioSelect(fictivaFolio).textContent(), /^Mutual funds/);
     assert.equal((await folioBankSelect(fictivaFolio).textContent()).trim(), "None: don't add bank transfers");
-    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await dFooter.getByText("1 question left: the account choice before importing.", { exact: true }).waitFor();
     await pickOption(folioSelect(testbridgeFolio), "Mutual funds (INR)");
-    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await dFooter.getByText("1 question left: the account choice before importing.", { exact: true }).waitFor();
     // A folio waiting for its bank account has no ready rows to skip its funds from; not importing it
     // leaves no question.
     await pickOption(folioSelect(testbridgeFolio), "Don't import");
@@ -1786,13 +1797,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const unfinishedLines = frame.getByText(/^The (price of .+ wasn't saved|statement's details for .+ weren't saved)\.$/);
     // The answer that replaces an account's holdings saved for the statement's date.
     const sameDay = (account, date = "31 Mar 2025") =>
-      frame.getByRole("button", { name: `Replace them with this statement: ${account}'s holdings for ${date}`, exact: true });
+      frame.getByRole("button", { name: `Replace them with this statement: holdings in ${account} for ${date}`, exact: true });
     // The read-only snapshot an account gets, under the footer's See … after saving.
     const snapshotTable = async (account, date = "31 Mar 2025") => {
-      const toggle = frame.getByRole("button", { name: `See ${account}'s holdings on ${date} after saving`, exact: true });
+      const toggle = frame.getByRole("button", { name: `See the holdings in ${account} on ${date} after saving`, exact: true });
       if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
-      const table = frame.getByRole("table", { name: `${account}'s holdings on ${date} after saving`, exact: true });
+      const table = frame.getByRole("table", { name: `Holdings in ${account} on ${date} after saving`, exact: true });
       await table.waitFor();
+      // Its section is named as the table is.
+      await frame.getByRole("region", { name: `Holdings in ${account} on ${date} after saving`, exact: true }).waitFor();
       return table;
     };
     const statusOf = async (table, text) => (await table.getByRole("row").filter({ hasText: text }).getByRole("cell").last().textContent()).trim();
@@ -1825,13 +1838,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("16 holdings", { exact: true }).waitFor();
     assert.equal(await questions.count(), 13);
     assert.equal(await frame.getByText("Not included in this save", { exact: true }).count(), 0);
-    await frame.getByText(/^Questions for you · 13 of 13 left$/).waitFor();
+    // The account choice is a question too, under Save to: the questions section is named for its own cards.
+    await frame.getByText(/^Other questions · 13 of 13 left$/).waitFor();
     // An older remembered choice keeps no provider, so where its prices come from is unknown.
     await ready("TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH").getByText(/^Price source unknown · chosen before ·/).waitFor();
     // Nothing is chosen for the statement yet, so that's a question too, and saving waits for it.
     assert.match(await investorSelect.textContent(), /Choose an account/);
     await frame.getByText("Used again for your next statement.", { exact: true }).waitFor();
-    await footer.getByText("14 questions left before saving.", { exact: true }).waitFor();
+    await footer.getByText("14 questions left: the account choice and 13 other questions before saving.", { exact: true }).waitFor();
+    await frame.getByRole("button", { name: "14 questions: the account choice and 13 other questions", exact: true }).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
     // With AMFI not added, the search for a fund's ISIN finds no AMFI result. Questions for you says so
     // once, above its cards, and offers Market data settings.
@@ -1924,10 +1939,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // question still open, the statement's account.
     await frame.getByRole("button", { name: /^Change answer: FICTIVA NIFTY 50 ETF: / }).press("Enter");
     await focused(question("FICTIVA NIFTY 50 ETF").getByRole("heading"), "Change answer, keyboard");
-    await footer.getByText("2 questions left before saving.", { exact: true }).waitFor();
+    await footer.getByText("2 questions left: the account choice and 1 fund question before saving.", { exact: true }).waitFor();
+    await frame.getByRole("heading", { name: "Fund questions · 1 of 13 left", exact: true }).waitFor();
     await question("FICTIVA NIFTY 50 ETF").getByRole("button", { name: /^Use this fund: / }).press("Enter");
     await focused(investorSelect, "the last answer, with an account still to choose");
-    await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
+    await footer.getByText("1 question left: the account choice before saving.", { exact: true }).waitFor();
     assert.equal(await said.getByText("All questions answered. Ready to save.", { exact: true }).count(), 0);
     // Go to the question goes to the select still to choose, from wherever the focus is.
     await footer.getByRole("button", { name: "Go to the question", exact: true }).click();
@@ -2052,7 +2068,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.match(await sourceSelect(otherFolioTitle).textContent(), /Same as above \(Fund folios\)/);
     // Go to the question opens Save part of it to another account and goes to the first select to choose.
     await partButton.click();
-    await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
+    await footer.getByText("1 question left: the account choice before saving.", { exact: true }).waitFor();
     await footer.getByRole("button", { name: "Go to the question", exact: true }).click();
     await focused(sourceSelect(nsdlTitle), "Go to the question, a demat account's account");
     await choose(nsdlTitle, "Demat (INR)");
@@ -2508,7 +2524,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     };
     const keptDateCard = (account = "Demat") => askCard(`${account} already has holdings saved for 31 Mar 2025`);
     const keepSaved = (account = "Demat") => keptDateCard(account).getByRole("button", {
-      name: `Keep the saved ones: ${account}'s holdings for 31 Mar 2025`, exact: true,
+      name: `Keep the saved ones: holdings in ${account} for 31 Mar 2025`, exact: true,
     });
     const doubleWarning = "Demat will still hold Fund INFZ90K01LQ6. Saving it in Fund folios too would count its units twice.";
     await resetKeptDate();
@@ -2557,13 +2573,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await keepFolio.press("Enter");
     await settled();
     await focused(footer.locator("[tabindex='-1']").first(), "Keep the folio in the kept account, nothing left to save");
-    await said.getByText("Nothing will be saved. Demat's holdings for 31 Mar 2025 are kept.", { exact: true }).waitFor();
+    await said.getByText("Nothing will be saved. The holdings in Demat for 31 Mar 2025 are kept.", { exact: true }).waitFor();
     await openParts();
     assert.match(await sourceSelect(otherFolioTitle).textContent(), /^Demat \(INR\)$/);
     await footer.getByText("Nothing will change: you kept the holdings already saved in Demat for 31 Mar 2025.", { exact: true }).waitFor();
     const beforeKeptFinish = await hosted(() => ({ saves: window.host.saves.length, snapshots: window.host.snapshots }));
     await footer.getByRole("button", { name: "Finish", exact: true }).click();
-    await frame.getByText("Finished: nothing from made-up-nsdl.pdf was saved. Demat's holdings for 31 Mar 2025 are kept.", { exact: true }).waitFor();
+    await frame.getByText("Finished: nothing from made-up-nsdl.pdf was saved. The holdings in Demat for 31 Mar 2025 are kept.", { exact: true }).waitFor();
     assert.deepEqual(await hosted(() => ({ saves: window.host.saves.length, snapshots: window.host.snapshots })), beforeKeptFinish);
 
     // Keeping the only destination also finishes without a write, including at 320 px with a long name.
@@ -2727,8 +2743,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.keyboard.press("Enter");
     // The last answer takes the focus to the bar's summary, which says what it does.
     await focused(footer.locator("[tabindex='-1']"), "the last question answered");
-    const flexiAnswer = await changeAnswer("Change answer: Fund INFZ90K01FC8: Fund folios's 2,892.104 units kept: Fund INFZ90K01FC8 in Fund folios");
-    await footer.getByText("Fund INFZ90K01FC8: Fund folios's 2,892.104 units kept.", { exact: true }).waitFor();
+    const flexiAnswer = await changeAnswer("Change answer: Fund INFZ90K01FC8: 2,892.104 units kept in Fund folios: Fund INFZ90K01FC8 in Fund folios");
+    await footer.getByText("Fund INFZ90K01FC8: 2,892.104 units kept in Fund folios.", { exact: true }).waitFor();
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Kept");
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     // Saving the statement's units in both accounts replaces the account's, so there's nothing to ask.
@@ -2740,7 +2756,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Saved here no more, it's asked again.
     await keepFlexi.waitFor();
     await removeFlexi.dispatchEvent("click");
-    await changeAnswer("Change answer: Fund INFZ90K01FC8: Fund folios's 2,892.104 units removed: Fund INFZ90K01FC8 in Fund folios");
+    await changeAnswer("Change answer: Fund INFZ90K01FC8: 2,892.104 units removed from Fund folios: Fund INFZ90K01FC8 in Fund folios");
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Removed");
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await saveHoldings.click();
@@ -2927,7 +2943,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const sharesRow = ready("SAMPLEWORKS TECHNOLOGIES LIMITED");
     await sharesRow.getByText(priced, { exact: true }).waitFor();
     // A statement older than the account's latest snapshot saves history: the review and the footer say so.
-    const laterNote = "This saves holdings history for 31 Mar 2025. Demat's current holdings still come from its snapshot of 30 Apr 2025.";
+    const laterNote = "This saves holdings history for 31 Mar 2025. The current holdings in Demat still come from its snapshot of 30 Apr 2025.";
     await frame.getByRole("heading", { name: /^Ready to save/ }).locator("xpath=..").getByText(laterNote, { exact: true }).waitFor();
     await footer.getByText(laterNote, { exact: true }).waitFor();
     await changeTo(sharesRow);
@@ -3012,7 +3028,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await ready(scheme).getByText(/^Prices from the statement · chosen by you/).waitFor();
     // Its investor is the statement's name, not the PAN of the earlier statements, so nothing else is remembered.
     assert.match(await investorSelect.textContent(), /Choose an account/);
-    await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
+    await footer.getByText("1 question left: the account choice before saving.", { exact: true }).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
     // A Change open on a holding whose account isn't chosen yet stays open on its row once the account
     // is chosen, with its Cancel, and the bar doesn't keep waiting on it after Cancel.
@@ -3311,7 +3327,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // import history that didn't reach Wealthfolio, each with its own retry.
     await frame.getByText("Holdings saved in 1 of 2 accounts", { exact: true }).waitFor();
     await frame.locator("li").getByText(/^Saved \d+ holdings? in Fund folios on 31 May\.$/).waitFor();
-    const dematLine = frame.getByText(/^Demat's \d+ holdings? on 31 May (wasn't|weren't) saved\.$/);
+    const dematLine = frame.getByText(/^\d+ holdings? in Demat on 31 May (wasn't|weren't) saved\.$/);
     await dematLine.waitFor();
     const historyLine = frame.getByText(/^Holdings saved, but the import history couldn't be saved\. The next import may not know which holdings this statement added\.$/);
     await historyLine.waitFor();
@@ -3982,6 +3998,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("option").first().waitFor({ state: "detached" });
     await footer.getByText(/^Create the Wealthfolio account Mutual funds and save \d+ holdings on 31 Mar 2025\./).waitFor();
     assert.equal(await saveHoldings.textContent(), "Save holdings");
+    // The new account's name reads naturally in the bar's link and the snapshot's names, not "Mutual funds's".
+    await snapshotTable("Mutual funds");
+    await footer.getByRole("button", { name: "See the holdings in Mutual funds on 31 Mar 2025 after saving", exact: true }).click();
+    await frame.getByRole("table", { name: "Holdings in Mutual funds on 31 Mar 2025 after saving", exact: true }).waitFor({ state: "detached" });
 
     // Rename edits the name in place: 2 to 50 characters, trimmed. While it's open, saving waits.
     await frame.getByRole("button", { name: "Rename the new account Mutual funds: ANANYA R TESTWALA's holdings", exact: true }).click();
@@ -4054,7 +4074,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => window.host.storage.clear());
     await readHoldings();
     assert.match(await investorSelect.textContent(), /Choose an account/);
-    await frame.getByRole("button", { name: /^\d+ questions?$/ }).waitFor();
+    await frame.getByRole("button", { name: /^\d+ questions?: the account choice( and \d+ (fund|other) questions?)?$/ }).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
     await investorSelect.click();
     await frame.getByRole("option", { name: "Don't save them", exact: true }).waitFor();
@@ -4078,7 +4098,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.failCreate = []; window.host.failSnapshotAccounts = ["created-2"]; });
     await frame.getByRole("button", { name: "Try again saving holdings", exact: true }).click();
     await frame.getByText("No holdings were saved", { exact: true }).waitFor();
-    await frame.getByText(/^Mutual funds 2's \d+ holdings? on 31 Mar (wasn't|weren't) saved\.$/).waitFor();
+    await frame.getByText(/^\d+ holdings? in Mutual funds 2 on 31 Mar (wasn't|weren't) saved\.$/).waitFor();
     await hosted(() => { window.host.failSnapshotAccounts = []; });
     await frame.getByRole("button", { name: "Try again: Mutual funds 2", exact: true }).click();
     await frame.getByText("Holdings saved", { exact: true }).waitFor();

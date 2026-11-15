@@ -85,6 +85,7 @@ import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
 import { holdingsBase, isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames, sourceBase } from "../lib/new-accounts";
 import { plural } from "../lib/plural";
+import { type OpenQuestions, questionParts, questionsHeading, questionTotal } from "../lib/questions-left";
 import { grouped, longDate, parseCost, rupees, shortDate, units } from "../lib/review-format";
 import { sha256 } from "../lib/sha256";
 
@@ -1090,7 +1091,7 @@ export function HoldingsImport({
       accountId: plan.accountId,
       words: { ...words, line: "Replacing them with this statement changes:" },
       changes: sameDateChanges(plan, choicesFor(plan.accountId, plan), nameOf, waitingHere),
-      target: `${accountLabel(plan.accountId)}'s holdings for ${date}`,
+      target: `holdings in ${accountLabel(plan.accountId)} for ${date}`,
       answer: sameDate.get(plan.accountId),
       set: (answer) => setSameDate((all) => {
         const next = new Map(all);
@@ -1144,13 +1145,24 @@ export function HoldingsImport({
   const openAsks = asks.filter((a) => a.answer === undefined);
   // Only the rare questions are left: the snapshots they decide can be seen already.
   const answeredAll = openKeys.length === 0 && lookingUp.length === 0 && !accountQuestion;
-  const questionCount = openKeys.length + (accountQuestion ? 1 : 0) + openAsks.length;
+  // Every open question: the account choice under Save to, and the questions section's cards.
+  const openQuestions: OpenQuestions = {
+    account: accountQuestion,
+    checks: 0,
+    cards: openKeys.length + openAsks.length,
+    fundsOnly: !openAsks.length && openKeys.every((key) => itemOf.get(key)?.noun === "fund"),
+  };
+  const questionCount = questionTotal(openQuestions);
+  // What the count includes besides the questions section's cards, which each line that counts them says.
+  const countParts = questionParts(openQuestions);
+  /** "14 questions left: the account choice and 13 fund questions" */
+  const questionsWords = (words: string) => `${plural(questionCount, "question")} ${words}${countParts ? `: ${countParts}` : ""}`;
   // Nothing to save: every folio, demat account and PRAN is set to Don't save or goes to an account
   // whose saved holdings are kept.
   const nothing = !accountQuestion &&
     holdings.sources.every((s) => destination(s) === LEFT_OUT || keptSaved.has(accountOf(s) ?? ""));
   const keptPlans = askPlans.filter((plan) => keptSaved.has(plan.accountId));
-  const keptWords = (plan: AccountPlan) => `${accountName(plan.accountId)}'s holdings for ${date} are kept`;
+  const keptWords = (plan: AccountPlan) => `The holdings in ${accountName(plan.accountId)} for ${date} are kept`;
 
   // A kept account that still holds funds this statement saves in another account would count them twice.
   const doubles = keptPlans.flatMap((kept) => {
@@ -1228,8 +1240,7 @@ export function HoldingsImport({
     if (!keys || !current || keys.some((key) => !searched.current.has(key))) return;
     initial.current = null;
     const found = keys.filter((key) => matched[key]).length;
-    const left = questionCount;
-    announce(`${found ? `${plural(found, "fund")} found automatically on AMFI. ` : ""}${left ? `${plural(left, "question")} for you.` : "No questions for you."}`);
+    announce(`${found ? `${plural(found, "fund")} found automatically on AMFI. ` : ""}${questionCount ? `${questionsWords("for you")}.` : "No questions for you."}`);
   });
   // Once AMFI is turned on, the open questions are searched again: says how many it matched.
   const amfiFocus = useRef<Element | null>(null);
@@ -1254,8 +1265,7 @@ export function HoldingsImport({
     if (!current) return;
     amfiBatch.current = null;
     const found = batch.keys.filter((key) => matched[key]).length;
-    const left = questionCount;
-    announce(`AMFI added: ${plural(found, "fund")} matched. ${left ? `${plural(left, "question")} ${left === 1 ? "remains" : "remain"}.` : "No questions remain."}`);
+    announce(`AMFI added: ${plural(found, "fund")} matched. ${questionCount ? `${questionsWords(questionCount === 1 ? "remains" : "remain")}.` : "No questions remain."}`);
     if (accountQuestion) focusAccountQuestion(false, batch.origin);
     else focusSoon(openHeadings()[0] ?? ids.summary, false, batch.origin);
   });
@@ -1721,7 +1731,7 @@ export function HoldingsImport({
           // The retried account's line says how it went, and takes the focus if its button went away.
           const outcome = outcomes.get(run.plans[0].accountId)!;
           announce([
-            outcome.state === "saved" ? accountWords(outcome) : `${outcome.name}'s holdings still weren't saved. Try again.`,
+            outcome.state === "saved" ? accountWords(outcome) : `The holdings in ${outcome.name} still weren't saved. Try again.`,
             ...unfinished.filter((u) => inRetried(u.accountId)).map((u) => `${unfinishedWords(u)} ${u.what === "price" ? "Retry saving the price." : "Retry saving the details."}`),
             ...(history.some((h) => inRetried(h.accountId)) ? ["Holdings saved, but the import history couldn't be saved. The next import may not know which holdings this statement added. Try again to save the import history."] : []),
           ].join(" "));
@@ -1807,7 +1817,7 @@ export function HoldingsImport({
         aria-controls={id(`snapshot-${plan.accountId}`)}
         onClick={() => setOpen(`snapshot:${plan.accountId}`, !open[`snapshot:${plan.accountId}`])}
       >
-        See {accountName(plan.accountId)}'s holdings on {date} after saving
+        See the holdings in {accountName(plan.accountId)} on {date} after saving
       </LinkButton>
     </p>
   );
@@ -1938,14 +1948,14 @@ export function HoldingsImport({
     const left = holdings.sources.some((s) => !d.sources.includes(s) && destination(s) !== LEFT_OUT && !keptSaved.has(accountOf(s) ?? ""));
     if (!left) {
       focusSoon(ids.summary);
-      return announce(`Nothing will be saved. ${d.account}'s holdings for ${date} are kept.`);
+      return announce(`Nothing will be saved. The holdings in ${d.account} for ${date} are kept.`);
     }
     focusSoon(ids.ready);
     announce(`${d.sources.length === 1 ? `${d.sources[0].title ?? d.sources[0].label} now goes` : `${plural(d.sources.length, "statement section")} now go`} to ${d.account}, whose holdings for ${date} are kept.`);
   };
   const laterPlans = plans.filter((plan) => plan.existing.later.length > 0);
   const later = (plan: AccountPlan) =>
-    `This saves holdings history for ${date}. ${accountName(plan.accountId)}'s current holdings still come from its snapshot of ${longDate(plan.existing.later[plan.existing.later.length - 1])}.`;
+    `This saves holdings history for ${date}. The current holdings in ${accountName(plan.accountId)} still come from its snapshot of ${longDate(plan.existing.later[plan.existing.later.length - 1])}.`;
 
   return (
     <div className="space-y-6">
@@ -1970,6 +1980,7 @@ export function HoldingsImport({
             {questionCount > 0 && (
               <Button type="button" variant="outline" size="xs" className="border-warning" onClick={nextQuestion}>
                 {plural(questionCount, "question")}
+                {countParts && <span className="sr-only">: {countParts}</span>}
               </Button>
             )}
           </>
@@ -2006,7 +2017,7 @@ export function HoldingsImport({
       {anyQuestions && (
         <section aria-labelledby={ids.questions} className="grid gap-3">
           <h3 id={ids.questions} tabIndex={-1} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
-            Questions for you
+            {questionsHeading(openQuestions)}
             {openCount > 0 && ` · ${openCount} of ${openCount + answeredCount} left`}
           </h3>
           {amfiFunds > 0 && amfi.status !== "on" && (
@@ -2257,7 +2268,7 @@ export function HoldingsImport({
         </div>
       )}
       {plans.filter((plan) => open[`snapshot:${plan.accountId}`]).map((plan) => (
-        <section key={plan.accountId} id={id(`snapshot-${plan.accountId}`)} aria-label={`${accountName(plan.accountId)}'s holdings on ${date} after saving`}>
+        <section key={plan.accountId} id={id(`snapshot-${plan.accountId}`)} aria-label={`Holdings in ${accountName(plan.accountId)} on ${date} after saving`}>
           <SnapshotTable plan={plan} choices={choicesFor(plan.accountId, plan)} account={accountName(plan.accountId)} />
         </section>
       ))}
@@ -2299,7 +2310,7 @@ export function HoldingsImport({
           if (questionCount) {
             // Only the rare questions left: the snapshots they decide can be seen already.
             return [
-              <p key="q">{plural(questionCount, "question")} left before saving.</p>,
+              <p key="q">{questionsWords("left")} before saving.</p>,
               ...(answeredAll && current
                 ? plans.flatMap((plan) => [
                     ...(plan.existing.later.length ? [<p key={`later:${plan.accountId}`} className="text-warning">{later(plan)}</p>] : []),

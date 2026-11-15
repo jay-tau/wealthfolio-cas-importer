@@ -94,7 +94,7 @@ export const accountWords = (a: AccountOutcome) => {
   if (a.state === "not-created") {
     return `${a.name} couldn't be created, so its ${plural(a.holdings, "holding")} on ${when} ${a.holdings === 1 ? "wasn't" : "weren't"} saved.`;
   }
-  return `${a.name}'s ${plural(a.holdings, "holding")} on ${when} ${a.holdings === 1 ? "wasn't" : "weren't"} saved.`;
+  return `${plural(a.holdings, "holding")} in ${a.name} on ${when} ${a.holdings === 1 ? "wasn't" : "weren't"} saved.`;
 };
 
 /** A price or set of details a save left, or wrote on a retry, in a sentence. */

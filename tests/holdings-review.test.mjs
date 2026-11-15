@@ -1514,7 +1514,7 @@ test("a new profile proposes the depository's account, creates it on saving and 
   assert.equal(saveTo.values[sourceKey(saveTo.sources[0])], "");
   const line = saveTo.newLine(investor, "Made-up Investor's holdings");
   assert.equal(textOf(line.type(line.props)), NEW_LINE);
-  assert.deepEqual(footerText(run)[0], "Create the Wealthfolio account NSDL Demat and save 1 holding on 31 Mar 2025.See NSDL Demat's holdings on 31 Mar 2025 after saving");
+  assert.deepEqual(footerText(run)[0], "Create the Wealthfolio account NSDL Demat and save 1 holding on 31 Mar 2025.See the holdings in NSDL Demat on 31 Mar 2025 after saving");
   assert.equal(find(run, "Footer").action.label, "Save holdings");
   assert.equal(find(run, "Footer").action.disabled, false);
   assert.deepEqual(remembers, []);
@@ -1537,7 +1537,7 @@ test("with accounts that track holdings but none remembered, nothing is preselec
   assert.equal(saveTo.values[investor], null);
   // The name an existing account has gets a number.
   assert.equal(saveTo.proposed(investor).name, "NSDL Demat 2");
-  assert.deepEqual(footerText(run), ["1 question left before saving."]);
+  assert.deepEqual(footerText(run), ["1 question left: the account choice before saving."]);
   assert.equal(find(run, "Footer").action.disabled, true);
   saveTo.onChange(investor, proposedId(investor));
   await run.flush();
@@ -1545,6 +1545,58 @@ test("with accounts that track holdings but none remembered, nothing is preselec
   find(run, "Footer").action.onClick();
   await run.flush();
   assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat 2"]);
+});
+
+test("with an account to choose and holding questions, every count says the account choice is in it", async () => {
+  const accounts = [{ id: "A", name: "CDSL holdings", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run, props } = withNewAccounts([source("X", [holding("ISINX"), holding("ISINY")])], { accounts });
+  props.fundChoices = {};
+  await settle(run);
+  assert.equal(find(run, "SaveTo").values[investorKey("TEST")], null);
+  assert.equal(said(run), "3 questions for you: the account choice and 2 other questions.");
+  const heading = () => textOf(nodes(run.tree).find((n) => n.type === "h3" && /questions/i.test(textOf(n))));
+  const button = () => textOf(nodes(run.tree).find((n) => n.type?.name === "Button" && /^\d+ questions?/.test(textOf(n))));
+  assert.equal(heading(), "Other questions · 2 of 2 left");
+  assert.equal(button(), "3 questions: the account choice and 2 other questions");
+  assert.deepEqual(footerText(run), ["3 questions left: the account choice and 2 other questions before saving."]);
+  find(run, "SaveTo").onChange(investorKey("TEST"), "A");
+  await run.flush();
+  assert.equal(heading(), "Questions for you · 2 of 2 left");
+  assert.equal(button(), "2 questions");
+  assert.deepEqual(footerText(run), ["2 questions left before saving."]);
+});
+
+test("an account named for its holdings reads naturally in the bar's link and the snapshot's name", async () => {
+  const accounts = [{ id: "A", name: "CDSL holdings", trackingMode: "HOLDINGS", isActive: true, isArchived: false }];
+  const { run } = withNewAccounts([source("X", [holding("ISINX")])], { accounts });
+  await run.flush();
+  find(run, "SaveTo").onChange(investorKey("TEST"), "A");
+  await run.flush();
+  const link = nodes(find(run, "Footer").lines).find((n) => n.type?.name === "LinkButton");
+  assert.equal(textOf(link), "See the holdings in CDSL holdings on 31 Mar 2025 after saving");
+  link.props.onClick();
+  await run.flush();
+  const section = nodes(run.tree).find((n) => n.type === "section" && n.props.id === link.props["aria-controls"]);
+  assert.equal(section.props["aria-label"], "Holdings in CDSL holdings on 31 Mar 2025 after saving");
+  assert.equal(find(run, "SnapshotTable").account, "CDSL holdings");
+});
+
+test("a summary statement's new Mutual funds account reads naturally in the bar's link and the snapshot's name", async () => {
+  // A first summary import: no account tracks holdings, so "New: Mutual funds" is proposed.
+  const folio = { id: "folio|7712045", kind: "folio", label: "Folio 7712045", title: "Fictiva Mutual Fund account (folio 7712045)", holdings: [holding("ISINX")] };
+  const { run, props } = withNewAccounts([folio]);
+  props.statement = { ...props.statement, file_type: "CAMS", cas_type: "SUMMARY" };
+  await run.flush();
+  const investor = investorKey("TEST");
+  assert.deepEqual(find(run, "SaveTo").proposed(investor), { id: proposedId(investor), name: "Mutual funds" });
+  assert.equal(find(run, "SaveTo").values[investor], proposedId(investor));
+  const link = nodes(find(run, "Footer").lines).find((n) => n.type?.name === "LinkButton");
+  assert.equal(textOf(link), "See the holdings in Mutual funds on 31 Mar 2025 after saving");
+  link.props.onClick();
+  await run.flush();
+  const section = nodes(run.tree).find((n) => n.type === "section" && n.props.id === link.props["aria-controls"]);
+  assert.equal(section.props["aria-label"], "Holdings in Mutual funds on 31 Mar 2025 after saving");
+  assert.equal(find(run, "SnapshotTable").account, "Mutual funds");
 });
 
 test("a remembered account wins over a new one", async () => {
@@ -1984,7 +2036,7 @@ test("holdings saved for the statement's date are asked about first, and keeping
     "Example ISINX: 10.000 units now, 12.000 on this statement", "Example ISINNEW: added, 10.000 units",
     "Example ISINASK: 10.000 units on this statement, still to be matched", "1 other holding: same units",
   ].join("|"));
-  assert.deepEqual([card.main.name, card.other.name], ["Keep the saved ones: A's holdings for 31 Mar 2025", "Replace them with this statement: A's holdings for 31 Mar 2025"]);
+  assert.deepEqual([card.main.name, card.other.name], ["Keep the saved ones: holdings in A for 31 Mar 2025", "Replace them with this statement: holdings in A for 31 Mar 2025"]);
   assert.ok(find(run, "QuestionCard"), "the holding to match is asked about too");
   assert.equal(find(run, "Footer").action.disabled, true);
   document.activeElement = document.body;
@@ -2000,12 +2052,12 @@ test("holdings saved for the statement's date are asked about first, and keeping
   assert.deepEqual(find(run, "Footer").lines.map(textOf), ["Nothing will change: you kept the holdings already saved in A for 31 Mar 2025."]);
   assert.equal(find(run, "Footer").action.label, "Finish");
   assert.deepEqual(focused, ["review-summary"]);
-  assert.equal(said(run), "Nothing will be saved. A's holdings for 31 Mar 2025 are kept.");
+  assert.equal(said(run), "Nothing will be saved. The holdings in A for 31 Mar 2025 are kept.");
   const notices = [];
   run.update({ onAnother: (notice) => notices.push(notice) });
   await run.flush();
   find(run, "Footer").action.onClick();
-  assert.deepEqual(notices, ["Finished: nothing from made-up.pdf was saved. A's holdings for 31 Mar 2025 are kept."]);
+  assert.deepEqual(notices, ["Finished: nothing from made-up.pdf was saved. The holdings in A for 31 Mar 2025 are kept."]);
   assert.deepEqual(saved, []);
   // Change answer brings the question back, focused.
   find(run, "AskAnswered").onChange();
@@ -2059,7 +2111,7 @@ test("Keep … in the kept account assigns it there itself, and with nothing lef
   // Y now goes to A itself, not "Same as above", which is B.
   assert.equal(find(run, "SaveTo").values[sourceKey(y)], "A");
   assert.deepEqual(focused, ["review-summary"]);
-  assert.equal(said(run), "Nothing will be saved. A's holdings for 31 Mar 2025 are kept.");
+  assert.equal(said(run), "Nothing will be saved. The holdings in A for 31 Mar 2025 are kept.");
   assert.equal(find(run, "Footer").action.label, "Finish");
   assert.deepEqual(saved, []);
 });

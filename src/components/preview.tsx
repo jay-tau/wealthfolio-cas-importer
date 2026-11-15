@@ -31,7 +31,7 @@ import {
 } from "../cas/plan";
 import { focusDropped } from "../lib/focus";
 import { plural } from "../lib/plural";
-import { longDate, units } from "../lib/review-format";
+import { longDate, rupees, units } from "../lib/review-format";
 import { otherCurrency } from "./fund-choices";
 
 const LABELS: Record<string, string> = {
@@ -49,17 +49,24 @@ const label = (row: { activityType: string; subtype?: string | null }) => {
   if (side) return CONVERSION_LABELS[side];
   return row.subtype === "DRIP" ? "reinvested dividend" : LABELS[row.activityType] ?? row.activityType;
 };
-/** "the 2023-05-05 purchase of Fictiva Liquid Fund" */
-const transactionName = ({ transaction: { activity, scheme } }: PlannedTransaction) =>
-  `the ${String(activity.date)} ${label(activity)} of ${scheme}`;
+/** The name a transaction's fund goes by on the Review screen: its chosen listing's, without its plan and option. */
+export type FundName = (t: PlannedTransaction) => string;
+/** "purchase of Fictiva Liquid Fund on 5 May 2023" */
+const transactionWords = (t: PlannedTransaction, fundName: FundName) =>
+  `${label(t.transaction.activity)} of ${fundName(t)} on ${longDate(String(t.transaction.activity.date).slice(0, 10))}`;
+/** "the purchase of Fictiva Liquid Fund on 5 May 2023" */
+const transactionName = (t: PlannedTransaction, fundName: FundName) => `the ${transactionWords(t, fundName)}`;
 /** "Purchase of Fictiva Liquid Fund on 5 May 2023" */
-const transactionTitle = ({ transaction: { activity, scheme } }: PlannedTransaction) => {
-  const what = label(activity);
-  return `${what[0].toUpperCase()}${what.slice(1)} of ${scheme} on ${longDate(String(activity.date).slice(0, 10))}`;
+const transactionTitle = (t: PlannedTransaction, fundName: FundName) => {
+  const what = transactionWords(t, fundName);
+  return `${what[0].toUpperCase()}${what.slice(1)}`;
 };
-/** "The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT FICTIVA MF)" */
+/** "withdrawal of ₹25,000 on 4 May 2023": a bank entry's amount and day as its review card gives them. */
+const movement = (entry: ActivityDetails) =>
+  `${label(entry)}${entry.amount ? ` of ${rupees(String(entry.amount))}` : ""} on ${longDate(day(entry.date))}`;
+/** "The withdrawal of ₹25,000 on 4 May 2023 in Savings (NEFT FICTIVA MF)" */
 const entryName = (entry: ActivityDetails, accountName: string) =>
-  `The ${label(entry)} of ${entry.amount} on ${day(entry.date)} in ${accountName}${entry.comment ? ` (${entry.comment})` : ""}`;
+  `The ${movement(entry)} in ${accountName}${entry.comment ? ` (${entry.comment})` : ""}`;
 const list = (names: string[]) =>
   names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "";
 
@@ -90,9 +97,9 @@ export interface BankLink extends Reused {
 }
 
 /** What changed in an entry the user chose, between the review and Import. */
-export function staleText(s: StaleEntry, accountName: (id: string) => string) {
-  const then = `${entryName(s.before, accountName(s.before.accountId))}, chosen for ${transactionName(s.transaction)},`;
-  const now = s.after && `a ${label(s.after)} of ${s.after.amount} on ${day(s.after.date)}`;
+export function staleText(s: StaleEntry, accountName: (id: string) => string, fundName: FundName) {
+  const then = `${entryName(s.before, accountName(s.before.accountId))}, chosen for ${transactionName(s.transaction, fundName)},`;
+  const now = s.after && `a ${movement(s.after)}`;
   const instead = `so the transaction now comes with a new ${label(s.transaction.transaction.bank!)}.`;
   const why = {
     gone: `is no longer in Wealthfolio, ${instead}`,
@@ -323,6 +330,7 @@ export function ImportResult({
   outcomes,
   closing,
   links,
+  fundName,
   accounts,
   base,
   onRetryAccount,
@@ -339,6 +347,8 @@ export function ImportResult({
   outcomes: ImportOutcome[];
   closing: ClosingCheck;
   links: BankLink[];
+  /** The name each link's fund goes by on the Review screen. */
+  fundName: FundName;
   accounts: Account[];
   /** Prefix of the ids of its lines (`importIds`). */
   base: string;
@@ -460,7 +470,7 @@ export function ImportResult({
               <li key={l.bankRow.id} id={ids.link(l)} tabIndex={-1} className="flex flex-wrap items-center gap-2">
                 <Mark ok={false} />
                 <span>
-                  {transactionTitle(l.transaction)}: {linkWords(l)}
+                  {transactionTitle(l.transaction, fundName)}: {linkWords(l)}
                 </span>
                 {l.stage !== "trade" && (
                   <WrapButton type="button" variant="outline" size="sm" onClick={() => onRetryLink(l)}>
@@ -479,7 +489,7 @@ export function ImportResult({
               <ul className="list-disc ps-4">
                 {changedLinks.map((l) => (
                   <li key={l.bankRow.id}>
-                    {entryName(l.bankRow, accountName(l.bankRow.accountId))}, for {transactionName(l.transaction)}:{" "}
+                    {entryName(l.bankRow, accountName(l.bankRow.accountId))}, for {transactionName(l.transaction, fundName)}:{" "}
                     {[...l.changes, ...l.warnings].join(" ")}
                   </li>
                 ))}

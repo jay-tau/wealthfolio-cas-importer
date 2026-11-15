@@ -26,6 +26,29 @@ export interface AskWords {
   done: (main: boolean) => string;
 }
 
+/** A possible duplicate's line, as its card shows it: its day, and its units and amount if it has them. */
+export interface LineFacts {
+  day: string;
+  units?: string;
+  amount?: string;
+}
+
+const BOTH_EQUAL = "Two equal transactions on one day can both be real.";
+
+/**
+ * Why both of a possible duplicate's transactions can be real, saying what their lines share: equal
+ * only when their day, units and amount are. Without `other`, Wealthfolio reported an equal one.
+ */
+export function bothRealWords(line: LineFacts, other?: LineFacts) {
+  if (!other) return BOTH_EQUAL;
+  const day = line.day === other.day;
+  const units = !!line.units && line.units === other.units;
+  const amount = !!line.amount && line.amount === other.amount;
+  if (day && amount && line.units === other.units) return BOTH_EQUAL;
+  const same = units && amount ? " with the same units and amount" : units ? " with the same units" : amount ? " for the same amount" : "";
+  return `Two transactions${day ? " on one day" : ""}${same} can both be real.`;
+}
+
 /** "A, B and C". */
 export const list = (names: readonly string[]) =>
   names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
@@ -94,8 +117,8 @@ export function holdingAskWords(
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
       caution: `Remove them only if all of them came from ${titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
-      receipt: (keep) => `${name(row)}: ${account}'s ${held} units ${keep ? "kept" : "removed"}`,
-      done: (keep) => `${name(row)}: ${account}'s ${held} units ${keep ? "kept" : "removed"}`,
+      receipt: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${account}`,
+      done: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${account}`,
     };
   }
   // A statement row that would replace an asset an earlier import added it as. The answers go by

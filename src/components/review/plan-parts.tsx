@@ -26,7 +26,7 @@ export function SnapshotTable({ plan, choices, account }: { plan: AccountPlan; c
   const cash = Object.entries(plan.existing.cash);
   return (
     <div className="grid gap-2">
-      <Table aria-label={`${account}'s holdings on ${longDate(plan.date)} after saving`}>
+      <Table aria-label={`Holdings in ${account} on ${longDate(plan.date)} after saving`}>
         <TableHeader>
           <TableRow>
             <TableHead>Holding</TableHead>

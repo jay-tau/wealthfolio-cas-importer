@@ -23,7 +23,10 @@ the statement is read, one Review screen shows, in this order:
   another file?" first if anything was answered, changed, chosen or typed. Nothing about the review is
   remembered until you import or finish, so discarding drops it all.
 - The counts: funds, ready, not included, and questions. The question count goes to the first open
-  question.
+  question. It includes the account choice and the bank matches under **Save to**, and says so ("6
+  questions: the account choice and 5 fund questions"), as does the bar; **Questions for you** counts
+  its own cards, and while any of those are open beside them it's titled **Fund questions**, or
+  **Other questions** when a card asks something else.
 - **Save to**: one box per PAN, named by the investor ("A. Investor's funds"), with the Wealthfolio
   account that tracks transactions their funds go to, or "Don't import them", and **Bank account for
   purchases and payouts (optional)**: "None: don't add bank transfers", the first time, or an account
@@ -53,9 +56,10 @@ the statement is read, one Review screen shows, in this order:
   check, is worded from its movement ("This purchase may already be in Mutual funds", "This
   redemption …", "This cash dividend …") and shows both rows: "On this statement: 3 Jul 2026 ·
   Purchase · Fictiva Midcap Fund · 61.350 units · ₹5,000" and "Already in Mutual funds: 3 Jul 2026 ·
-  Buy · … · entered by hand on 4 Jul 2026". Two equal transactions on one day can both be real:
-  **Skip this transaction** is the main answer, and **Import it as a second purchase** imports it.
-  More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
+  Buy · … · entered by hand on 4 Jul 2026". Both can be real, and the card says what they share,
+  calling them equal only when their day, units and amount are ("Two transactions on one day with the
+  same units can both be real."): **Skip this transaction** is the main answer, and **Import it as a
+  second purchase** imports it. More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
   Credit Risk Fund's transactions don't add up. They add up to 1,204.500 units; the statement says
   1,250.000.") has **Skip this fund** as the main answer, and **Import with this difference**.
 - **Ready to import**: each fund with new transactions, with its plan and option, where its prices
@@ -238,8 +242,10 @@ it:
 Right before importing, the add-on reads the entries you linked again. If one is gone, changed, or now
 needs a note the question didn't give, nothing is imported: the Review screen shows the entries as
 they are now, and you choose Import again. The result names each entry whose split was deleted, whose
-category was removed or couldn't be, or that the sync no longer corrects, so you can check it in
-Wealthfolio.
+category was removed or couldn't be, or that the sync no longer corrects, with its amount and day as
+the question gave them and its fund by the name the Review screen gives it ("The withdrawal of ₹25,000
+on 4 May 2023 in Savings (NEFT FICTIVA MF), for the purchase of Fictiva Liquid Fund on 5 May 2023"),
+so you can check it in Wealthfolio.
 
 ### Mergers
 
@@ -346,7 +352,10 @@ Review screen shows, in this order:
   **Keep reviewing** focused. Nothing about the review is remembered until you save or finish, so
   discarding drops it all; the saved password, AMFI and earlier choices stay.
 - The counts: holdings, ready, not included, and questions. The question count goes to the first
-  open question.
+  open question. It includes the account choice under **Save to**, and says so ("14 questions: the
+  account choice and 13 other questions"), as does the bar; **Questions for you** counts its own
+  cards, and while the account choice is open beside them it's titled **Fund questions**, or **Other
+  questions** when a card asks about something other than which fund a holding is.
 - **Save to**: one Wealthfolio account that tracks holdings for all of the investor's holdings, or
   "Don't save them". The one chosen last time is preselected. Under **Save part of it to another
   account**, each folio, demat account and National Pension System (NPS) account can go to another
@@ -387,8 +396,8 @@ Review screen shows, in this order:
 - A bar that stays at the bottom: what's left before saving, or what will be saved ("Update
   **Demat** to 31 Jul 2026 with 10 holdings from this statement. Its other holdings and cash stay.",
   or "Create the Wealthfolio account **CDSL Demat** and save 10 holdings on 31 Jul 2026." for a new
-  account) with what your answers do ("Fictiva Liquid Fund kept at 512.300 units"), **See Demat's
-  holdings on 31 Jul 2026 after saving**, the missing costs with **Add costs**, and **Update
+  account) with what your answers do ("Fictiva Liquid Fund kept at 512.300 units"), **See the
+  holdings in Demat on 31 Jul 2026 after saving**, the missing costs with **Add costs**, and **Update
   holdings** or **Save holdings**. With nothing to save, it's **Finish**. While a cost, Change or a
   new account's Rename is open, saving waits until you save or cancel it.
 
@@ -470,8 +479,8 @@ goes by its asset's ID, or for a choice remembered without one, by the symbol an
 asset's profile. After saving, the result repeats how many funds weren't saved for this reason, and
 the first that differs.
 
-Wealthfolio's snapshot is the account's whole state on its date, so **See Demat's holdings on 31 Jul
-2026 after saving** shows each account's complete snapshot before anything is saved, made by these
+Wealthfolio's snapshot is the account's whole state on its date, so **See the holdings in Demat on 31
+Jul 2026 after saving** shows each account's complete snapshot before anything is saved, made by these
 rules:
 
 - It starts from the account's latest snapshot on or before the statement's date; calculated
