@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Search by name, when its ISIN finds nothing, for a fund in a CDSL statement's CDSL demat account whose long name is cut short partway through a word and has no spaces around its dashes, as a real CDSL statement prints names, without its plan, option and their filler words, the cut word included: "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES FUND-DIRECT GROW" is searched as "FICTIVA TESTBRIDGE GLOBAL PLACEHOLDERS SAMPLES", as it already was with spaces around its dash. Before, the search was the whole name, "-DIRECT GROW" included, though the fund's badges read Direct and Growth. A cut word whose possible completions read differently, or that's in the fund's own name, is searched as before
 
 ### Security
 
