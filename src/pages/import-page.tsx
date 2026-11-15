@@ -28,7 +28,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   const [fileName, setFileName] = useState("");
   // Bumped by Use another file, which clears the chosen file.
   const [resets, setResets] = useState(0);
-  // What the last review ended with, such as "Finished: nothing … was saved."
+  // What the last review ended with, such as "Finished: nothing … was saved.", until another file
+  // is chosen or read, so it isn't taken for what that attempt said.
   const [notice, setNotice] = useState("");
   // Summary and depository statements: their holdings, saved as snapshots.
   const [holdings, setHoldings] = useState<Holdings | null>(null);
@@ -63,6 +64,7 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   const clear = () => {
     setStatement(null);
     setHoldings(null);
+    setNotice("");
   };
 
   const read = async (full: Statement, name: string) => {
@@ -109,7 +111,6 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     setHoldings(held);
     setStatement(full);
     setFileName(name);
-    setNotice("");
     setReads((n) => n + 1);
   };
 

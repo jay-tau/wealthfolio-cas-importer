@@ -676,10 +676,34 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: `Change: ${detailed.liquid}, nothing new`, exact: true }).waitFor();
     assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
     await dFooter.getByText("Nothing is ready to import. See the transactions left out or waiting above.", { exact: true }).waitFor();
-    await dFooter.getByRole("button", { name: "Finish", exact: true }).click();
-    await frame.getByText("Finished: nothing from made-up-cas.pdf was imported.", { exact: true }).waitFor();
-    await transactionsHeading.waitFor({ state: "detached" });
+    const finished = frame.getByText("Finished: nothing from made-up-cas.pdf was imported.", { exact: true });
+    const finish = async () => {
+      await dFooter.getByRole("button", { name: "Finish", exact: true }).click();
+      await finished.waitFor();
+      await transactionsHeading.waitFor({ state: "detached" });
+      await focused(fileInput, "Finish");
+      // It stays once the form is back.
+      await painted();
+      assert.equal(await finished.count(), 1, "right after Finish");
+    };
+    await finish();
     assert.deepEqual(await storage(), firstChoices);
+    // What the review ended with goes once another file is chosen, so it's never taken for what the
+    // next attempt says: a wrong password, or a file that isn't a CAS.
+    const notCas = frame.getByRole("alert").filter({ hasText: /^We couldn't read this as a CAS from CAMS, KFintech, NSDL or CDSL\. Nothing was saved\./ });
+    await fileInput.setInputFiles("tests/fixtures/made-up-cas.pdf");
+    await finished.waitFor({ state: "detached" });
+    await usePassword("not-the-password");
+    await readButton.press("Enter");
+    await wrongPassword.waitFor({ timeout: 180_000 });
+    assert.equal(await finished.count(), 0, "a wrong password");
+    await readStatement();
+    await finish();
+    await fileInput.setInputFiles({ name: "not-a-cas.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 not a statement") });
+    await finished.waitFor({ state: "detached" });
+    await readButton.press("Enter");
+    await notCas.waitFor({ timeout: 180_000 });
+    assert.equal(await finished.count(), 0, "a file that isn't a CAS");
 
     // Activities show an asset's display code: each fund goes by the symbol and exchange on its
     // asset's profile, which must still be the fund's, with its type. Wealthfolio's reads are kept until
@@ -4209,7 +4233,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // clears it.
     await frame.locator("#cas-file").setInputFiles({ name: "not-a-cas.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 not a statement") });
     await readButton.press("Enter");
-    const notCas = frame.getByRole("alert").filter({ hasText: /^We couldn't read this as a CAS from CAMS, KFintech, NSDL or CDSL\. Nothing was saved\./ });
     await notCas.waitFor({ timeout: 180_000 });
     const chooseAnother = notCas.getByRole("button", { name: "Choose another file", exact: true });
     await focused(chooseAnother, "Read statement, not a CAS");
