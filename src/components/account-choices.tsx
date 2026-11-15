@@ -1,5 +1,6 @@
 import type { Account } from "@wealthfolio/addon-sdk";
 import { Button, Input, Label, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@wealthfolio/ui";
+import type { AccountLabel } from "../lib/account-labels";
 import { LinkButton } from "./review/parts";
 
 /**
@@ -21,6 +22,24 @@ export function ChooseAgain({ ignored, mode }: { ignored: Ignored | undefined; m
   return <p className="text-muted-foreground w-full text-sm">Chosen before: {account}, so choose again.</p>;
 }
 
+/**
+ * Under Save to's heading when its lists number an account: where the number comes from, and how to
+ * do without it. Said once, with the first such label as its example. Its `id` describes the selects.
+ */
+export function NumberedNote({ id, accounts, labels }: { id: string; accounts: Account[]; labels: ReadonlyMap<string, AccountLabel> }) {
+  const example = accounts.map((a) => labels.get(a.id)).find((l) => l?.numbered);
+  if (!example) return null;
+  return (
+    <p id={id} className="text-muted-foreground text-sm">
+      A number after a name, as in {example.text}, is the account's place among the accounts of that name in Wealthfolio under
+      Settings → Accounts, counting hidden and archived ones. Giving them different names in Wealthfolio tells them apart.
+    </p>
+  );
+}
+
+/** Whether Save to's lists number an account, so its note describes them. */
+export const numbers = (accounts: Account[], labels: ReadonlyMap<string, AccountLabel>) => accounts.some((a) => labels.get(a.id)?.numbered);
+
 const SAME_AS_PAN = "same-as-pan";
 /**
  * Wealthfolio's CSS gives every span and div overflow-wrap: break-word, which still sizes a select or its list to fit
@@ -39,6 +58,7 @@ export const newLabel = (proposed: Proposed) => `New: ${proposed.name}`;
 export function AccountSelect({
   id,
   accounts,
+  labels,
   proposed,
   value,
   onChange,
@@ -50,6 +70,8 @@ export function AccountSelect({
 }: {
   id: string;
   accounts: Account[];
+  /** How the screen names each account: an account another one shares its name with is told apart. */
+  labels: ReadonlyMap<string, AccountLabel>;
   /** A new account to offer after the existing ones. */
   proposed?: Proposed;
   /** Empty inherits when `inherit` is given; null shows that nothing is chosen yet. */
@@ -69,7 +91,7 @@ export function AccountSelect({
   const items = [
     ...(inherit ? [{ value: SAME_AS_PAN, label: inherit }] : []),
     ...(leaveOutFirst ? out : []),
-    ...accounts.map((a) => ({ value: a.id, label: `${a.name} (${a.currency})` })),
+    ...accounts.map((a) => ({ value: a.id, label: labels.get(a.id)?.option ?? `${a.name} (${a.currency})` })),
     ...(proposed ? [{ value: proposed.id, label: newLabel(proposed) }] : []),
     ...(leaveOutFirst ? [] : out),
   ];

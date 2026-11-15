@@ -32,11 +32,11 @@ test("a holding the statement no longer lists asks to keep it or set it to zero,
     // The answered line names the account too: Change answer's name is the line alone.
     "Fictiva Liquid Fund: 512.300 units kept in CDSL Demat", "Fictiva Liquid Fund: set to zero in CDSL Demat on 31 Jul", "Fictiva Liquid Fund kept at 512.300 units", "Fictiva Liquid Fund set to zero",
   ]);
-  // An account whose name another has is numbered in the answered line only.
-  const numbered = holdingAskWords(planOf(liquid), liquid, { account: "CDSL Demat", label: "CDSL Demat, account 2", name });
-  assert.deepEqual([numbered.line, numbered.main, numbered.receipt(true), numbered.done(true)], [
-    "CDSL Demat holds 512.300 units of it, from an earlier import of Mutual fund folio 7712045.", "Keep 512.300 units",
-    "Fictiva Liquid Fund: 512.300 units kept in CDSL Demat, account 2", "Fictiva Liquid Fund kept at 512.300 units",
+  // An account whose name another has is told apart the same way in its line and answered line.
+  const told = holdingAskWords(planOf(liquid), liquid, { account: "CDSL Demat (ending 4821)", name });
+  assert.deepEqual([told.line, told.receipt(true), told.receipt(false)], [
+    "CDSL Demat (ending 4821) holds 512.300 units of it, from an earlier import of Mutual fund folio 7712045.",
+    "Fictiva Liquid Fund: 512.300 units kept in CDSL Demat (ending 4821)", "Fictiva Liquid Fund: set to zero in CDSL Demat (ending 4821) on 31 Jul",
   ]);
 });
 
@@ -163,8 +163,12 @@ test("replacing holdings saved for the date says what changes, from what would b
     "CDSL Demat: kept the holdings already saved for 31 Jul 2026",
     "CDSL Demat: replaced the holdings saved for 31 Jul 2026 with this statement",
   ]);
-  const numbered = sameDateWords("CDSL Demat", "2026-07-31", "CDSL Demat, account 2");
-  assert.deepEqual([numbered.title, numbered.receipt(true)], ["CDSL Demat already has holdings saved for 31 Jul 2026", "CDSL Demat, account 2: kept the holdings already saved for 31 Jul 2026"]);
+  // An account whose name another has is told apart the same way in its title, answered line and the bar.
+  const told = sameDateWords("CDSL Demat (ending 4821)", "2026-07-31");
+  assert.deepEqual([told.title, told.receipt(true), told.done(false)], [
+    "CDSL Demat (ending 4821) already has holdings saved for 31 Jul 2026", "CDSL Demat (ending 4821): kept the holdings already saved for 31 Jul 2026",
+    "CDSL Demat (ending 4821): the holdings saved for 31 Jul 2026 are replaced.",
+  ]);
 });
 
 test("the same-date comparison counts the actual saved asset once when overlap splits its contributions", () => {

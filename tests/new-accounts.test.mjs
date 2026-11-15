@@ -28,6 +28,12 @@ test("Rename takes 2 to 50 characters once trimmed, as Wealthfolio's account for
   assert.equal(nameProblem("AB"), undefined);
   assert.equal(nameProblem(` ${"x".repeat(50)} `), undefined);
   assert.equal(nameProblem("x".repeat(51)), "Use at most 50 characters.");
+  // Nor a name another account has, as names compare, which the Review screen couldn't tell apart.
+  assert.equal(nameProblem(" funds  ", ["Savings", "Funds"]), "Wealthfolio already has an account named funds. Use another name.");
+  assert.equal(nameProblem("My  funds", [], ["my funds"]), "Another new account is already named My funds. Use another name.");
+  assert.equal(nameProblem("Funds 2", ["Funds"], ["Funds 3"]), undefined);
+  assert.equal(nameProblem("Funds (ending 4821)", ["Funds"], [], ["Funds (ending 4821)"]),
+    "The review already uses Funds (ending 4821) for an account. Use another name.");
 });
 
 test("a generated name fits in 50 characters, shortening the base before the investor's name", () => {

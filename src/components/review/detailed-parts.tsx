@@ -54,8 +54,8 @@ export function NotIncludedDetailed({
   skipped: string[];
   /** Folios set to Don't import, by name. */
   notImported: string[];
-  /** Funds whose rows don't add up, skipped by an answer: each can still be changed. */
-  unbalanced: Pick<LeftOutFund, "key" | "name" | "label">[];
+  /** Funds whose rows don't add up, skipped by an answer, one per question: each can still be changed. */
+  unbalanced: (Pick<LeftOutFund, "key" | "name" | "label"> & { id: string })[];
   leftOut: LeftOutFund[];
   /** "CAMS", "KFintech": whose earlier statement to read. */
   registrar: string;
@@ -115,7 +115,7 @@ export function NotIncludedDetailed({
             <span className="font-semibold">Skipped because their transactions don't add up ({unbalanced.length})</span>, by your answer:
           </p>
           {unbalanced.map((fund) => (
-            <p key={fund.key}>
+            <p key={fund.id}>
               {fund.name} ·{" "}
               <LinkButton type="button" aria-label={`Change: ${fund.label}, transactions don't add up`} onClick={() => onReopen(fund.key)}>
                 Change

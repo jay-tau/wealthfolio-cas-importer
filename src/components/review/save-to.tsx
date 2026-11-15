@@ -3,9 +3,10 @@ import { Label } from "@wealthfolio/ui";
 import type { ReactNode } from "react";
 import type { Source } from "../../cas/holdings";
 import { LEFT_OUT, sourceKey } from "../../lib/choices";
+import type { AccountLabel } from "../../lib/account-labels";
 import { isProposed } from "../../lib/new-accounts";
 import { plural } from "../../lib/plural";
-import { AccountSelect, ChooseAgain, type Ignored, newLabel, type Proposed } from "../account-choices";
+import { AccountSelect, ChooseAgain, type Ignored, newLabel, NumberedNote, numbers, type Proposed } from "../account-choices";
 import { Disclosure } from "./parts";
 
 const NOT_HOLDINGS = "doesn't track holdings. A snapshot saved there wouldn't change its holdings";
@@ -21,6 +22,7 @@ export function SaveTo({
   investorKey,
   sources,
   targets,
+  labels,
   proposed,
   newLine,
   values,
@@ -36,6 +38,8 @@ export function SaveTo({
   sources: Source[];
   /** Accounts a snapshot can be saved in today: active, unarchived, tracking holdings. */
   targets: Account[];
+  /** How the screen names each account: an account another one shares its name with is told apart. */
+  labels: ReadonlyMap<string, AccountLabel>;
   /** The new account each key's select offers, until it's created. */
   proposed: (key: string) => Proposed | undefined;
   /** What's under a select that shows its new account, by key, with what the account is for. */
@@ -55,14 +59,17 @@ export function SaveTo({
   const investorProposal = proposed(investorKey);
   const statementAccount = isProposed(investorValue)
     ? investorProposal && newLabel(investorProposal)
-    : targets.find((a) => a.id === investorValue)?.name;
+    : targets.some((a) => a.id === investorValue) ? labels.get(investorValue!)?.text : undefined;
   const why = (key: string) => <ChooseAgain ignored={ignored[key]} mode={NOT_HOLDINGS} />;
   const isNew = (key: string) => isProposed(values[key]) && values[key] === proposed(key)?.id;
+  // What numbers accounts in the lists, read with each select.
+  const noteId = numbers(targets, labels) ? `${partId}-numbered` : undefined;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       <h3 id={`${partId}-heading`} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
         Save to
       </h3>
+      {noteId && <NumberedNote id={noteId} accounts={targets} labels={labels} />}
       <div className="grid gap-2 rounded-lg border p-4">
         <div className="flex flex-wrap items-center gap-3">
           <Label htmlFor={investorKey} className="font-semibold">
@@ -71,6 +78,8 @@ export function SaveTo({
           <AccountSelect
             id={investorKey}
             accounts={targets}
+            labels={labels}
+            describedBy={noteId}
             proposed={proposed(investorKey)}
             value={values[investorKey]}
             onChange={(id) => onChange(investorKey, id)}
@@ -98,6 +107,8 @@ export function SaveTo({
                     <AccountSelect
                       id={key}
                       accounts={targets}
+                      labels={labels}
+                      describedBy={noteId}
                       proposed={proposed(key)}
                       value={values[key]}
                       onChange={(id) => onChange(key, id)}

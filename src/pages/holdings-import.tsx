@@ -84,6 +84,7 @@ import { explanation, Explained } from "../lib/explained";
 import { nextOpen, type QuestionStop } from "../lib/focus";
 import { fundName, readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
+import { accountLabels } from "../lib/account-labels";
 import { nameNumber } from "../lib/name-number";
 import { holdingsBase, isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames, sourceBase } from "../lib/new-accounts";
 import { warningLines } from "../lib/parse-warnings";
@@ -328,6 +329,8 @@ async function afterSave(
 /** Which accounts hold each asset now: `fundRef` → accounts. */
 async function holders(api: Api, profileOf: Profiles, accounts: Account[]) {
   const held = new Map<string, (OtherAccount & { id: string })[]>();
+  // Named as the screen names them.
+  const labels = accountLabels(accounts);
   const modes = new Map<string, boolean>();
   await Promise.all(
     accounts.map(async (account) => {
@@ -348,7 +351,7 @@ async function holders(api: Api, profileOf: Profiles, accounts: Account[]) {
         if (archivedSnapshot || !Number.isFinite(quantity) || quantity === 0) continue;
         const others = held.get(ref) ?? [];
         if (!others.some((o) => o.id === account.id)) {
-          others.push({ id: account.id, name: account.name, tracksTransactions: account.trackingMode !== "HOLDINGS" });
+          others.push({ id: account.id, name: labels.get(account.id)?.text ?? account.name, tracksTransactions: account.trackingMode !== "HOLDINGS" });
         }
         held.set(ref, others);
       }
@@ -463,7 +466,8 @@ export function HoldingsImport({
   const targets = accounts.filter((a) => a.trackingMode === "HOLDINGS");
   // Accounts that track transactions, which in Wealthfolio include NOT_SET; the unarchived ones are compared.
   const compared = allAccounts.filter((a) => a.trackingMode !== "HOLDINGS" && !a.isArchived);
-  const comparedLabels = new Map(compared.map((a, i) => [a.id, `${a.name.trim()}${nameNumber(compared, i, "account")}`]));
+  // How the screen names each account: told apart from another account of the same name.
+  const labels = accountLabels(allAccounts);
   // Like a hidden, archived or missing one, a remembered account that no longer tracks holdings is
   // ignored, and its row says why.
   const usable: HoldingsAccountChoices = Object.fromEntries(
@@ -474,7 +478,7 @@ export function HoldingsImport({
     ...Object.fromEntries(
       Object.entries(accountChoices).flatMap(([key, account]) => {
         const found = accounts.find((a) => a.id === account && a.trackingMode !== "HOLDINGS");
-        return found ? [[key, { name: found.name }]] : [];
+        return found ? [[key, { name: labels.get(found.id)?.text ?? found.name }]] : [];
       }),
     ),
   };
@@ -496,7 +500,7 @@ export function HoldingsImport({
   const tried = useRef<Record<string, string>>({});
   const proposalNames = proposedNames(
     [{ key: investor, base: holdingsBase(statement.file_type) }, ...holdings.sources.map((s) => ({ key: sourceKey(s), base: sourceBase(s) }))],
-    allAccounts.map((a) => a.name),
+    allAccounts.flatMap((a) => [a.name, labels.get(a.id)!.text]),
     { ...tried.current, ...renamed },
   );
   const proposed = (key: string): Proposed => ({ id: proposedId(key), name: proposalNames.get(key) ?? "" });
@@ -888,17 +892,18 @@ export function HoldingsImport({
         return asset && fundRef(asset.symbol, asset.exchangeMic) === ref;
       }))));
   };
+  /**
+   * The account as the screen names it, shown and in accessible names: told apart from another
+   * account of the same name. A new account's name is its own: no other account has it.
+   */
   function accountName(accountId: string) {
-    const account = created.current.get(accountId);
-    if (account) return account.name;
+    const account = created.current.get(accountId) ?? [...created.current.values()].find((a) => a.id === accountId);
+    if (account) return labels.get(account.id)?.text ?? account.name;
     if (isProposed(accountId)) return proposalNames.get(proposalKey(accountId)) ?? "";
-    return allAccounts.find((a) => a.id === accountId)?.name ?? [...created.current.values()].find((a) => a.id === accountId)?.name ?? accountId;
+    return labels.get(accountId)?.text ?? accountId;
   }
-  /** The account's name in accessible names, numbered when another account has the same one. */
-  const accountLabel = (accountId: string) => {
-    const i = accounts.findIndex((a) => a.id === accountId);
-    return i < 0 ? accountName(accountId) : `${accounts[i].name.trim()}${nameNumber(accounts, i, "account")}`;
-  };
+  const realAccountName = (accountId: string) =>
+    allAccounts.find((a) => a.id === accountId)?.name ?? [...created.current.values()].find((a) => a.id === accountId)?.name ?? accountId;
 
   // The holdings that will be saved, a row each per account.
   const itemsIn = (position: PlannedPosition) =>
@@ -997,7 +1002,7 @@ export function HoldingsImport({
     const status = unitStatus(check);
     if (status === "review" || check.held === undefined) return { kind: "unknown", why: check.problem ?? "" };
     if (status === "match") return { kind: "match" };
-    const accounts = check.accounts.map((a) => ({ ...a, name: comparedLabels.get(a.id) ?? a.name }));
+    const accounts = check.accounts.map((a) => ({ ...a, name: accountName(a.id) }));
     return { kind: "differ", theirs: `${units(format(check.held))} units`, ours: units(format(check.statement)), accounts, accountName: accounts.map((a) => a.name).join(", ") };
   };
   const trackedFunds = (prepared ? items : []).flatMap((item) => {
@@ -1013,7 +1018,7 @@ export function HoldingsImport({
       p.lines.some((l) => holdingKey(l.holding) === item.key) && included(p, choicesFor(plan.accountId, plan))));
     const plan = statementPlan(item);
     return [{
-      accounts: by.map((o) => comparedLabels.get(o.id) ?? o.name).join(", "),
+      accounts: by.map((o) => accountName(o.id)).join(", "),
       fund: {
         key: item.key,
         name: shownName(item, fund),
@@ -1085,7 +1090,7 @@ export function HoldingsImport({
   };
   const sameAsks: Ask[] = askPlans.filter(replacesSnapshot).map((plan) => {
     const account = accountName(plan.accountId);
-    const words = sameDateWords(account, holdings.date, accountLabel(plan.accountId));
+    const words = sameDateWords(account, holdings.date);
     // Holdings still waiting for an answer to which fund they are.
     const waitingHere = holdings.sources.filter((s) => accountOf(s) === plan.accountId)
       .flatMap((s) => s.holdings.filter((h) => !choiceOf(holdingKey(h))).map((h) => ({ name: h.name, units: h.units })));
@@ -1094,7 +1099,7 @@ export function HoldingsImport({
       accountId: plan.accountId,
       words: { ...words, line: "Replacing them with this statement changes:" },
       changes: sameDateChanges(plan, choicesFor(plan.accountId, plan), nameOf, waitingHere),
-      target: `holdings in ${accountLabel(plan.accountId)} for ${date}`,
+      target: `holdings in ${accountName(plan.accountId)} for ${date}`,
       answer: sameDate.get(plan.accountId),
       set: (answer) => setSameDate((all) => {
         const next = new Map(all);
@@ -1119,14 +1124,14 @@ export function HoldingsImport({
         id: `${plan.accountId}|${position.key}`,
         accountId: plan.accountId,
         words: holdingAskWords(plan, position, {
-          account, label: accountLabel(plan.accountId), name: nameOf, provider: (p) => (p.asset ? providerName(p.asset as ChosenFund) : undefined),
+          account, name: nameOf, provider: (p) => (p.asset ? providerName(p.asset as ChosenFund) : undefined),
           // A statement row's name as printed, not its chosen asset's.
           statement: (p) => {
             const item = itemOf.get(holdingKey(p.lines[0].holding))!;
             return shownName(item);
           },
         }),
-        target: `${nameOf(row)} in ${accountLabel(plan.accountId)}`,
+        target: `${nameOf(row)} in ${accountName(plan.accountId)}`,
         answer,
         set: replace
           ? (main) => {
@@ -1379,7 +1384,7 @@ export function HoldingsImport({
   };
   const handlers: ReadyHandlers = {
     ids: ids.row,
-    label: (row, item) => `${labelOf.get(item.key)!}${row.accountId ? ` in ${accountLabel(row.accountId)}` : ""}`,
+    label: (row, item) => `${labelOf.get(item.key)!}${row.accountId ? ` in ${accountName(row.accountId)}` : ""}`,
     editing: editor?.kind === "cost" ? { rowId: editor.rowId, draft: editor.draft, error: editor.error } : undefined,
     changing: editor?.kind === "change" ? editor.rowId : undefined,
     changingItem: editor?.kind === "change" ? editor.itemKey : undefined,
@@ -1532,7 +1537,9 @@ export function HoldingsImport({
       onDraft={(draft) => setRenaming((r) => r && { ...r, draft })}
       onSave={() => {
         if (!renaming) return;
-        const problem = nameProblem(renaming.draft);
+        const problem = nameProblem(renaming.draft, allAccounts.map((a) => a.name),
+          Object.entries({ ...tried.current, ...renamed }).filter(([other]) => other !== key).map(([, typed]) => typed),
+          [...labels.values()].map((l) => l.text));
         if (problem) {
           setRenaming({ ...renaming, error: problem });
           announce(problem);
@@ -1676,7 +1683,7 @@ export function HoldingsImport({
           await api.snapshots.save(accountId, positions, cash, plan.date);
           savedPlans.add(plan.accountId);
         } catch (e) {
-          api.logger.error(`Couldn't save the snapshot of ${outcome.name} on ${plan.date}: ${String(e)}`);
+          api.logger.error(`Couldn't save the snapshot of ${realAccountName(accountId)} on ${plan.date}: ${String(e)}`);
           outcomes.set(plan.accountId, { ...outcome, state: "failed" });
           left.push(plan);
           done.add(plan);
@@ -1705,7 +1712,7 @@ export function HoldingsImport({
         try {
           await writeHistory(false);
         } catch (e) {
-          api.logger.error(`Couldn't save the import history of ${outcome.name}: ${String(e)}`);
+          api.logger.error(`Couldn't save the import history of ${realAccountName(accountId)}: ${String(e)}`);
           history.push({ accountId, name: outcome.name, retry: () => writeHistory(true) });
         }
         done.add(plan);
@@ -1800,7 +1807,7 @@ export function HoldingsImport({
         await h.retry();
         fixed.add(h);
       } catch (e) {
-        api.logger.error(`Couldn't save the import history of ${h.name} again: ${String(e)}`);
+        api.logger.error(`Couldn't save the import history of ${realAccountName(h.accountId)} again: ${String(e)}`);
       }
     }
     setResult((r) => r && { ...r, saved: { ...r.saved, history: r.saved.history.map((h) => (fixed.has(h) ? { ...h, done: true } : h)) } });
@@ -2016,6 +2023,7 @@ export function HoldingsImport({
         investorKey={investor}
         sources={holdings.sources}
         targets={targets}
+        labels={labels}
         proposed={(key) => created.current.has(proposedId(key)) ? undefined : proposed(key)}
         newLine={newLine}
         values={Object.fromEntries([investor, ...holdings.sources.map(sourceKey)].map((key) => [key, valueOf(key)]))}
@@ -2141,7 +2149,7 @@ export function HoldingsImport({
           <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
             <Disclosure
               label="Show this statement's holdings"
-              ariaLabel={`Show this statement's holdings for ${accountLabel(plan.accountId)}`}
+              ariaLabel={`Show this statement's holdings for ${accountName(plan.accountId)}`}
               open={!!open[`kept:${plan.accountId}`]}
               onOpenChange={(yes) => setOpen(`kept:${plan.accountId}`, yes)}
             >
@@ -2175,7 +2183,7 @@ export function HoldingsImport({
             <div key={d.accountId} className="grid grid-cols-1 gap-2" style={{ overflowWrap: "anywhere" }}>
               <p className="text-warning text-sm">{d.text}</p>
               <div className="flex flex-wrap gap-2">
-                <WrapButton type="button" variant="outline" disabled={busy !== ""} aria-label={`${d.button}${nameNumber(accounts, accounts.findIndex((a) => a.id === d.accountId), "account")}`} onClick={() => keepInKept(d)}>
+                <WrapButton type="button" variant="outline" disabled={busy !== ""} onClick={() => keepInKept(d)}>
                   {d.button}
                 </WrapButton>
               </div>
@@ -2242,7 +2250,7 @@ export function HoldingsImport({
                   id={ids.row(row).change}
                   type="button"
                   aria-expanded={handlers.changing === row.id && handlers.changingItem === row.item.key}
-                  aria-label={`Change: ${row.label} in ${accountLabel(plan.accountId)}`}
+                  aria-label={`Change: ${row.label} in ${accountName(plan.accountId)}`}
                   onClick={() => handlers.onChange(row)}
                 >
                   Change
@@ -2280,7 +2288,11 @@ export function HoldingsImport({
         </div>
       )}
       {plans.filter((plan) => open[`snapshot:${plan.accountId}`]).map((plan) => (
-        <section key={plan.accountId} id={id(`snapshot-${plan.accountId}`)} aria-label={`Holdings in ${accountName(plan.accountId)} on ${date} after saving`}>
+        // Its heading says whose holdings it shows, as two can be open at once.
+        <section key={plan.accountId} id={id(`snapshot-${plan.accountId}`)} aria-labelledby={id(`snapshot-heading-${plan.accountId}`)} className="grid grid-cols-1 gap-2" style={{ overflowWrap: "anywhere" }}>
+          <h3 id={id(`snapshot-heading-${plan.accountId}`)} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
+            Holdings in {accountName(plan.accountId)} on {date} after saving
+          </h3>
           <SnapshotTable plan={plan} choices={choicesFor(plan.accountId, plan)} account={accountName(plan.accountId)} />
         </section>
       ))}

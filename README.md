@@ -42,6 +42,8 @@ the statement is read, one Review screen shows, in this order:
   purchases and payouts (optional)**: "None: don't add bank transfers", the first time, or an account
   (see [Bank account](#bank-account)). The choices made last time are preselected; with no account
   that tracks transactions, a new one is, created when you import (see [New accounts](#new-accounts)).
+  Two accounts with the same name are told apart here and everywhere else on the screen (see
+  [Accounts with the same name](#accounts-with-the-same-name)).
   Under **Save part of it to another account**, each folio can go to another account, a new one of its
   own or "Don't import", and have its own bank account. A folio printed without a PAN has a box of its own. A remembered account that's hidden,
   archived, no longer listed or tracks holdings asks you to choose again, and so does a bank account
@@ -71,7 +73,14 @@ the statement is read, one Review screen shows, in this order:
   same units can both be real."): **Skip this transaction** is the safe answer, and **Import it as a
   second purchase** imports it. More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
   Credit Risk Fund's transactions don't add up. They add up to 1,204.500 units; the statement says
-  1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**.
+  1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**. When
+  an equal question is about another folio, each card names its folio in its heading, its buttons
+  and its answered line ("This purchase in folio 7712045 may already be in Mutual funds",
+  "Fictiva Credit Risk Fund's transactions in folio 7712045 don't add up"). An unbalanced fund's
+  summary in the bar and, once skipped, its line under **Not included** name its folio too, and a possible
+  duplicate's "On this statement:" and "Also on this statement:" lines name each line's folio
+  ("3 Jul 2026 · Purchase · Fictiva Liquid Fund, folio 7712045 · …"), as they do when the line a
+  transaction repeats is in another folio.
 - **Ready to import**: each fund with new transactions, with its plan and option, where its prices
   come from (and whether it was chosen before or by you) and **Change**, its **New transactions**
   ("38 imported before" under them) and its **Units after import**: the units Wealthfolio has at the
@@ -378,7 +387,8 @@ Review screen shows, in this order:
   statement's folios by their fund house and number, and an NPS account by its PRAN as printed,
   masked. Changing where something goes drops the questions and edits that only it needed. With no
   account that tracks holdings, a new one is preselected, created when you save (see
-  [New accounts](#new-accounts)).
+  [New accounts](#new-accounts)). Two accounts with the same name are told apart here and
+  everywhere else on the screen (see [Accounts with the same name](#accounts-with-the-same-name)).
 - **Questions for you**: each holding with no confirmed asset, as one card with what the statement
   prints, why it's asked, its results, and **Search by fund code** (**Search by ISIN** for shares and
   bonds). A share's results on the two Indian exchanges are named as **National Stock Exchange (NSE)**
@@ -656,8 +666,10 @@ has. A name another account has, in any case and even archived, gets a number ("
 and every name fits Wealthfolio's 2 to 50 characters, shortened if it has to be.
 
 Nothing is created until you save or import. Under the select, "New · Wealthfolio account, created
-when you save · **Rename**" changes the name first: 2 to 50 characters, trimmed, with the focus back
-on Rename once it's saved or cancelled. While Rename is open, the bar says "Save or cancel the new
+when you save · **Rename**" changes the name first: 2 to 50 characters, trimmed, and not a name
+another account has or the review uses as its label, hidden and archived ones included, or one
+another new account was given with Rename ("Wealthfolio already has an account named Funds. Use another name."), with the focus back on Rename once it's
+saved or cancelled. While Rename is open, the bar says "Save or cancel the new
 account name first." and saving waits. The account is a securities account in rupees, not the
 default, that tracks holdings for a summary or depository statement and transactions for a detailed
 one, with no provider link. It's created before anything is saved in it, and remembered for its
@@ -679,6 +691,22 @@ that needs a missing account waits whole, with both sides of a gift between two 
 and a trade's bank transfer, so they go in together, as Wealthfolio links transfers only within one
 import. Wealthfolio checks a new account's transactions once it's created, just before they're
 imported: one it refuses stays out and is listed with its reason.
+
+## Accounts with the same name
+
+Wealthfolio lets two accounts have the same name. Wherever the Review screen names an account that
+another one shares its name with (spaces and case aside, hidden and archived accounts included), it
+says in brackets what tells them apart, from what Wealthfolio shows beside them under **Settings →
+Accounts**: the end of the account number ("Funds (ending 4821)"), the currency ("Funds (USD)"), the
+group ("Funds (Family group)") or what it tracks ("Funds (tracks transactions)"), the fewest of these
+that no other account of that name has, in that order. **Save to**'s lists add the rest: "Funds
+(ending 4821) · INR · Family group". When nothing tells one apart, it's numbered by its place among
+the accounts of that name under **Settings → Accounts**, hidden and archived ones counted ("Funds
+(account 2)"), and a line under **Save to** says so, and that different names in Wealthfolio tell
+them apart. No label reads like another account's name. The question cards and their answered lines,
+the bar, **Ready to save** or **Ready to import**, **Not included**, the holdings after saving (each
+preview headed "Holdings in Funds (ending 4821) on 31 Mar 2026 after saving") and the result name the
+account the same way, and so do the controls' accessible names.
 
 ## Troubleshooting
 

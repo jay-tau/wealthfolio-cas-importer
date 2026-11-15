@@ -1390,21 +1390,21 @@ test("same-named tracked accounts keep global names across separate fund compari
   api.query = { invalidateQueries() {} };
   await run.flush();
   const notIncluded = find(run, "NotIncluded");
-  assert.deepEqual(notIncluded.tracked.map((group) => group.accounts), ["Funds, account 2", "Funds, account 1"]);
-  assert.deepEqual(notIncluded.tracked.map((group) => group.funds[0].comparison.accounts.map((a) => a.name)), [["Funds, account 2"], ["Funds, account 1"]]);
+  assert.deepEqual(notIncluded.tracked.map((group) => group.accounts), ["Funds (account 2)", "Funds (account 1)"]);
+  assert.deepEqual(notIncluded.tracked.map((group) => group.funds[0].comparison.accounts.map((a) => a.name)), [["Funds (account 2)"], ["Funds (account 1)"]]);
   const { NotIncluded } = await server.ssrLoadModule("/src/components/review/not-included.tsx");
   const groups = nodes(NotIncluded(notIncluded)).filter((node) => node.type?.name === "Tracked");
   const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
   const reviewLinks = (tree) => nodes(tree).filter((node) => node.type?.name === "LinkButton" && textOf(node).startsWith("Review its transactions in "));
   const before = groups.flatMap((group) => reviewLinks(group.type(group.props)));
-  assert.deepEqual(before.map(textOf), ["Review its transactions in Funds, account 2", "Review its transactions in Funds, account 1"]);
+  assert.deepEqual(before.map(textOf), ["Review its transactions in Funds (account 2)", "Review its transactions in Funds (account 1)"]);
   before.forEach((link) => link.props.onClick());
   assert.deepEqual(routes, ["/accounts/T2", "/accounts/T1"]);
   routes.length = 0;
   find(run, "Footer").action.onClick();
   await run.flush();
   const after = reviewLinks(run.tree);
-  assert.deepEqual(after.map(textOf), ["Review its transactions in Funds, account 2"]);
+  assert.deepEqual(after.map(textOf), ["Review its transactions in Funds (account 2)"]);
   after[0].props.onClick();
   assert.deepEqual(routes, ["/accounts/T2"]);
 });
@@ -1579,7 +1579,9 @@ test("an account named for its holdings reads naturally in the bar's link and th
   link.props.onClick();
   await run.flush();
   const section = nodes(run.tree).find((n) => n.type === "section" && n.props.id === link.props["aria-controls"]);
-  assert.equal(section.props["aria-label"], "Holdings in CDSL holdings on 31 Mar 2025 after saving");
+  // Its visible heading names it, so two open previews say whose holdings each shows.
+  const heading = nodes(section).find((n) => n.type === "h3" && n.props.id === section.props["aria-labelledby"]);
+  assert.equal(textOf(heading), "Holdings in CDSL holdings on 31 Mar 2025 after saving");
   assert.equal(find(run, "SnapshotTable").account, "CDSL holdings");
 });
 
@@ -1597,7 +1599,9 @@ test("a summary statement's new Mutual funds account reads naturally in the bar'
   link.props.onClick();
   await run.flush();
   const section = nodes(run.tree).find((n) => n.type === "section" && n.props.id === link.props["aria-controls"]);
-  assert.equal(section.props["aria-label"], "Holdings in Mutual funds on 31 Mar 2025 after saving");
+  // Its visible heading names it, so two open previews say whose holdings each shows.
+  const heading = nodes(section).find((n) => n.type === "h3" && n.props.id === section.props["aria-labelledby"]);
+  assert.equal(textOf(heading), "Holdings in Mutual funds on 31 Mar 2025 after saving");
   assert.equal(find(run, "SnapshotTable").account, "Mutual funds");
 });
 
@@ -1738,7 +1742,10 @@ test("when the only new account isn't created, nothing is saved or remembered fo
 });
 
 test("Rename edits the new account's name in place, by Wealthfolio's rule, and saving waits for it", async () => {
-  const { run, asked } = withNewAccounts([source("X", [holding("ISINX")])]);
+  // An account that tracks transactions: its name can't be taken, so the two are never named alike.
+  const { run, asked } = withNewAccounts([source("X", [holding("ISINX")])], {
+    accounts: [{ id: "T", name: "Mutual funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false }],
+  });
   const focused = [];
   document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
   await run.flush();
@@ -1752,7 +1759,10 @@ test("Rename edits the new account's name in place, by Wealthfolio's rule, and s
   assert.equal(find(run, "Footer").action.disabled, true);
   assert.equal(find(run, "Footer").go.label, "Go to it");
   assert.equal(find(run, "ReviewHeader").changes, 1);
-  for (const [draft, error] of [["  ", "Enter an account name."], [" X ", "Use at least 2 characters."], ["x".repeat(51), "Use at most 50 characters."]]) {
+  for (const [draft, error] of [
+    ["  ", "Enter an account name."], [" X ", "Use at least 2 characters."], ["x".repeat(51), "Use at most 50 characters."],
+    [" mutual  FUNDS ", "Wealthfolio already has an account named mutual FUNDS. Use another name."],
+  ]) {
     line().onDraft(draft);
     await run.flush();
     line().onSave();
@@ -1776,9 +1786,49 @@ test("Rename edits the new account's name in place, by Wealthfolio's rule, and s
   assert.equal(focused.at(-1), line().ids.rename);
   assert.equal(find(run, "SaveTo").proposed(investor).name, "My demat");
   assert.match(footerText(run)[0], /^Create the Wealthfolio account My demat and save 1 holding/);
+  // Another new account can't be renamed to it either.
+  const other = sourceKey(find(run, "SaveTo").sources[0]);
+  const otherLine = () => find(run, "SaveTo").newLine(other, "X demat account").props;
+  otherLine().onRename();
+  await run.flush();
+  otherLine().onDraft("my DEMAT");
+  await run.flush();
+  otherLine().onSave();
+  await run.flush();
+  assert.equal(otherLine().editing.error, "Another new account is already named my DEMAT. Use another name.");
+  otherLine().onCancel();
+  await run.flush();
   find(run, "Footer").action.onClick();
   await run.flush();
   assert.deepEqual(asked.map((a) => a.name), ["My demat"]);
+});
+
+test("a new account can't take an existing account's label before or after creation", async () => {
+  const accounts = ["4821", "7310"].map((end) => ({
+    id: end, name: "Funds", accountNumber: end, currency: "INR", trackingMode: "HOLDINGS", isActive: true, isArchived: false,
+  }));
+  const { run, asked } = withNewAccounts([source("X", [holding("ISINX")])], { accounts });
+  const investor = investorKey("TEST");
+  await run.flush();
+  find(run, "SaveTo").onChange(investor, proposedId(investor));
+  await run.flush();
+  const before = [...find(run, "SaveTo").labels];
+  const line = () => find(run, "SaveTo").newLine(investor, "holdings").props;
+  line().onRename();
+  await run.flush();
+  line().onDraft("Funds (ending 4821)");
+  await run.flush();
+  line().onSave();
+  await run.flush();
+  assert.match(line().editing?.error ?? "", /Use another name/);
+  line().onCancel();
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(asked.length, 1);
+  assert.deepEqual(find(run, "HoldingsResult").result.accounts.map((a) => a.name), [asked[0].name]);
+  const { accountLabels } = await server.ssrLoadModule("/src/lib/account-labels.ts");
+  assert.deepEqual([...accountLabels([...accounts, { id: "created-1", ...asked[0] }])].slice(0, 2), before);
 });
 
 test("choosing an existing account closes an open Rename of the new one", async () => {
@@ -2140,7 +2190,7 @@ test("keeping a snapshot drops its overlap controls but preserves another source
   assert.equal(find(run, "Footer").action.label, "Finish");
 });
 
-test("open holding answers keep numbered account names when two accounts have the same name", async () => {
+test("two accounts of one name are told apart in open questions and answered lines, shown and in names", async () => {
   const fund = { ...holding("INFTEST"), kind: "fund" };
   const x = { ...source("X", [fund]), kind: "folio" };
   const y = { ...source("Y", [fund]), kind: "folio" };
@@ -2166,14 +2216,54 @@ test("open holding answers keep numbered account names when two accounts have th
   await run.flush();
   const cards = nodes(run.tree).filter((n) => n.type?.name === "AskCard").map((n) => n.props);
   assert.equal(cards.length, 2);
-  assert.deepEqual(cards.map((c) => c.main.name), cards.map((c, i) => `Keep them in Funds: Example INFTEST in Funds, account ${i + 1}`));
-  assert.deepEqual(cards.map((c) => c.other.name), cards.map((c, i) => `Remove them from Funds: Example INFTEST in Funds, account ${i + 1}`));
-  // Answered alike, their lines number the accounts, so they and Change answer's names differ.
+  // Nothing else tells them apart, so they're numbered in Wealthfolio's order, in their buttons as on them.
+  assert.deepEqual(cards.map((c) => [c.main.label, c.main.name]), cards.map((c, i) => [`Keep them in Funds (account ${i + 1})`, `Keep them in Funds (account ${i + 1}): Example INFTEST in Funds (account ${i + 1})`]));
+  assert.deepEqual(cards.map((c) => c.other.name), cards.map((c, i) => `Remove them from Funds (account ${i + 1}): Example INFTEST in Funds (account ${i + 1})`));
+  // Answered alike, their lines name the accounts the same way, so they and Change answer's names differ.
   cards.forEach((c) => c.main.onClick());
   await run.flush();
   const answers = nodes(run.tree).filter((n) => n.type?.name === "AskAnswered").map((n) => n.props);
-  const lines = [1, 2].map((n) => `Example INFTEST: 10.000 units kept in Funds, account ${n}`);
+  const lines = [1, 2].map((n) => `Example INFTEST: 10.000 units kept in Funds (account ${n})`);
   assert.deepEqual(answers.map((a) => [a.text, a.name]), lines.map((line) => [line, line]));
+});
+
+test("two holdings accounts of one name with holdings saved for the date are told apart in their cards, lines, Save to and the bar", async () => {
+  const x = source("X", [{ ...holding("INFTEST"), kind: "fund" }]);
+  const y = source("Y", [{ ...holding("INFOTHER"), kind: "fund" }]);
+  const { run, props, api } = sameDate([x, y], [["INFTEST", "10"]]);
+  props.accounts.forEach((a, i) => Object.assign(a, { name: "Funds", currency: "INR", accountNumber: ["1234 4821", "5678 7310"][i] }));
+  props.accountChoices[sourceKey(y)] = "B";
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-03-31", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => [{
+    holdingType: "security", quantity: "10", costBasis: null, localCurrency: "INR",
+    instrument: { id: "asset-INFTEST", symbol: "INFTEST", name: "Example INFTEST", quoteMode: "MARKET" },
+  }];
+  await run.flush();
+  const cards = () => nodes(run.tree).filter((n) => n.type?.name === "AskCard").map((n) => n.props);
+  // Each account is shown with the end of its account number, as Wealthfolio shows it beside them, in
+  // its card's title and its buttons' names alike.
+  assert.deepEqual(cards().map((c) => [c.title, c.main.name]), ["(ending 4821)", "(ending 7310)"].map((end) => [
+    `Funds ${end} already has holdings saved for 31 Mar 2025`, `Keep the saved ones: holdings in Funds ${end} for 31 Mar 2025`,
+  ]));
+  assert.deepEqual(["A", "B"].map((id) => find(run, "SaveTo").labels.get(id).option), ["Funds (ending 4821) · INR", "Funds (ending 7310) · INR"]);
+  cards()[0].main.onClick();
+  await run.flush();
+  cards()[0].other.onClick();
+  await run.flush();
+  const answers = nodes(run.tree).filter((n) => n.type?.name === "AskAnswered").map((n) => n.props);
+  assert.deepEqual(answers.map((a) => [a.text, a.name]), [
+    "Funds (ending 4821): kept the holdings already saved for 31 Mar 2025", "Funds (ending 7310): replaced the holdings saved for 31 Mar 2025 with this statement",
+  ].map((line) => [line, line]));
+  // Reopened, the card names its account as its line did.
+  answers[1].onChange();
+  await run.flush();
+  assert.deepEqual(cards().map((c) => c.title), ["Funds (ending 7310) already has holdings saved for 31 Mar 2025"]);
+  cards()[0].other.onClick();
+  await run.flush();
+  const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
+  const bar = find(run, "Footer").lines.map(textOf).join(" | ");
+  assert.match(bar, /Funds \(ending 7310\)/);
+  assert.doesNotMatch(bar, /Funds(?! \(ending)/);
 });
 
 for (const existingIds of [false, true]) {
@@ -2231,9 +2321,10 @@ for (const keptAccount of ["A", "B"]) {
     nodes(run.tree).filter((n) => n.type?.name === "AskCard").forEach((n) => n.props.main.onClick());
     await run.flush();
     const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
-    const buttons = nodes(run.tree).filter((n) => n.type?.name === "WrapButton" && textOf(n) === "Keep the Z demat account in Funds");
-    assert.deepEqual(buttons.map((b) => b.props["aria-label"]), [
-      "Keep the Z demat account in Funds, account 1", "Keep the Z demat account in Funds, account 2",
+    // Each button says which account it keeps them in, so its text is its name.
+    const buttons = nodes(run.tree).filter((n) => n.type?.name === "WrapButton" && textOf(n).startsWith("Keep the Z demat account in Funds"));
+    assert.deepEqual(buttons.map((b) => [textOf(b), b.props["aria-label"]]), [
+      ["Keep the Z demat account in Funds (account 1)", undefined], ["Keep the Z demat account in Funds (account 2)", undefined],
     ]);
     buttons[keptAccount === "A" ? 0 : 1].props.onClick();
     await run.flush();
@@ -2375,7 +2466,8 @@ for (const retry of [false, true]) test(`a holding the statement no longer lists
 test("a snapshot Wealthfolio doesn't save in an existing account gets its own Try again, and the other account's stays saved", async () => {
   const x = source("X", [holding("ISINX")]);
   const y = source("Y", [holding("ISINY")]);
-  const { run, api, logged } = setup([x, y]);
+  const { run, props, api, logged } = setup([x, y]);
+  props.accounts.forEach((a, i) => Object.assign(a, { name: "Funds", currency: "INR", accountNumber: ["4821", "7310"][i] }));
   const saved = [];
   let fail = true;
   api.snapshots.save = async (accountId) => {
@@ -2393,7 +2485,8 @@ test("a snapshot Wealthfolio doesn't save in an existing account gets its own Tr
   assert.deepEqual(outcomes(result), [["A", "saved"], ["B", "failed"]]);
   assert.equal(find(run, "ReviewHeader").unfinished, true, "leaving a partial result asks before discarding answers");
   assert.deepEqual(saved, ["A"]);
-  assert.match(logged.at(-1), /^Couldn't save the snapshot of B on 2025-03-31: Error: made-up snapshot failure$/);
+  assert.equal(result.result.accounts[1].name, "Funds (ending 7310)");
+  assert.match(logged.at(-1), /^Couldn't save the snapshot of Funds on 2025-03-31: Error: made-up snapshot failure$/);
   // B's Try again saves B only: A isn't saved again.
   fail = false;
   result.onRetryAccount("B");
@@ -2405,7 +2498,8 @@ test("a snapshot Wealthfolio doesn't save in an existing account gets its own Tr
 
 test("import history that couldn't be saved, and a fund's details, are each saved again on their own", async () => {
   const bond = { ...holding("INEZ91A07012"), kind: "bond", name: "Example Bond", details: { name: "Example Bond", coupon: "7.5" } };
-  const { run, props, api } = setup([source("X", [bond])]);
+  const { run, props, api, logged } = setup([source("X", [bond])]);
+  props.accounts.forEach((a, i) => Object.assign(a, { name: "Funds", currency: "INR", accountNumber: ["4821", "7310"][i] }));
   props.fundChoices[holdingKey(bond)].fund.assetId = "bond-asset";
   api.assets.getProfile = async (id) => ({ id, instrumentSymbol: bond.isin, instrumentExchangeMic: "XBOM", instrumentType: "BOND", metadata: null });
   let failStorage = true;
@@ -2428,12 +2522,16 @@ test("import history that couldn't be saved, and a fund's details, are each save
   let result = find(run, "HoldingsResult");
   assert.deepEqual(outcomes(result), [["A", "saved"]]);
   assert.deepEqual(result.result.history.map((h) => [h.accountId, !!h.done]), [["A", false]]);
+  assert.ok(logged.some((line) => line.startsWith("Couldn't save the import history of Funds: ")), logged.join(" | "));
   assert.deepEqual(result.result.unfinished.map((u) => [u.what, u.name, !!u.done]), [["details", bond.name, false]]);
   await new Promise((resolve) => setTimeout(resolve, 85));
   await run.flush();
   const notice = nodes(run.tree).find((n) => n.props?.role === "status").props.children;
   assert.match(notice, /The statement's details for Example Bond weren't saved\. Retry saving the details\./);
   assert.match(notice, /Holdings saved, but the import history couldn't be saved\./);
+  result.onRetryHistory();
+  await run.flush();
+  assert.ok(logged.some((line) => line.startsWith("Couldn't save the import history of Funds again: ")), logged.join(" | "));
   // The details' retry doesn't save the history, and the history's doesn't save the details.
   failProfile = false;
   result.onRetryUnfinished(result.result.unfinished[0]);

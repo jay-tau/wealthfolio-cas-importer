@@ -15,12 +15,22 @@ export const proposalKey = (id: string) => id.slice(PREFIX.length);
 export const NAME_MIN = 2;
 export const NAME_MAX = 50;
 
-/** What's wrong with a typed account name, by Wealthfolio's form's rule once trimmed; undefined if nothing. */
-export function nameProblem(name: string) {
+/**
+ * What's wrong with a typed account name, by Wealthfolio's form's rule once trimmed; undefined if
+ * nothing. Nor may it be a name that `existing`, Wealthfolio's accounts (hidden and archived ones
+ * included), or `others`, the other new accounts' typed names, has, as names compare: two accounts
+ * of one name couldn't be told apart until Wealthfolio has created this one. Nor may it take an
+ * existing account's label on the review.
+ */
+export function nameProblem(name: string, existing: Iterable<string> = [], others: Iterable<string> = [], labels: Iterable<string> = []) {
   const trimmed = name.trim();
   if (!trimmed) return "Enter an account name.";
   if (trimmed.length < NAME_MIN) return `Use at least ${NAME_MIN} characters.`;
   if (trimmed.length > NAME_MAX) return `Use at most ${NAME_MAX} characters.`;
+  const same = (names: Iterable<string>) => [...names].some((n) => fold(n) === fold(trimmed));
+  if (same(existing)) return `Wealthfolio already has an account named ${squash(trimmed)}. Use another name.`;
+  if (same(labels)) return `The review already uses ${squash(trimmed)} for an account. Use another name.`;
+  if (same(others)) return `Another new account is already named ${squash(trimmed)}. Use another name.`;
   return undefined;
 }
 
@@ -52,7 +62,7 @@ export function accountName(base: string, who?: string, n = 1) {
 }
 
 /** Names compare as Wealthfolio's list shows them: whitespace collapsed, in any case. */
-const fold = (name: string) => squash(name).toLocaleLowerCase();
+export const fold = (name: string) => squash(name).toLocaleLowerCase();
 
 export interface Wanted {
   /** The choice's storage key. */
