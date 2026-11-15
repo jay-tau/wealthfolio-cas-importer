@@ -273,6 +273,29 @@ test("rare questions keep their cards and answers while an answer works the plan
   assert.deepEqual([b.duplicates, b.importedDuplicates, b.skippedDuplicates, b.unbalanced], [0, 1, 1, 0]);
 });
 
+test("the same unbalanced fund in two folios keeps each folio in its answered line and name", async () => {
+  const { run, data } = setup({ entries: [], change(data) {
+    const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    scheme.close = String(Number(scheme.close_calculated) + 1);
+    const first = { ...data.folios[0], schemes: [scheme] };
+    data.folios = [first, { ...structuredClone(first), folio: "222222222" }];
+    return data;
+  } });
+  await run.flush();
+  const cards = askCards(run);
+  assert.equal(cards.length, 2);
+  cards.forEach((card) => card.main.onClick());
+  await run.flush();
+  const names = data.folios.map((folio) => `Fictiva Liquid Fund, folio ${folio.folio}: skipped`);
+  assert.deepEqual(askAnswers(run).map((a) => [a.text, a.name]), names.map((name) => [name, name]));
+  askAnswers(run)[0].onChange();
+  await run.flush();
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  names[0] = `Fictiva Liquid Fund, folio ${data.folios[0].folio}: imported with the difference`;
+  assert.deepEqual(askAnswers(run).map((a) => [a.text, a.name]), names.map((name) => [name, name]));
+});
+
 test("a failed plan recovers with its accepted units difference", async () => {
   const { run, api } = setup({ entries: [], change(data) {
     const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));
@@ -654,10 +677,45 @@ test("equal possible duplicates have numbered button names", async () => {
   assert.match(cards[0].main.name, /^Skip this transaction: Fictiva Liquid Fund, purchase of ₹[\d,.]+ on \d+ \w+ \d{4}, transaction 1$/);
   cards[0].main.onClick();
   await run.flush();
-  assert.match(askAnswers(run)[0].target, /, transaction 1$/);
+  // Answered, its line names it: Change answer's name adds a number only once another line reads the same.
+  assert.match(askAnswers(run)[0].text, /^₹[\d,.]+ purchase of Fictiva Liquid Fund on \d+ \w+ \d{4}: skipped$/);
+  assert.equal(askAnswers(run)[0].name, askAnswers(run)[0].text);
   cards[1].main.onClick();
   await run.flush();
-  assert.deepEqual(askAnswers(run).map((a) => a.target), cards.map((c) => c.target));
+  const answers = askAnswers(run);
+  assert.equal(answers[0].text, answers[1].text);
+  assert.deepEqual(answers.map((a) => a.name), [1, 2].map((n) => `${answers[0].text}, question ${n}`));
+  // Answered differently, the lines differ and aren't numbered.
+  find(run, "AskAnswered").onChange();
+  await run.flush();
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.deepEqual(askAnswers(run).map((a) => a.name), askAnswers(run).map((a) => a.text));
+});
+
+test("equal possible duplicates in two folios name their folio, not a number", async () => {
+  const { run, api, data } = setup({ entries: [], change(data) {
+    const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    const purchase = scheme.transactions.find((t) => t.type === "PURCHASE");
+    scheme.transactions = [purchase];
+    scheme.open = "0";
+    scheme.close = scheme.close_calculated = purchase.units;
+    const first = { ...data.folios[0], schemes: [scheme] };
+    data.folios = [first, { ...structuredClone(first), folio: "222222222" }];
+    return data;
+  } });
+  api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  const cards = askCards(run);
+  assert.equal(cards.length, 2);
+  const folios = data.folios.map((f) => f.folio);
+  cards.forEach((card, i) => assert.match(card.target, new RegExp(`^Fictiva Liquid Fund, folio ${folios[i]}, purchase of ₹[\\d,.]+ on \\d+ \\w+ \\d{4}$`)));
+  cards.forEach((card) => card.main.onClick());
+  await run.flush();
+  // Answered alike, each line names its folio, so neither name needs a number.
+  const answers = askAnswers(run);
+  answers.forEach((a, i) => assert.match(a.text, new RegExp(`^₹[\\d,.]+ purchase of Fictiva Liquid Fund, folio ${folios[i]} on \\d+ \\w+ \\d{4}: skipped$`)));
+  assert.deepEqual(answers.map((a) => a.name), answers.map((a) => a.text));
 });
 
 test("a zero-send plan still opens the read-only transaction table", async () => {

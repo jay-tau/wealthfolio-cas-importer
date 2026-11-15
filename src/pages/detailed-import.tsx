@@ -78,7 +78,7 @@ import { isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedN
 import { warningLines } from "../lib/parse-warnings";
 import { plural } from "../lib/plural";
 import { longDate, rupees, STATEMENT_WORDS, units } from "../lib/review-format";
-import { type AskWords, bothRealWords, type LineFacts } from "../lib/asks";
+import { answerNames, type AskWords, bothRealWords, type LineFacts } from "../lib/asks";
 import { type OpenQuestions, questionParts, questionsHeading, questionTotal } from "../lib/questions-left";
 import { sha256 } from "../lib/sha256";
 
@@ -723,7 +723,7 @@ export function DetailedImport({
     if (!check) {
       check = {
         id: `${box.key}|${bankId}`, anchor, bankId, bankName: accountName(bankId),
-        label: `${box.title} · ${accountLabel(bankId)}`,
+        label: `${box.title} · ${accountLabel(bankId)}`, box: box.title, bankLabel: accountLabel(bankId),
         pairs: [], signature: "",
       };
       checks.push(check);
@@ -928,6 +928,8 @@ export function DetailedImport({
     const twice = unbalancedWarnings.filter((other) => other.scheme === w.scheme).length > 1;
     const added = units(w.units?.added ?? "");
     const closing = units(w.units?.closing ?? "");
+    // In two folios, its line and buttons name the folio.
+    const which = twice ? `${fund}, folio ${w.folio}` : fund;
     return {
       id: `unbalanced|${key}`,
       words: {
@@ -935,10 +937,10 @@ export function DetailedImport({
         line: `${twice ? `In folio ${w.folio}, they` : "They"} add up to ${added} units; the statement says ${closing}. A row may be missing or misread.`,
         main: "Skip this fund",
         other: "Import with this difference",
-        receipt: (skip) => `${fund}: ${skip ? "skipped" : "imported with the difference"}`,
+        receipt: (skip) => `${which}: ${skip ? "skipped" : "imported with the difference"}`,
         done: (skip) => `${fund} ${skip ? "skipped" : "imported with the difference"}, by your answer`,
       },
-      target: twice ? `${fund}, folio ${w.folio}` : fund,
+      target: which,
       fundKey: scheme && fundKey(scheme),
       answer: unbalancedAnswers.get(key),
       warn: unbalancedAnswers.get(key) === false,
@@ -951,13 +953,19 @@ export function DetailedImport({
     };
   });
   const offered = (shown?.plan ?? []).filter(canImportAnyway);
+  const amountOf = (row: PlannedTransaction["transaction"]["rows"][number]) => (row.amount ? rupees(format(abs(dec(row.amount)))) : undefined);
+  // What a possible duplicate's line and buttons name it by: its fund, movement, amount and day.
+  const duplicateWords = offered.map((t) => ({
+    fund: transactionFund(t), word: statementWord(t), money: amountOf(t.transaction.rows[0]), when: longDate(t.transaction.rows[0].date),
+  }));
   const duplicateAccounts = new Set<string>();
-  const duplicateAsks: Ask[] = offered.map((t) => {
+  const duplicateAsks: Ask[] = offered.map((t, i) => {
     const key = transactionKey(t);
-    const { activity, rows: [first] } = t.transaction;
-    const fund = transactionFund(t);
-    const word = statementWord(t);
-    const amountOf = (row: typeof first) => (row.amount ? rupees(format(abs(dec(row.amount)))) : undefined);
+    const { activity, folio, rows: [first] } = t.transaction;
+    const { fund, word, money, when } = duplicateWords[i];
+    // An equal one in another folio: each names its folio too.
+    const twice = duplicateWords.some((o, j) => offered[j].transaction.folio !== folio && o.fund === fund && o.word === word && o.money === money && o.when === when);
+    const says = twice ? `${fund}, folio ${folio}` : fund;
     const unitsOf = (row: typeof first) => (row.units && dec(row.units).n !== 0n ? `${units(format(abs(dec(row.units))))} units` : undefined);
     const factsOf = (row: typeof first): LineFacts => ({ day: longDate(row.date), units: unitsOf(row), amount: amountOf(row) });
     const statementLine = (row: typeof first) =>
@@ -986,8 +994,6 @@ export function DetailedImport({
         `${how}${there.createdAt ? ` on ${onDay(there.createdAt)}` : ""}`,
       ].filter(Boolean).join(" · ");
     })();
-    const when = longDate(first.date);
-    const money = amountOf(first);
     const evidence = (
       <>
         <p>
@@ -1016,11 +1022,11 @@ export function DetailedImport({
         line: "",
         main: "Skip this transaction",
         other: `Import it as a second ${word}`,
-        receipt: (skip) => `${money ? `${money} ` : ""}${word} of ${fund} on ${when}: ${skip ? "skipped" : `imported as a second ${word}`}`,
+        receipt: (skip) => `${money ? `${money} ` : ""}${word} of ${says} on ${when}: ${skip ? "skipped" : `imported as a second ${word}`}`,
         done: (skip) => (skip ? "skipped" : "imported"),
       },
       evidence,
-      target: `${fund}, ${word}${money ? ` of ${money}` : ""} on ${when}`,
+      target: `${says}, ${word}${money ? ` of ${money}` : ""} on ${when}`,
       answer: duplicateAnswers.get(key),
       set: (answer) => setDuplicateAnswers((all) => {
         const next = new Map(all);
@@ -1036,6 +1042,8 @@ export function DetailedImport({
   asks.forEach((a, i) => {
     a.target += nameNumber(targets0, i, a.id.startsWith("duplicate|") ? "transaction" : "fund");
   });
+  // Change answer's names, numbered when two answered lines read the same.
+  const answerNameOf = new Map(answerNames(asks.map((a) => a.answer === undefined ? undefined : a.words.receipt(a.answer))).map((n, i) => [asks[i].id, n]));
   const openAsks = asks.filter((a) => a.answer === undefined);
   // Fund lines, by box: what the counts say.
   const lines = boxes.flatMap((box) =>
@@ -1914,7 +1922,7 @@ export function DetailedImport({
     if (ask.answer !== undefined) {
       return (
         <ul key={ask.id} className="grid">
-          <AskAnswered text={ask.words.receipt(ask.answer)} target={ask.target} warn={ask.warn} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+          <AskAnswered text={ask.words.receipt(ask.answer)} name={answerNameOf.get(ask.id)} warn={ask.warn} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
         </ul>
       );
     }
@@ -2179,7 +2187,7 @@ export function DetailedImport({
                     />
                   ))}
                   {asks.map((ask) => (
-                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} target={ask.target} warn={ask.warn} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} name={answerNameOf.get(ask.id)} warn={ask.warn} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
                   ))}
                 </ul>
               </Disclosure>

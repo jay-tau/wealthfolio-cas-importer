@@ -1,13 +1,14 @@
 import { cmp, dec } from "../cas/decimal.ts";
 import { type AccountPlan, assetName, assetNames, type Choices, included, type PlannedPosition, snapshotOf, type Source } from "../cas/holdings.ts";
 import { fundRef } from "../cas/plan.ts";
+import { nameNumber } from "./name-number.ts";
 import { plural } from "./plural.ts";
 import { longDate, shortDate, units } from "./review-format.ts";
 
 // What the Review screen's rare questions say: a plain heading, at most one line of evidence, the safe
 // answer first, and what each answer did, for its line once answered and for the bar.
 
-/** A rare question's words. `main` is the safe answer. */
+/** A rare question's words. `main` is the safe answer, shown first. */
 export interface AskWords {
   title: string;
   /** The evidence, one line. */
@@ -20,7 +21,10 @@ export interface AskWords {
   caution?: string;
   /** Why it's asked, behind "Why am I asked?", where the reason isn't obvious. */
   why?: string;
-  /** The answered line, for the main answer (true) or the other. */
+  /**
+   * The answered line, for the main answer (true) or the other: what the answer did. It names the
+   * question, account included, as Change answer's name is "Change answer: " and this line.
+   */
   receipt: (main: boolean) => string;
   /** What the bar says the answer does, for the main answer (true) or the other. */
   done: (main: boolean) => string;
@@ -49,6 +53,17 @@ export function bothRealWords(line: LineFacts, other?: LineFacts) {
   return `Two transactions${day ? " on one day" : ""}${same} can both be real.`;
 }
 
+/**
+ * What Change answer's name says after its label for each answered question: its line, then a number
+ * when another answered line reads the same, as equal names are numbered elsewhere (", question 2").
+ * Undefined lines are open questions.
+ */
+export function answerNames(lines: readonly (string | undefined)[]) {
+  // An open question's empty name never matches an answered line.
+  const named = lines.map((line) => ({ name: line ?? "" }));
+  return lines.map((line, i) => (line === undefined ? undefined : `${line}${nameNumber(named, i, "question")}`));
+}
+
 /** "A, B and C". */
 export const list = (names: readonly string[]) =>
   names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
@@ -72,8 +87,10 @@ export const MISSING_WHY =
 export function holdingAskWords(
   plan: AccountPlan,
   position: PlannedPosition,
-  { account, name, statement = name, provider }: {
+  { account, label = account, name, statement = name, provider }: {
     account: string;
+    /** The account in the answered line: numbered when another account has the same name. */
+    label?: string;
     name: (p: PlannedPosition) => string;
     statement?: (p: PlannedPosition) => string;
     provider?: (p: PlannedPosition) => string | undefined;
@@ -90,7 +107,7 @@ export function holdingAskWords(
       main: `Keep ${held} units`,
       other: zero,
       why: MISSING_WHY,
-      receipt: (keep) => (keep ? `${own}: kept at ${held} units` : `${own}: set to zero on ${shortDate(plan.date)}`),
+      receipt: (keep) => (keep ? `${own}: ${held} units kept in ${label}` : `${own}: set to zero in ${label} on ${shortDate(plan.date)}`),
       done: (keep) => (keep ? `${own} kept at ${held} units` : `${own} set to zero`),
     };
   }
@@ -104,7 +121,7 @@ export function holdingAskWords(
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
       caution: `Remove them only if all of them came from ${one ? thisOne(moved[0]) : titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
-      receipt: (keep) => `${own}: ${keep ? "kept in" : "removed from"} ${account}`,
+      receipt: (keep) => `${own}: ${keep ? "kept in" : "removed from"} ${label}`,
       done: (keep) => `${own} ${keep ? "kept in" : "removed from"} ${account}`,
     };
   }
@@ -117,7 +134,7 @@ export function holdingAskWords(
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
       caution: `Remove them only if all of them came from ${titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
-      receipt: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${account}`,
+      receipt: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${label}`,
       done: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${account}`,
     };
   }
@@ -136,7 +153,7 @@ export function holdingAskWords(
     note: `${capital(now)} isn't saved, so its units aren't counted twice.`,
     other: `Replace ${old} with ${now}`,
     caution: `Replace ${old} only if all ${olds.length > 1 ? "their" : "its"} units came from ${titles(ask.recorded ?? position.lines.map((l) => l.source))}: ${IMPORTS_DONT_RECORD}.`,
-    receipt: (keep) => (keep ? `${printed}: kept as ${old} for now` : `${printed}: ${old} replaced with ${now}`),
+    receipt: (keep) => (keep ? `${printed}: kept as ${old} in ${label} for now` : `${printed}: ${old} replaced with ${now} in ${label}`),
     done: (keep) => (keep ? `${printed} kept as ${old}` : `${old} replaced with ${now}`),
   };
 }
@@ -188,14 +205,17 @@ export function sameDateChanges(plan: AccountPlan, choices: Choices, name: (p: P
   return lines;
 }
 
-/** The same-date question's words, for an account that has holdings saved for the statement's date. */
-export function sameDateWords(account: string, date: string): Omit<AskWords, "line"> {
+/**
+ * The same-date question's words, for an account that has holdings saved for the statement's date.
+ * `label` is the account in the answered line: numbered when another account has the same name.
+ */
+export function sameDateWords(account: string, date: string, label = account): Omit<AskWords, "line"> {
   const on = longDate(date);
   return {
     title: `${account} already has holdings saved for ${on}`,
     main: "Keep the saved ones",
     other: "Replace them with this statement",
-    receipt: (keep) => (keep ? `${account}: keep the holdings already saved for ${on}` : `${account}: replace the holdings saved for ${on}`),
+    receipt: (keep) => (keep ? `${label}: kept the holdings already saved for ${on}` : `${label}: replaced the holdings saved for ${on} with this statement`),
     done: (keep) => (keep ? `${account}: existing holdings kept for ${on}.` : `${account}: the holdings saved for ${on} are replaced.`),
   };
 }

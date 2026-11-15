@@ -11,7 +11,9 @@ export interface Answer {
 
 /**
  * A question that only some imports ask, as one card: a plain heading, at most one line of evidence,
- * the safe answer as the main button, and "Why am I asked?" where the reason isn't obvious.
+ * its two answers, and "Why am I asked?" where the reason isn't obvious. Nothing is chosen until a
+ * click answers it, so both answers have the same weight, the safe one first: a filled button would
+ * look already chosen.
  */
 export function AskCard({
   headingId,
@@ -34,6 +36,7 @@ export function AskCard({
   level?: 4 | 5;
   /** The evidence: one line, or for a saved snapshot, what replacing it changes. */
   children: ReactNode;
+  /** The safe answer, first. */
   main: Answer;
   other: Answer;
   /** What the main answer leaves, tied to its button. */
@@ -52,7 +55,7 @@ export function AskCard({
       </Heading>
       <div className="text-muted-foreground grid grid-cols-1 gap-1 text-sm">{children}</div>
       <div className="flex flex-wrap items-center gap-2">
-        <WrapButton type="button" disabled={disabled} aria-label={main.name} aria-describedby={note ? `${own}-note` : undefined} onClick={main.onClick}>
+        <WrapButton type="button" variant="outline" disabled={disabled} aria-label={main.name} aria-describedby={note ? `${own}-note` : undefined} onClick={main.onClick}>
           {main.label}
         </WrapButton>
         <WrapButton type="button" variant="outline" disabled={disabled} aria-label={other.name} aria-describedby={caution ? `${own}-caution` : undefined} onClick={other.onClick}>
@@ -78,15 +81,19 @@ export function AskCard({
   );
 }
 
-/** An answered question, as one line with Change answer, like a fund question's. */
-export function AskAnswered({ text, target, buttonId, warn, onChange }: { text: string; target: string; buttonId: string; warn?: boolean; onChange: () => void }) {
+/**
+ * An answered question, as one line with Change answer, like a fund question's. The line names the
+ * question, so Change answer's name is the line, or `name`: the line with a number when two answered
+ * lines read the same.
+ */
+export function AskAnswered({ text, name, buttonId, warn, onChange }: { text: string; name?: string; buttonId: string; warn?: boolean; onChange: () => void }) {
   return (
     <li className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
       <span aria-hidden="true" className="text-success">
         ✓
       </span>
       <span className={`min-w-0 flex-1 ${warn ? "text-warning" : ""}`}>{text}</span>
-      <LinkButton id={buttonId} type="button" aria-label={`Change answer: ${text}: ${target}`} onClick={onChange}>
+      <LinkButton id={buttonId} type="button" aria-label={`Change answer: ${name ?? text}`} onClick={onChange}>
         Change answer
       </LinkButton>
     </li>

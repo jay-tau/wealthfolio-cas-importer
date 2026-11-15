@@ -1,7 +1,7 @@
 // The words of the Review screen's rare questions, from made-up plans.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { bothRealWords, holdingAskWords, MISSING_WHY, sameDateChanges, sameDateWords } from "../src/lib/asks.ts";
+import { answerNames, bothRealWords, holdingAskWords, MISSING_WHY, sameDateChanges, sameDateWords } from "../src/lib/asks.ts";
 import { planSnapshots, snapshotOf } from "../src/cas/holdings.ts";
 
 const folio = { id: "folio|7712045", kind: "folio", label: "Folio 7712045", title: "Mutual fund folio 7712045", holdings: [] };
@@ -29,7 +29,14 @@ test("a holding the statement no longer lists asks to keep it or set it to zero,
     MISSING_WHY,
   ]);
   assert.deepEqual([words.receipt(true), words.receipt(false), words.done(true), words.done(false)], [
-    "Fictiva Liquid Fund: kept at 512.300 units", "Fictiva Liquid Fund: set to zero on 31 Jul", "Fictiva Liquid Fund kept at 512.300 units", "Fictiva Liquid Fund set to zero",
+    // The answered line names the account too: Change answer's name is the line alone.
+    "Fictiva Liquid Fund: 512.300 units kept in CDSL Demat", "Fictiva Liquid Fund: set to zero in CDSL Demat on 31 Jul", "Fictiva Liquid Fund kept at 512.300 units", "Fictiva Liquid Fund set to zero",
+  ]);
+  // An account whose name another has is numbered in the answered line only.
+  const numbered = holdingAskWords(planOf(liquid), liquid, { account: "CDSL Demat", label: "CDSL Demat, account 2", name });
+  assert.deepEqual([numbered.line, numbered.main, numbered.receipt(true), numbered.done(true)], [
+    "CDSL Demat holds 512.300 units of it, from an earlier import of Mutual fund folio 7712045.", "Keep 512.300 units",
+    "Fictiva Liquid Fund: 512.300 units kept in CDSL Demat, account 2", "Fictiva Liquid Fund kept at 512.300 units",
   ]);
 });
 
@@ -110,8 +117,8 @@ test("an old asset to replace keeps it for now as the main answer, and says what
     "Replace Testbridge Gilt Reg Gr only if all its units came from Mutual fund folio 7712045 and Fictiva Securities demat account: imports don't record how many units each folio, demat account or PRAN added.",
   ]);
   assert.deepEqual([amfi.receipt(true), amfi.receipt(false)], [
-    "Testbridge Gilt Fund: kept as Testbridge Gilt Reg Gr for now",
-    "Testbridge Gilt Fund: Testbridge Gilt Reg Gr replaced with the AMFI fund",
+    "Testbridge Gilt Fund: kept as Testbridge Gilt Reg Gr in CDSL Demat for now",
+    "Testbridge Gilt Fund: Testbridge Gilt Reg Gr replaced with the AMFI fund in CDSL Demat",
   ]);
   // Another provider's result goes by its name, with its symbol when the statement's name is the same;
   // the statement row is named as the statement prints it.
@@ -152,9 +159,12 @@ test("replacing holdings saved for the date says what changes, from what would b
     "CDSL Demat already has holdings saved for 31 Jul 2026",
     "Keep the saved ones",
     "Replace them with this statement",
-    "CDSL Demat: keep the holdings already saved for 31 Jul 2026",
-    "CDSL Demat: replace the holdings saved for 31 Jul 2026",
+    // What the answer did, as the other answered lines say it.
+    "CDSL Demat: kept the holdings already saved for 31 Jul 2026",
+    "CDSL Demat: replaced the holdings saved for 31 Jul 2026 with this statement",
   ]);
+  const numbered = sameDateWords("CDSL Demat", "2026-07-31", "CDSL Demat, account 2");
+  assert.deepEqual([numbered.title, numbered.receipt(true)], ["CDSL Demat already has holdings saved for 31 Jul 2026", "CDSL Demat, account 2: kept the holdings already saved for 31 Jul 2026"]);
 });
 
 test("the same-date comparison counts the actual saved asset once when overlap splits its contributions", () => {
@@ -192,4 +202,12 @@ test("a possible duplicate's two transactions are called equal only when their d
   assert.equal(bothRealWords(statement, { day: "5 May 2023", amount: "₹24,998.75" }), "Two transactions on one day for the same amount can both be real.");
   assert.equal(bothRealWords(statement, { ...statement, day: "4 May 2023" }), "Two transactions with the same units and amount can both be real.");
   assert.equal(bothRealWords(statement, { day: "4 May 2023", units: "1.000 units", amount: "₹1" }), "Two transactions can both be real.");
+});
+
+test("answered lines that read the same are numbered for Change answer, open questions never", () => {
+  const same = "Demat: kept the holdings already saved for 31 Jul 2026";
+  assert.deepEqual(answerNames([same, undefined, "Fund: skipped", undefined, ` ${same}`]),
+    [`${same}, question 1`, undefined, "Fund: skipped", undefined, ` ${same}, question 5`]);
+  assert.deepEqual(answerNames([same, "Fund: skipped"]), [same, "Fund: skipped"]);
+  assert.deepEqual(answerNames([undefined, undefined]), [undefined, undefined]);
 });

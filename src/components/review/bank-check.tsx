@@ -16,6 +16,10 @@ export interface BankCheckModel {
   bankName: string;
   /** Its investor's box and bank, distinguishing repeated controls. */
   label: string;
+  /** Its investor's box, which Change answer names after the answer's line. */
+  box: string;
+  /** The bank's name, numbered when another account has the same one, for Change answer's name. */
+  bankLabel: string;
   pairs: BankPair[];
   /** The pairs' keys, which an answer and ticks hold on to. */
   signature: string;
@@ -127,7 +131,13 @@ export function BankCheck({
           ✓
         </span>
         <span className="min-w-0 flex-1">{text}</span>
-        <LinkButton id={changeId} type="button" aria-label={`Change answer: ${text}: ${check.label}`} onClick={onChange}>
+        <LinkButton
+          id={changeId}
+          type="button"
+          // The line names the bank once; its box follows.
+          aria-label={`Change answer: ${checkReceipt({ ...check, bankName: check.bankLabel }, answered)}, for ${check.box}`}
+          onClick={onChange}
+        >
           Change answer
         </LinkButton>
       </div>
