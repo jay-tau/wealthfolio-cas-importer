@@ -231,14 +231,14 @@ const wait = async (operation: string) => {
   });
   await host.pending;
 };
-// Lists a search in `host.unansweredSearches` until `answer` settles.
-const unanswered = async <T>(query: string, answer: () => Promise<T>) => {
+// Returns the search's own promise so the add-on awaits it directly; the side reaction removes
+// its entry from `host.unansweredSearches` before the add-on resumes.
+const unanswered = <T>(query: string, answer: () => Promise<T>) => {
+  const answered = answer();
   host.unansweredSearches.push(query);
-  try {
-    return await answer();
-  } finally {
-    host.unansweredSearches.splice(host.unansweredSearches.indexOf(query), 1);
-  }
+  const done = () => { host.unansweredSearches.splice(host.unansweredSearches.indexOf(query), 1); };
+  answered.then(done, done);
+  return answered;
 };
 
 const fund = (query: string): SymbolSearchResult & { quoteMode?: string } => ({
