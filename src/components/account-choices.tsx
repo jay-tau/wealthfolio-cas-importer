@@ -80,7 +80,7 @@ export function AccountSelect({
       onValueChange={(next) => onChange(next === SAME_AS_PAN || next === null ? "" : next)}
     >
       {/* As wide as its choice, from 18rem (or the card's width, if narrower) to the card's width, wrapping past that.
-          The add-on has no CSS, so only classes in Wealthfolio's apply: there's none for the minimum, and cn keeps both
+          The add-on defines no utilities, so only classes in Wealthfolio's apply: there's none for the minimum, and cn keeps both
           h-auto and h-input-height, whose rule comes later, hence the style. `line-clamp-none` isn't there either, but
           it makes cn drop the value's one-line clamp and flex classes. */}
       <SelectTrigger

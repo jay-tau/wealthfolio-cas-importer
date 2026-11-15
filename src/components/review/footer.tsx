@@ -131,11 +131,15 @@ export function Footer({
         </div>
         {fold && (
           // Shown above the buttons, so Hide details stays where Details was; fitted to the frame.
+          // Padding protects links' rings, and scroll padding keeps a focused link's ring in view as it
+          // scrolls; margins and no maximum keep their lines in place under Wealthfolio's narrow-window
+          // max-width rule (#240). Its own ring is inset because it scrolls.
           <div
             ref={details}
             id={detailsId}
             hidden={!open}
-            className="focus-visible:outline-ring grid grid-cols-1 gap-1 overflow-y-auto focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-solid"
+            className="focus-visible:outline-ring grid grid-cols-1 gap-1 overflow-y-auto focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-solid"
+            style={{ padding: 4, margin: -4, maxWidth: "none", scrollPadding: 4 }}
             {...(scrolls ? { tabIndex: 0, role: "region", "aria-label": "Details" } : {})}
           >
             {fold.more}

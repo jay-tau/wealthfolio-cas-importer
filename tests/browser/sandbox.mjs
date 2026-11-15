@@ -297,16 +297,23 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await hide.waitFor();
         const place = () => bar.evaluate((b) => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
           const header = document.querySelector("header");
+          const brief = b.querySelector("[id$='-summary']").getBoundingClientRect();
+          const details = b.querySelector("[id$='-details']");
+          const box = details.getBoundingClientRect();
+          const style = getComputedStyle(details);
           resolve({
             header: header && getComputedStyle(header).position === "sticky" ? header.getBoundingClientRect().bottom : 0,
-            brief: b.querySelector("[id$='-summary']").getBoundingClientRect().top,
+            brief: brief.top,
             buttons: b.lastElementChild.getBoundingClientRect().bottom,
             frame: innerHeight,
+            details: [box.left + parseFloat(style.paddingLeft) - brief.left, box.right - parseFloat(style.paddingRight) - brief.right],
           });
         }))));
         const at = await place();
         assert.ok(at.brief >= at.header - 1 && at.buttons <= at.frame + 1,
           `${width} by 300 px, opened: ${JSON.stringify(at)}: the brief below the header, the buttons in the frame`);
+        assert.ok(at.details.every((edge) => Math.abs(edge) <= 1),
+          `${width} px: Details' padding leaves its lines aligned with the brief and just as wide`);
         await hide.press("Enter");
         await show.waitFor();
       } finally {
@@ -314,6 +321,186 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await tab.frames()[1].evaluate(() => document.getElementById("narrow-bar-css")?.remove());
         await bar.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       }
+    };
+    // The same rule cuts what reaches past a .flex's or .grid's sides, and past its top and bottom where
+    // it scrolls: a control's focus ring, 4 px outside it, and a checkbox's or radio's touch area, with
+    // negative insets of 12 px sideways and 8 px vertically. With that CSS loaded for this check alone,
+    // Tab reaches each control with its whole ring, and its whole touch area inside the frame: by
+    // default at 744 px and at the rule's 1,024 px, and at 1,100 px without it, 900 px tall, in light and
+    // dark, and at the first width with Wealthfolio main's rule, which clips only sideways. The page lets
+    // those boxes reach past instead and clips sideways itself, so nothing that shows may reach past its
+    // sides, and no text past the row that holds it, long unbroken text included. Then the frame gets
+    // its size, scroll and focus back. Returns the controls Tab reached in each pass.
+    const ringsWhole = async (what, { widths = [744, 1024, 1100], height = 900 } = {}) => {
+      const passes = [
+        ...widths.flatMap((width) => ["light", "dark"].map((theme) => ({ width, theme, rule: "3.13.0" }))),
+        { width: widths[0], theme: "light", rule: "main" },
+      ];
+      const inFrame = tab.frames()[1];
+      const before = await tab.evaluate(() => document.querySelector("iframe").getAttribute("style"));
+      const focusedBefore = await inFrame.evaluateHandle(() => document.activeElement);
+      const scrolledBefore = await inFrame.evaluate(() => [scrollX, scrollY]);
+      const cuts = [];
+      // The controls Tab reached in each pass, for checks of their own.
+      const reaches = new Map();
+      try {
+        await inFrame.evaluate((css) => {
+          const sheet = document.createElement("style");
+          sheet.id = "rings-css";
+          sheet.textContent = css;
+          document.head.append(sheet);
+          // Tab starts after one and stops at the other, so the focus never leaves the frame.
+          for (const [id, place] of [["rings-start", "prepend"], ["rings-end", "append"]]) {
+            const edge = document.createElement("span");
+            edge.id = id;
+            edge.tabIndex = id === "rings-start" ? -1 : 0;
+            document.body[place](edge);
+          }
+        }, wealthfolioCss);
+        for (const { width, theme, rule } of passes) {
+          await tab.evaluate(({ width, height }) => {
+            Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: `${height}px` });
+          }, { width, height });
+          const past = await inFrame.evaluate(async ({ dark, main }) => {
+            document.documentElement.classList.toggle("dark", dark);
+            document.documentElement.toggleAttribute("data-wealthfolio-main", main);
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+            // Wealthfolio's buttons transition everything over 200 ms, their sizes too, from before this
+            // CSS or this width: measure where they end.
+            for (const change of document.getAnimations()) if (change instanceof CSSTransition) change.finish();
+            document.getElementById("rings-start").focus();
+            // What shows of each box and line of text, after the boxes inside the page that clip it: none
+            // of it reaches past the page's sides, which clip it too.
+            // The add-on's page: its content's parent.
+            const page = document.querySelector("[data-page-content]").parentElement;
+            const { left: pageLeft, right: pageRight } = page.getBoundingClientRect();
+            const shown = new Map([[page, [-Infinity, Infinity]]]);
+            const shownIn = (box) => {
+              if (!shown.has(box)) {
+                let [left, right] = shownIn(box.parentElement);
+                if (getComputedStyle(box).overflowX !== "visible") {
+                  const r = box.getBoundingClientRect();
+                  left = Math.max(left, r.left + box.clientLeft);
+                  right = Math.min(right, r.left + box.clientLeft + box.clientWidth);
+                }
+                shown.set(box, [left, right]);
+              }
+              return shown.get(box);
+            };
+            const out = [];
+            const walker = document.createTreeWalker(page, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
+            for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+              const text = node.nodeType === Node.TEXT_NODE;
+              if (text && !node.nodeValue.trim()) continue;
+              const range = text && document.createRange();
+              if (text) range.selectNodeContents(node);
+              const rects = text ? [...range.getClientRects()] : [node.getBoundingClientRect()];
+              const [left, right] = shownIn(node.parentElement);
+              const what = text ? `"${node.nodeValue.trim().slice(0, 60)}"` : `<${node.localName} class="${node.getAttribute("class")}">`;
+              // Explicit size utilities still win over the page's zero automatic minima.
+              if (!text && node.classList.contains("min-h-input-height") && !(parseFloat(getComputedStyle(node).minHeight) > 0)) {
+                out.push(`${what} loses its explicit minimum height`);
+              }
+              // Text mustn't show past the row or box that holds it either, now that one no longer cuts it there.
+              const row = text && node.parentElement.closest(".flex:not([class*=overflow]), .grid:not([class*=overflow])");
+              const held = row && page.contains(row) ? row.getBoundingClientRect() : null;
+              for (const r of rects) {
+                const shownLeft = Math.max(r.left, left);
+                const shownRight = Math.min(r.right, right);
+                if (!r.width || shownRight <= shownLeft) continue;
+                const reach = Math.max(pageLeft - shownLeft, shownRight - pageRight);
+                if (reach > 0.5) out.push(`${what} reaches ${Math.round(reach)} px past the page's side`);
+                const spill = held ? Math.max(held.left - shownLeft, shownRight - held.right) : 0;
+                if (spill > 1) out.push(`${what} reaches ${Math.round(spill)} px past <${row.localName} class="${row.getAttribute("class")}">`);
+              }
+            }
+            return out;
+          }, { dark: theme === "dark", main: rule === "main" });
+          const pass = `${width} px, ${theme}, Wealthfolio ${rule}'s rule`;
+          cuts.push(...past.map((line) => `${pass}: ${line}`));
+          for (let i = 0; ; i++) {
+            assert.ok(i < 400, `${what}, ${pass}: Tab reaches the end of the page`);
+            await tab.keyboard.press("Tab");
+            const found = await inFrame.evaluate(() => {
+              const control = document.activeElement;
+              if (control.id === "rings-end") return null;
+              // Wealthfolio's buttons transition everything over 200 ms, their ring too: measure its end.
+              for (const change of document.getAnimations()) if (change instanceof CSSTransition) change.finish();
+              const labelledBy = control.getAttribute("aria-labelledby")?.split(" ").map((id) => document.getElementById(id)?.textContent).join(" ");
+              const name = (control.getAttribute("aria-label") ?? labelledBy ?? control.labels?.[0]?.textContent ??
+                control.closest("label")?.textContent ?? control.textContent).replace(/\s+/g, " ").trim().slice(0, 80);
+              // The ring is the control's, or for a control drawn inside another, such as a file field's
+              // button, the nearest box that draws one around it.
+              let ringed = control;
+              while (ringed !== document.body && getComputedStyle(ringed).outlineStyle === "none") ringed = ringed.parentElement;
+              const reached = `${control.localName} "${name}"`;
+              const page = document.querySelector("[data-page-content]").parentElement;
+              if (ringed === document.body) return { reached, cuts: [`${reached} has no focus ring`] };
+              const style = getComputedStyle(ringed);
+              const reach = Math.max(0, parseFloat(style.outlineOffset) + parseFloat(style.outlineWidth));
+              const r = ringed.getBoundingClientRect();
+              const areas = [["ring", { left: r.left - reach, right: r.right + reach, top: r.top - reach, bottom: r.bottom + reach }, ringed]];
+              const touch = getComputedStyle(control, "::after");
+              if (touch.content !== "none" && touch.position === "absolute") {
+                const c = control.getBoundingClientRect();
+                const left = c.left + control.clientLeft;
+                const top = c.top + control.clientTop;
+                areas.push(["touch area", {
+                  left: left + parseFloat(touch.left), right: left + control.clientWidth - parseFloat(touch.right),
+                  top: top + parseFloat(touch.top), bottom: top + control.clientHeight - parseFloat(touch.bottom),
+                }, control]);
+              }
+              const cuts = areas.flatMap(([area, box, from]) => {
+                const out = [];
+                for (let box2 = from.parentElement; box2 !== document.body; box2 = box2.parentElement) {
+                  // A touch area can't reach past the frame, so nor past the page, which spans it.
+                  if (area === "touch area" && box2 === page) break;
+                  const s = getComputedStyle(box2);
+                  const x = s.overflowX !== "visible";
+                  const y = s.overflowY !== "visible";
+                  if (!x && !y) continue;
+                  const b = box2.getBoundingClientRect();
+                  const left = b.left + box2.clientLeft;
+                  const top = b.top + box2.clientTop;
+                  const cut = {
+                    left: x ? left - box.left : 0, right: x ? box.right - (left + box2.clientWidth) : 0,
+                    top: y ? top - box.top : 0, bottom: y ? box.bottom - (top + box2.clientHeight) : 0,
+                  };
+                  const sides = Object.entries(cut).filter(([, px]) => px > 0.5).map(([side, px]) => `${side} ${Math.round(px)} px`);
+                  if (sides.length) out.push(`${area} cut ${sides.join(", ")} by <${box2.localName} class="${box2.getAttribute("class")}">`);
+                }
+                // But a ring must fit in the frame.
+                const frameWidth = document.documentElement.clientWidth;
+                if (area === "ring" && (box.left < -0.5 || box.right > frameWidth + 0.5)) out.push("ring cut by the frame's side");
+                return out.map((cut) => `${reached}: ${cut}`);
+              });
+              return { reached, cuts };
+            });
+            if (found === null) break;
+            if (!reaches.has(pass)) reaches.set(pass, []);
+            reaches.get(pass).push(found.reached);
+            cuts.push(...found.cuts.map((cut) => `${pass}: ${cut}`));
+          }
+        }
+      } finally {
+        await inFrame.evaluate(() => {
+          for (const id of ["rings-css", "rings-start", "rings-end"]) document.getElementById(id)?.remove();
+          document.documentElement.classList.remove("dark");
+          document.documentElement.removeAttribute("data-wealthfolio-main");
+        });
+        await tab.evaluate((style) => {
+          const frame = document.querySelector("iframe");
+          if (style === null) frame.removeAttribute("style");
+          else frame.setAttribute("style", style);
+        }, before);
+        await inFrame.evaluate(async ([x, y]) => {
+          await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          scrollTo(x, y);
+        }, scrolledBefore);
+        await focusedBefore.evaluate((element) => (element === document.body ? document.activeElement.blur() : element.focus()));
+      }
+      assert.deepEqual(cuts, [], `${what}: every focus ring and touch area is whole`);
+      return reaches;
     };
     // A click outside the add-on while the page is locked, such as on Wealthfolio's own menu, keeps
     // the focus there once the page is unlocked, as it would on Wealthfolio's own pages.
@@ -351,6 +538,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // With a password saved, the form uses it and says so; its field is for another password.
     await frame.getByText("Using your saved password", { exact: true }).waitFor();
     await scrollsOnlyWhereMeant("The form, with a saved password");
+    await ringsWhole("The form, with a saved password");
     assert.equal(await passwordBox.count(), 0);
     await frame.getByRole("button", { name: "Use a different password" }).press("Enter");
     await focused(passwordBox, "Use a different password");
@@ -401,6 +589,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await focused(checkAgain, "I've added AMFI: check, AMFI still off");
     }
     await scrollsOnlyWhereMeant("The form, with the AMFI banner and its check's outcome");
+    await ringsWhole("The form, with the AMFI banner and its check's outcome");
     // Continue without it hides the banner until the page is opened again. The focus goes to the form below it.
     await amfiBanner.getByRole("button", { name: "Continue without it" }).press("Enter");
     await amfiBanner.waitFor({ state: "detached" });
@@ -493,6 +682,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await fileInput.evaluate((input) => input.files[0]?.name), "made-up-cas.pdf");
     const passwordStatus = frame.locator("[id$='-reading'][role='status']");
     assert.equal(await passwordStatus.textContent(), "", "the field's description already reads the password error");
+    await ringsWhole("The form, after a wrong password");
     // A password failure still says what went wrong when the user moved focus outside while reading.
     await hosted(() => {
       const read = File.prototype.arrayBuffer;
@@ -694,6 +884,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await sizeFrame(1000);
     await dSettled();
     await scrollsOnlyWhereMeant("A detailed statement's questions");
+    await ringsWhole("A detailed statement's questions");
 
     // The heading says which transactions, from which statement and file. While a statement is
     // reviewed, its file form and the page's AMFI banner make way for it.
@@ -1001,11 +1192,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, waiting for your answer · 26 waiting for earlier purchases");
     await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
     assert.equal(await importButton.isDisabled(), true);
+    await ringsWhole("A possible duplicate's question");
     // Skipped: one line with Change answer, and nothing to import.
     await skipDuplicate.focus();
     await tab.keyboard.press("Enter");
     await focused(dSummary, "Skip this transaction, the last question");
     const duplicateAnswer = await changeAnswer("Change answer: ₹9,162.28 switch in of Fund INFZ90K01LQ6 on 20 Jun 2024: skipped");
+    await ringsWhole("A detailed statement's answered duplicate");
     assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, skipped by your answer · 26 waiting for earlier purchases");
     await dFooter.getByText("1 possible duplicate skipped by your answer.", { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Finish", exact: true }).waitFor();
@@ -1150,6 +1343,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await dFooter.getByText("1 question left: the payment check before importing.", { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
     await focused(savingsCheck.getByRole("heading"), "Go to the question, the payment check");
+    await ringsWhole("A bank account's payment check");
     await pairBox(neftPair).dispatchEvent("click");
     assert.equal(await linkSelected.textContent(), "Link 0 selected");
     assert.equal(await linkSelected.isDisabled(), true);
@@ -1170,6 +1364,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       brief: /^Import \d+ transactions for \d+ funds into Mutual funds\.$/,
       folded: [`${investor}'s purchases transfer from Savings, and sales and payouts back to it: 9 get new transfers.`, "See every transaction"],
     });
+    // Opened, its lines' links keep their whole rings, also while the lines scroll in a frame too short
+    // for them, where Tab reaches the lines themselves (#240). (In a frame so short that they get their
+    // smallest height, 40 px, a 44 px link can't show whole, ring or not.)
+    await dFooter.getByRole("button", { name: /^Details/ }).click();
+    await ringsWhole("The bar at 320 px, its details open", { widths: [320] });
+    const scrolling = await ringsWhole("The bar at 320 by 260 px, its details open and scrolling", { widths: [320], height: 260 });
+    for (const [pass, reached] of scrolling) assert.ok(reached.includes('div "Details"'), `${pass}: Tab reaches the details`);
+    await dFooter.getByRole("button", { name: "Hide details", exact: true }).click();
     await sizeFrame(1000);
     // Change answer asks again, with the ticks as they were.
     await fundsBox().getByRole("button", { name: `Change answer: ${notLinked}, for ${investor}'s funds`, exact: true }).click();
@@ -1471,6 +1673,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await dFooter.getByRole("button", { name: "Go to the question", exact: true }).click();
     await focused(folioSelect(fictivaFolio), "Go to the question, a folio's account");
     assert.equal(await partToggle().getAttribute("aria-expanded"), "true");
+    await ringsWhole("A detailed statement's folios under Save part of it to another account");
     assert.equal(await fundsBox().getByText(hiddenFunds, { exact: true }).count(), 2);
     await fundsBox().getByText(missing, { exact: true }).waitFor();
     await fundsBox().getByText(oldFunds, { exact: true }).waitFor();
@@ -2634,6 +2837,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Change opens the holding's search in place, its box taking the focus.
     await focused(changeSearch, "Change");
     await changePanel.getByText("On your statement: DEMOCORP BANK LIMITED", { exact: true }).waitFor();
+    await ringsWhole("A holding's Change panel");
     await scrollsOnlyWhereMeant("A holding's Change panel");
     await changeSearch.fill("Democorp Bank");
     await changeSearch.press("Enter");
@@ -3062,6 +3266,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await footer.getByText("2 questions left before saving.", { exact: true }).waitFor();
     await footer.getByRole("button", { name: "Go to the next question", exact: true }).click();
     await focused(askCard("Demat already has holdings saved for 31 Mar 2025").getByRole("heading"), "Go to the next question, the saved holdings");
+    await ringsWhole("A question about saved holdings");
     await changeTo(ready(balancedName), "MULTI", /^Fund A /);
     assert.deepEqual(await replaceAndSave("Fund INFZ90K01BA1", "Fund A", "INFZ90K01BA1"), [
       ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["A", "3540.293"],

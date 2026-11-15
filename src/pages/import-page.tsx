@@ -14,6 +14,27 @@ import { focusDropped } from "../lib/focus";
 import { DetailedImport } from "./detailed-import";
 import { HoldingsImport, holdingItems } from "./holdings-import";
 
+/**
+ * Up to 1,024 px wide, Wealthfolio's CSS gives every `.flex` and `.grid` `overflow-x: hidden` outside any
+ * layer, so it beats utility classes. Each then cuts what reaches past its sides, and, as that makes it
+ * scroll, past its top and bottom: a control's focus ring, 4 px outside it, and a checkbox's or radio's
+ * touch area, with negative insets of 12 px sideways and 8 px vertically. On this page they reach past
+ * instead, as on Wealthfolio's own form rows and settings lists. A box with an overflow of its own
+ * keeps it, and each keeps its scrolling box's zero automatic minimum size; explicit size utilities
+ * still win. The page itself clips sideways, so nothing can make the frame scroll sideways.
+ */
+const UNCLIPPED = `@media (max-width: 1024px) {
+  [data-cas-importer] :is(.flex, .grid):not([class*="overflow"]) {
+    overflow-x: visible;
+  }
+  @layer base {
+    [data-cas-importer] :is(.flex, .grid):not([class*="overflow"]) {
+      min-width: 0;
+      min-height: 0;
+    }
+  }
+}`;
+
 /** Remembered: a choice's storage key → account ID, `LEFT_OUT` or `NO_BANK`. */
 type AccountChoices = Record<string, string>;
 
@@ -153,7 +174,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   const reviewing = statement && remembered && accounts ? (holdings ? "holdings" : data ? "detailed" : null) : null;
 
   return (
-    <Page>
+    <Page data-cas-importer="" style={{ overflowX: "clip" }}>
+      <style>{UNCLIPPED}</style>
       <PageHeader heading="CAS Importer (India)" />
       <PageContent>
         {/* A fieldset is as wide as its widest unbreakable content unless its minimum width is 0. */}
