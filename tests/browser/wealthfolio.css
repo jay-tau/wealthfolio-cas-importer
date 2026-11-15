@@ -1,0 +1,64 @@
+/* Close enough to Wealthfolio's add-on CSS to check layout: Tailwind's classes that the add-on and
+   @wealthfolio/ui use, with Tailwind's default theme, and Wealthfolio's rules for narrow windows.
+   sandbox.mjs builds it and loads it only for the checks that need it. */
+@import "tailwindcss" source(none);
+@source "../../src";
+@source "../../node_modules/@wealthfolio/ui/dist/index.js";
+
+/* From Wealthfolio v3.13.0's apps/frontend/src/globals.css, without the rules for Wealthfolio's own
+   pages. Unlayered, so it beats normal utilities: up to 1,024 px, every .flex and .grid hides what
+   reaches past its sides, which makes it scroll up and down when something reaches past its top or
+   bottom. */
+@media (max-width: 1024px) {
+  body {
+    @apply overflow-x-hidden;
+  }
+
+  *,
+  *::before,
+  *::after {
+    max-width: 100vw;
+    box-sizing: border-box;
+  }
+
+  button,
+  [role="button"] {
+    transition: all 200ms ease-in-out;
+  }
+
+  p,
+  span,
+  div {
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+
+  .grid,
+  .flex {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  @media (width >= 640px) {
+    [data-slot="dialog-content"],
+    [role="alertdialog"],
+    [data-slot="sheet-content"][data-side="left"],
+    [data-slot="sheet-content"][data-side="right"],
+    [data-slot="sheet-content"][data-side="inline-start"],
+    [data-slot="sheet-content"][data-side="inline-end"] {
+      max-width: revert-layer;
+    }
+  }
+
+  [data-slot="alert"] > svg {
+    box-sizing: revert-layer;
+  }
+
+  [data-slot="form-item"] {
+    overflow-x: visible;
+  }
+
+  [data-slot="alert-dialog-footer"] {
+    overflow-x: visible;
+  }
+}
