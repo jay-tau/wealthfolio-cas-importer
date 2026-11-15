@@ -373,6 +373,22 @@ test("the read-only snapshot keeps an existing cost's currency while statement c
   assert.ok(!shown.includes("₹100") && !shown.includes("₹75"), shown);
 });
 
+test("the read-only snapshot's name reads naturally for an account named for its holdings", () => {
+  const markup = renderToStaticMarkup(createElement(components.SnapshotTable, {
+    plan: { date: "2026-03-31", positions: [], existing: { date: "2026-02-28", cash: {} } },
+    choices: { flipped: new Set(), costs: new Map() }, account: "CDSL holdings",
+  }));
+  assert.ok(markup.includes('aria-label="Holdings in CDSL holdings on 31 Mar 2026 after saving"'), markup);
+  assert.ok(!markup.includes("holdings&#x27;s"), markup);
+});
+
+test("an account's holdings that weren't saved are named without a possessive", () => {
+  const { accountWords } = components;
+  const outcome = { key: "a", name: "CDSL holdings", date: "2026-03-31", holdings: 3, state: "failed" };
+  assert.equal(accountWords(outcome), "3 holdings in CDSL holdings on 31 Mar weren't saved.");
+  assert.equal(accountWords({ ...outcome, holdings: 1 }), "1 holding in CDSL holdings on 31 Mar wasn't saved.");
+});
+
 test("tracked fund actions distinguish equal names and comparison links name each account separately", () => {
   for (const names of [["First funds", "Second funds"], ["Funds, account 1", "Funds, account 2"]]) {
     const accounts = names.map((name, i) => ({ id: `a${i}`, name }));
@@ -424,7 +440,7 @@ test("separately compared funds keep their accounts' global labels in headings a
 const importResult = (props) => text("ImportResult", {
   imported: (props.outcomes ?? []).reduce((n, a) => n + a.imported, 0),
   result: { activities: [], summary: { success: true, total: 0, imported: 0, duplicates: 0, assetsCreated: 0 } },
-  sent: [], total: 1, outcomes: [], closing: undefined, links: [], accounts: [], base: "r",
+  sent: [], total: 1, outcomes: [], closing: undefined, links: [], fundName: (t) => t.transaction.scheme, accounts: [], base: "r",
   onRetryAccount() {}, onRetryLink() {}, onCheckAgain() {}, onOpenAccount() {}, ...props,
 });
 const outcome = (fields) => ({ key: "k", name: "Mutual funds", isNew: false, imported: 0, waiting: 0, state: "imported", ...fields });
@@ -485,7 +501,9 @@ test("the import result's units check: couldn't run, every fund matching, or uni
 });
 
 test("the import result names each bank entry the add-on changed, and says how far a failed one got", () => {
-  const transaction = { transaction: { activity: { date: "2023-05-05", activityType: "BUY" }, scheme: "Fictiva Liquid Fund" } };
+  const transaction = { transaction: { activity: { date: "2023-05-05", activityType: "BUY" }, scheme: "Fictiva Liquid Fund - Direct Plan - Growth" } };
+  // The fund goes by its name on the Review screen, and the bank entry's amount and day as its review card gives them.
+  const fundName = (t) => (t === transaction ? "Fictiva Liquid Fund" : "?");
   const bankRow = (id, activityType, comment) =>
     ({ id, accountId: "bank-1", activityType, amount: "25000.00", date: "2023-05-04T00:00:00+00:00", comment });
   const links = [
@@ -493,19 +511,20 @@ test("the import result names each bank entry the add-on changed, and says how f
     { transaction, bankRow: bankRow("b", "TRANSFER_OUT"), facts: {}, changes: [], warnings: [] },
     { transaction, bankRow: bankRow("c", "WITHDRAWAL"), facts: {}, error: "Added the fund account's transfer, but couldn't link it.", stage: "link", changes: [], warnings: ["Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio."] },
   ];
-  const shown = importResult({ total: 3, outcomes: [outcome({ imported: 3 })], links, accounts: [{ id: "bank-1", name: "Savings" }] });
+  const shown = importResult({ total: 3, outcomes: [outcome({ imported: 3 })], links, fundName, accounts: [{ id: "bank-1", name: "Savings" }] });
   assert.match(shown, / ✓ Linked 2 of 3 bank entries you chose with their transactions\. /);
   assert.ok(shown.includes(
     " ✗ Purchase of Fictiva Liquid Fund on 5 May 2023: The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't linked. Try again : link the bank entry of 4 May 2023 ",
   ), shown);
   assert.ok(shown.includes(
     "What changed in the bank entries you chose Check these in Wealthfolio: " +
-      "The withdrawal of 25000.00 on 2023-05-04 in Savings (NEFT), for the 2023-05-05 purchase of Fictiva Liquid Fund: Its split across 2 spending categories was deleted. Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio. " +
-      "The withdrawal of 25000.00 on 2023-05-04 in Savings, for the 2023-05-05 purchase of Fictiva Liquid Fund: Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio.",
+      "The withdrawal of ₹25,000 on 4 May 2023 in Savings (NEFT), for the purchase of Fictiva Liquid Fund on 5 May 2023: Its split across 2 spending categories was deleted. Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio. " +
+      "The withdrawal of ₹25,000 on 4 May 2023 in Savings, for the purchase of Fictiva Liquid Fund on 5 May 2023: Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio.",
   ), shown);
-  assert.ok(!shown.includes("transfer out of 25000.00"), "a bank entry with nothing else changed isn't listed");
+  assert.ok(!shown.includes("transfer out of ₹25,000"), "a bank entry with nothing else changed isn't listed");
+  assert.ok(!/25000|2023-05-0|Direct Plan/.test(shown), shown);
   // Each step that can fail says what happened before it; a trade that didn't go in has no Try again.
-  const failedAt = (stage) => importResult({ links: [{ ...links[2], stage }] });
+  const failedAt = (stage) => importResult({ links: [{ ...links[2], stage }], fundName });
   assert.ok(failedAt("trade").includes(": The trade wasn't imported, so the bank entry of 4 May 2023 was left as it is. "));
   assert.ok(!failedAt("trade").includes("Try again"));
   assert.ok(failedAt("transfer").includes(": The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of 4 May 2023 wasn't linked. Try again"));

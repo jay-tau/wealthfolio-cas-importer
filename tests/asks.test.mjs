@@ -1,7 +1,7 @@
 // The words of the Review screen's rare questions, from made-up plans.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { holdingAskWords, MISSING_WHY, sameDateChanges, sameDateWords } from "../src/lib/asks.ts";
+import { bothRealWords, holdingAskWords, MISSING_WHY, sameDateChanges, sameDateWords } from "../src/lib/asks.ts";
 import { planSnapshots, snapshotOf } from "../src/cas/holdings.ts";
 
 const folio = { id: "folio|7712045", kind: "folio", label: "Folio 7712045", title: "Mutual fund folio 7712045", holdings: [] };
@@ -73,6 +73,14 @@ test("units an earlier import added of a fund tracked from its transactions ask 
     "Keep them in CDSL Demat",
     "Remove them from CDSL Demat",
     "Remove them only if all of them came from Fictiva Mutual Fund account (folio 91234567): imports don't record how many units each folio, demat account or PRAN added.",
+  ]);
+  // The answer names the account without a possessive, which an account named for its holdings would make "holdings's".
+  const named = holdingAskWords(planOf(flexi), flexi, { account: "CDSL holdings", name });
+  assert.deepEqual([named.receipt(true), named.receipt(false), named.done(true), named.done(false)], [
+    "Fictiva Flexi Cap Fund: 1,500.000 units kept in CDSL holdings",
+    "Fictiva Flexi Cap Fund: 1,500.000 units removed from CDSL holdings",
+    "Fictiva Flexi Cap Fund: 1,500.000 units kept in CDSL holdings",
+    "Fictiva Flexi Cap Fund: 1,500.000 units removed from CDSL holdings",
   ]);
   // Added as another asset, for the statement row now left out for the overlap.
   const old = position("OLDFLEXI@XBOM", {
@@ -167,4 +175,21 @@ test("the same-date comparison counts the actual saved asset once when overlap s
   const both = choices({ flipped: new Set([overlap.key]) });
   assert.equal(snapshotOf(plan, both).holdings[0].quantity, "100");
   assert.deepEqual(sameDateChanges(plan, both, name), ["1 holding: same units"]);
+});
+
+test("a possible duplicate's two transactions are called equal only when their day, units and amount are", () => {
+  const statement = { day: "5 May 2023", units: "9.747 units", amount: "₹24,998.75" };
+  // Equal, or reported equal by Wealthfolio.
+  assert.equal(bothRealWords(statement, { ...statement }), "Two equal transactions on one day can both be real.");
+  assert.equal(bothRealWords(statement), "Two equal transactions on one day can both be real.");
+  // A cash dividend has no units: its amount and day are all there is to compare.
+  assert.equal(bothRealWords({ day: "5 May 2023", amount: "₹120" }, { day: "5 May 2023", amount: "₹120" }), "Two equal transactions on one day can both be real.");
+  // What they share, without "equal", once anything differs.
+  assert.equal(bothRealWords(statement, { ...statement, amount: "₹25,001.15" }), "Two transactions on one day with the same units can both be real.");
+  assert.equal(bothRealWords(statement, { ...statement, units: "9.748 units" }), "Two transactions on one day for the same amount can both be real.");
+  assert.equal(bothRealWords(statement, { day: "5 May 2023", amount: "₹25,000" }), "Two transactions on one day can both be real.");
+  // A bank entry has no units, so a purchase and its entry are never equal.
+  assert.equal(bothRealWords(statement, { day: "5 May 2023", amount: "₹24,998.75" }), "Two transactions on one day for the same amount can both be real.");
+  assert.equal(bothRealWords(statement, { ...statement, day: "4 May 2023" }), "Two transactions with the same units and amount can both be real.");
+  assert.equal(bothRealWords(statement, { day: "4 May 2023", units: "1.000 units", amount: "₹1" }), "Two transactions can both be real.");
 });

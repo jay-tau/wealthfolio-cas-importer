@@ -388,7 +388,7 @@ test("a remembered bank account that tracks holdings asks again, and the import 
   const bank = choices.bankKey(keys.pan);
   assert.equal(saveTo(run).values[bank], null);
   assert.deepEqual(saveTo(run).ignored[bank], { name: "Demat" });
-  assert.deepEqual(footer(run), ["1 question left before importing."]);
+  assert.deepEqual(footer(run), ["1 question left: the account choice before importing."]);
   assert.equal(find(run, "Footer").action.disabled, true);
   saveTo(run).onChange(bank, "bank");
   await run.flush();
@@ -528,7 +528,8 @@ test("a possible duplicate imported anyway counts in every number, and its fund'
   assert.deepEqual(lines, [
     "On this statement: 5 May 2023 · Purchase · Fictiva Liquid Fund · 9.747 units · ₹24,998.75",
     `Already in Mutual funds: 5 May 2023 · Buy · ${purchase.symbol} · 9.747 units · ₹25,001.15 · entered by hand on 6 May 2023`,
-    "Two equal transactions on one day can both be real.",
+    // Their amounts differ, so they aren't called equal.
+    "Two transactions on one day with the same units can both be real.",
   ]);
   assert.equal(find(run, "TransactionsSummary").breakdown.duplicates, 1);
   assert.equal(find(run, "Footer").action.disabled, true);
@@ -680,14 +681,14 @@ test("a zero-send plan still opens the read-only transaction table", async () =>
   assert.ok(find(run, "ActivityTable").plan.length > 0);
 });
 
-test("the first announcement counts bank and account questions; mixed questions have their own heading", async () => {
+test("the first announcement counts bank and account questions; with questions under Save to, the questions section is named for its own", async () => {
   const { run, props, keys } = setup({ remembered: {
     [choices.panKey("ABCDE1234F")]: "mf", [choices.bankKey(choices.panKey("ABCDE1234F"))]: "bank",
   } });
   await run.flush();
   await new Promise((resolve) => setTimeout(resolve, 70));
   await run.flush();
-  assert.equal(nodes(run.tree).find((node) => node.props?.role === "status").props.children, "1 question for you.");
+  assert.equal(nodes(run.tree).find((node) => node.props?.role === "status").props.children, "1 question for you: the payment check.");
   // Keep the purchase check, with an account question in the other folio and a fund question here.
   saveTo(run).onChange(keys.testbridge, "");
   props.unavailable[choices.bankKey(keys.testbridge)] = { name: "Missing bank" };
@@ -695,8 +696,37 @@ test("the first announcement counts bank and account questions; mixed questions 
   delete props.fundChoices[choices.fundKey(fund)];
   saveTo(run).onChange(keys.fictiva, "mf");
   await run.flush();
-  // The other imported funds still provide the bank check.
-  assert.match(textOf(run.tree), /Other questions/);
+  // The other imported funds still provide the bank check. The count says what it includes; the
+  // questions section counts only its own card.
+  const heading = nodes(run.tree).find((n) => n.type === "h3" && /questions/i.test(textOf(n)));
+  assert.equal(textOf(heading), "Fund questions · 1 of 1 left");
+  const button = nodes(run.tree).find((n) => n.type?.name === "Button" && /^\d+ questions?/.test(textOf(n)));
+  assert.equal(textOf(button), "3 questions: the account choice, the payment check and 1 fund question");
+  assert.deepEqual(footer(run), ["3 questions left: the account choice, the payment check and 1 fund question before importing."]);
+});
+
+test("with an account to choose and fund questions, every count says the account choice is in it", async () => {
+  // An account that tracks transactions, none chosen yet, and two funds to match.
+  const { run, props, data } = setup({ remembered: {} });
+  for (const scheme of data.folios.flatMap((f) => f.schemes).filter((s) => !s.scheme.includes("Liquid")).slice(0, 2)) {
+    delete props.fundChoices[choices.fundKey(scheme)];
+  }
+  await run.flush();
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  await run.flush();
+  assert.equal(saveTo(run).values[choices.panKey("ABCDE1234F")], null);
+  assert.equal(nodes(run.tree).find((node) => node.props?.role === "status").props.children, "3 questions for you: the account choice and 2 fund questions.");
+  const heading = nodes(run.tree).find((n) => n.type === "h3" && /questions/i.test(textOf(n)));
+  assert.equal(textOf(heading), "Fund questions · 2 of 2 left");
+  const button = nodes(run.tree).find((n) => n.type?.name === "Button" && /^\d+ questions?/.test(textOf(n)));
+  assert.equal(textOf(button), "3 questions: the account choice and 2 fund questions");
+  assert.deepEqual(footer(run), ["3 questions left: the account choice and 2 fund questions before importing."]);
+  // Once the account is chosen, the questions section has every open question again.
+  saveTo(run).onChange(choices.panKey("ABCDE1234F"), "mf");
+  await run.flush();
+  assert.equal(textOf(nodes(run.tree).find((n) => n.type === "h3" && /questions/i.test(textOf(n)))), "Questions for you · 2 of 2 left");
+  assert.equal(textOf(nodes(run.tree).find((n) => n.type?.name === "Button" && /^\d+ questions?/.test(textOf(n)))), "2 questions");
+  assert.deepEqual(footer(run), ["2 questions left before importing."]);
 });
 
 test("an all-closed statement keeps the printed investor in its heading", async () => {
@@ -847,7 +877,7 @@ test("AMFI's remaining-question announcement waits for the newly matched fund's 
   await run.flush();
   await new Promise((resolve) => setTimeout(resolve, 70));
   await run.flush();
-  assert.equal(status(), "AMFI added: 1 fund matched. 1 question remains.");
+  assert.equal(status(), "AMFI added: 1 fund matched. 1 question remains: the payment check.");
   assert.match(footer(run)[0], /payment check/);
 });
 
@@ -980,7 +1010,7 @@ test("an immediate AMFI result is announced after its bank plan settles", async 
   await run.flush();
   await new Promise((resolve) => setTimeout(resolve, 70));
   await run.flush();
-  assert.equal(nodes(run.tree).find((node) => node.props?.role === "status").props.children, "AMFI added: 1 fund matched. 1 question remains.");
+  assert.equal(nodes(run.tree).find((node) => node.props?.role === "status").props.children, "AMFI added: 1 fund matched. 1 question remains: the payment check.");
 });
 
 test("skipping the final fund announces answered questions without claiming readiness", async () => {
@@ -1239,7 +1269,10 @@ test("Import rechecks accepted bank details after a revisit, then accepts the di
     assert.match(warning, /Nothing was imported: bank entries you chose changed/);
     if (change === "split") assert.match(warning, /split across 2 spending categories/);
     if (change === "unknown") assert.match(warning, /Couldn't check whether this entry is split/);
-    if (change === "amount") assert.match(warning, /24998.75/);
+    if (change === "amount") {
+      assert.ok(warning.includes("The withdrawal of ₹25,000 on 4 May 2023 in Savings (NEFT FICTIVA MF), chosen for the purchase of Fictiva Liquid Fund on 5 May 2023, " +
+        "is now a withdrawal of ₹24,998.75 on 4 May 2023."), warning);
+    }
     // The warning showed the new details; a second Import can proceed without a warning loop.
     find(run, "Footer").action.onClick();
     await run.flush();
