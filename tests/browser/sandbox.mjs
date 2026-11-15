@@ -206,6 +206,115 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       }
     };
+    // Below Tailwind's `sm` width the bar keeps its brief line and its buttons, with Details at the end of
+    // their row saying how many warnings it folds, and folds the rest (#238). Details unfolds it above
+    // the buttons and Hide details folds it again, the focus staying on the toggle; the frame's scroll
+    // padding follows the bar's height each way (WCAG 2.4.11). The frame is left at `width`, 900 px tall.
+    const narrowBar = async (bar, button, { width, brief, folded, warnings }) => {
+      await tab.setViewportSize({ width: 1280, height: 1000 });
+      await tab.evaluate((width) => {
+        Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
+      }, width);
+      const summary = bar.locator("[id$='-summary']");
+      const show = bar.getByRole("button", { name: /^Details( · \d+ warnings?)?$/ });
+      const hide = bar.getByRole("button", { name: "Hide details", exact: true });
+      await show.waitFor();
+      assert.match((await summary.innerText()).trim(), brief, `${width} px: the brief line`);
+      assert.equal(await show.getAttribute("aria-expanded"), "false");
+      // `warnings`: how many warnings Details says it folds, if any.
+      const label = (await show.textContent()).replace(/\s+/g, " ").trim();
+      if (warnings) assert.match(label, new RegExp(`^Details · ${warnings.source ?? warnings}$`));
+      else assert.equal(label, "Details");
+      assert.ok(await button.isVisible(), `${width} px: the main button stays`);
+      const hidden = async (state) => {
+        for (const line of folded) assert.equal(await bar.getByText(line, { exact: true }).isVisible(), !state, `${line}: ${state ? "folded" : "shown"}`);
+      };
+      await hidden(true);
+      const height = () => bar.evaluate((b) => b.getBoundingClientRect().height);
+      // Folded, the bar shows only its brief and its buttons, and is no taller than they are with
+      // the bar's spacing (`slack`): the folded lines take no room.
+      const folds = async (what, slack = 40) => {
+        const { stray, parts } = await bar.evaluate((b) => {
+          const walker = document.createTreeWalker(b, NodeFilter.SHOW_TEXT);
+          const stray = [];
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const range = document.createRange();
+            range.selectNodeContents(node);
+            if (!node.nodeValue.trim() || !range.getClientRects().length) continue;
+            if (!node.parentElement.closest("[id$='-summary'], button")) stray.push(node.nodeValue);
+          }
+          // The bar's last child: its buttons' row.
+          const row = b.lastElementChild;
+          const parts = b.querySelector("[id$='-summary']").getBoundingClientRect().height + row.getBoundingClientRect().height;
+          return { stray, parts };
+        });
+        assert.deepEqual(stray, [], `${what}: only the brief and the buttons show`);
+        assert.ok((await height()) <= parts + slack, `${what}: ${await height()} px for ${parts} px of brief and buttons`);
+      };
+      await folds(`${width} px, folded`);
+      const padded = async (what) => {
+        try {
+          await tab.frames()[1].waitForFunction((b) =>
+            document.documentElement.style.scrollPaddingBottom === `${Math.ceil(b.getBoundingClientRect().height) + 8}px`,
+          await bar.elementHandle(), { timeout: 5_000 });
+        } catch {
+          assert.fail(`${what}: the scroll padding is the bar's height, ${await height()} px, and 8`);
+        }
+      };
+      await padded(`${width} px, folded`);
+      const closed = await height();
+      await show.press("Enter");
+      await focused(hide, `${width} px: Details`);
+      assert.equal(await hide.getAttribute("aria-expanded"), "true");
+      await hidden(false);
+      assert.match((await summary.innerText()).trim(), brief, `${width} px: the brief stays`);
+      const open = await height();
+      assert.ok(open > closed, `${width} px: open ${open} > closed ${closed}`);
+      await padded(`${width} px, open`);
+      await textFits(bar, `the open bar at ${width} px`);
+      await hide.press("Enter");
+      await focused(show, `${width} px: Hide details`);
+      await hidden(true);
+      await folds(`${width} px, folded again`);
+      assert.equal(await height(), closed);
+      await padded(`${width} px, folded again`);
+      // With Wealthfolio's CSS (close enough: wealthfolio.css), folded, the bar is its brief and its
+      // buttons' row, 44 px tall from Wealthfolio's touch targets, with its 8 px of padding above and
+      // below, the 8 px between them and its 1 px border. Opened in a frame 300 px tall, its details
+      // fit between the page's sticky header and the buttons: the brief below the header, the buttons
+      // inside the frame.
+      try {
+        await tab.frames()[1].evaluate((css) => {
+          const sheet = document.createElement("style");
+          sheet.id = "narrow-bar-css";
+          sheet.textContent = css;
+          document.head.append(sheet);
+        }, wealthfolioCss);
+        await bar.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+        await folds(`${width} px with Wealthfolio's CSS`, 26);
+        await tab.evaluate(() => { document.querySelector("iframe").style.height = "300px"; });
+        await show.press("Enter");
+        await hide.waitFor();
+        const place = () => bar.evaluate((b) => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => {
+          const header = document.querySelector("header");
+          resolve({
+            header: header && getComputedStyle(header).position === "sticky" ? header.getBoundingClientRect().bottom : 0,
+            brief: b.querySelector("[id$='-summary']").getBoundingClientRect().top,
+            buttons: b.lastElementChild.getBoundingClientRect().bottom,
+            frame: innerHeight,
+          });
+        }))));
+        const at = await place();
+        assert.ok(at.brief >= at.header - 1 && at.buttons <= at.frame + 1,
+          `${width} by 300 px, opened: ${JSON.stringify(at)}: the brief below the header, the buttons in the frame`);
+        await hide.press("Enter");
+        await show.waitFor();
+      } finally {
+        await tab.evaluate(() => { document.querySelector("iframe").style.height = "900px"; });
+        await tab.frames()[1].evaluate(() => document.getElementById("narrow-bar-css")?.remove());
+        await bar.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      }
+    };
     // A click outside the add-on while the page is locked, such as on Wealthfolio's own menu, keeps
     // the focus there once the page is unlocked, as it would on Wealthfolio's own pages.
     const clickOutside = async () => {
@@ -1008,6 +1117,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await focused(dSummary, "Create new transfers instead");
     await dSaid.getByText(`${notLinked}. All questions answered. Ready to import.`, { exact: true }).waitFor();
     await dFooter.getByText(`${investor}'s purchases transfer from Savings, and sales and payouts back to it: 9 get new transfers.`, { exact: true }).waitFor();
+    // In a narrow frame the bar keeps what's imported and its button; the bank line folds (#238).
+    await narrowBar(dFooter, importButton, {
+      width: 320,
+      brief: /^Import \d+ transactions for \d+ funds into Mutual funds\.$/,
+      folded: [`${investor}'s purchases transfer from Savings, and sales and payouts back to it: 9 get new transfers.`, "See every transaction"],
+    });
+    await sizeFrame(1000);
     // Change answer asks again, with the ticks as they were.
     await fundsBox().getByRole("button", { name: `Change answer: ${notLinked}: ${savingsLabel}`, exact: true }).click();
     await focused(savingsCheck.getByRole("heading"), "Change answer, the payment check");
@@ -1265,6 +1381,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await frame.locator("th[scope=colgroup]").allTextContents(), [`${investor} → Mutual funds`, `${otherInvestor} → Not set`]);
     await dFooter.getByText("Import 7 transactions for 2 funds into Mutual funds.", { exact: true }).waitFor();
     await dFooter.getByText("Import 6 transactions for 2 funds into Not set.", { exact: true }).waitFor();
+    // In a narrow frame one line says what both accounts get, and each account's line folds (#238).
+    await narrowBar(dFooter, importButton, {
+      width: 421,
+      brief: /^Import 13 transactions for 4 funds into 2 accounts\.$/,
+      folded: ["Import 7 transactions for 2 funds into Mutual funds.", "Import 6 transactions for 2 funds into Not set."],
+    });
+    await sizeFrame(1000);
     await hosted(() => { window.host.otherInvestorFolio = ""; });
     await leaveDetailed();
 
@@ -2714,6 +2837,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await settled();
     await frameWidth(320);
     await textFits(footer.locator("[tabindex='-1']").first(), "mixed-save footer summary at 320 px");
+    // Its kept line and double-count warning, folded at this width (#238), fit once shown.
+    await footer.getByRole("button", { name: /^Details/ }).click();
+    await footer.getByText(`${longAccount}: existing holdings kept for 31 Mar 2025.`, { exact: true }).waitFor();
+    await textFits(footer, "mixed-save footer details at 320 px");
+    await footer.getByRole("button", { name: "Hide details", exact: true }).click();
     await reviewFits("mixed-save review at 320 px");
     await saveHoldings.click();
     await frame.getByText("Holdings saved", { exact: true }).waitFor();
@@ -3048,6 +3176,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const laterNote = "This saves holdings history for 31 Mar 2025. The current holdings in Demat still come from its snapshot of 30 Apr 2025.";
     await frame.getByRole("heading", { name: /^Ready to save/ }).locator("xpath=..").getByText(laterNote, { exact: true }).waitFor();
     await footer.getByText(laterNote, { exact: true }).waitFor();
+    // In a narrow frame the warning folds behind Details, which counts it (#238).
+    await narrowBar(footer, saveHoldings, {
+      width: 600,
+      brief: /^(\d+ questions? left(: .+)? before saving\.|(Update|Save) .+ 31 Mar 2025\b.*)$/s,
+      folded: [laterNote, "See the holdings in Demat on 31 Mar 2025 after saving"],
+      warnings: /\d+ warnings?/,
+    });
+    await frameWidth(1000);
     await changeTo(sharesRow);
     // With no observed holding left, the current search result still carries its MANUAL mode.
     const laterSnapshot = await snapshot("holdings-1", "2025-04-30");

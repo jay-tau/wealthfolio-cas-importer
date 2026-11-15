@@ -1,7 +1,7 @@
 import type { Account, AddonContext, Asset, Holding, Quote, UpdateAssetProfile } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, Badge, Button, Spinner } from "@wealthfolio/ui";
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { abs, add, dec, format, sub } from "../cas/decimal";
 import {
   type AccountPlan,
@@ -53,7 +53,7 @@ import {
   type Unfinished,
 } from "../components/holdings-preview";
 import { useReviewFocus } from "../components/review/focus";
-import { Footer } from "../components/review/footer";
+import { Footer, type Narrow } from "../components/review/footer";
 import { ReviewHeader } from "../components/review/header";
 import { StatementWarnings } from "../components/review/statement-warnings";
 import { SearchDown } from "../components/review/trouble";
@@ -2270,114 +2270,134 @@ export function HoldingsImport({
       ))}
       <Footer
         summaryId={ids.summary}
-        lines={(() => {
+        {...((): { lines: ReactNode[]; narrow?: Narrow } => {
           if (busy === "import") {
-            return plans.map((plan) => {
-              const name = <span className="font-semibold">{accountName(plan.accountId)}</span>;
-              const state = saving[plan.accountId];
-              return (
-                <p key={plan.accountId}>
-                  {state === "saved" ? (
-                    <>
-                      <Mark ok /> Saved {name}.
-                    </>
-                  ) : state === "failed" ? (
-                    <>
-                      <Mark ok={false} /> {name} wasn't saved.
-                    </>
-                  ) : isProposed(plan.accountId) && !created.current.has(plan.accountId) ? (
-                    <>Creating {name} and saving…</>
-                  ) : (
-                    <>Saving to {name}…</>
-                  )}
-                </p>
-              );
-            });
+            return {
+              lines: plans.map((plan) => {
+                const name = <span className="font-semibold">{accountName(plan.accountId)}</span>;
+                const state = saving[plan.accountId];
+                return (
+                  <p key={plan.accountId}>
+                    {state === "saved" ? (
+                      <>
+                        <Mark ok /> Saved {name}.
+                      </>
+                    ) : state === "failed" ? (
+                      <>
+                        <Mark ok={false} /> {name} wasn't saved.
+                      </>
+                    ) : isProposed(plan.accountId) && !created.current.has(plan.accountId) ? (
+                      <>Creating {name} and saving…</>
+                    ) : (
+                      <>Saving to {name}…</>
+                    )}
+                  </p>
+                );
+              }),
+            };
           }
-          if (renaming) return [<p key="r" className="text-warning">Save or cancel the new account name first.</p>];
+          if (renaming) return { lines: [<p key="r" className="text-warning">Save or cancel the new account name first.</p>] };
           if (prepareError && !nothing) {
-            return [
-              <p key="x" className="text-destructive">{CANT_PLAN}</p>,
-              ...(prepareError.why ? [<p key="why">{prepareError.why}</p>] : []),
-            ];
+            return {
+              lines: [
+                <p key="x" className="text-destructive">{CANT_PLAN}</p>,
+                ...(prepareError.why ? [<p key="why">{prepareError.why}</p>] : []),
+              ],
+            };
           }
-          if (editor) return [<p key="e" className="text-warning">Save or cancel {editWhat} first.</p>];
-          if (lookingUp.length) return [<p key="l">Looking up {plural(lookingUp.length, "holding")}…</p>];
+          if (editor) return { lines: [<p key="e" className="text-warning">Save or cancel {editWhat} first.</p>] };
+          if (lookingUp.length) return { lines: [<p key="l">Looking up {plural(lookingUp.length, "holding")}…</p>] };
+          // A later snapshot's warning, which Ready to save shows too.
+          const laterLine = (plan: AccountPlan) =>
+            plan.existing.later.length ? [<p key={`later:${plan.accountId}`} className="text-warning">{later(plan)}</p>] : [];
           if (questionCount) {
             // Only the rare questions left: the snapshots they decide can be seen already.
-            return [
-              <p key="q">{questionsWords("left")} before saving.</p>,
-              ...(answeredAll && current
-                ? plans.flatMap((plan) => [
-                    ...(plan.existing.later.length ? [<p key={`later:${plan.accountId}`} className="text-warning">{later(plan)}</p>] : []),
-                    see(plan),
-                  ])
-                : []),
-            ];
+            const left = <p key="q">{questionsWords("left")} before saving.</p>;
+            const more = answeredAll && current ? plans.flatMap((plan) => [...laterLine(plan), see(plan)]) : [];
+            return { lines: [left, ...more], narrow: { brief: left, more, warnings: more.length ? laterPlans.length : 0 } };
           }
           if (nothing) {
-            return [
-              <p key="n">
-                {keptPlans.length
-                  ? `Nothing will change: you kept the holdings already saved in ${list(keptPlans.map((plan) => accountName(plan.accountId)))} for ${date}.`
-                  : "Nothing from this statement will be saved."}
-              </p>,
-            ];
+            return {
+              lines: [
+                <p key="n">
+                  {keptPlans.length
+                    ? `Nothing will change: you kept the holdings already saved in ${list(keptPlans.map((plan) => accountName(plan.accountId)))} for ${date}.`
+                    : "Nothing from this statement will be saved."}
+                </p>,
+              ],
+            };
           }
-          if (!current) return [<p key="w" className="text-muted-foreground">Working out what will be saved…</p>];
-          const lines = plans.map((plan) => {
-            const n = rows.filter((r) => r.accountId === plan.accountId).length;
+          if (!current) return { lines: [<p key="w" className="text-muted-foreground">Working out what will be saved…</p>] };
+          const count = (plan: AccountPlan) => rows.filter((r) => r.accountId === plan.accountId).length;
+          const parts = plans.map((plan) => {
+            const n = count(plan);
             const name = <span className="font-semibold">{accountName(plan.accountId)}</span>;
             // What the answers about its holdings do.
             const done = holdingAsks.filter((a) => a.accountId === plan.accountId && a.answer !== undefined).map((a) => a.words.done(a.answer!));
-            return (
-              <div key={plan.accountId} className="grid grid-cols-1 gap-1">
-                <p>
-                  {isProposed(plan.accountId) ? (
-                    <>
-                      Create the Wealthfolio account {name} and save {plural(n, "holding")} on {date}.
-                    </>
-                  ) : plan.existing.date ? (
-                    <>
-                      Update {name} to {date} with {plural(n, "holding")} from this statement. Its other holdings and cash stay.
-                    </>
-                  ) : (
-                    <>
-                      Save {plural(n, "holding")} in {name} on {date}.
-                    </>
-                  )}
-                </p>
-                {done.length > 0 && <p className="text-muted-foreground">{capital(done.join("; "))}.</p>}
-                {plan.existing.later.length > 0 && <p className="text-warning">{later(plan)}</p>}
-                {see(plan)}
-              </div>
+            const main = (
+              <p key={`main:${plan.accountId}`}>
+                {isProposed(plan.accountId) ? (
+                  <>
+                    Create the Wealthfolio account {name} and save {plural(n, "holding")} on {date}.
+                  </>
+                ) : plan.existing.date ? (
+                  <>
+                    Update {name} to {date} with {plural(n, "holding")} from this statement. Its other holdings and cash stay.
+                  </>
+                ) : (
+                  <>
+                    Save {plural(n, "holding")} in {name} on {date}.
+                  </>
+                )}
+              </p>
             );
+            const extra = [
+              ...(done.length ? [<p key={`done:${plan.accountId}`} className="text-muted-foreground">{capital(done.join("; "))}.</p>] : []),
+              ...laterLine(plan),
+              see(plan),
+            ];
+            return { main, extra, block: <div key={plan.accountId} className="grid grid-cols-1 gap-1">{main}{extra}</div> };
           });
-          for (const plan of keptPlans) {
-            lines.push(
+          const rest = [
+            ...keptPlans.map((plan) => (
               <p key={`kept:${plan.accountId}`} className="text-muted-foreground">
                 {accountName(plan.accountId)}: existing holdings kept for {date}.
-              </p>,
-            );
-          }
-          for (const d of doubles) {
-            lines.push(
+              </p>
+            )),
+            ...doubles.map((d) => (
               <p key={`double:${d.accountId}`} className="text-warning">
                 {d.text}
-              </p>,
-            );
-          }
-          if (missingCosts.length) {
-            lines.push(
-              <p key="c" className="text-warning">
-                Purchase cost missing for {missingCosts.length} ·{" "}
-                <LinkButton type="button" onClick={() => focusSoon(ids.row(missingCosts[0]).cost, false, document.activeElement)}>
-                  Add costs
-                </LinkButton>
-              </p>,
-            );
-          }
-          return lines;
+              </p>
+            )),
+            ...(missingCosts.length
+              ? [
+                  <p key="c" className="text-warning">
+                    Purchase cost missing for {missingCosts.length} ·{" "}
+                    <LinkButton type="button" onClick={() => focusSoon(ids.row(missingCosts[0]).cost, false, document.activeElement)}>
+                      Add costs
+                    </LinkButton>
+                  </p>,
+                ]
+              : []),
+          ];
+          const lines = [...parts.map((part) => part.block), ...rest];
+          if (!parts.length) return { lines };
+          const warnings = laterPlans.length + doubles.length + (missingCosts.length ? 1 : 0);
+          if (parts.length === 1) return { lines, narrow: { brief: parts[0].main, more: [...parts[0].extra, ...rest], warnings } };
+          // Several accounts: one line for all of them, each account's own lines folded.
+          const total = plural(plans.reduce((n, plan) => n + count(plan), 0), "holding");
+          const accountsCount = plural(plans.length, "account");
+          const creating = plans.filter((plan) => isProposed(plan.accountId)).length;
+          const brief = (
+            <p key="brief">
+              {creating
+                ? `Create ${plural(creating, "new account")} and save ${total} in ${accountsCount} on ${date}.`
+                : plans.every((plan) => plan.existing.date)
+                  ? `Update ${accountsCount} to ${date} with ${total} from this statement.`
+                  : `Save ${total} in ${accountsCount} on ${date}.`}
+            </p>
+          );
+          return { lines, narrow: { brief, more: lines, warnings } };
         })()}
         action={
           questionCount || lookingUp.length

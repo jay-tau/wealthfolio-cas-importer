@@ -1096,6 +1096,9 @@ test("a fund with nothing new still has Change on its line", async () => {
   await run.flush();
   assert.equal(find(run, "FundsReadyTable"), undefined);
   assert.match(footer(run)[0], /Nothing new: every transaction/);
+  // A narrow frame's bar keeps that line and folds the rest (#238).
+  assert.equal(textOf(find(run, "Footer").narrow.brief), footer(run)[0]);
+  assert.deepEqual(find(run, "Footer").narrow.more.map(textOf), footer(run).slice(1));
   const change = nodes(run.tree).find((node) => node.props?.["aria-label"]?.endsWith("nothing new") && node.props.onClick);
   assert.ok(change);
   change.props.onClick();
@@ -2273,4 +2276,33 @@ test("a recovered conversion reports its deleted split and stopped sync while us
     "Its split across 2 spending categories was deleted.",
     "Later corrections to it from the sync won't change it.",
   ]);
+});
+
+// #238: in a narrow frame the bar shows one line and its button with Details; the rest folds.
+test("the bar's narrow form says what's imported in one line, for one account or several, and folds the rest", async () => {
+  const { run, keys } = setup({ entries: [] });
+  await run.flush();
+  saveTo(run).onChange(choices.bankKey(keys.pan), "bank");
+  await run.flush();
+  let { narrow } = find(run, "Footer");
+  assert.equal(textOf(narrow.brief), "Import 13 transactions for 4 funds into Mutual funds.");
+  assert.deepEqual(narrow.more.map(textOf), [
+    "ANANYA R TESTWALA's purchases transfer from Savings, and sales and payouts back to it: 9 get new transfers.",
+    "See every transaction",
+  ]);
+  assert.equal(narrow.warnings, 0);
+  saveTo(run).onChange(keys.testbridge, "other");
+  await run.flush();
+  ({ narrow } = find(run, "Footer"));
+  assert.equal(textOf(narrow.brief), "Import 13 transactions for 4 funds into 2 accounts.");
+  assert.deepEqual(narrow.more.map(textOf), footer(run), "every line, in a wide frame's order");
+  assert.deepEqual(footer(run).slice(0, 2), [
+    "Import 7 transactions for 2 funds into Mutual funds.",
+    "Import 6 transactions for 2 funds into Other funds.",
+  ]);
+  // Nothing new to import: that line, with what's folded under it.
+  saveTo(run).onChange(keys.pan, choices.LEFT_OUT);
+  saveTo(run).onChange(keys.testbridge, choices.LEFT_OUT);
+  await run.flush();
+  assert.equal(find(run, "Footer").narrow, undefined, "nothing is imported: one line, nothing folded");
 });
