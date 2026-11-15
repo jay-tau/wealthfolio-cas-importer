@@ -370,6 +370,14 @@ function changesBalance(scheme: CasScheme, index: number) {
 const skipped = (scheme: CasScheme, index: number) =>
   recordsNothing(scheme.transactions[index]) && !changesBalance(scheme, index);
 
+/**
+ * Whether a scheme's rows don't add up to its closing balance: casparser's close_calculated, the
+ * opening units plus every row's units, differs from the closing units by more than casparser's
+ * tolerance. Such a fund is asked about on a detailed Review screen once its rows would be imported.
+ */
+export const rowsMissClosing = (scheme: CasScheme) =>
+  cmp(abs(sub(dec(scheme.close), dec(scheme.close_calculated))), UNIT_TOLERANCE) > 0;
+
 /** A scheme with no units at either end and nothing to import, such as one sold before the statement. */
 export const closedScheme = (scheme: CasScheme) =>
   isZero(dec(scheme.open)) && isZero(dec(scheme.close)) && scheme.transactions.every((_, index) => skipped(scheme, index));
@@ -403,10 +411,9 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
     state.problem = `The statement starts with ${scheme.open} units bought before ${from}. Import that earlier history, or add the units with their original costs and dates, before this scheme's transactions.`;
     state.problemKind = "opening";
   }
-  // casparser's close_calculated is the opening units plus every row's units.
-  const calculated = dec(scheme.close_calculated);
-  const gap = abs(sub(dec(scheme.close), calculated));
-  if (cmp(gap, UNIT_TOLERANCE) > 0) {
+  if (rowsMissClosing(scheme)) {
+    const calculated = dec(scheme.close_calculated);
+    const gap = abs(sub(dec(scheme.close), calculated));
     state.unbalanced = `The rows take the unit balance from ${format(dec(scheme.open))} to ${format(calculated)}, but the statement's closing balance is ${format(dec(scheme.close))}, ${format(gap)} units apart: a row was probably dropped or misread.`;
     state.units = { added: format(calculated), closing: format(dec(scheme.close)) };
   }

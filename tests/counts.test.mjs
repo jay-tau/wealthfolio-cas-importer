@@ -582,19 +582,55 @@ test("the Review screen's heading names the statement, its investor and file, an
   assert.ok(text("HoldingsImport", review(summary)).includes(" CAMS summary statement · "));
 });
 
-test("parser warnings show scheme names without control characters on both statement summaries", async () => {
+test("casparser's warnings are said in plain words on both Review screens, naming funds without control characters", async () => {
   const data = JSON.parse(await readFile("tests/fixtures/made-up-cas-mismatch.json", "utf8"));
+  // casparser quotes a name as Python's repr does, so the control characters a CDSL statement prints
+  // in some names come as escapes.
   const [warning] = data.parse_warnings;
-  data.parse_warnings = [warning.replace("Fictiva Flexi Cap Fund", "Fictiva\u0002 Flexi Cap Fund\u007f")];
-  for (const [component, props] of [
-    ["DetailedImport", detailedReview(data)],
-    ["HoldingsImport", review(data)],
+  data.folios[0].schemes[0].scheme = "Fictiva\u0002 Flexi Cap Fund - Direct Plan - Growth\u007f";
+  data.parse_warnings = [warning.replace("'Fictiva Flexi Cap Fund - Direct Plan - Growth'", String.raw`'Fictiva\x02 Flexi Cap Fund - Direct Plan - Growth\x7f'`)];
+  assert.notEqual(data.parse_warnings[0], warning);
+  const line = " Fictiva Flexi Cap Fund: after the SIP purchase on 10 Oct 2023, its rows add up to 1,831.591 units, but the statement prints 1,925.629. A row may be missing or misread. ";
+  for (const [component, props, before] of [
+    ["DetailedImport", detailedReview(data), "importing"],
+    ["HoldingsImport", review(data), "saving"],
   ]) {
     const rendered = renderToStaticMarkup(createElement(components[component], props));
     assert.ok(!/[\x00-\x1f\x7f]/.test(rendered), component);
-    assert.ok(text(component, props).includes(warning), component);
+    const shown = text(component, props);
+    assert.ok(shown.includes(` Check these against the PDF before ${before} ${line.trim()} `), shown);
+    assert.ok(!shown.includes("casparser") && !shown.includes("TransactionType"), component);
   }
-  assert.ok(data.parse_warnings[0].includes("\u0002"));
+});
+
+test("the detailed Review screen leaves a closing balance warning to the question about its fund", async () => {
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-cas-mismatch.json", "utf8"));
+  const [gap] = data.parse_warnings;
+  // Flexi Cap's rows add up to less than its closing balance, so its question asks about the difference.
+  const closing = "'Fictiva Flexi Cap Fund - Direct Plan - Growth' [FFCDG]: closing unit balance mismatch — computed 2798.066 but statement printed 2892.104 (Δ=-94.038); a transaction row may be missing or mis-parsed";
+  data.parse_warnings = [closing];
+  assert.ok(!text("DetailedImport", detailedReview(data)).includes("Check these against the PDF"));
+  data.parse_warnings = [gap, closing];
+  const shown = text("DetailedImport", detailedReview(data));
+  assert.ok(shown.includes(" Fictiva Flexi Cap Fund: after the SIP purchase on 10 Oct 2023, "), shown);
+  assert.ok(!shown.includes("closing balance is"), shown);
+  // The holdings Review screen asks no such question, so it keeps it.
+  assert.ok(text("HoldingsImport", review(data)).includes(" Fictiva Flexi Cap Fund: its rows add up to 2,798.066 units, but the statement's closing balance is 2,892.104. "));
+});
+
+test("the holdings Review screen names a depository statement's fund by its holding, and keeps a warning it doesn't recognise to copy", async () => {
+  const nsdl = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
+  nsdl.parse_warnings = ["MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail", "Something new\u0002 in a later casparser"];
+  const props = review(nsdl);
+  const shown = text("HoldingsImport", props);
+  assert.ok(
+    shown.includes(
+      " Check these against the PDF before saving Fictiva Balanced Advantage Fund: its NAV and value couldn't be read from its line, so the largest amount on that line was taken as its value. Check its NAV, value and cost against the PDF. ",
+    ),
+    shown,
+  );
+  const rendered = renderToStaticMarkup(createElement(components.HoldingsImport, props));
+  assert.ok(rendered.includes("casparser found something it couldn&#x27;t read cleanly. To report it, copy its message: <code class=\"select-all\">Something new in a later casparser</code>"), rendered);
 });
 
 test("the Review screen names CDSL demat funds without their fund house, short name or control characters", async () => {

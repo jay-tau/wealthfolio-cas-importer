@@ -1,6 +1,6 @@
 import type { Account, AddonContext, Asset, Holding, Quote, UpdateAssetProfile } from "@wealthfolio/addon-sdk";
 import { QueryKeys } from "@wealthfolio/addon-sdk";
-import { Alert, AlertDescription, AlertTitle, Badge, Button, Spinner } from "@wealthfolio/ui";
+import { Alert, AlertDescription, Badge, Button, Spinner } from "@wealthfolio/ui";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { abs, add, dec, format, sub } from "../cas/decimal";
 import {
@@ -35,7 +35,7 @@ import {
   unlistedRefs,
 } from "../cas/holdings";
 import { engineTimeZone, fundRef } from "../cas/plan";
-import type { Statement } from "../cas/types";
+import { isDepository, type Statement } from "../cas/types";
 import { type Ignored, NewAccountLine, type Proposed, type Renaming } from "../components/account-choices";
 import type { AmfiCheck } from "../components/amfi-banner";
 import type { FundChoice, FundItem } from "../components/fund-choices";
@@ -55,6 +55,7 @@ import {
 import { useReviewFocus } from "../components/review/focus";
 import { Footer } from "../components/review/footer";
 import { ReviewHeader } from "../components/review/header";
+import { StatementWarnings } from "../components/review/statement-warnings";
 import { SearchDown } from "../components/review/trouble";
 import { type Comparison, NotIncluded, type TrackedFund, type TrackedGroup, unitsText } from "../components/review/not-included";
 import { Disclosure, LinkButton, PlanBadges, providerName, shownName, useWide, WrapButton } from "../components/review/parts";
@@ -84,6 +85,7 @@ import { fundName, readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
 import { holdingsBase, isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames, sourceBase } from "../lib/new-accounts";
+import { warningLines } from "../lib/parse-warnings";
 import { plural } from "../lib/plural";
 import { type OpenQuestions, questionParts, questionsHeading, questionTotal } from "../lib/questions-left";
 import { grouped, longDate, parseCost, rupees, shortDate, units } from "../lib/review-format";
@@ -1986,19 +1988,13 @@ export function HoldingsImport({
           </>
         )}
       </div>
-      {statement.parse_warnings.length > 0 && (
-        <Alert variant="warning">
-          <AlertTitle>casparser reported warnings</AlertTitle>
-          <AlertDescription>
-            Check these warnings against the PDF before saving.
-            <ul className="list-disc ps-4">
-              {statement.parse_warnings.map((warning) => (
-                <li key={warning}>{readableName(warning)}</li>
-              ))}
-            </ul>
-          </AlertDescription>
-        </Alert>
-      )}
+      <StatementWarnings
+        lines={warningLines(statement.parse_warnings, {
+          statement: isDepository(statement) ? undefined : statement,
+          nameOf: (key) => (itemOf.has(key) ? shownName(itemOf.get(key)!, fundOf(key)) : undefined),
+        })}
+        before="saving"
+      />
       <SaveTo
         investorName={investorName}
         investorKey={investor}

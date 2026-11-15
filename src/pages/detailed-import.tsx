@@ -63,6 +63,7 @@ import { useReviewFocus } from "../components/review/focus";
 import { Footer } from "../components/review/footer";
 import { type FundRow, type FundRowHandlers, FundsReadyTable } from "../components/review/funds-ready";
 import { ReviewHeader } from "../components/review/header";
+import { StatementWarnings } from "../components/review/statement-warnings";
 import { SearchDown } from "../components/review/trouble";
 import { Disclosure, LinkButton, shownName, useWide, WrapButton } from "../components/review/parts";
 import { AnsweredLine, answerWords, Picker, pickerIds, QuestionCard } from "../components/review/question";
@@ -74,8 +75,9 @@ import { explanation, Explained } from "../lib/explained";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
 import { isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames } from "../lib/new-accounts";
+import { warningLines } from "../lib/parse-warnings";
 import { plural } from "../lib/plural";
-import { longDate, rupees, units } from "../lib/review-format";
+import { longDate, rupees, STATEMENT_WORDS, units } from "../lib/review-format";
 import { type AskWords, bothRealWords, type LineFacts } from "../lib/asks";
 import { type OpenQuestions, questionParts, questionsHeading, questionTotal } from "../lib/questions-left";
 import { sha256 } from "../lib/sha256";
@@ -208,11 +210,6 @@ const LABELS: Record<string, string> = {
 };
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
 const activityLabel = (row: ActivityImport) => (row.activityType === "DIVIDEND" && row.subtype === "DRIP" ? "Reinvested dividend" : LABELS[row.activityType] ?? row.activityType);
-/** A statement row's movement as the statement words it: "purchase", "redemption", "cash dividend". */
-const STATEMENT_WORDS: Record<string, string> = {
-  PURCHASE: "purchase", PURCHASE_SIP: "SIP purchase", REDEMPTION: "redemption", SWITCH_IN: "switch in", SWITCH_IN_MERGER: "switch in",
-  SWITCH_OUT: "switch out", SWITCH_OUT_MERGER: "switch out", DIVIDEND_PAYOUT: "cash dividend", DIVIDEND_REINVEST: "reinvested dividend",
-};
 /** A transaction's movement as the statement words it, else as the Review screen does. */
 const statementWord = (t: PlannedTransaction, accountId?: string) => STATEMENT_WORDS[t.transaction.rows[0].type] ?? noun(t, accountId);
 /** Wealthfolio's names for an activity's type, as its activity list shows them. */
@@ -2075,20 +2072,14 @@ export function DetailedImport({
           </>
         )}
       </div>
-      {statement.parse_warnings.length > 0 && (
-        <Alert variant="warning">
-          <AlertTitle>casparser reported warnings</AlertTitle>
-          <AlertDescription>
-            A row or a whole scheme may have been dropped or misread. Each fund whose rows don't add up to its closing balance is asked about
-            under “Questions for you”; check anything else these name against the PDF before importing.
-            <ul className="list-disc ps-4">
-              {statement.parse_warnings.map((warning) => (
-                <li key={warning}>{readableName(warning)}</li>
-              ))}
-            </ul>
-          </AlertDescription>
-        </Alert>
-      )}
+      <StatementWarnings
+        lines={warningLines(statement.parse_warnings, {
+          statement,
+          nameOf: (key) => (itemOf.has(key) ? fundNameOf(key) : undefined),
+          asksUnbalanced: true,
+        })}
+        before="importing"
+      />
       <SaveToDetailed
         boxes={boxes}
         targets={targets}

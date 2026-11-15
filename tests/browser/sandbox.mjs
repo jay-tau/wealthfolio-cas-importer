@@ -1652,7 +1652,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     };
     await hosted((opening) => { window.host.activities = [opening]; }, flexiOpening);
     await readStatement("tests/fixtures/made-up-cas-mismatch.pdf");
-    await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
+    // casparser's warning about the dropped row, in plain words, naming the fund as its question does.
+    const statementWarnings = frame.getByRole("alert").filter({ hasText: "Check these against the PDF before importing" });
+    await statementWarnings.getByText("Check these against the PDF before importing", { exact: true }).waitFor();
+    await statementWarnings
+      .getByText("Fund INFZ90K01FC8: after the SIP purchase on 10 Oct 2023, its rows add up to 1,831.591 units, but the statement prints 1,925.629. A row may be missing or misread.", { exact: true })
+      .waitFor();
+    assert.doesNotMatch(await statementWarnings.innerText(), /casparser|TransactionType|Δ/);
     const gapCard = askCard("Fund INFZ90K01FC8's transactions don't add up");
     await gapCard.getByText("They add up to 2,798.066 units; the statement says 2,892.104. A row may be missing or misread.", { exact: true }).waitFor();
     const skipFlexi = gapCard.getByRole("button", { name: "Skip this fund: Fund INFZ90K01FC8", exact: true });
@@ -1917,8 +1923,16 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // While a statement is reviewed, its file form and the page's AMFI banner make way for it.
     assert.equal(await frame.locator("#cas-file").isVisible(), false);
     assert.equal(await amfiBanner.count(), 0);
-    await frame.getByText("casparser reported warnings", { exact: true }).waitFor();
-    await frame.getByText("MF holdings INFZ90K01BA1: no closing nav/value pair; inferred from max tail", { exact: true }).waitFor();
+    // casparser's warning about a fund line it worked out, in plain words, naming the fund as the screen does.
+    const holdingsWarnings = frame.getByRole("alert").filter({ hasText: "Check these against the PDF before saving" });
+    await holdingsWarnings.getByText("Check these against the PDF before saving", { exact: true }).waitFor();
+    await holdingsWarnings
+      .getByText(
+        "Fund INFZ90K01BA1: its NAV and value couldn't be read from its line, so the largest amount on that line was taken as its value. Check its NAV, value and cost against the PDF.",
+        { exact: true },
+      )
+      .waitFor();
+    assert.doesNotMatch(await holdingsWarnings.innerText(), /casparser|MF holdings/);
     // 16 holdings: three confirmed before, the Index fund, Balanced Advantage and Corporate Bond funds,
     // are ready to save once an account is chosen; the others are questions.
     await frame.getByText("16 holdings", { exact: true }).waitFor();

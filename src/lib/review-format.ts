@@ -15,6 +15,12 @@ export function longDate(iso: string) {
 /** "2026-07-31" → "31 Jul"; anything else as it is. */
 export const shortDate = (iso: string) => longDate(iso).replace(/ \d{4}$/, "");
 
+/** A statement row's movement as the statement words it: "purchase", "redemption", "cash dividend". */
+export const STATEMENT_WORDS: Record<string, string> = {
+  PURCHASE: "purchase", PURCHASE_SIP: "SIP purchase", REDEMPTION: "redemption", SWITCH_IN: "switch in", SWITCH_IN_MERGER: "switch in",
+  SWITCH_OUT: "switch out", SWITCH_OUT_MERGER: "switch out", DIVIDEND_PAYOUT: "cash dividend", DIVIDEND_REINVEST: "reinvested dividend",
+};
+
 /** An integer's digits with Indian grouping: "102310" → "1,02,310". */
 function indian(digits: string) {
   if (digits.length <= 3) return digits;
