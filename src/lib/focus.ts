@@ -11,6 +11,24 @@ export function focusDropped() {
   return (!active || active === document.body) && document.hasFocus();
 }
 
+/** A question on the Review screen, open or answered, and how to move the focus to it. */
+export interface QuestionStop {
+  id: string;
+  open: boolean;
+  go: (force?: boolean, origin?: Element | null) => void;
+}
+
+/**
+ * Where the focus goes after the question `from` is answered: the next open question below it, or
+ * the first open one above it when none is left below. `order` lists every question in page order,
+ * answered ones too, so that `from` keeps its place; if it's gone, the first open question.
+ */
+export function nextOpen<T extends { id: string; open: boolean }>(order: readonly T[], from: string): T | undefined {
+  const at = order.findIndex((q) => q.id === from);
+  const open = (q: T) => q.open && q.id !== from;
+  return order.slice(at + 1).find(open) ?? order.slice(0, Math.max(at, 0)).find(open);
+}
+
 /**
  * Moves the focus to the control that takes the place of the one the user pressed, which is gone
  * after the change. Call `expect(key)` before the change, and give each control that can take its

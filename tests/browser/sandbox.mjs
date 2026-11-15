@@ -734,19 +734,62 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.locator(`[id="${bankHint}"]`).textContent(), "Purchases transfer from this account; sales and cash dividends transfer back to it.");
     await frame.getByText("Used again for your next statement.", { exact: true }).waitFor();
 
-    // Each fund's question asks which fund it is; answering one moves the focus to the next one's
-    // heading, and the last answer to the footer's summary.
+    // Each fund's question asks which fund it is. Answering one moves the focus to the next open
+    // question below it, past any left open above; with none left below, to the first one above; and
+    // after the last answer, to the footer's summary.
     await dFooter.getByText("5 questions left before importing.", { exact: true }).waitFor();
     await frame.getByRole("button", { name: "5 questions", exact: true }).waitFor();
     await frame.getByRole("heading", { name: "Questions for you · 5 of 5 left", exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Go to the next question" }).click();
     await focused(fundQuestion(detailed.flexi).getByRole("heading"), "Go to the next question");
     await fundQuestion(detailed.flexi).getByText(/· Direct plan · Growth · 2,892\.104 units$/).waitFor();
-    const order = [detailed.flexi, detailed.liquid, detailed.balanced, detailed.corporate, detailed.overnight];
-    for (const [i, name] of order.entries()) {
-      await fundQuestion(name).getByRole("button", { name: `Use this fund: Fund ${["INFZ90K01FC8", "INFZ90K01LQ6", "INFZ90K01BA1", "0P0000TBCB", "0P0000TONF"][i]}, for ${name}`, exact: true }).press("Enter");
-      if (i < order.length - 1) await focused(fundQuestion(order[i + 1]).getByRole("heading"), `answering ${name}`);
-    }
+    const fundCodes = {
+      [detailed.flexi]: "INFZ90K01FC8", [detailed.liquid]: "INFZ90K01LQ6", [detailed.balanced]: "INFZ90K01BA1",
+      [detailed.corporate]: "0P0000TBCB", [detailed.overnight]: "0P0000TONF",
+    };
+    const useFund = (name) =>
+      fundQuestion(name).getByRole("button", { name: `Use this fund: Fund ${fundCodes[name]}, for ${name}`, exact: true }).press("Enter");
+    const headingOf = (name) => fundQuestion(name).getByRole("heading");
+    const reopenFund = async (name) => {
+      await (await changeAnswer(new RegExp(`^Change answer: ${literal(name)}: `))).press("Enter");
+      await focused(headingOf(name), `Change answer: ${name}`);
+      await dSettled();
+    };
+    await pause("check");
+    await useFund(detailed.liquid);
+    await waiting();
+    await focused(headingOf(detailed.balanced), "answering the second, the first left open");
+    await resume();
+    await dSettled();
+    await useFund(detailed.corporate);
+    await focused(headingOf(detailed.overnight), "answering the fourth, the third left open");
+    await dSettled();
+    // A focus moved while the plan is worked out again with an answer stays where it was moved: here
+    // in the add-on, and below outside it.
+    await pause("check");
+    await useFund(detailed.overnight);
+    await waiting();
+    await fundsSelect().focus();
+    await resume();
+    await dSettled();
+    await painted();
+    await focused(fundsSelect(), "answering the last one down, the focus moved in the add-on meanwhile");
+    await reopenFund(detailed.overnight);
+    await useFund(detailed.overnight);
+    await focused(headingOf(detailed.flexi), "answering the last one down, none left below");
+    await useFund(detailed.flexi);
+    await focused(headingOf(detailed.balanced), "answering the first, one left below");
+    await dSettled();
+    await pause("check");
+    await useFund(detailed.balanced);
+    await waiting();
+    await clickOutside();
+    await resume();
+    await dSaid.getByText("All questions answered. Ready to import.", { exact: true }).waitFor();
+    await painted();
+    await stayedOutside("the last answer, the focus moved outside the add-on meanwhile");
+    await reopenFund(detailed.balanced);
+    await useFund(detailed.balanced);
     await focused(dSummary, "the last answer");
     await dSaid.getByText("All questions answered. Ready to import.", { exact: true }).waitFor();
     await dSettled();
@@ -1817,6 +1860,36 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const afterGap = await hosted(() => window.host.activities);
     assert.deepEqual(afterGap.filter((a) => a.assetSymbol === "INFZ90K01FC8").map((a) => a.id), ["flexi-opening"]);
     assert.equal(afterGap.length, 24);
+    // A card's answer moves the focus on from where the card is too, once the plan is worked out again
+    // with it. With a fund's question left open above and a possible duplicate below, the card for the
+    // fund whose rows don't add up hands it down to the duplicate, whose answer, with none left below,
+    // takes it back up to the fund's question.
+    const corporateKey = "isin:INFZ91T01CB6";
+    const corporateChoice = (await storage())[corporateKey];
+    assert.ok(corporateChoice, "the corporate bond fund was chosen before");
+    await hosted(([rows, opening, key]) => {
+      const all = structuredClone(rows);
+      const buy = all.find((a) => a.activityType === "BUY" && a.assetSymbol === "INFZ90K01LQ6" && a.date.startsWith("2024-06-20"));
+      delete buy.sourceRecordId;
+      window.host.activities = [...all.filter((a) => !(a.activityType === "DEPOSIT" && a.date.startsWith("2024-06-20"))), opening];
+      window.host.storage.delete(key);
+    }, [allImported, flexiOpening, corporateKey]);
+    await readStatement("tests/fixtures/made-up-cas-mismatch.pdf");
+    await duplicateCard.waitFor();
+    assert.ok(await follows(headingOf(detailed.corporate), await gapCard.getByRole("heading").elementHandle()), "the fund's question is above the card");
+    assert.ok(await follows(gapCard.getByRole("heading"), await duplicateCard.getByRole("heading").elementHandle()), "the possible duplicate is below it");
+    await pause("check");
+    await importFlexi.press("Enter");
+    await waiting();
+    await painted();
+    assert.equal(await hosted(() => document.activeElement === document.body), true, "the card's answer waits for its plan before moving focus");
+    await resume();
+    await dSettled();
+    await focused(duplicateCard.getByRole("heading"), "Import with this difference, a fund's question left open above, a possible duplicate below");
+    await skipDuplicate.press("Enter");
+    await focused(headingOf(detailed.corporate), "Skip this transaction, none left below");
+    await leaveDetailed();
+    await saveChoices([[corporateKey, corporateChoice]]);
 
     // With AMFI added, a fund whose ISIN finds exactly one AMFI result, in rupees, whose plan and option
     // don't differ from the statement's, is confirmed without a click, and its row says so. Wealthfolio's
@@ -1849,6 +1922,22 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.providers = "fail";
       window.host.assets = {};
     });
+    await restoreChoices(beforeIgnoredDetailed);
+
+    // A payment check under Save to is above the funds' questions: its answer takes the focus down to
+    // a fund's question left open. That fund's answer adds its purchase to the check, which asks it
+    // again: with nothing left below, the focus goes back up to it, and its answer is the last.
+    await resetBank();
+    await hosted(() => { window.host.storage.delete("isin:INFZ90K01LQ6"); });
+    await readStatement();
+    await pickOption(bankSelect(), "Savings (INR)");
+    await newTransfers.press("Enter");
+    await focused(headingOf(detailed.liquid), "Create new transfers instead, a fund's question left open below");
+    await useFund(detailed.liquid);
+    await focused(savingsCheck.getByRole("heading"), "answering the last fund, the payment check asked again above");
+    await newTransfers.press("Enter");
+    await focused(dSummary, "Create new transfers instead, the last answer");
+    await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
     // Below Tailwind's `sm` width, 320 px here, the ready funds are a stacked list, and nothing is wider
@@ -2118,10 +2207,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       "With the price on the statement, its price changes only when you import a statement, not with the market.",
     );
     await bondCard.getByRole("radio").nth(1).dispatchEvent("click");
+    const openNames = [];
+    for (let i = 0; i < await questions.count(); i++) openNames.push(await printedName(questions.nth(i)));
+    const bondAt = openNames.indexOf(bond);
+    assert.ok(bondAt > 0 && bondAt < openNames.length - 1, openNames.join(" | "));
     await bondCard.getByRole("button", { name: `Use this bond for ${bond}`, disabled: false }).press("Enter");
     await bondCard.waitFor({ state: "detached" });
-    // An answer takes the focus to the next question's heading.
-    await focused(questions.first().getByRole("heading"), "Use this bond");
+    // An answer takes the focus to the next question's heading below it, with those above left open.
+    await focused(question(openNames[bondAt + 1]).getByRole("heading"), "Use this bond");
     const bondAnswer = frame.getByRole("button", { name: new RegExp(`^Change answer: ${escaped(bond)}: `) });
     await bondAnswer.waitFor();
     // Change answer opens the question again, its heading taking the focus.
@@ -2155,7 +2248,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await searchDown.waitFor({ state: "hidden" });
     // Bonds the search can't find use the statement's prices; the one it finds is used as found.
     // Placeholder Pharma is skipped, and the rest use their first result.
-    await answerAll((name) => (name === "PLACEHOLDER PHARMA LIMITED" ? "skip" : /\b(NCD|BD)\b/.test(name) && name !== "DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33" ? "statement" : 0));
+    const howToAnswer = (name) =>
+      (name === "PLACEHOLDER PHARMA LIMITED" ? "skip" : /\b(NCD|BD)\b/.test(name) && name !== "DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33" ? "statement" : 0);
+    await answerAll(howToAnswer);
     assert.equal(await amfiQuestionsNote.count(), 0);
     await frame.getByText("All 13 questions answered.", { exact: true }).waitFor();
     await frame.getByText(/^Skipped \(1\): PLACEHOLDER PHARMA LIMITED, by your answer\.$/).waitFor();
@@ -2163,8 +2258,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Show answers", exact: true }).click();
     await frame.getByText(`${bond}: priced from the statement`, { exact: true }).waitFor();
     await frame.getByText("DEMOCORP INFRA BONDS LIMITED 7.60 BD 30SP33: Democorp Infra 7.60% 2033 (FAKE)", { exact: true }).waitFor();
-    // Change answer, then answering with the keyboard: the last card's answer takes the focus to the
-    // question still open, the statement's account.
+    // Change answer, then answering with the keyboard: the last card's answer takes the focus up to the
+    // question still open above it, the statement's account.
     await frame.getByRole("button", { name: /^Change answer: FICTIVA NIFTY 50 ETF: / }).press("Enter");
     await focused(question("FICTIVA NIFTY 50 ETF").getByRole("heading"), "Change answer, keyboard");
     await footer.getByText("2 questions left: the account choice and 1 fund question before saving.", { exact: true }).waitFor();
@@ -2176,10 +2271,15 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Go to the question goes to the select still to choose, from wherever the focus is.
     await footer.getByRole("button", { name: "Go to the question", exact: true }).click();
     await focused(investorSelect, "Go to the question");
-    // With the account chosen, the last answer takes the focus to the footer's summary, and says so.
+    // With the account chosen, the last card's answer takes the focus up to the first question left
+    // open above it, and the last answer to the footer's summary, which says so.
     await choose("investor", "Fund folios (INR)");
-    await frame.getByRole("button", { name: /^Change answer: FICTIVA NIFTY 50 ETF: / }).press("Enter");
+    assert.ok(openNames.indexOf("FICTIVA NIFTY 50 ETF") > 0, openNames.join(" | "));
+    await (await changeAnswer(new RegExp(`^Change answer: ${escaped(openNames[0])}: `))).press("Enter");
+    await (await changeAnswer(/^Change answer: FICTIVA NIFTY 50 ETF: /)).press("Enter");
     await question("FICTIVA NIFTY 50 ETF").getByRole("button", { name: /^Use this fund: / }).press("Enter");
+    await focused(question(openNames[0]).getByRole("heading"), "the last card's answer, a card left open above");
+    await answer(openNames[0], howToAnswer(openNames[0]));
     await focused(footer.locator("[tabindex='-1']").first(), "the last answer");
     await said.getByText("All questions answered. Ready to save.", { exact: true }).waitFor();
 
