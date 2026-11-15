@@ -6,6 +6,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import tailwindcss from "@tailwindcss/vite";
 import { chromium, firefox, webkit } from "playwright-core";
 import { build } from "vite";
 
@@ -29,6 +30,13 @@ const [bundle] = await build({
 const script = bundle.output[0].code.replace(/<\/script/gi, "<\\/script");
 const hash = createHash("sha256").update(script).digest("base64");
 const srcdoc = (head) => `<!doctype html>${head}<script>${script}</script>`;
+const { output } = await build({
+  configFile: false,
+  logLevel: "silent",
+  plugins: [tailwindcss()],
+  build: { write: false, rollupOptions: { input: "tests/browser/wealthfolio.css" } },
+});
+const wealthfolioCss = output.find((file) => file.fileName.endsWith(".css")).source;
 
 const runtime = JSON.parse(await readFile("assets/runtime/files.json", "utf8"));
 const paths = ["files.json", ...runtime.files, ...runtime.wasmParts, ...runtime.wheels].map(
@@ -152,6 +160,52 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       });
       assert.deepEqual(outside, [], `${what}: add-on elements stay inside ${width} px`);
     };
+    // Up to 1,024 px wide, Wealthfolio's CSS makes every .flex and .grid scroll up and down when something
+    // in it, such as a checkbox's touch area, reaches past its top or bottom. With that CSS loaded for
+    // this check alone, at 1,024 px and at a phone's 360 by default, nothing scrolls but what's meant
+    // to: a box with an overflow class of its own. The frame then gets its size back.
+    const scrollsOnlyWhereMeant = async (what, widths = [1024, 360]) => {
+      const before = await tab.evaluate(() => document.querySelector("iframe").getAttribute("style"));
+      try {
+        for (const width of widths) {
+          await tab.evaluate((width) => {
+            Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
+          }, width);
+          const scrolling = await tab.frames()[1].evaluate(async (css) => {
+            const sheet = document.createElement("style");
+            sheet.textContent = css;
+            document.head.append(sheet);
+            try {
+              await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+              return [...document.body.querySelectorAll("*")].flatMap((element) => {
+                if (/(^|[\s:])overflow(-[xy])?-(auto|scroll)(\s|$)/.test(element.getAttribute("class") ?? "")) return [];
+                const style = getComputedStyle(element);
+                // Firefox counts each line's glyphs, which this page's fallback fonts can make taller than
+                // the line, so a box's text alone can reach a pixel past it. Only more than that counts.
+                const scrolls = [
+                  /auto|scroll/.test(style.overflowX) && element.scrollWidth > element.clientWidth + 1 ? "sideways" : "",
+                  /auto|scroll/.test(style.overflowY) && element.scrollHeight > element.clientHeight + 1 ? "up and down" : "",
+                ].filter(Boolean);
+                if (!scrolls.length) return [];
+                const text = element.textContent.replace(/\s+/g, " ").trim().slice(0, 60);
+                return [`<${element.localName} class="${element.getAttribute("class")}"> ${scrolls.join(", ")}: ` +
+                  `${element.scrollWidth}x${element.scrollHeight} in ${element.clientWidth}x${element.clientHeight} "${text}"`];
+              });
+            } finally {
+              sheet.remove();
+            }
+          }, wealthfolioCss);
+          assert.deepEqual(scrolling, [], `${what} at ${width} px: nothing scrolls but what's meant to`);
+        }
+      } finally {
+        await tab.evaluate((style) => {
+          const frame = document.querySelector("iframe");
+          if (style === null) frame.removeAttribute("style");
+          else frame.setAttribute("style", style);
+        }, before);
+        await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      }
+    };
     // A click outside the add-on while the page is locked, such as on Wealthfolio's own menu, keeps
     // the focus there once the page is unlocked, as it would on Wealthfolio's own pages.
     const clickOutside = async () => {
@@ -187,16 +241,19 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await focused(fileInput, "Continue without it during password loading");
     // With a password saved, the form uses it and says so; its field is for another password.
     await frame.getByText("Using your saved password", { exact: true }).waitFor();
+    await scrollsOnlyWhereMeant("The form, with a saved password");
     assert.equal(await passwordBox.count(), 0);
     await frame.getByRole("button", { name: "Use a different password" }).press("Enter");
     await focused(passwordBox, "Use a different password");
     assert.equal(await remember.getAttribute("aria-checked"), "false");
     assert.equal(await frame.getByRole("checkbox", { name: "Remember this password (replaces the saved one)" }).count(), 1);
+    await scrollsOnlyWhereMeant("The form, replacing the saved password");
     await frame.getByRole("button", { name: "Forget saved password" }).click();
     // Unstyled here, so the checkbox has no size: it's attached, not visible.
     await frame.getByRole("checkbox", { name: "Remember this password", exact: true }).waitFor({ state: "attached" });
     assert.equal(await frame.getByRole("button", { name: "Forget saved password" }).count(), 0);
     assert.deepEqual((await host()).secrets, []);
+    await scrollsOnlyWhereMeant("The form, without a saved password");
     // A statement without a password reads with the box left empty, so a file is all Read statement
     // needs; one with a password then says it's wrong.
     const hint = await frame.locator("#cas-password").getAttribute("aria-describedby");
@@ -234,6 +291,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await amfiOutcome.getByText("AMFI isn't added yet.", { exact: true }).waitFor();
       await focused(checkAgain, "I've added AMFI: check, AMFI still off");
     }
+    await scrollsOnlyWhereMeant("The form, with the AMFI banner and its check's outcome");
     // Continue without it hides the banner until the page is opened again. The focus goes to the form below it.
     await amfiBanner.getByRole("button", { name: "Continue without it" }).press("Enter");
     await amfiBanner.waitFor({ state: "detached" });
@@ -524,6 +582,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const quotedIn = (locator) => locator.getByText(/^The statement's prices and amounts are in rupees, but /);
     await sizeFrame(1000);
     await dSettled();
+    await scrollsOnlyWhereMeant("A detailed statement's questions");
 
     // The heading says which transactions, from which statement and file. While a statement is
     // reviewed, its file form and the page's AMFI banner make way for it.
@@ -590,6 +649,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Ready to import: each fund with new transactions, its price source and Change, its new
     // transactions and its units after the import.
     await frame.getByRole("heading", { name: "Ready to import (4)", exact: true }).waitFor();
+    await scrollsOnlyWhereMeant("A detailed statement's ready funds");
     assert.deepEqual(await cellsOf(readyFunds), [["3", "8.053"], ["4", "3,540.293"], ["4", "9,511.738"], ["2", "10.201"]]);
     assert.deepEqual(await frame.getByRole("columnheader").allTextContents(), ["Fund", "New transactions", "Units after import"]);
     const liquidFundRow = readyFund("Fund INFZ90K01LQ6");
@@ -920,6 +980,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await savingsCheck.locator("li").filter({ has: frame.getByRole("checkbox", { name: new RegExp(`^${literal(name)}`) }) }).getByText(reason, { exact: true }).waitFor();
     }
     assert.equal(await savingsCheck.getByRole("checkbox").count(), 5);
+    await scrollsOnlyWhereMeant("A bank account's check");
     const outsideSpending = "Changing a withdrawal or deposit into a transfer deletes any split across spending categories, also one saved before Spending was turned off for its account.";
     assert.equal(await savingsCheck.getByText(outsideSpending, { exact: true }).count(), 1);
     await savingsCheck.getByText("Linking changes each withdrawal or deposit into a transfer, linked with the fund account's.", { exact: true }).waitFor();
@@ -1669,6 +1730,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await readyFunds.count(), 0);
     for (const button of [linkSelected, newTransfers, importButton]) assert.ok(await button.isVisible());
     assert.ok(await hosted(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "nothing past 320 px");
+    await scrollsOnlyWhereMeant("A detailed statement's stacked funds", [320]);
     await sizeFrame(1000);
     await leaveDetailed();
 
@@ -1864,6 +1926,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText("Not included in this save", { exact: true }).count(), 0);
     // The account choice is a question too, under Save to: the questions section is named for its own cards.
     await frame.getByText(/^Other questions · 13 of 13 left$/).waitFor();
+    await scrollsOnlyWhereMeant("A depository statement's questions");
     // An older remembered choice keeps no provider, so where its prices come from is unknown.
     await ready("TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH").getByText(/^Price source unknown · chosen before ·/).waitFor();
     // Nothing is chosen for the statement yet, so that's a question too, and saving waits for it.
@@ -2296,6 +2359,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Change opens the holding's search in place, its box taking the focus.
     await focused(changeSearch, "Change");
     await changePanel.getByText("On your statement: DEMOCORP BANK LIMITED", { exact: true }).waitFor();
+    await scrollsOnlyWhereMeant("A holding's Change panel");
     await changeSearch.fill("Democorp Bank");
     await changeSearch.press("Enter");
     const usdOptions = changePanel.getByRole("radiogroup", { name: "Results for “Democorp Bank”" }).locator("label");
@@ -3950,6 +4014,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await stacked.getByText(/^Units: .+ · Value on 31 Mar: ₹/).waitFor();
     assert.equal(await readyRows.count(), 0);
     assert.ok(await hosted(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth), "nothing past 320 px");
+    await scrollsOnlyWhereMeant("A summary statement's stacked holdings", [320]);
     await frameWidth(1000);
     await summaryLiquid().waitFor();
 
