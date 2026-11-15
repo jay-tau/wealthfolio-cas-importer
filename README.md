@@ -27,6 +27,16 @@ the statement is read, one Review screen shows, in this order:
   questions: the account choice and 5 fund questions"), as does the bar; **Questions for you** counts
   its own cards, and while any of those are open beside them it's titled **Fund questions**, or
   **Other questions** when a card asks something else.
+- **Check these against the PDF before importing**, when casparser couldn't read part of the
+  statement cleanly: each of its warnings in plain words, naming the fund as the rest of the screen
+  does. A fund whose rows don't add up to a balance the statement prints ("Fictiva Flexi Cap Fund:
+  after the SIP purchase on 10 Oct 2023, its rows add up to 1,831.591 units, but the statement
+  prints 1,925.629. A row may be missing or misread."). A closing balance isn't repeated here when
+  the add-on's own sum finds that the fund's rows don't add up to it either: the fund's
+  "transactions don't add up" question needs an answer before any of its rows are imported. A fund
+  casparser couldn't read at all, with its page or where it was and the text printed there: its
+  transactions aren't imported, so add them in Wealthfolio. Any other warning says "casparser found
+  something it couldn't read cleanly", with casparser's message to copy and report.
 - **Save to**: one box per PAN, named by the investor ("A. Investor's funds"), with the Wealthfolio
   account that tracks transactions their funds go to, or "Don't import them", and **Bank account for
   purchases and payouts (optional)**: "None: don't add bank transfers", the first time, or an account
@@ -356,6 +366,9 @@ Review screen shows, in this order:
   account choice and 13 other questions"), as does the bar; **Questions for you** counts its own
   cards, and while the account choice is open beside them it's titled **Fund questions**, or **Other
   questions** when a card asks about something other than which fund a holding is.
+- **Check these against the PDF before saving**, when casparser couldn't read part of the statement
+  cleanly, as on the detailed Review screen: for example, an NSDL fund line whose NAV and value it
+  couldn't read, so the line's largest amount was taken as its value.
 - **Save to**: one Wealthfolio account that tracks holdings for all of the investor's holdings, or
   "Don't save them". The one chosen last time is preselected. Under **Save part of it to another
   account**, each folio, demat account and National Pension System (NPS) account can go to another
