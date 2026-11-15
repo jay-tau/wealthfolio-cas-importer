@@ -2029,10 +2029,44 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // A holding that will be saved is a row of Ready to save, with Change named for it.
     const ready = (text) => frame.getByRole("row").filter({ has: frame.getByRole("button", { name: /^Change: / }) }).filter({ hasText: text });
     const readyRows = frame.getByRole("row").filter({ has: frame.getByRole("button", { name: /^Change: / }) });
+    const lookingUp = frame.getByText(/^Looking up \d+ holdings?…$/);
+    const workingOut = footer.getByText("Working out what will be saved…");
     // Waits until each holding is looked up and what will be saved is worked out.
     const settled = async () => {
-      await frame.getByText(/^Looking up \d+ holdings?…$/).waitFor({ state: "detached" });
-      await footer.getByText("Working out what will be saved…").waitFor({ state: "detached" });
+      try {
+        await lookingUp.waitFor({ state: "detached" });
+        await workingOut.waitFor({ state: "detached" });
+      } catch (error) {
+        console.log("  While settling:", await settleDetails().catch((error) => `diagnostics failed: ${error.message}`));
+        throw error;
+      }
+    };
+    // A stalled page can leave a bare call log (#246), so check response times first.
+    // Each diagnostic step gives up after 10 s.
+    const settleDetails = async () => {
+      const within = (promise) => {
+        let timer;
+        const late = new Promise((resolve) => { timer = setTimeout(resolve, 10_000, "no answer within 10 s"); });
+        return Promise.race([promise.catch((error) => `failed: ${error.message.split("\n")[0]}`), late]).finally(() => clearTimeout(timer));
+      };
+      const timed = (evaluate) => {
+        const start = Date.now();
+        return within(evaluate(() => true).then(() => `answered in ${Date.now() - start} ms`));
+      };
+      // Include classes to distinguish screen-reader text; checkVisibility does not check clipping.
+      const describe = (all) => all.map((e) => `${[e, e.parentElement].map((n) => n &&
+        `<${n.tagName.toLowerCase()}${["id", "role", "class"].map((a) => n.getAttribute(a) ? ` ${a}="${n.getAttribute(a)}"` : "").join("")}>`).join(" in ")} ` +
+        `${JSON.stringify(e.textContent)} checkVisibility=${e.checkVisibility({ visibilityProperty: true })}`);
+      return {
+        page: await timed((fn) => tab.evaluate(fn)),
+        addOn: await timed(hosted),
+        lookingUp: await within(lookingUp.evaluateAll(describe)),
+        workingOut: await within(workingOut.evaluateAll(describe)),
+        status: await within(said.allTextContents()),
+        // Cards appear only after the first search; unanswered queries below include those still pending.
+        questions: await within(questions.allTextContents()),
+        searches: await within(hosted(() => ({ latest: window.host.searches.slice(-12), unanswered: window.host.unansweredSearches }))),
+      };
     };
     let statementFile = "tests/fixtures/made-up-nsdl.pdf";
     // Leaves the review for the file form, discarding what it changed.
