@@ -76,6 +76,8 @@ const host = {
   secrets: new Map<string, string>(),
   activities: [] as ActivityDetails[],
   searches: [] as string[],
+  // The searches the add-on is still waiting on, which a test that times out prints.
+  unansweredSearches: [] as string[],
   pause: "password",
   pending: undefined as Promise<void> | undefined,
   resume: undefined as (() => void) | undefined,
@@ -228,6 +230,15 @@ const wait = async (operation: string) => {
     };
   });
   await host.pending;
+};
+// Lists a search in `host.unansweredSearches` until `answer` settles.
+const unanswered = async <T>(query: string, answer: () => Promise<T>) => {
+  host.unansweredSearches.push(query);
+  try {
+    return await answer();
+  } finally {
+    host.unansweredSearches.splice(host.unansweredSearches.indexOf(query), 1);
+  }
 };
 
 const fund = (query: string): SymbolSearchResult & { quoteMode?: string } => ({
@@ -741,7 +752,7 @@ const api = {
       { id: "YAHOO", name: "Yahoo Finance", logoFilename: "yahoo-finance.png", lastSyncedDate: null, enabled: true },
       ...(host.providers === "no-amfi" ? [] : [amfi]),
     ];
-  }, searchTicker: async (query: string) => {
+  }, searchTicker: (query: string) => unanswered(query, async () => {
     host.searches.push(query);
     await wait("market");
     await wait(query);
@@ -810,7 +821,7 @@ const api = {
     // The Overnight fund has no ISIN on the statement.
     if (query === "Testbridge Overnight") return [fund("0P0000TONF")];
     return query === "MULTI" ? [fund("A"), fund("B")] : [fund(query), ...amfi];
-  } },
+  }) },
   storage: {
     get: async (key: string) => {
       await wait("storage");
