@@ -79,7 +79,7 @@ import {
   securityKey,
   sourceKey,
 } from "../lib/choices";
-import { type AskWords, holdingAskWords, list, sameDateChanges, sameDateWords } from "../lib/asks";
+import { type AskWords, answerNames, holdingAskWords, list, sameDateChanges, sameDateWords } from "../lib/asks";
 import { explanation, Explained } from "../lib/explained";
 import { fundName, readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
@@ -1084,7 +1084,7 @@ export function HoldingsImport({
   };
   const sameAsks: Ask[] = askPlans.filter(replacesSnapshot).map((plan) => {
     const account = accountName(plan.accountId);
-    const words = sameDateWords(account, holdings.date);
+    const words = sameDateWords(account, holdings.date, accountLabel(plan.accountId));
     // Holdings still waiting for an answer to which fund they are.
     const waitingHere = holdings.sources.filter((s) => accountOf(s) === plan.accountId)
       .flatMap((s) => s.holdings.filter((h) => !choiceOf(holdingKey(h))).map((h) => ({ name: h.name, units: h.units })));
@@ -1118,7 +1118,7 @@ export function HoldingsImport({
         id: `${plan.accountId}|${position.key}`,
         accountId: plan.accountId,
         words: holdingAskWords(plan, position, {
-          account, name: nameOf, provider: (p) => (p.asset ? providerName(p.asset as ChosenFund) : undefined),
+          account, label: accountLabel(plan.accountId), name: nameOf, provider: (p) => (p.asset ? providerName(p.asset as ChosenFund) : undefined),
           // A statement row's name as printed, not its chosen asset's.
           statement: (p) => {
             const item = itemOf.get(holdingKey(p.lines[0].holding))!;
@@ -1144,6 +1144,8 @@ export function HoldingsImport({
     a.target += n;
   });
   const asks = [...sameAsks, ...holdingAsks];
+  // Change answer's names, numbered when two answered lines still read the same.
+  const answerNameOf = new Map(answerNames(asks.map((a) => a.answer === undefined ? undefined : a.words.receipt(a.answer))).map((n, i) => [asks[i].id, n]));
   const openAsks = asks.filter((a) => a.answer === undefined);
   // Only the rare questions are left: the snapshots they decide can be seen already.
   const answeredAll = openKeys.length === 0 && lookingUp.length === 0 && !accountQuestion;
@@ -1909,7 +1911,7 @@ export function HoldingsImport({
     if (ask.answer !== undefined) {
       return (
         <ul key={ask.id} className="grid">
-          <AskAnswered text={ask.words.receipt(ask.answer)} target={ask.target} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+          <AskAnswered text={ask.words.receipt(ask.answer)} name={answerNameOf.get(ask.id)} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
         </ul>
       );
     }
@@ -2061,7 +2063,7 @@ export function HoldingsImport({
               >
                 <ul className="mt-2 grid gap-2">
                   {sameAsks.map((ask) => (
-                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} target={ask.target} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} name={answerNameOf.get(ask.id)} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
                   ))}
                   {answeredKeys.map((key) => (
                     <AnsweredLine
@@ -2074,7 +2076,7 @@ export function HoldingsImport({
                     />
                   ))}
                   {holdingAsks.map((ask) => (
-                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} target={ask.target} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
+                    <AskAnswered key={ask.id} text={ask.words.receipt(ask.answer!)} name={answerNameOf.get(ask.id)} buttonId={ids.askAnswer(ask.id)} onChange={() => reopenAsk(ask)} />
                   ))}
                 </ul>
               </Disclosure>

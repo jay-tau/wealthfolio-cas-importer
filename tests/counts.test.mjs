@@ -103,7 +103,7 @@ const bankPair = (type, key) => {
   };
 };
 const bankProps = (pairs, label = "A. Investor's funds · Savings account") => ({
-  check: { id: label, bankName: "Savings account", label, pairs }, ticked: new Set(pairs.map((p) => p.key)), facts: new Map(),
+  check: { id: label, bankName: "Savings account", label, box: label.split(" · ")[0], bankLabel: label.split(" · ")[1], pairs }, ticked: new Set(pairs.map((p) => p.key)), facts: new Map(),
   fundName: () => "Fictiva Fund", headingId: "bank-heading", changeId: "bank-change", pairId: (pair) => pair.key,
   onTick() {}, onLink() {}, onNone() {}, onChange() {},
 });
@@ -135,9 +135,15 @@ test("bank actions and receipts name their investor even when two checks use the
     const markup = (extra = {}) => renderToStaticMarkup(createElement(components.BankCheck, { ...props, ...extra })).replaceAll("&#x27;", "'");
     assert.ok(markup().includes(`aria-label="Link 1 selected: ${label}"`));
     assert.ok(markup().includes(`aria-label="Create new transfers instead: ${label}"`));
+    // Change answer's name is its line, which names the bank once, then the box.
     const receiptName = markup({ answered: 1 }).match(/aria-label="(Change answer:[^"]+)"/)?.[1];
-    assert.ok(receiptName?.includes(label), receiptName);
+    assert.equal(receiptName, `Change answer: The payout is linked to an entry already in Savings account, for ${investor}. Investor's funds`);
   }
+  // A bank whose name another account has too goes by its number, in the name only.
+  const numbered = bankProps([bankPair("DIVIDEND_PAYOUT", "n")], "A. Investor's funds · Savings account, account 2");
+  const answered = renderToStaticMarkup(createElement(components.BankCheck, { ...numbered, answered: 0 })).replaceAll("&#x27;", "'").replaceAll("<!-- -->", "");
+  assert.ok(answered.includes(">Not linked: the payout gets a new transfer to Savings account</span>"));
+  assert.match(answered, /aria-label="Change answer: Not linked: the payout gets a new transfer to Savings account, account 2, for A\. Investor's funds"/);
 });
 
 test("equal bank pairs keep their visible labels and distinct names within and across checks", () => {
@@ -262,8 +268,8 @@ test("controls distinguish equal holding names", () => {
   for (const name of ["Change: Example Share, holding 1", "Change: Example Share, holding 2", "Add cost: Example Share, holding 1", "Edit: purchase cost of Example Share, holding 2"]) {
     assert.ok(ready.includes(`aria-label="${name}"`), name);
   }
-  // A question's answers each name what they act on, after their visible labels, and only the first
-  // is the main one; Why am I asked? names its question.
+  // A question's answers each name what they act on, after their visible labels, the safe one first;
+  // Why am I asked? names its question.
   const ask = (n) => renderToStaticMarkup(createElement(components.AskCard, {
     headingId: `h${n}`, title: "Old Fund isn't on this statement", target: `Old Fund in Demat, holding ${n}`, children: "Demat holds 5.000 units of it.",
     main: { label: "Keep 5.000 units", name: `Keep 5.000 units: Old Fund in Demat, holding ${n}`, onClick() {} },
@@ -274,12 +280,20 @@ test("controls distinguish equal holding names", () => {
     for (const name of [`Keep 5.000 units: Old Fund in Demat, holding ${n}`, `Set it to zero on 31 Mar: Old Fund in Demat, holding ${n}`, `Why am I asked? Old Fund isn't on this statement: Old Fund in Demat, holding ${n}`]) {
       assert.ok(ask(n).includes(`aria-label="${name}"`), name);
     }
+    // Answered, Change answer's name is its line, which names the question once, with what tells
+    // equal lines apart.
     const answered = renderToStaticMarkup(createElement(components.AskAnswered, {
-      text: "Old Fund: kept at 5.000 units", target: `Old Fund in Demat, holding ${n}`, buttonId: `answer-${n}`, onChange() {},
+      text: "Old Fund: 5.000 units kept in Demat", name: `Old Fund: 5.000 units kept in Demat, account ${n}`, buttonId: `answer-${n}`, onChange() {},
     }));
-    assert.ok(answered.includes(`aria-label="Change answer: Old Fund: kept at 5.000 units: Old Fund in Demat, holding ${n}"`));
+    assert.ok(answered.includes(`aria-label="Change answer: Old Fund: 5.000 units kept in Demat, account ${n}"`));
+    assert.ok(answered.includes(">Old Fund: 5.000 units kept in Demat</span>"));
   }
+  const single = renderToStaticMarkup(createElement(components.AskAnswered, { text: "Old Fund: 5.000 units kept in Demat", buttonId: "answer", onChange() {} }));
+  assert.ok(single.includes(`aria-label="Change answer: Old Fund: 5.000 units kept in Demat"`));
   assert.match(ask(1), /<h4 id="h1" tabindex="-1"[^>]*>Old Fund isn't on this statement<\/h4>/);
+  // Nothing is chosen yet, so neither answer looks chosen: both are outline buttons, the safe one first.
+  assert.deepEqual([...ask(1).matchAll(/<button[^>]*data-variant="([^"]+)"[^>]*aria-label="([^":]+):/g)].map((m) => [m[2], m[1]]),
+    [["Keep 5.000 units", "outline"], ["Set it to zero on 31 Mar", "outline"], ["Why am I asked? Old Fund isn't on this statement", "link"]]);
   // A caution is said under the buttons and tied to the other answer, which it's about.
   const cautioned = renderToStaticMarkup(createElement(components.AskCard, {
     headingId: "h3", title: "Folio 1 now goes to Funds", target: "Old Fund in Demat", children: "Demat holds 5.000 units of Old Fund that this folio added.",

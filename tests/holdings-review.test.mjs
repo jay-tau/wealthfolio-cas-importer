@@ -889,7 +889,7 @@ test("a replacement asked about waits for its answer, and changing it back clear
   assert.equal(find(run, "Footer").action.disabled, true);
   card.other.onClick();
   await run.flush();
-  assert.equal(find(run, "AskAnswered").text, "Example ISINX: Old listing replaced with Example ISINX");
+  assert.equal(find(run, "AskAnswered").text, "Example ISINX: Old listing replaced with Example ISINX in A");
   assert.equal(find(run, "Footer").action.disabled, false);
   await saveCost(run, x.isin, "100");
   let ready = find(run, "ReadyTable");
@@ -2049,7 +2049,7 @@ test("holdings saved for the statement's date are asked about first, and keeping
   // Its holdings and their question go; nothing is saved, and Finish says so.
   assert.equal(find(run, "QuestionCard"), undefined);
   assert.equal(find(run, "ReadyTable"), undefined);
-  assert.equal(find(run, "AskAnswered").text, "A: keep the holdings already saved for 31 Mar 2025");
+  assert.equal(find(run, "AskAnswered").text, "A: kept the holdings already saved for 31 Mar 2025");
   assert.ok(nodes(run.tree).some((node) => node.type?.name === "Badge" && node.props.children?.join?.("") === "A kept as saved"));
   assert.deepEqual(find(run, "Footer").lines.map(textOf), ["Nothing will change: you kept the holdings already saved in A for 31 Mar 2025."]);
   assert.equal(find(run, "Footer").action.label, "Finish");
@@ -2168,6 +2168,12 @@ test("open holding answers keep numbered account names when two accounts have th
   assert.equal(cards.length, 2);
   assert.deepEqual(cards.map((c) => c.main.name), cards.map((c, i) => `Keep them in Funds: Example INFTEST in Funds, account ${i + 1}`));
   assert.deepEqual(cards.map((c) => c.other.name), cards.map((c, i) => `Remove them from Funds: Example INFTEST in Funds, account ${i + 1}`));
+  // Answered alike, their lines number the accounts, so they and Change answer's names differ.
+  cards.forEach((c) => c.main.onClick());
+  await run.flush();
+  const answers = nodes(run.tree).filter((n) => n.type?.name === "AskAnswered").map((n) => n.props);
+  const lines = [1, 2].map((n) => `Example INFTEST: 10.000 units kept in Funds, account ${n}`);
+  assert.deepEqual(answers.map((a) => [a.text, a.name]), lines.map((line) => [line, line]));
 });
 
 for (const existingIds of [false, true]) {
@@ -2351,7 +2357,7 @@ for (const retry of [false, true]) test(`a holding the statement no longer lists
   assert.equal(find(run, "Footer").go.label, "Go to the question");
   card.other.onClick();
   await run.flush();
-  assert.equal(find(run, "AskAnswered").text, "Example ISINOLD: set to zero on 31 Mar");
+  assert.equal(find(run, "AskAnswered").text, "Example ISINOLD: set to zero in A on 31 Mar");
   const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
   assert.match(textOf(find(run, "Footer").lines[0]), /^Update A to 31 Mar 2025 with 1 holding from this statement\. Its other holdings and cash stay\.Example ISINOLD set to zero\./);
   find(run, "Footer").action.onClick();

@@ -68,10 +68,10 @@ the statement is read, one Review screen shows, in this order:
   Purchase · Fictiva Midcap Fund · 61.350 units · ₹5,000" and "Already in Mutual funds: 3 Jul 2026 ·
   Buy · … · entered by hand on 4 Jul 2026". Both can be real, and the card says what they share,
   calling them equal only when their day, units and amount are ("Two transactions on one day with the
-  same units can both be real."): **Skip this transaction** is the main answer, and **Import it as a
+  same units can both be real."): **Skip this transaction** is the safe answer, and **Import it as a
   second purchase** imports it. More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
   Credit Risk Fund's transactions don't add up. They add up to 1,204.500 units; the statement says
-  1,250.000.") has **Skip this fund** as the main answer, and **Import with this difference**.
+  1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**.
 - **Ready to import**: each fund with new transactions, with its plan and option, where its prices
   come from (and whether it was chosen before or by you) and **Change**, its **New transactions**
   ("38 imported before" under them) and its **Units after import**: the units Wealthfolio has at the
@@ -393,9 +393,10 @@ Review screen shows, in this order:
   holdings already saved for the statement's date (asked first, per account), a holding the
   statement no longer lists, a folio, demat account or PRAN that now goes to another account, units
   an earlier import added of a fund tracked from its transactions, and an old asset to replace (see
-  the snapshot rules below). Each has a plain heading, one line of evidence and the safe answer as
-  its main button; nothing is preselected, and saving waits for every answer. Answering moves the
-  focus to the next open question; **Change answer** reopens the card.
+  the snapshot rules below). Each has a plain heading, one line of evidence and its two answers,
+  the safe one first. Nothing is preselected, so both answers look the same until you choose one,
+  and saving waits for every answer. Answering moves the focus to the next open question; the card
+  becomes one line saying what the answer did, and **Change answer** reopens it.
 - **Ready to save**: every holding that will be saved, with its plan and option, where its prices
   come from (and whether it was chosen before or by you), **Change**, units, value and purchase cost.
   **Add cost** takes the total cost of the holding's units in rupees, with or without grouping commas
@@ -506,7 +507,7 @@ rules:
   and its cash carry over. A holding that an earlier import of the same folio or demat account added on or before that snapshot's date,
   and that the statement no longer lists, is asked about: "Fictiva Liquid Fund isn't on this
   statement. CDSL Demat holds 512.300 units of it, from an earlier import of Mutual fund folio
-  7712045." **Keep 512.300 units** is the main answer, and **Set it to zero on 31 Jul** removes it;
+  7712045." **Keep 512.300 units** is the safe answer, and **Set it to zero on 31 Jul** removes it;
   **Why am I asked?** says that a statement can leave out a fund you still hold, for example one
   that covers only some fund houses. Nothing is preselected: earlier versions removed it by default.
   A folio, demat account or PRAN that lists nothing asks the same about each holding its earlier
@@ -535,7 +536,7 @@ rules:
   account an earlier import of it put them in, a holding that it recorded adding, and that the
   statement doesn't list there, is asked about: "Mutual fund folio 7712045 now goes to Mutual funds
   (holdings). CDSL Demat holds 812.300 units of Testbridge Gilt Fund that this folio added." **Keep
-  them in CDSL Demat** is the main answer; **Remove them from CDSL Demat** removes them, so remove
+  them in CDSL Demat** is the safe answer; **Remove them from CDSL Demat** removes them, so remove
   them only if all of them came from it, since imports don't record how many units each folio, demat
   account or PRAN added; the card says so under its buttons. This applies when the account is being updated. If another folio, demat account or PRAN, left
   out or not listed, may have added some of the units, or the identifiers can't be compared, the
@@ -564,7 +565,7 @@ rules:
 - A holding the statement still lists, but that you now confirm to another asset than the one an
   earlier import of the same folio, demat account or PRAN added (AMFI's result instead of Yahoo's,
   say, or a summary statement's fund that now prints its ISIN), isn't counted twice. It's asked
-  about: "Testbridge Gilt Fund is now matched to its AMFI fund. CDSL Demat holds it as …". The main
+  about: "Testbridge Gilt Fund is now matched to its AMFI fund. CDSL Demat holds it as …". The safe
   answer keeps the old asset for now and leaves the new one out ("The AMFI fund isn't saved, so its
   units aren't counted twice."); the other replaces the old asset with it, which the card says to
   choose only if all the old asset's units came from the folios, demat accounts or PRANs it names,
@@ -584,7 +585,7 @@ rules:
   account already has of it unless you remove them; keeping them counts them in both accounts.
   When an earlier import of that folio recorded adding the holding for its own lines alone, it's
   asked about: "Fictiva Flexi Cap Fund is already tracked in Mutual funds. CDSL Demat also holds
-  1,500.000 units of it, from an earlier import of …", with **Keep them in CDSL Demat** as the main
+  1,500.000 units of it, from an earlier import of …", with **Keep them in CDSL Demat** as the safe
   answer and **Remove them from CDSL Demat**; remove them only if all of them came from that folio,
   since imports don't record how many units each folio, demat account or PRAN added, as the card
   says under its buttons. An old asset
@@ -604,7 +605,7 @@ rules:
   added, 1,000.000 units", "Fictiva Liquid Fund: 512.300 units now, not on this statement", "9 other
   holdings: same units"); the comparison uses each asset's actual saved quantity, leaving out
   skipped, excluded and rerouted statement contributions.
-  **Keep the saved ones** is the main answer: nothing is saved in that account, and its holdings and
+  **Keep the saved ones** is the safe answer: nothing is saved in that account, and its holdings and
   their questions make way for "CDSL Demat: nothing will be saved", with **Show this statement's
   holdings**. Folios, demat accounts and PRANs that go to other accounts are still saved there. If
   one of them has funds the kept account already holds, Ready to save warns that saving them there

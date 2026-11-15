@@ -646,6 +646,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const notIncluded = frame.locator("section").filter({ has: frame.getByRole("heading", { name: "Not included in this import", exact: true }) });
     // A rare question's card, by its heading.
     const askCard = (title) => frame.getByRole("region", { name: title, exact: typeof title === "string" });
+    // A card's buttons by text and look: "Skip this fund outline".
+    const answerLooks = (card) => card.getByRole("button").evaluateAll((all) => all.map((b) => `${b.textContent} ${b.dataset.variant}`));
     // Sets each holding the statement no longer lists to zero, by its question.
     const zeroNotListed = async () => {
       const notListed = frame.getByRole("region", { name: /isn't on this statement$/ });
@@ -935,7 +937,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // A switch in that Wealthfolio has as a purchase without the add-on's row ID, but without its cash,
     // may be another: it's asked about in the statement's words, with both rows side by side and
-    // skipping it as the main answer, and the import waits for the answer.
+    // skipping it as the safe answer, and the import waits for the answer.
     await hosted(() => {
       const buy = window.host.activities.find((a) => a.activityType === "BUY" && a.assetSymbol === "INFZ90K01LQ6" && a.date.startsWith("2024-06-20"));
       delete buy.sourceRecordId;
@@ -951,6 +953,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const skipDuplicate = duplicateCard.getByRole("button", { name: "Skip this transaction: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
     const importDuplicate = duplicateCard.getByRole("button", { name: "Import it as a second switch in: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
     await skipDuplicate.waitFor();
+    // Nothing is chosen yet, so neither answer looks chosen: both outline, the safe one first.
+    assert.deepEqual(await answerLooks(duplicateCard), ["Skip this transaction outline", "Import it as a second switch in outline"]);
     assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, waiting for your answer · 26 waiting for earlier purchases");
     await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
     assert.equal(await importButton.isDisabled(), true);
@@ -958,7 +962,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await skipDuplicate.focus();
     await tab.keyboard.press("Enter");
     await focused(dSummary, "Skip this transaction, the last question");
-    const duplicateAnswer = await changeAnswer("Change answer: ₹9,162.28 switch in of Fund INFZ90K01LQ6 on 20 Jun 2024: skipped: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024");
+    const duplicateAnswer = await changeAnswer("Change answer: ₹9,162.28 switch in of Fund INFZ90K01LQ6 on 20 Jun 2024: skipped");
     assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, skipped by your answer · 26 waiting for earlier purchases");
     await dFooter.getByText("1 possible duplicate skipped by your answer.", { exact: true }).waitFor();
     await dFooter.getByRole("button", { name: "Finish", exact: true }).waitFor();
@@ -1125,7 +1129,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     await sizeFrame(1000);
     // Change answer asks again, with the ticks as they were.
-    await fundsBox().getByRole("button", { name: `Change answer: ${notLinked}: ${savingsLabel}`, exact: true }).click();
+    await fundsBox().getByRole("button", { name: `Change answer: ${notLinked}, for ${investor}'s funds`, exact: true }).click();
     await focused(savingsCheck.getByRole("heading"), "Change answer, the payment check");
     assert.equal(await pairBox(neftPair).getAttribute("aria-checked"), "true");
     await linkSelected.click();
@@ -1767,7 +1771,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await restoreChoices(beforeIgnoredDetailed);
 
     // A fund whose rows don't add up to its closing balance is asked about, even with its opening units
-    // in Wealthfolio, with skipping it as the main answer, and the import waits for the answer.
+    // in Wealthfolio, with skipping it as the safe answer, and the import waits for the answer.
     const flexiOpening = {
       id: "flexi-opening", accountId: "account-1", activityType: "BUY", subtype: null, status: "POSTED",
       date: "2023-03-01T00:00:00+00:00", quantity: "1250", unitPrice: "40", amount: "50000", fee: null, currency: "INR",
@@ -1798,7 +1802,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await focused(dSummary, "Import with this difference, once the plan is worked out again");
     await dSaid.getByText("All questions answered. Ready to import.", { exact: true }).waitFor();
     // Changed to Skip this fund, it's left out again, with Change under Not included.
-    const gapAnswer = await changeAnswer("Change answer: Fund INFZ90K01FC8: imported with the difference: Fund INFZ90K01FC8");
+    const gapAnswer = await changeAnswer("Change answer: Fund INFZ90K01FC8: imported with the difference");
     await gapAnswer.focus();
     await tab.keyboard.press("Enter");
     await focused(gapCard.getByRole("heading"), "Change answer on a fund whose rows don't add up");
@@ -2754,6 +2758,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const doubleWarning = "Demat will still hold Fund INFZ90K01LQ6. Saving it in Fund folios too would count its units twice.";
     await resetKeptDate();
     await keptDateCard().waitFor();
+    assert.deepEqual(await answerLooks(keptDateCard()), ["Keep the saved ones outline", "Replace them with this statement outline"]);
     await question("DEMOCORP BANK LIMITED").waitFor();
     assert.equal(await saveHoldings.isDisabled(), true, "both saved-date answers are still needed");
     // Skipped, excluded and rerouted statement holdings do not appear as changes to Demat.
@@ -2773,6 +2778,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await keepSaved().press("Enter");
     await settled();
     assert.equal(await questions.count(), 0);
+    // Its line says what the answer did, and Change answer's name is that line.
+    await changeAnswer("Change answer: Demat: kept the holdings already saved for 31 Mar 2025");
     assert.equal(await frame.getByRole("textbox", { name: /^Total purchase cost of these / }).count(), 0);
     assert.equal(await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").count(), 0);
     await frame.getByText("Demat: nothing will be saved", { exact: true }).waitFor();
@@ -2895,7 +2902,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       const keep = card.getByRole("button", { name: `Keep ${oldName} for now: ${newName} in Fund folios`, exact: true });
       const replace = card.getByRole("button", { name: `Replace ${oldName} with ${newName}: ${newName} in Fund folios`, exact: true });
       await keep.waitFor();
-      // The main answer says what it leaves, tied to it.
+      // The safe answer says what it leaves, tied to it.
       const note = await keep.getAttribute("aria-describedby");
       assert.equal(await frame.locator(`[id="${note}"]`).textContent(), `${newName} isn't saved, so its units aren't counted twice.`);
       // Replacing says when to, tied to it: import records hold identifiers, not units.
@@ -2907,7 +2914,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       assert.equal(await statusOf(await snapshotTable("Fund folios"), oldName), "Kept");
       assert.equal(await statusOf(await snapshotTable("Fund folios"), newName), "Needs an answer");
       await replace.dispatchEvent("click");
-      await changeAnswer(`Change answer: Fictiva Balanced Advantage Fund: ${oldName} replaced with ${newName}: ${newName} in Fund folios`);
+      await changeAnswer(`Change answer: Fictiva Balanced Advantage Fund: ${oldName} replaced with ${newName} in Fund folios`);
       assert.equal(await statusOf(await snapshotTable("Fund folios"), oldName), "Replaced");
       assert.equal(await statusOf(await snapshotTable("Fund folios"), newName), "New");
       await sameDay("Demat").dispatchEvent("click");
@@ -2973,7 +2980,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.keyboard.press("Enter");
     // The last answer takes the focus to the bar's summary, which says what it does.
     await focused(footer.locator("[tabindex='-1']"), "the last question answered");
-    const flexiAnswer = await changeAnswer("Change answer: Fund INFZ90K01FC8: 2,892.104 units kept in Fund folios: Fund INFZ90K01FC8 in Fund folios");
+    const flexiAnswer = await changeAnswer("Change answer: Fund INFZ90K01FC8: 2,892.104 units kept in Fund folios");
     await footer.getByText("Fund INFZ90K01FC8: 2,892.104 units kept in Fund folios.", { exact: true }).waitFor();
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Kept");
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
@@ -2986,7 +2993,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Saved here no more, it's asked again.
     await keepFlexi.waitFor();
     await removeFlexi.dispatchEvent("click");
-    await changeAnswer("Change answer: Fund INFZ90K01FC8: 2,892.104 units removed from Fund folios: Fund INFZ90K01FC8 in Fund folios");
+    await changeAnswer("Change answer: Fund INFZ90K01FC8: 2,892.104 units removed from Fund folios");
     assert.equal(await statusOf(await snapshotTable("Fund folios"), "Fund INFZ90K01FC8"), "Removed");
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await saveHoldings.click();
@@ -3041,7 +3048,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await footer.getByText("1 question left before saving.", { exact: true }).waitFor();
     await sold.getByRole("button", { name: "Set it to zero on 31 Mar: Fund INFZ90K01LQ6 in Fund folios", exact: true }).click();
     // Change answer reopens the card, its heading focused; answered again, the bar says what it does.
-    const soldAnswer = await changeAnswer("Change answer: Fund INFZ90K01LQ6: set to zero on 31 Mar: Fund INFZ90K01LQ6 in Fund folios");
+    const soldAnswer = await changeAnswer("Change answer: Fund INFZ90K01LQ6: set to zero in Fund folios on 31 Mar");
     await soldAnswer.focus();
     await tab.keyboard.press("Enter");
     await focused(sold.getByRole("heading"), "Change answer, a holding not on the statement");
@@ -3128,7 +3135,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       const card = askCard(`${name} isn't on this statement`);
       await card.getByRole("button", { name: new RegExp(`^Keep [\\d,.]+ units: ${escaped(name)} in Demat$`) }).waitFor();
       await card.getByRole("button", { name: `Set it to zero on 31 Mar: ${name} in Demat`, exact: true }).click();
-      await changeAnswer(`Change answer: ${name}: set to zero on 31 Mar: ${name} in Demat`);
+      await changeAnswer(`Change answer: ${name}: set to zero in Demat on 31 Mar`);
     }
     // The empty demat account's other sold holdings are asked about the same way.
     await zeroNotListed();
