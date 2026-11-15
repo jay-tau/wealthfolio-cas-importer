@@ -60,7 +60,7 @@ import { BankCheck, type BankCheckModel, checkReceipt, paid } from "../component
 import { AskAnswered, AskCard } from "../components/review/asks";
 import { type EarlierFund, type LeftOutFund, NotIncludedDetailed, nothingWords, TransactionsSummary } from "../components/review/detailed-parts";
 import { useReviewFocus } from "../components/review/focus";
-import { Footer } from "../components/review/footer";
+import { Footer, type Narrow } from "../components/review/footer";
 import { type FundRow, type FundRowHandlers, FundsReadyTable } from "../components/review/funds-ready";
 import { ReviewHeader } from "../components/review/header";
 import { StatementWarnings } from "../components/review/statement-warnings";
@@ -2301,37 +2301,41 @@ export function DetailedImport({
       )}
       <Footer
         summaryId={ids.summary}
-        lines={(() => {
+        {...((): { lines: ReactNode[]; narrow?: Narrow } => {
           if (busy === "import") {
-            return perAccount.map((a) => {
-              const name = <span className="font-semibold">{accountName(a.accountId)}</span>;
-              return (
-                <p key={a.accountId}>
-                  {isProposed(a.accountId) && !created.current.has(a.accountId) ? (
-                    <>
-                      Creating {name} and importing {plural(a.transactions, "transaction")}…
-                    </>
-                  ) : (
-                    <>
-                      Importing {plural(a.transactions, "transaction")} into {name}…
-                    </>
-                  )}
-                </p>
-              );
-            });
+            return {
+              lines: perAccount.map((a) => {
+                const name = <span className="font-semibold">{accountName(a.accountId)}</span>;
+                return (
+                  <p key={a.accountId}>
+                    {isProposed(a.accountId) && !created.current.has(a.accountId) ? (
+                      <>
+                        Creating {name} and importing {plural(a.transactions, "transaction")}…
+                      </>
+                    ) : (
+                      <>
+                        Importing {plural(a.transactions, "transaction")} into {name}…
+                      </>
+                    )}
+                  </p>
+                );
+              }),
+            };
           }
-          if (renaming) return [<p key="r" className="text-warning">Save or cancel the new account name first.</p>];
+          if (renaming) return { lines: [<p key="r" className="text-warning">Save or cancel the new account name first.</p>] };
           if (prepareError && !nothing) {
-            return [
-              <p key="x" className="text-destructive">{CANT_PLAN}</p>,
-              ...(prepareError.why ? [<p key="why">{prepareError.why}</p>] : []),
-            ];
+            return {
+              lines: [
+                <p key="x" className="text-destructive">{CANT_PLAN}</p>,
+                ...(prepareError.why ? [<p key="why">{prepareError.why}</p>] : []),
+              ],
+            };
           }
-          if (editor) return [<p key="e" className="text-warning">Save or cancel {editWhat} first.</p>];
-          if (lookingUp.length) return [<p key="l">Looking up {plural(lookingUp.length, "fund")}…</p>];
-          if (questionCount) return [<p key="q">{leftWords}</p>];
-          if (nothing) return [<p key="n">Nothing from this statement will be imported.</p>];
-          if (!current || !counts) return [<p key="w" className="text-muted-foreground">Working out what will be imported…</p>];
+          if (editor) return { lines: [<p key="e" className="text-warning">Save or cancel {editWhat} first.</p>] };
+          if (lookingUp.length) return { lines: [<p key="l">Looking up {plural(lookingUp.length, "fund")}…</p>] };
+          if (questionCount) return { lines: [<p key="q">{leftWords}</p>] };
+          if (nothing) return { lines: [<p key="n">Nothing from this statement will be imported.</p>] };
+          if (!current || !counts) return { lines: [<p key="w" className="text-muted-foreground">Working out what will be imported…</p>] };
           const see = (
             <p key="see">
               <LinkButton
@@ -2344,23 +2348,26 @@ export function DetailedImport({
               </LinkButton>
             </p>
           );
-          if (!toImport) return [<p key="0">{nothingWords(counts)}</p>, ...answerLine, see];
-          return [
-            ...perAccount.map((a) => (
-              <p key={a.accountId}>
-                {isProposed(a.accountId) ? (
-                  <>
-                    Create the Wealthfolio account <span className="font-semibold">{accountName(a.accountId)}</span> and import{" "}
-                    {plural(a.transactions, "transaction")} for {plural(a.funds, "fund")} into it.
-                  </>
-                ) : (
-                  <>
-                    Import {plural(a.transactions, "transaction")} for {plural(a.funds, "fund")} into{" "}
-                    <span className="font-semibold">{accountName(a.accountId)}</span>.
-                  </>
-                )}
-              </p>
-            )),
+          if (!toImport) {
+            const none = <p key="0">{nothingWords(counts)}</p>;
+            return { lines: [none, ...answerLine, see], narrow: { brief: none, more: [...answerLine, see], warnings: 0 } };
+          }
+          const mains = perAccount.map((a) => (
+            <p key={a.accountId}>
+              {isProposed(a.accountId) ? (
+                <>
+                  Create the Wealthfolio account <span className="font-semibold">{accountName(a.accountId)}</span> and import{" "}
+                  {plural(a.transactions, "transaction")} for {plural(a.funds, "fund")} into it.
+                </>
+              ) : (
+                <>
+                  Import {plural(a.transactions, "transaction")} for {plural(a.funds, "fund")} into{" "}
+                  <span className="font-semibold">{accountName(a.accountId)}</span>.
+                </>
+              )}
+            </p>
+          ));
+          const rest = [
             ...(differ.length
               ? [
                   <p key="d" className="text-warning">
@@ -2377,6 +2384,20 @@ export function DetailedImport({
             ...answerLine,
             see,
           ];
+          const lines = [...mains, ...rest];
+          const warnings = differ.length ? 1 : 0;
+          if (mains.length === 1) return { lines, narrow: { brief: mains[0], more: rest, warnings } };
+          // Several accounts: one line for all of them, each account's own line folded.
+          const transactions = plural(perAccount.reduce((n, a) => n + a.transactions, 0), "transaction");
+          const funds = plural(perAccount.reduce((n, a) => n + a.funds, 0), "fund");
+          const brief = (
+            <p key="brief">
+              {creating
+                ? `Create ${plural(creating, "new account")} and import ${transactions} for ${funds} into ${plural(perAccount.length, "account")}.`
+                : `Import ${transactions} for ${funds} into ${plural(perAccount.length, "account")}.`}
+            </p>
+          );
+          return { lines, narrow: { brief, more: lines, warnings } };
         })()}
         action={
           questionCount || lookingUp.length

@@ -98,7 +98,9 @@ the statement is read, one Review screen shows, in this order:
   each activity with its cash and status, and **Import 136 transactions** (**Create account and
   import 136 transactions** with a new account). With nothing to import, it
   says why ("Nothing new: every transaction on this statement is already in Wealthfolio.") and has
-  **Finish**.
+  **Finish**. In a narrow window it keeps to its first line, or one line for several accounts
+  ("Import 13 transactions for 4 funds into 2 accounts."), and its buttons, with the rest behind
+  **Details** beside them, which says how many warnings are there.
 
 The plan is worked out again as you answer, from reads of Wealthfolio that are repeated when you open
 the add-on's page again. After the import, the result compares each imported fund's units in
@@ -412,7 +414,10 @@ Review screen shows, in this order:
   account) with what your answers do ("Fictiva Liquid Fund kept at 512.300 units"), **See the
   holdings in Demat on 31 Jul 2026 after saving**, the missing costs with **Add costs**, and **Update
   holdings** or **Save holdings**. With nothing to save, it's **Finish**. While a cost, Change or a
-  new account's Rename is open, saving waits until you save or cancel it.
+  new account's Rename is open, saving waits until you save or cancel it. In a narrow window it keeps
+  to its first line, or one line for several accounts ("Save 21 holdings in 3 accounts on 31 Jul
+  2026."), and its buttons, with the rest behind **Details** beside them, which says how many warnings
+  are there.
 
 Each account's snapshot is worked out again as you answer, from reads of Wealthfolio that are
 repeated when you open the add-on's page again. A fund confirmed for a detailed statement is already

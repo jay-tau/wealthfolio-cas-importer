@@ -116,7 +116,7 @@ after(() => server?.close());
 
 // Only the controller and its hooks run. Child components stay React elements, exposing their
 // real callbacks without reproducing DOM behavior or Wealthfolio's UI implementation.
-function controller(props, Component = HoldingsImport) {
+function controller(props, Component = HoldingsImport, { wide = true } = {}) {
   const slots = [];
   let cursor;
   let dirty = true;
@@ -149,7 +149,8 @@ function controller(props, Component = HoldingsImport) {
     useId() { return memo(() => "review", []); },
     useEffect: effect,
     useLayoutEffect: effect,
-    useSyncExternalStore(subscribe, snapshot, fallback) { return fallback(); },
+    // Only useWide reads a store: whether the frame is at least `sm` wide.
+    useSyncExternalStore(subscribe, snapshot, fallback) { return wide && fallback(); },
   };
   return {
     async flush() {
@@ -168,6 +169,7 @@ function controller(props, Component = HoldingsImport) {
       assert.equal(dirty, false, "the controller settled");
     },
     update(patch) { Object.assign(props, patch); dirty = true; },
+    resize(value) { wide = value; dirty = true; },
     get tree() { return tree; },
     dispose() { slots.forEach((slot) => slot.cleanup?.()); },
   };
@@ -2456,4 +2458,201 @@ test("a search Wealthfolio rejects says so at the top until a search answers aga
   question.searches.retry(question.item);
   await run.flush();
   assert.equal(find(run, "SearchDown").down, false);
+});
+
+// #238: in a narrow frame the bar shows one line and its button with Details; the rest folds.
+test("the bar's narrow form says what one account gets in one line and folds the rest, warnings counted", async () => {
+  const { run, api } = setup([source("X", [holding("ISINX")])]);
+  // A holds a snapshot after the statement's date: the later-snapshot warning.
+  api.snapshots.getAll = async (id) => id === "A" ? [{ snapshotDate: "2025-06-30", source: "MANUAL" }] : [];
+  run.update({ visit: {} });
+  await run.flush();
+  const { lines, narrow } = find(run, "Footer");
+  assert.deepEqual(lines.map(textOf), [
+    "Save 1 holding in A on 31 Mar 2025." +
+      "This saves holdings history for 31 Mar 2025. The current holdings in A still come from its snapshot of 30 Jun 2025." +
+      "See the holdings in A on 31 Mar 2025 after saving",
+    "Purchase cost missing for 1 · Add costs",
+  ]);
+  assert.equal(textOf(narrow.brief), "Save 1 holding in A on 31 Mar 2025.");
+  assert.deepEqual(narrow.more.map(textOf), [
+    "This saves holdings history for 31 Mar 2025. The current holdings in A still come from its snapshot of 30 Jun 2025.",
+    "See the holdings in A on 31 Mar 2025 after saving",
+    "Purchase cost missing for 1 · Add costs",
+  ]);
+  assert.equal(narrow.warnings, 2, "the later snapshot and the missing cost");
+});
+
+test("the bar's narrow form says what several accounts get in one line, each account's lines folded", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const { run } = setup([x, source("Y", [holding("ISINY"), holding("ISINZ")])]);
+  await run.flush();
+  find(run, "SaveTo").onChange(sourceKey(x), "B");
+  await run.flush();
+  const { lines, narrow } = find(run, "Footer");
+  assert.equal(textOf(narrow.brief), "Save 3 holdings in 2 accounts on 31 Mar 2025.");
+  assert.deepEqual(narrow.more.map(textOf), lines.map(textOf), "every line, in a wide frame's order");
+  assert.deepEqual(lines.map(textOf).slice(0, 2).map((line) => line.replace(/\..*/, ".")), [
+    "Save 1 holding in B on 31 Mar 2025.",
+    "Save 2 holdings in A on 31 Mar 2025.",
+  ]);
+  assert.equal(narrow.warnings, 1, "the missing costs");
+});
+
+test("in a narrow frame the bar shows its brief and Details beside its button, and the folded lines once opened", async () => {
+  const { run } = setup([source("X", [holding("ISINX")])]);
+  await run.flush();
+  const footer = nodes(run.tree).find((node) => node.type?.name === "Footer");
+  run.dispose();
+  active = undefined;
+  document.documentElement = { style: {} };
+  document.querySelector = () => null;
+  const { summaryId } = footer.props;
+  const render = async (props, wide) => {
+    active?.dispose();
+    active = controller(props, footer.type, { wide });
+    await active.flush();
+  };
+  const byId = (id) => nodes(active.tree).find((node) => node.props?.id === id);
+  const toggle = () => nodes(active.tree).find((node) => node.type?.name === "LinkButton" && node.props["aria-controls"] === `${summaryId}-details`);
+  // The buttons' row: the main button, then Details at its end.
+  const row = () => nodes(active.tree).find((node) => node.props?.className === "flex flex-wrap items-center gap-2").props.children.filter(Boolean);
+  await render({ ...footer.props }, false);
+  assert.equal(textOf(byId(summaryId)), "Save 1 holding in A on 31 Mar 2025.");
+  assert.deepEqual(row().map((node) => node.type?.name), ["WrapButton", "LinkButton"]);
+  assert.equal(textOf(toggle().props.children), "Details · 1 warning");
+  assert.equal(toggle().props["aria-expanded"], false);
+  assert.equal(byId(`${summaryId}-details`).props.hidden, true);
+  assert.deepEqual(byId(`${summaryId}-details`).props.children.map(textOf), [
+    "See the holdings in A on 31 Mar 2025 after saving",
+    "Purchase cost missing for 1 · Add costs",
+  ]);
+  toggle().props.onClick();
+  await active.flush();
+  assert.equal(textOf(toggle().props.children), "Hide details");
+  assert.equal(toggle().props["aria-expanded"], true);
+  assert.equal(byId(`${summaryId}-details`).props.hidden, false);
+  assert.equal(textOf(byId(summaryId)), "Save 1 holding in A on 31 Mar 2025.", "the brief stays above them");
+  // Without warnings, Details says nothing more.
+  await render({ ...footer.props, narrow: { ...footer.props.narrow, warnings: 0 } }, false);
+  assert.equal(textOf(toggle().props.children), "Details");
+  // A wide frame shows every line, with nothing folded.
+  await render({ ...footer.props }, true);
+  assert.deepEqual(byId(summaryId).props.children.map(textOf), footer.props.lines.map(textOf));
+  assert.equal(toggle(), undefined);
+  assert.equal(byId(`${summaryId}-details`), undefined);
+  // Nothing to fold: the lines as they are, without Details.
+  await render({ ...footer.props, narrow: { ...footer.props.narrow, more: [] } }, false);
+  assert.deepEqual(byId(summaryId).props.children.map(textOf), footer.props.lines.map(textOf));
+  assert.equal(toggle(), undefined);
+});
+
+test("switching the bar's width keeps focus when a footer control moves, without taking it from elsewhere", async () => {
+  const { run } = setup([source("X", [holding("ISINX")])]);
+  await run.flush();
+  const footer = nodes(run.tree).find((node) => node.type?.name === "Footer");
+  run.dispose();
+  active = undefined;
+  document.documentElement = { style: {} };
+  document.querySelector = () => null;
+  const summary = { focus() { document.activeElement = this; } };
+  document.getElementById = (id) => id === footer.props.summaryId ? summary : null;
+  active = controller({ ...footer.props }, footer.type, { wide: false });
+  await active.flush();
+  const focus = () => {
+    const element = { isConnected: true };
+    document.activeElement = element;
+    active.tree.props.onFocusCapture?.({ target: element });
+    return element;
+  };
+  const detach = (element) => { element.isConnected = false; document.activeElement = document.body; };
+  const resize = async (wide) => { active.resize(wide); await active.flush(); };
+  // Details goes away on widening; a wide summary's link moves into the folded details on narrowing.
+  for (const wide of [true, false]) {
+    detach(focus());
+    await resize(wide);
+    assert.equal(document.activeElement, summary, `${wide ? "wide" : "narrow"}: the visible summary gets focus`);
+  }
+  const main = focus();
+  await resize(true);
+  assert.equal(document.activeElement, main, "a button that stays keeps its focus");
+  detach(focus());
+  const outside = document.activeElement = {};
+  await resize(false);
+  assert.equal(document.activeElement, outside, "a focus moved elsewhere in the page stays there");
+  detach(focus());
+  document.hasFocus = () => false;
+  await resize(true);
+  assert.equal(document.activeElement, document.body, "the add-on does not take focus back from Wealthfolio");
+  document.hasFocus = () => true;
+  const blurred = focus();
+  active.tree.props.onBlurCapture?.();
+  detach(blurred);
+  await resize(false);
+  assert.equal(document.activeElement, document.body, "a control that lost focus before resizing is not restored");
+  // An unrelated removal must not leave a handoff waiting for a later width change.
+  detach(focus());
+  active.update({});
+  await active.flush();
+  await resize(true);
+  assert.equal(document.activeElement, document.body, "an earlier removal does not move focus later");
+});
+
+test("opened in a short frame, the bar's details fit below the sticky header and scroll, focusable while they do", async (t) => {
+  const globals = ["window", "getComputedStyle", "ResizeObserver"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
+  t.after(() => {
+    for (const [name, descriptor] of globals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  const { run } = setup([source("X", [holding("ISINX")])]);
+  await run.flush();
+  const footer = nodes(run.tree).find((node) => node.type?.name === "Footer");
+  run.dispose();
+  active = undefined;
+  const { summaryId } = footer.props;
+  // A 72 px sticky header; the bar's brief and buttons take 115 px, its details 150 px unless capped.
+  const header = { getBoundingClientRect: () => ({ height: 72 }) };
+  document.documentElement = { style: {} };
+  document.querySelector = () => header;
+  globalThis.getComputedStyle = () => ({ position: "sticky" });
+  let resized;
+  globalThis.window = { innerHeight: 300, addEventListener: (_, fn) => { resized = fn; }, removeEventListener() {} };
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+  const shown = () => Math.min(150, parseFloat(details.style.maxHeight) || 150);
+  const details = {
+    hidden: true, style: {}, scrollHeight: 150,
+    get clientHeight() { return shown(); },
+    getBoundingClientRect: () => ({ height: details.hidden ? 0 : shown() }),
+  };
+  const bar = { getBoundingClientRect: () => ({ height: 115 + details.getBoundingClientRect().height }) };
+  active = controller({ ...footer.props }, (props) => {
+    const tree = footer.type(props);
+    tree.props.ref.current = bar;
+    const panel = nodes(tree).find((node) => node.props?.id === `${summaryId}-details`);
+    panel.props.ref.current = details;
+    details.hidden = panel.props.hidden;
+    return tree;
+  }, { wide: false });
+  await active.flush();
+  const panel = () => nodes(active.tree).find((node) => node.props?.id === `${summaryId}-details`).props;
+  assert.equal(panel().tabIndex, undefined, "folded: nothing to scroll");
+  nodes(active.tree).find((node) => node.props?.["aria-controls"] === `${summaryId}-details`).props.onClick();
+  await active.flush();
+  // 300 - 72 - 115 - 8 = 105 px left, under 40% of the frame (120 px): the details scroll there.
+  assert.equal(details.style.maxHeight, "105px");
+  assert.deepEqual([panel().tabIndex, panel().role, panel()["aria-label"]], [0, "region", "Details"]);
+  // A taller frame: 40% of it, and the 150 px fit.
+  window.innerHeight = 1000;
+  resized();
+  await active.flush();
+  assert.equal(details.style.maxHeight, "400px");
+  assert.equal(panel().tabIndex, undefined, "nothing to scroll");
+  // A frame too short for both: two lines still show, scrolling.
+  window.innerHeight = 200;
+  resized();
+  await active.flush();
+  assert.equal(details.style.maxHeight, "40px");
+  assert.equal(panel().tabIndex, 0);
 });
