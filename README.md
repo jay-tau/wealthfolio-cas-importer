@@ -395,8 +395,9 @@ Review screen shows, in this order:
   an earlier import added of a fund tracked from its transactions, and an old asset to replace (see
   the snapshot rules below). Each has a plain heading, one line of evidence and its two answers,
   the safe one first. Nothing is preselected, so both answers look the same until you choose one,
-  and saving waits for every answer. Answering moves the focus to the next open question; the card
-  becomes one line saying what the answer did, and **Change answer** reopens it.
+  and saving waits for every answer. Answering a question moves the focus to the next open one
+  below it, or up to the first one left open when none is left below, and the last answer to the
+  bar; the card becomes one line saying what the answer did, and **Change answer** reopens it.
 - **Ready to save**: every holding that will be saved, with its plan and option, where its prices
   come from (and whether it was chosen before or by you), **Change**, units, value and purchase cost.
   **Add cost** takes the total cost of the holding's units in rupees, with or without grouping commas

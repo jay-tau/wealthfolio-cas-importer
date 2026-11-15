@@ -81,6 +81,7 @@ import {
 } from "../lib/choices";
 import { type AskWords, answerNames, holdingAskWords, list, sameDateChanges, sameDateWords } from "../lib/asks";
 import { explanation, Explained } from "../lib/explained";
+import { nextOpen, type QuestionStop } from "../lib/focus";
 import { fundName, readableName } from "../lib/fund-name";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
@@ -1212,18 +1213,32 @@ export function HoldingsImport({
     showAll: id("show-all"),
     notCreated: id("not-created"),
   };
-  /** The open questions' headings, in the order they're shown: saved holdings for the date, holdings to match, then the others. */
-  const openHeadings = () => [
-    ...openAsks.filter((a) => sameAsks.includes(a)).map((a) => ids.ask(a.id)),
-    ...openKeys.map(ids.question),
-    ...openAsks.filter((a) => !sameAsks.includes(a)).map((a) => ids.ask(a.id)),
-  ];
   /** Focuses the first account question, opening Save part of it to another account when it's there. */
   const focusAccountQuestion = (force = false, origin?: Element | null) => {
     const source = undecidedSources.find((s) => valueOf(sourceKey(s)) === null);
     if (source) setOpen("part", true);
     focusSoon(source ? sourceKey(source) : investor, force, origin);
   };
+  const askStop = (ask: Ask): QuestionStop => ({
+    id: `ask|${ask.id}`,
+    open: ask.answer === undefined,
+    go: (force, origin) => focusSoon(ids.ask(ask.id), force, origin),
+  });
+  /**
+   * Every question in the order it's shown, answered ones too: the account under Save to, then
+   * holdings already saved for the date, the holdings to match and the other decisions.
+   */
+  const questionOrder = (): QuestionStop[] => [
+    { id: "account", open: accountQuestion, go: focusAccountQuestion },
+    ...sameAsks.map(askStop),
+    ...items.map((item): QuestionStop => ({
+      id: `fund|${item.key}`,
+      open: openKeys.includes(item.key),
+      go: (force, origin) => focusSoon(ids.question(item.key), force, origin),
+    })),
+    ...holdingAsks.map(askStop),
+  ];
+  const firstOpen = () => questionOrder().find((q) => q.open);
   const nothingWords = () =>
     keptPlans.length ? `Nothing will be saved. ${keptPlans.map(keptWords).join(". ")}.` : "Nothing from this statement will be saved.";
   // The accounts the last save couldn't create, while something still goes to them.
@@ -1270,12 +1285,13 @@ export function HoldingsImport({
     amfiBatch.current = null;
     const found = batch.keys.filter((key) => matched[key]).length;
     announce(`AMFI added: ${plural(found, "fund")} matched. ${questionCount ? `${questionsWords(questionCount === 1 ? "remains" : "remain")}.` : "No questions remain."}`);
-    if (accountQuestion) focusAccountQuestion(false, batch.origin);
-    else focusSoon(openHeadings()[0] ?? ids.summary, false, batch.origin);
+    const first = firstOpen();
+    if (first) first.go(false, batch.origin);
+    else focusSoon(ids.summary, false, batch.origin);
   });
 
-  const afterAnswer = useRef(false);
-  const afterAsk = useRef(false);
+  // The question just answered, until the plan is worked out again with its answer.
+  const afterAnswer = useRef<string | null>(null);
   const afterChange = useRef<{ key: string; accountId: string } | null>(null);
   useEffect(() => {
     if (!current) return;
@@ -1293,31 +1309,23 @@ export function HoldingsImport({
         focusSoon(target ? ids.row(target, itemOf.get(changed.key)!).change : rows.length ? ids.ready : ids.summary);
       }
     }
-    if ((!afterAnswer.current || questionKeys.length) && !afterAsk.current) return;
-    if (afterAsk.current && lookingUp.length) {
-      afterAsk.current = false;
-      return focusSoon(ids.questions);
-    }
-    if (afterAsk.current && questionKeys.length) {
-      // A rare question answered while fund questions are open: on to the next open one.
-      afterAsk.current = false;
-      return focusSoon(openHeadings()[0] ?? ids.questions);
-    }
-    afterAnswer.current = false;
-    afterAsk.current = false;
-    if (questionCount) {
-      if (accountQuestion) focusAccountQuestion();
-      else focusSoon(openHeadings()[0] ?? ids.summary);
-    } else {
-      focusSoon(ids.summary);
-      announce(nothing ? nothingWords() : "All questions answered. Ready to save.");
-    }
+    const from = afterAnswer.current;
+    if (!from) return;
+    afterAnswer.current = null;
+    // On to the next open question below the one answered, or the first above it when none is left
+    // below; with none left, to the bar's summary.
+    // Changed evidence can reopen the question just answered.
+    const next = nextOpen(questionOrder(), from) ?? firstOpen();
+    if (next) return next.go();
+    if (lookingUp.length) return focusSoon(ids.questions);
+    focusSoon(ids.summary);
+    announce(nothing ? nothingWords() : "All questions answered. Ready to save.");
   });
-  /** A rare question's answer: the focus goes on to the next open question, or to the bar's summary. */
+  /** A rare question's answer: the focus moves on once the plan is worked out again with it. */
   const answerAsk = (ask: Ask, main: boolean) => {
     if (!current) return;
     ask.set(main);
-    afterAsk.current = true;
+    afterAnswer.current = askStop(ask).id;
     // Keeping an account's saved holdings closes the edits of what it would have saved.
     if (ask.id.startsWith("same|") && main && editor) {
       const inAccount = editor.kind === "cost" ? editor.accountId === ask.accountId : editor.rowId.startsWith(`${ask.accountId}|`);
@@ -1335,11 +1343,16 @@ export function HoldingsImport({
     setHandled((all) => new Set(all).add(key));
     setTouched((all) => new Set(all).add(key));
     searches.settle(key);
-    const rest = openKeys.filter((k) => k !== key);
-    if (rest.length) {
-      focusSoon(ids.question(rest[0]));
+    // A holding's question below this one is there whatever the answer; any other question waits
+    // for the plan, which the answer can change.
+    const from = `fund|${key}`;
+    const order = questionOrder();
+    const below = order.slice(order.findIndex((q) => q.id === from) + 1).find((q) => q.open);
+    if (below?.id.startsWith("fund|")) {
+      afterAnswer.current = null;
+      below.go();
     } else {
-      afterAnswer.current = true;
+      afterAnswer.current = from;
     }
   };
   const reopen = (key: string) => {
@@ -1826,8 +1839,9 @@ export function HoldingsImport({
     </p>
   );
   const nextQuestion = () => {
-    if (accountQuestion) return focusAccountQuestion(true);
-    focusSoon(openHeadings()[0] ?? ids.questions, true);
+    const first = firstOpen();
+    if (first) first.go(true);
+    else focusSoon(ids.questions, true);
   };
 
   const header = (

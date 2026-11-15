@@ -318,6 +318,40 @@ test("a failed plan recovers with its accepted units difference", async () => {
   assert.equal(find(run, "Footer").action.disabled, false);
 });
 
+test("a pending plan can reopen the question just answered without announcing completion", async () => {
+  const { run, api } = setup({ entries: [], change(data) {
+    const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));
+    scheme.close = String(Number(scheme.close_calculated) + 1);
+    return data;
+  } });
+  const checked = (rows, evidence) => rows.map((r) =>
+    r.symbol === "INFZ90K01LQ6" && r.activityType === "BUY" && r.date === "2023-05-05" ? { ...r, duplicateOfId: evidence } : r);
+  api.activities.checkImport = async (rows) => checked(rows, "previous");
+  await run.flush();
+  assert.equal(askCards(run).length, 2);
+  let finish;
+  api.activities.checkImport = (rows) => new Promise((resolve) => { finish = () => resolve(checked(rows, "changed-evidence")); });
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  // The duplicate can be answered while the accepted units difference is still being checked.
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  assert.equal(askCards(run).length, 0);
+  document.activeElement = document.body;
+  const focused = [];
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  finish();
+  await run.flush();
+  const [reopened] = askCards(run);
+  assert.equal(askCards(run).length, 1);
+  assert.equal(reopened.title, "This purchase may already be in Mutual funds");
+  assert.deepEqual(focused, [reopened.headingId]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  await new Promise((resolve) => setTimeout(resolve, 70));
+  await run.flush();
+  assert.doesNotMatch(nodes(run.tree).find((node) => node.props?.role === "status").props.children, /All questions answered/);
+});
+
 for (const change of ["unchanged", "activity", "details", "line", "bank", "removed"]) {
   test(`a planning retry keeps duplicate answers only for unchanged evidence (${change})`, async () => {
     const pan = choices.panKey("ABCDE1234F");

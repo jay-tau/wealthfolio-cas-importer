@@ -72,6 +72,7 @@ import { useHoldingSearches } from "../components/review/search";
 import { bankKey, type ChosenFund, folioKey, fundKey, LEFT_OUT, NO_BANK, panKey } from "../lib/choices";
 import { readableName } from "../lib/fund-name";
 import { explanation, Explained } from "../lib/explained";
+import { nextOpen, type QuestionStop } from "../lib/focus";
 import { instrumentType } from "../lib/instrument-type";
 import { nameNumber } from "../lib/name-number";
 import { isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames } from "../lib/new-accounts";
@@ -1102,9 +1103,8 @@ export function DetailedImport({
     if (!folioAccount(folio)) return valueOf(folioKey(folio)) === null || !folio.PAN ? folioKey(folio) : panKey(folio.PAN);
     return bankChoiceOf(folio).key;
   };
-  /** Focuses the first account question, opening its box's folios when it's there. */
-  const focusAccountQuestion = (force = false, origin?: Element | null) => {
-    const folio = undecidedFolios[0];
+  /** Focuses a folio's account question, the first one by default, opening its box's folios when it's there. */
+  const focusAccountQuestion = (force = false, origin?: Element | null, folio = undecidedFolios[0]) => {
     if (!folio) return;
     const key = questionKey(folio);
     const box = boxOf(folio);
@@ -1118,12 +1118,42 @@ export function DetailedImport({
     }
     focusSoon(ids.check(check.id), force, origin);
   };
-  const nextQuestion = (force = true) => {
-    if (accountQuestion) return focusAccountQuestion(force);
-    if (openChecks.length) return focusCheck(openChecks[0], force);
-    if (openKeys.length) return focusSoon(ids.question(openKeys[0]), force);
-    if (openAsks.length) return focusSoon(ids.ask(openAsks[0].id), force);
-    focusSoon(ids.summary, force);
+  const askStop = (ask: Ask): QuestionStop => ({
+    id: `ask|${ask.id}`,
+    open: ask.answer === undefined,
+    go: (force, origin) => focusSoon(ids.ask(ask.id), force, origin),
+  });
+  /**
+   * Every question in the order it's shown, answered ones too: under Save to, each box's and then
+   * each of its folios' account and bank account, with the payment checks under the bank account
+   * they're for; then the funds to match, the funds whose rows don't add up and possible duplicates.
+   */
+  const questionOrder = (): QuestionStop[] => [
+    ...boxes.flatMap((box) => [box.key, bankKey(box.key), ...(box.pan ? box.folios.flatMap((f) => [folioKey(f), bankKey(folioKey(f))]) : [])])
+      .flatMap((key) => [
+        ...undecidedFolios.filter((f) => questionKey(f) === key).slice(0, 1).map((folio): QuestionStop => ({
+          id: `account|${key}`,
+          open: true,
+          go: (force, origin) => focusAccountQuestion(force, origin, folio),
+        })),
+        ...checks.filter((c) => c.anchor === key).map((check): QuestionStop => ({
+          id: `check|${check.id}`,
+          open: !answerOf(check),
+          go: (force, origin) => focusCheck(check, force, origin),
+        })),
+      ]),
+    ...items.map((item): QuestionStop => ({
+      id: `fund|${item.key}`,
+      open: openKeys.includes(item.key),
+      go: (force, origin) => focusSoon(ids.question(item.key), force, origin),
+    })),
+    ...asks.map(askStop),
+  ];
+  const firstOpen = () => questionOrder().find((q) => q.open);
+  const nextQuestion = () => {
+    const first = firstOpen();
+    if (first) first.go(true);
+    else focusSoon(ids.summary, true);
   };
 
   // As "Reading the statement…" ends: says what's still looked up, until the first searches are done.
@@ -1156,46 +1186,42 @@ export function DetailedImport({
     amfiBatch.current = null;
     const found = batch.keys.filter((key) => matched[key]).length;
     announce(`AMFI added: ${plural(found, "fund")} matched. ${questionCount ? `${questionsWords(questionCount === 1 ? "remains" : "remain")}.` : "No questions remain."}`);
-    if (accountQuestion) focusAccountQuestion(false, batch.origin);
-    else if (openChecks.length) focusCheck(openChecks[0], false, batch.origin);
-    else focusSoon(openKeys.length ? ids.question(openKeys[0]) : openAsks.length ? ids.ask(openAsks[0].id) : ids.summary, false, batch.origin);
+    const first = firstOpen();
+    if (first) first.go(false, batch.origin);
+    else focusSoon(ids.summary, false, batch.origin);
   });
 
-  // After the last answer, the focus goes on to what's left, or to the summary.
-  const afterAnswer = useRef(false);
+  /** What the bar's status says once every question is answered. */
+  const allAnswered = () => `All questions answered.${(counts?.toImport || counts?.importedDuplicates) && !editor ? " Ready to import." : ""}`;
+  // The question just answered, until the plan is worked out again with its answer.
+  const afterAnswer = useRef<string | null>(null);
   const afterChange = useRef<string | null>(null);
-  const afterAsk = useRef(false);
   useEffect(() => {
     if (!current) return;
-    if (afterAsk.current) {
-      // A rare question answered: on to the next open question, once the plan is worked out again.
-      afterAsk.current = false;
-      if (lookingUp.length) focusSoon(ids.questions);
-      else if (questionCount) nextQuestion(false);
-      else {
-        focusSoon(ids.summary);
-        announce(`All questions answered.${counts?.toImport || counts?.importedDuplicates ? " Ready to import." : ""}`);
-      }
-    }
     const changed = afterChange.current;
     if (changed) {
       afterChange.current = null;
       const row = rows.find((r) => r.items.some((i) => i.key === changed));
       focusSoon(row ? ids.row(row, itemOf.get(changed)!).change : rows.length ? ids.ready : ids.summary);
     }
-    if (!afterAnswer.current || questionKeys.length) return;
-    afterAnswer.current = false;
-    if (questionCount) nextQuestion(false);
-    else {
-      focusSoon(ids.summary);
-      announce(`All questions answered.${counts?.toImport && !editor ? " Ready to import." : ""}`);
-    }
+    const from = afterAnswer.current;
+    if (!from) return;
+    afterAnswer.current = null;
+    // On to the next open question below the one answered, or the first above it when none is left
+    // below; with none left, to the bar's summary.
+    // Changed evidence can reopen the question just answered.
+    const next = nextOpen(questionOrder(), from) ?? firstOpen();
+    if (next) return next.go();
+    if (lookingUp.length) return focusSoon(ids.questions);
+    focusSoon(ids.summary);
+    announce(allAnswered());
   });
 
+  /** A rare question's answer: the focus moves on once the plan is worked out again with it. */
   const answerAsk = (ask: Ask, main: boolean) => {
     if (staleQuestions) return;
     ask.set(main);
-    afterAsk.current = true;
+    afterAnswer.current = askStop(ask).id;
   };
   const reopenAsk = (ask: Ask) => {
     ask.set(undefined);
@@ -1206,33 +1232,39 @@ export function DetailedImport({
     setHandled((all) => new Set(all).add(key));
     setTouched((all) => new Set(all).add(key));
     searches.settle(key);
-    const rest = openKeys.filter((k) => k !== key);
-    if (rest.length) focusSoon(ids.question(rest[0]));
-    else afterAnswer.current = true;
+    // A fund's question below this one is there whatever the answer; any other question waits for
+    // the plan, which the answer can change.
+    const from = `fund|${key}`;
+    const order = questionOrder();
+    const below = order.slice(order.findIndex((q) => q.id === from) + 1).find((q) => q.open);
+    if (below?.id.startsWith("fund|")) {
+      afterAnswer.current = null;
+      below.go();
+    } else {
+      afterAnswer.current = from;
+    }
   };
   const reopen = (key: string) => {
     if (busyEditor(`answer-${key}`)) return;
     setAnswers((all) => ({ ...all, [key]: undefined }));
     focusSoon(ids.question(key));
   };
+  // A payment check's answer doesn't change the plan, so the focus moves on at once.
   const answerCheck = (check: BankCheckModel, linked: boolean) => {
     const shown = new Map(check.pairs.map((p) => [p.entry.id, { entry: p.entry, facts: current!.facts.get(p.entry.id)! }]));
     setCheckAnswers((all) => ({ ...all, [check.id]: { linked, signature: check.signature, shown } }));
     const receipt = `${checkReceipt(check, linked ? check.pairs.filter((p) => tickedOf(check).has(p.key)).length : 0)}.`;
-    const rest = openChecks.filter((c) => c.id !== check.id);
-    if (accountQuestion) focusAccountQuestion();
-    else if (rest.length) focusCheck(rest[0]);
-    else if (openKeys.length) focusSoon(ids.question(openKeys[0]));
-    else if (openAsks.length) focusSoon(ids.ask(openAsks[0].id));
-    else if (lookingUp.length) {
+    const next = nextOpen(questionOrder(), `check|${check.id}`);
+    if (next) {
+      next.go();
+      announce(receipt);
+    } else if (lookingUp.length) {
       focusSoon(ids.questions);
-      return announce(`${receipt} Looking up ${plural(lookingUp.length, "fund")}…`);
-    }
-    else {
+      announce(`${receipt} Looking up ${plural(lookingUp.length, "fund")}…`);
+    } else {
       focusSoon(ids.summary);
-      return announce(`${receipt} All questions answered.${counts?.toImport && !editor ? " Ready to import." : ""}`);
+      announce(`${receipt} ${allAnswered()}`);
     }
-    announce(receipt);
   };
 
   // One edit at a time: asking for another goes back to the open one.
@@ -2072,7 +2104,7 @@ export function DetailedImport({
             {current && <Badge variant="outline">{readyCount} ready</Badge>}
             {current && outCount > 0 && <Badge variant="outline">{outCount} not included</Badge>}
             {questionCount > 0 && (
-              <Button type="button" variant="outline" size="xs" className="border-warning" onClick={() => nextQuestion()}>
+              <Button type="button" variant="outline" size="xs" className="border-warning" onClick={nextQuestion}>
                 {plural(questionCount, "question")}
                 {countParts && <span className="sr-only">: {countParts}</span>}
               </Button>
@@ -2445,7 +2477,7 @@ export function DetailedImport({
               : editor
               ? { label: "Go to it", onClick: () => focusSoon(ids.changePanel(editor.rowId), true) }
               : questionCount && !lookingUp.length
-                ? { label: questionCount === 1 ? "Go to the question" : "Go to the next question", onClick: () => nextQuestion() }
+                ? { label: questionCount === 1 ? "Go to the question" : "Go to the next question", onClick: nextQuestion }
                 : undefined
         }
       />
