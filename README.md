@@ -143,6 +143,17 @@ uses them as printed. The price can differ from the fund's NAV for that day; for
 hand, it also becomes the fund's price for that day. The add-on can't tell whether the amount used
 to derive a NAV includes that day's charges, and treats it as before them.
 
+casparser lists each charge on a row of its own after its transaction, without linking the two, so
+a charge goes with the one transaction of its fund and folio on its day that it can belong to:
+stamp duty with a purchase, a switch in or a reinvested dividend; STT with a redemption or a switch
+out; TDS with a redemption, a switch out or a dividend. A gift, a segregated portfolio's credit, a
+reversal or a row casparser couldn't read on that day counts for every kind too, and a gift or
+credit with a charge on its day is left out. With more than one, the add-on can't tell which, and
+leaves them all out, unless none is a reversal or a row casparser couldn't read, they're equal, with
+the same type, units and amount, and the day has one charge of that kind for each, all for the same
+positive amount. Then each gets one, in the statement's order; any pairing would import the same
+activities.
+
 An activity also keeps each of its charges as a tax line labelled "Stamp duty", "STT" or "TDS". The
 lines add up to its tax, and the activity's details list them under it; they change no figure.
 Activities that add-on version 2.2.0 or earlier imported have only the total, and importing the
