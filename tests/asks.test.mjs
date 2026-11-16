@@ -1,7 +1,7 @@
 // The words of the Review screen's rare questions, from made-up plans.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { answerNames, bothRealWords, holdingAskWords, MISSING_WHY, sameDateChanges, sameDateWords } from "../src/lib/asks.ts";
+import { answerNames, bothRealWords, holdingAskWords, MISSING_WHY, placeWords, sameDateChanges, sameDateWords } from "../src/lib/asks.ts";
 import { planSnapshots, snapshotOf } from "../src/cas/holdings.ts";
 
 const folio = { id: "folio|7712045", kind: "folio", label: "Folio 7712045", title: "Mutual fund folio 7712045", holdings: [] };
@@ -214,4 +214,14 @@ test("answered lines that read the same are numbered for Change answer, open que
     [`${same}, question 1`, undefined, "Fund: skipped", undefined, ` ${same}, question 5`]);
   assert.deepEqual(answerNames([same, "Fund: skipped"]), [same, "Fund: skipped"]);
   assert.deepEqual(answerNames([undefined, undefined]), [undefined, undefined]);
+});
+
+test("a numbered possible duplicate says what its number counts, amount or none", () => {
+  assert.equal(placeWords({ n: 1, of: 2 }, "purchase", "₹5,000", "3 Jul 2026"),
+    "The statement lists 2 purchases of ₹5,000 in this fund and folio on 3 Jul 2026; this is the first.");
+  assert.equal(placeWords({ n: 2, of: 2 }, "switch in", "₹9,162.28", "20 Jun 2024"),
+    "The statement lists 2 switches in of ₹9,162.28 in this fund and folio on 20 Jun 2024; this is the second.");
+  // Rows without an amount are counted apart from rows with one.
+  assert.equal(placeWords({ n: 11, of: 12 }, "gift received", undefined, "4 Jun 2024"),
+    "The statement lists 12 gifts received with no amount shown in this fund and folio on 4 Jun 2024; this is the 11th.");
 });

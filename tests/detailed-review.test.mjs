@@ -247,7 +247,7 @@ test("rare questions keep their cards and answers while an answer works the plan
     "This switch in may already be in Mutual funds",
   ]);
   assert.deepEqual(cards.map((c) => [c.main.label, c.other.label]), [
-    ["Skip this fund", "Import with this difference"], ["Skip this transaction", "Import it as a second purchase"], ["Skip this transaction", "Import it as a second switch in"],
+    ["Skip this fund", "Import with this difference"], ["Skip this transaction", "Import it as another purchase"], ["Skip this transaction", "Import it as another switch in"],
   ]);
   assert.equal(find(run, "Footer").action.disabled, true);
   assert.equal(find(run, "TransactionsSummary").breakdown.duplicates, 2);
@@ -603,14 +603,14 @@ test("a possible duplicate imported anyway counts in every number, and its fund'
   assert.equal(find(run, "Footer").action.disabled, true);
   card.other.onClick();
   await run.flush();
-  assert.equal(askAnswers(run)[0].text, "₹24,998.75 purchase of Fictiva Liquid Fund on 5 May 2023: imported as a second purchase");
+  assert.equal(askAnswers(run)[0].text, "₹24,998.75 purchase of Fictiva Liquid Fund on 5 May 2023: imported as another purchase");
   assert.deepEqual(footer(run).slice(0, 2), [
     "Import 13 transactions for 4 funds into Mutual funds.",
     "1 fund's units won't match the statement after importing: Fictiva Liquid Fund.",
   ]);
   assert.match(footer(run).at(-2), /^1 possible duplicate imported by your answer\.$/);
   const row = find(run, "FundsReadyTable").rows.find((r) => r.name.includes("Liquid"));
-  assert.equal(row.note, "After import: 17.800 units · Statement: 8.053. Includes the second purchase you chose.");
+  assert.equal(row.note, "After import: 17.800 units · Statement: 8.053. Includes another purchase you chose.");
   const b = find(run, "TransactionsSummary").breakdown;
   assert.deepEqual([b.duplicates, b.importedDuplicates, b.toImport], [0, 1, 12]);
 });
@@ -779,39 +779,173 @@ test("a withheld statement-price asset keeps an AMFI result unconfirmed", async 
   }
 });
 
-test("equal possible duplicates have numbered button names", async () => {
+/**
+ * The made-up statement's Liquid Fund in its first folio only, with its purchase twice and, between
+ * the two, one of `other` rupees on the same day, if given.
+ */
+const equalPurchases = (other) => (data) => {
+  const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+  const purchase = scheme.transactions.find((t) => t.type === "PURCHASE");
+  const between = other && { ...structuredClone(purchase), amount: other, units: "1.000" };
+  scheme.transactions = [purchase, ...(between ? [between] : []), structuredClone(purchase)];
+  scheme.open = "0";
+  scheme.close = scheme.close_calculated = String(Number(purchase.units) * 2 + (between ? 1 : 0));
+  data.folios = [{ ...data.folios[0], schemes: [scheme] }];
+  return data;
+};
+const DAY = String.raw`\d+ \w+ \d{4}`;
+
+test("equal possible duplicates in one folio say which they are by their place on the statement", async () => {
+  const { run, api } = setup({ entries: [], change: equalPurchases("1000.00") });
+  api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  // The purchase between them, for another amount, isn't equal to them: its card has no number and
+  // doesn't count.
+  const cards = askCards(run);
+  assert.deepEqual(cards.map((c) => c.title), ["This purchase (1 of 2)", "This purchase", "This purchase (2 of 2)"].map((t) => `${t} may already be in Mutual funds`));
+  assert.deepEqual(cards.map((c) => textOf(c.children).split("Already in")[0].replace(/ · [\d,.]+ units · ₹[\d,.]+$/, "")),
+    ["Purchase (1 of 2)", "Purchase", "Purchase (2 of 2)"].map((m) => textOf(cards[0].children).split("Already in")[0].match(/^On this statement: [^·]+ · /)[0] + `${m} · Fictiva Liquid Fund`));
+  // A numbered card says what's counted, and in what order.
+  assert.deepEqual(cards.map((c) => textOf(c.children).match(/The statement lists .*$/)?.[0].replace(new RegExp(DAY), "<day>")), [
+    "The statement lists 2 purchases of ₹24,998.75 in this fund and folio on <day>; this is the first.", undefined,
+    "The statement lists 2 purchases of ₹24,998.75 in this fund and folio on <day>; this is the second.",
+  ]);
+  assert.match(cards[0].main.name, new RegExp(`^Skip this transaction: Fictiva Liquid Fund, purchase \\(1 of 2\\) of ₹[\\d,.]+ on ${DAY}$`));
+  assert.match(cards[1].main.name, new RegExp(`^Skip this transaction: Fictiva Liquid Fund, purchase of ₹1,000 on ${DAY}$`));
+  assert.match(cards[2].other.name, new RegExp(`^Import it as another purchase: Fictiva Liquid Fund, purchase \\(2 of 2\\) of ₹[\\d,.]+ on ${DAY}$`));
+  // Answered alike, each line says which it is, so Change answer's name needs no number.
+  for (const card of cards) card.main.onClick();
+  await run.flush();
+  const alike = askAnswers(run);
+  assert.match(alike[0].text, new RegExp(`^₹[\\d,.]+ purchase \\(1 of 2\\) of Fictiva Liquid Fund on ${DAY}: skipped$`));
+  assert.equal(alike[2].text, alike[0].text.replace("(1 of 2)", "(2 of 2)"));
+  assert.deepEqual(alike.map((a) => a.name), alike.map((a) => a.text));
+  // Reopened, the card keeps its number; answered the other way, so does each line.
+  alike[2].onChange();
+  await run.flush();
+  const [reopened] = askCards(run);
+  assert.equal(reopened.title, "This purchase (2 of 2) may already be in Mutual funds");
+  assert.match(textOf(reopened.children), /^On this statement: [^·]+ · Purchase \(2 of 2\) · /);
+  reopened.other.onClick();
+  await run.flush();
+  const differently = askAnswers(run);
+  assert.equal(differently[0].text, alike[0].text);
+  assert.equal(differently[2].text, alike[2].text.replace(/: skipped$/, ": imported as another purchase"));
+  assert.deepEqual(differently.map((a) => a.name), differently.map((a) => a.text));
+});
+
+test("statement places don't rescan transactions on an unrelated render", async () => {
+  const { run, api, data } = setup({ entries: [], change: equalPurchases() });
+  api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  const scheme = data.folios[0].schemes[0];
+  const transactions = scheme.transactions;
+  let reads = 0;
+  Object.defineProperty(scheme, "transactions", { get() { reads++; return transactions; } });
+  run.update({});
+  await run.flush();
+  assert.equal(reads, 0, "statement order is unchanged, so reuse its places");
+  assert.match(askCards(run)[1].title, /purchase \(2 of 2\)/);
+});
+
+test("a lone amount-less gift question counts unasked rows with different units, apart from amounts shown", async () => {
   const { run, api } = setup({ entries: [], change(data) {
-    const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
-    const purchase = scheme.transactions.find((t) => t.type === "PURCHASE");
-    scheme.transactions = [purchase, structuredClone(purchase)];
-    scheme.open = "0";
-    scheme.close = scheme.close_calculated = String(Number(purchase.units) * 2);
-    data.folios = [{ ...data.folios[0], schemes: [scheme] }];
+    equalPurchases()(data);
+    const scheme = data.folios[0].schemes[0];
+    const gift = { ...scheme.transactions[0], type: "GIFT_IN", amount: null, units: "10", nav: "50", balance: null };
+    scheme.transactions = [gift, { ...gift, amount: "500" }, { ...gift, units: "11" }];
+    scheme.close = scheme.close_calculated = "31";
     return data;
+  } });
+  api.activities.checkImport = async (rows) => rows.map((r) => r.quantity === "11" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  const cards = askCards(run);
+  assert.equal(cards.length, 1);
+  assert.equal(cards[0].title, "This gift received (2 of 2) may already be in Mutual funds");
+  assert.match(textOf(cards[0].children), /The statement lists 2 gifts received with no amount shown in this fund and folio on .*; this is the second\.$/);
+  assert.match(cards[0].main.name, /gift received \(2 of 2\) on /);
+});
+
+test("a purchase on the statement twice in one folio says which line is which", async () => {
+  // Without Wealthfolio's row IDs, the second purchase repeats the first's line.
+  const { run, api } = setup({ entries: [], change: equalPurchases() });
+  api.activities.checkImport = async (rows) => rows.map((r) => { const { sourceRecordId, ...rest } = r; return rest; });
+  await run.flush();
+  const [twice, ...more] = askCards(run);
+  assert.equal(more.length, 0);
+  // Its heading says which one repeats an earlier one.
+  assert.equal(twice.title, "This purchase (2 of 2) matches an earlier purchase on this statement");
+  assert.match(textOf(twice.children), /^On this statement: [^·]+ · Purchase \(2 of 2\) · Fictiva Liquid Fund · .*Also on this statement: [^·]+ · Purchase \(1 of 2\) · Fictiva Liquid Fund · /);
+  assert.match(textOf(twice.children), new RegExp(`The statement lists 2 purchases of ₹24,998\\.75 in this fund and folio on ${DAY}; this is the second\\.$`));
+  assert.match(twice.main.name, /^Skip this transaction: Fictiva Liquid Fund, purchase \(2 of 2\) of /);
+  twice.main.onClick();
+  await run.flush();
+  assert.match(askAnswers(run)[0].text, new RegExp(`^₹[\\d,.]+ purchase \\(2 of 2\\) of Fictiva Liquid Fund on ${DAY}: skipped$`));
+});
+
+test("a line another fund's cash repeats names each line's own fund", async () => {
+  // Without Wealthfolio's row IDs, two funds' purchases of one amount on one day have equal deposits.
+  const { run, api } = setup({ entries: [], change(d) {
+    const [liquid] = equalPurchases()(d).folios[0].schemes;
+    const purchase = liquid.transactions[0];
+    liquid.transactions = [purchase];
+    liquid.close = liquid.close_calculated = purchase.units;
+    const other = {
+      ...structuredClone(liquid), scheme: "Fictiva Overnight Fund - Direct Plan - Growth", isin: "INFZ90K01ON9", rta_code: "FONDG",
+    };
+    d.folios[0].schemes.push(other);
+    return d;
+  } });
+  api.activities.checkImport = async (rows) => rows.map((r) => { const { sourceRecordId, ...rest } = r; return rest; });
+  await run.flush();
+  const [card] = askCards(run);
+  assert.match(textOf(card.children), /^On this statement: [^·]+ · Purchase · Fictiva Overnight Fund · .*Also on this statement: [^·]+ · Purchase · Fictiva Liquid Fund · /);
+});
+
+test("equal possible duplicates are numbered in a folio whose number another fund house's folio also has", async () => {
+  const { run, api, data } = setup({ entries: [], change(d) {
+    equalPurchases()(d);
+    const [fictiva] = d.folios;
+    const [liquid] = fictiva.schemes;
+    const purchase = structuredClone(liquid.transactions[0]);
+    const testbridge = {
+      ...structuredClone(liquid), scheme: "Testbridge Liquid Fund - Direct Plan - Growth", isin: "INFZ91T01LQ2", rta_code: "TLQDG",
+      transactions: [purchase], close: purchase.units, close_calculated: purchase.units,
+    };
+    // The other fund house's folio comes first, with the same number.
+    d.folios = [{ ...structuredClone(fictiva), amc: "Testbridge Mutual Fund", schemes: [testbridge] }, fictiva];
+    return d;
   } });
   api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
   await run.flush();
+  assert.equal(data.folios[0].folio, data.folios[1].folio);
+  assert.deepEqual(askCards(run).map((c) => textOf(c.children).match(/^On this statement: [^·]+ · ([^·]+ · [^·]+) · /)[1]),
+    ["Purchase · Testbridge Liquid Fund", "Purchase (1 of 2) · Fictiva Liquid Fund", "Purchase (2 of 2) · Fictiva Liquid Fund"]);
+});
+
+test("equal possible duplicates in one folio and another name the folio and their place in it", async () => {
+  const { run, api, data } = setup({ entries: [], change(d) {
+    equalPurchases()(d);
+    const [scheme] = d.folios[0].schemes;
+    const other = { ...scheme, transactions: [structuredClone(scheme.transactions[0])] };
+    other.close = other.close_calculated = other.transactions[0].units;
+    d.folios.push({ ...structuredClone(d.folios[0]), folio: "222222222", schemes: [other] });
+    return d;
+  } });
+  api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  const [first, second] = data.folios.map((f) => f.folio);
   const cards = askCards(run);
-  assert.equal(cards.length, 2);
-  assert.equal(cards[0].title, cards[1].title);
-  assert.deepEqual(cards.map((c) => c.main.name), cards.map((c, i) => `Skip this transaction: ${c.main.name.replace(/^Skip this transaction: /, "").replace(/, transaction \d$/, "")}, transaction ${i + 1}`));
-  assert.match(cards[0].main.name, /^Skip this transaction: Fictiva Liquid Fund, purchase of ₹[\d,.]+ on \d+ \w+ \d{4}, transaction 1$/);
-  cards[0].main.onClick();
+  assert.deepEqual(cards.map((c) => c.title), [`This purchase (1 of 2) in folio ${first}`, `This purchase (2 of 2) in folio ${first}`, `This purchase in folio ${second}`]
+    .map((t) => `${t} may already be in Mutual funds`));
+  assert.deepEqual(cards.map((c) => textOf(c.children).match(/^On this statement: [^·]+ · ([^·]+ · [^·]+) · /)[1]),
+    [`Purchase (1 of 2) · Fictiva Liquid Fund, folio ${first}`, `Purchase (2 of 2) · Fictiva Liquid Fund, folio ${first}`, `Purchase · Fictiva Liquid Fund, folio ${second}`]);
+  for (const card of cards) card.main.onClick();
   await run.flush();
-  // Answered, its line names it: Change answer's name adds a number only once another line reads the same.
-  assert.match(askAnswers(run)[0].text, /^₹[\d,.]+ purchase of Fictiva Liquid Fund on \d+ \w+ \d{4}: skipped$/);
-  assert.equal(askAnswers(run)[0].name, askAnswers(run)[0].text);
-  cards[1].main.onClick();
-  await run.flush();
-  const answers = askAnswers(run);
-  assert.equal(answers[0].text, answers[1].text);
-  assert.deepEqual(answers.map((a) => a.name), [1, 2].map((n) => `${answers[0].text}, question ${n}`));
-  // Answered differently, the lines differ and aren't numbered.
-  find(run, "AskAnswered").onChange();
-  await run.flush();
-  askCards(run)[0].other.onClick();
-  await run.flush();
-  assert.deepEqual(askAnswers(run).map((a) => a.name), askAnswers(run).map((a) => a.text));
+  assert.deepEqual(askAnswers(run).map((a) => a.text.replace(/^₹[\d,.]+ /, "").replace(new RegExp(` on ${DAY}`), "")), [
+    `purchase (1 of 2) of Fictiva Liquid Fund, folio ${first}: skipped`, `purchase (2 of 2) of Fictiva Liquid Fund, folio ${first}: skipped`,
+    `purchase of Fictiva Liquid Fund, folio ${second}: skipped`,
+  ]);
 });
 
 test("equal possible duplicates in two folios name their folio, not a number", async () => {
@@ -847,7 +981,7 @@ test("equal possible duplicates in two folios name their folio, not a number", a
   reopened.other.onClick();
   await run.flush();
   assert.deepEqual(askAnswers(run).map((a) => a.text.replace(/^₹[\d,.]+ purchase of /, "").replace(/ on \d+ \w+ \d{4}/, "")), [
-    `Fictiva Liquid Fund, folio ${folios[0]}: skipped`, `Fictiva Liquid Fund, folio ${folios[1]}: imported as a second purchase`,
+    `Fictiva Liquid Fund, folio ${folios[0]}: skipped`, `Fictiva Liquid Fund, folio ${folios[1]}: imported as another purchase`,
   ]);
 });
 
@@ -1102,7 +1236,7 @@ test("an accepted paired gift shows the right difference note in both accounts, 
     for (const row of rows) {
       assert.equal(row.group.forced, 1);
       assert.equal(row.unitsAfter, row.group.accountId === "other" ? "15.000" : "5.000");
-      assert.ok(row.note.endsWith(`Includes the second gift ${row.group.accountId === "other" ? "received" : "given"} you chose.`), row.note);
+      assert.ok(row.note.endsWith(`Includes another gift ${row.group.accountId === "other" ? "received" : "given"} you chose.`), row.note);
     }
     run.dispose();
   }
@@ -2240,8 +2374,8 @@ test("a possible duplicate redemption and cash dividend are asked about in their
   await run.flush();
   const cards = askCards(run);
   assert.deepEqual(cards.map((c) => [c.title, c.other.label]), [
-    ["This redemption may already be in Mutual funds", "Import it as a second redemption"],
-    ["This cash dividend may already be in Mutual funds", "Import it as a second cash dividend"],
+    ["This redemption may already be in Mutual funds", "Import it as another redemption"],
+    ["This cash dividend may already be in Mutual funds", "Import it as another cash dividend"],
   ]);
   const evidence = (card) => nodes(card.children).filter((n) => n.type === "p").map(textOf);
   assert.match(evidence(cards[0])[0], /^On this statement: \d+ \w+ \d{4} · Redemption · Fictiva Liquid Fund · [\d,.]+ units · ₹[\d,.]+$/);
@@ -2255,14 +2389,14 @@ test("a possible duplicate redemption and cash dividend are asked about in their
   const rows = find(run, "FundsReadyTable").rows;
   const liquid = rows.find((r) => r.name.includes("Liquid"));
   const bond = rows.find((r) => r.name.includes("Corporate Bond"));
-  // A second redemption takes units away; a second cash dividend adds income, not units.
-  assert.match(liquid.note, /^After import: [\d,.-]+ units · Statement: [\d,.]+\. Includes the second redemption you chose\.$/);
-  assert.match(bond.note, /^Includes the second cash dividend you chose: ₹[\d,.]+ more income\.$/);
+  // Another redemption takes units away; another cash dividend adds income, not units.
+  assert.match(liquid.note, /^After import: [\d,.-]+ units · Statement: [\d,.]+\. Includes another redemption you chose\.$/);
+  assert.match(bond.note, /^Includes another cash dividend you chose: ₹[\d,.]+ more income\.$/);
   assert.match(textOf(find(run, "Footer").lines), /2 possible duplicates imported by your answer\./);
   assert.equal(find(run, "TransactionsSummary").breakdown.importedDuplicates, 2);
 });
 
-test("a second cash dividend's income stays visible when a second purchase also changes the fund's units", async () => {
+test("another cash dividend's income stays visible when another purchase also changes the fund's units", async () => {
   const change = (data) => {
     const folio = data.folios[1];
     data.folios = [{ ...folio, schemes: [folio.schemes.find((s) => s.scheme.includes("Corporate Bond"))] }];
@@ -2284,7 +2418,7 @@ test("a second cash dividend's income stays visible when a second purchase also 
   await run.flush();
   const row = find(run, "FundsReadyTable").rows[0];
   assert.match(row.note, /^After import: .* Includes the 2 possible duplicates you chose\./);
-  assert.match(row.note, /Includes the second cash dividend you chose: ₹[\d,.]+ more income\.$/);
+  assert.match(row.note, /Includes another cash dividend you chose: ₹[\d,.]+ more income\.$/);
 });
 
 /** The made-up purchase's bank entry chosen, ready to import into Mutual funds with Savings. */

@@ -1,7 +1,7 @@
 // The Review screen's dates, units, amounts and the purchase cost a user types.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { exchangeOf, grouped, longDate, parseCost, rupees, shortDate, units } from "../src/lib/review-format.ts";
+import { exchangeOf, grouped, longDate, movements, ordinal, parseCost, rupees, shortDate, units } from "../src/lib/review-format.ts";
 
 test("dates read as a day, a short month and a year", () => {
   assert.equal(longDate("2026-07-31"), "31 Jul 2026");
@@ -54,4 +54,14 @@ test("shares on Indian exchanges go by the exchange's name", () => {
   assert.deepEqual(exchangeOf("XBOM"), { short: "BSE", long: "Bombay Stock Exchange (BSE)" });
   assert.equal(exchangeOf("XNYS"), undefined);
   assert.equal(exchangeOf(null), undefined);
+});
+
+test("ordinals are words to tenth, then numbers with their suffix", () => {
+  assert.deepEqual([1, 2, 3, 10].map(ordinal), ["first", "second", "third", "tenth"]);
+  assert.deepEqual([11, 12, 13, 21, 22, 23, 101, 111, 112].map(ordinal), ["11th", "12th", "13th", "21st", "22nd", "23rd", "101st", "111th", "112th"]);
+});
+
+test("a movement's plural puts the s on its noun", () => {
+  assert.deepEqual(["purchase", "SIP purchase", "redemption", "cash dividend", "switch in", "switch out", "gift received", "sale"].map(movements),
+    ["purchases", "SIP purchases", "redemptions", "cash dividends", "switches in", "switches out", "gifts received", "sales"]);
 });
