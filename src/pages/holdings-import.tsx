@@ -1836,6 +1836,7 @@ export function HoldingsImport({
   const see = (plan: AccountPlan) => (
     <p key={`see:${plan.accountId}`}>
       <LinkButton
+        alone
         type="button"
         aria-expanded={!!open[`snapshot:${plan.accountId}`]}
         aria-controls={id(`snapshot-${plan.accountId}`)}
@@ -2148,6 +2149,7 @@ export function HoldingsImport({
           <p className="text-success text-sm">Its existing holdings will be kept for {date}.</p>
           <div className="flex flex-wrap items-baseline gap-x-2 text-sm">
             <Disclosure
+              alone
               label="Show this statement's holdings"
               ariaLabel={`Show this statement's holdings for ${accountName(plan.accountId)}`}
               open={!!open[`kept:${plan.accountId}`]}

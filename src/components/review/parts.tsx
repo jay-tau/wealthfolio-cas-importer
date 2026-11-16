@@ -22,9 +22,24 @@ export function WrapButton({ className = "", style, ...props }: ButtonProps) {
   );
 }
 
-/** A link-styled button for Change, Add cost and the like, which can sit in a line of text. */
-export function LinkButton({ className = "", ...props }: ButtonProps) {
-  return <Button variant="link" size="sm" {...props} className={`h-auto p-0 whitespace-normal text-start ${className}`} />;
+/**
+ * A link-styled button's classes. Below 1,024 px Wealthfolio's Button is at least 44 px tall, which
+ * puts a link in a line of text on a tall line of its own once the line wraps. In a line of text it
+ * keeps the line's height instead: `cn` lets `max-lg:min-h-0` replace `max-lg:min-h-11` (WCAG 2.5.8
+ * sets no minimum size for a target in a sentence, or for one with room around it, as Change answer
+ * beside its line has), and `border-0` drops the Button's transparent border, which made the line
+ * 2 px taller. It stays 44 px tall on a touch screen, where Wealthfolio's `pointer-coarse:min-h-11`
+ * comes later in its CSS and wins. `alone`: not in a line of text, so it keeps Wealthfolio's 44 px
+ * wherever Wealthfolio's buttons have them.
+ */
+const linkClasses = (alone: boolean) => `h-auto p-0 whitespace-normal text-start${alone ? "" : " max-lg:min-h-0 border-0"}`;
+
+/**
+ * A link-styled button for Change, Add cost and the like, which can sit in a line of text; `alone`
+ * for one on its own or among buttons, such as Use another file.
+ */
+export function LinkButton({ className = "", alone = false, ...props }: ButtonProps & { alone?: boolean }) {
+  return <Button variant="link" size="sm" {...props} className={`${linkClasses(alone)} ${className}`} />;
 }
 
 /** Badges for a plan and option, with a space before each; one that differs from the statement's warns. */
@@ -187,6 +202,7 @@ export function Disclosure({
   children,
   ariaLabel,
   id,
+  alone = false,
 }: {
   label: ReactNode;
   open: boolean;
@@ -194,13 +210,15 @@ export function Disclosure({
   children: ReactNode;
   ariaLabel?: string;
   id?: string;
+  /** Not in a line of text, as for LinkButton. */
+  alone?: boolean;
 }) {
   return (
     <Collapsible open={open} onOpenChange={onOpenChange} className="contents">
       <CollapsibleTrigger
         id={id}
         aria-label={ariaLabel}
-        render={<Button variant="link" size="sm" className="h-auto p-0 whitespace-normal text-start" />}
+        render={<Button variant="link" size="sm" className={linkClasses(alone)} />}
       >
         {label}
       </CollapsibleTrigger>

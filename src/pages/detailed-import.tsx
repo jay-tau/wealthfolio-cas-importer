@@ -2473,6 +2473,7 @@ export function DetailedImport({
           const see = (
             <p key="see">
               <LinkButton
+                alone
                 type="button"
                 aria-expanded={!!open.every}
                 aria-controls={ids.every}

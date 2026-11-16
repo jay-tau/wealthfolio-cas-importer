@@ -159,7 +159,7 @@ export function Footer({
         )}
         {/* In the buttons' row, which is as tall as Wealthfolio's touch targets anyway, at its end. */}
         {fold && (
-          <LinkButton type="button" className="ms-auto" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(!open)}>
+          <LinkButton alone type="button" className="ms-auto" aria-expanded={open} aria-controls={detailsId} onClick={() => setOpen(!open)}>
             {open ? (
               "Hide details"
             ) : (
