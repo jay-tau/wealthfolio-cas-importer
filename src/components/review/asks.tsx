@@ -62,7 +62,7 @@ export function AskCard({
           {other.label}
         </WrapButton>
         {why && (
-          <Disclosure label="Why am I asked?" ariaLabel={`Why am I asked? ${title}: ${target}`} open={why.open} onOpenChange={why.onOpenChange}>
+          <Disclosure alone label="Why am I asked?" ariaLabel={`Why am I asked? ${title}: ${target}`} open={why.open} onOpenChange={why.onOpenChange}>
             <p className="text-muted-foreground mt-1 border-s-2 ps-3 text-sm">{why.text}</p>
           </Disclosure>
         )}

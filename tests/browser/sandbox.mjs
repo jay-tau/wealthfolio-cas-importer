@@ -206,6 +206,73 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       }
     };
+    // Below 1,024 px Wealthfolio's Button is at least 44 px tall, link-styled ones too. With its CSS loaded
+    // for this check alone, at a phone's 360 px, where the ready lists are stacked, and at 800 px by default,
+    // each link-styled button showing in a line of text is no taller than its lines of text, so it keeps
+    // the line's height (#250); one on its own line or among buttons (`ALONE`) keeps the 44 px. With a
+    // touch screen's pointer, in Chromium, whose pointer can change in an open page, every one keeps them.
+    // `includes`: links that must be among those measured at some width, by their text. Then the frame gets
+    // its size back.
+    const ALONE = /^(Use another file|Details( · \d+ warnings?)?|Hide details|See every transaction|See the holdings in .+ after saving|Save part of it to another account|Why\?|Why am I asked\?|Show this statement's holdings|Forget saved password)$/;
+    const linksKeepTheirLine = async (what, includes, widths = [360, 800]) => {
+      const inFrame = tab.frames()[1];
+      const before = await tab.evaluate(() => document.querySelector("iframe").getAttribute("style"));
+      const touch = browser.browserType().name() === "chromium" ? await tab.context().newCDPSession(tab) : null;
+      const measured = new Set();
+      try {
+        await inFrame.evaluate((css) => {
+          const sheet = document.createElement("style");
+          sheet.id = "links-css";
+          sheet.textContent = css;
+          document.head.append(sheet);
+        }, wealthfolioCss);
+        for (const width of widths) {
+          await tab.evaluate((width) => {
+            Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
+          }, width);
+          for (const coarse of touch ? [false, true] : [false]) {
+            await touch?.send("Emulation.setTouchEmulationEnabled", { enabled: coarse });
+            const links = await inFrame.evaluate(async () => {
+              await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+              // Wealthfolio's buttons transition everything over 200 ms, their sizes too: measure where they end.
+              for (const change of document.getAnimations()) if (change instanceof CSSTransition) change.finish();
+              return [...document.querySelectorAll('button[data-variant="link"]')].filter((link) => link.getClientRects().length).map((link) => {
+                const range = document.createRange();
+                range.selectNodeContents(link);
+                const tops = [];
+                for (const { top, height } of range.getClientRects()) if (height && !tops.some((t) => Math.abs(t - top) < 3)) tops.push(top);
+                return {
+                  name: link.textContent.replace(/\s+/g, " ").trim(),
+                  height: link.getBoundingClientRect().height,
+                  lines: tops.length,
+                  line: parseFloat(getComputedStyle(link).lineHeight),
+                  coarse: matchMedia("(pointer: coarse)").matches,
+                };
+              });
+            });
+            assert.ok(links.length, `${what} at ${width} px: link-styled buttons show`);
+            for (const link of links) {
+              const where = `${what} at ${width} px${coarse ? " on a touch screen" : ""}: ${link.name}`;
+              assert.equal(link.coarse, coarse, `${where}: pointer: coarse matches only on the touch screen`);
+              if (coarse || ALONE.test(link.name)) assert.ok(link.height >= 43.5, `${where} is ${link.height} px tall, not Wealthfolio's 44`);
+              else assert.ok(link.height <= link.lines * link.line + 1, `${where} is ${link.height} px tall for ${link.lines} lines of ${link.line} px`);
+            }
+            for (const link of links) measured.add(link.name);
+          }
+        }
+        for (const name of includes) assert.ok(measured.has(name), `${what}: ${name} is measured, among ${[...measured].join(", ")}`);
+      } finally {
+        await touch?.send("Emulation.setTouchEmulationEnabled", { enabled: false });
+        await touch?.detach();
+        await inFrame.evaluate(() => document.getElementById("links-css")?.remove());
+        await tab.evaluate((style) => {
+          const frame = document.querySelector("iframe");
+          if (style === null) frame.removeAttribute("style");
+          else frame.setAttribute("style", style);
+        }, before);
+        await inFrame.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      }
+    };
     // Below Tailwind's `sm` width the bar keeps its brief line and its buttons, with Details at the end of
     // their row saying how many warnings it folds, and folds the rest (#238). Details unfolds it above
     // the buttons and Hide details folds it again, the focus staying on the toggle; the frame's scroll
@@ -538,6 +605,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // With a password saved, the form uses it and says so; its field is for another password.
     await frame.getByText("Using your saved password", { exact: true }).waitFor();
     await scrollsOnlyWhereMeant("The form, with a saved password");
+    await linksKeepTheirLine("The form, with a saved password", ["Use a different password"]);
     await ringsWhole("The form, with a saved password");
     assert.equal(await passwordBox.count(), 0);
     await frame.getByRole("button", { name: "Use a different password" }).press("Enter");
@@ -1012,6 +1080,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       "Read an earlier CAMS statement that includes its first purchase, or add the 1,250.000 units in Wealthfolio as a buy with their cost and date. Then read this statement again: transactions already imported are skipped.",
       { exact: true },
     ).waitFor();
+    await linksKeepTheirLine("A detailed statement's ready and waiting funds", ["Change", "How to fix", "Use another file", "Save part of it to another account"]);
     // The statement's transactions, by what happens to them; the parts add up.
     assert.equal((await transactionsBox.locator("p").first().innerText()).trim(), "39 transactions, Apr 2023 to Mar 2025");
     assert.equal(await transactionParts(), "13 to import · 26 waiting for earlier purchases");
@@ -2955,6 +3024,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await footer.getByText(/^Purchase cost missing for \d+ · /).waitFor();
     await footer.getByRole("button", { name: "Add costs", exact: true }).click();
     await focused(readyRows.getByRole("button", { name: /^Add cost: / }).first(), "Add costs");
+    await linksKeepTheirLine("A depository statement's ready holdings", ["Change", "Edit", "Add cost", "Add costs", "Show answers", "Details · 1 warning"]);
     // The Flexi Cap fund is left out because Mutual funds holds it; the hand-added fund and the cash stay.
     await frame.getByText(/^Already tracked in Mutual funds \(1\)/).waitFor();
     const folios = await snapshotTable("Fund folios");
@@ -4434,6 +4504,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.frames()[1].waitForFunction(() => window.host.navigations.at(-1) === "/accounts/account-1");
     await balancedGroup.getByRole("button", { name: "Review its transactions in Not set", exact: true }).click();
     await tab.frames()[1].waitForFunction(() => window.host.navigations.at(-1) === "/accounts/unset-1");
+    await linksKeepTheirLine("Funds already tracked", ["Show it", "Review its transactions in Mutual funds", "Why?"]);
     // The Liquid fund, which no such account holds, isn't compared.
     assert.equal(await frame.getByText(/^Fund INFZ90K01LQ6 differs/).count(), 0);
     assert.equal(await saveHoldings.isDisabled(), true);
@@ -4628,6 +4699,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("table", { name: "Holdings in Mutual funds on 31 Mar 2025 after saving", exact: true }).waitFor({ state: "detached" });
 
     // Rename edits the name in place: 2 to 50 characters, trimmed. While it's open, saving waits.
+    await linksKeepTheirLine("A new account", ["Rename"]);
     await frame.getByRole("button", { name: "Rename the new account Mutual funds: ANANYA R TESTWALA's holdings", exact: true }).click();
     const nameField = frame.getByRole("textbox", { name: "Name of the new account: ANANYA R TESTWALA's holdings", exact: true });
     await focused(nameField, "Rename");

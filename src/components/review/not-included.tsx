@@ -147,7 +147,7 @@ function Tracked({
         )))}
       </div>
       <div className="flex flex-wrap items-baseline gap-x-3 text-sm">
-        <Disclosure id={ids.why} label="Why?" ariaLabel={`Why? Already tracked in ${group.accounts}`} open={why} onOpenChange={onWhy}>
+        <Disclosure id={ids.why} alone label="Why?" ariaLabel={`Why? Already tracked in ${group.accounts}`} open={why} onOpenChange={onWhy}>
           <p className="text-muted-foreground mt-1">
             {group.accounts} already {group.accounts.includes(", ") ? "count" : "counts"} these funds from their transactions. Saving the same
             units in another Wealthfolio account would count them twice.

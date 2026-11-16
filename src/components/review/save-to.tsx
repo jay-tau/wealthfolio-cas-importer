@@ -92,7 +92,7 @@ export function SaveTo({
       </div>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-2 text-sm">
         <span className="text-muted-foreground">{remembered ? "Chosen last time." : "Used again for your next statement."}</span>
-        <Disclosure label="Save part of it to another account" open={open} onOpenChange={onOpen} id={`${partId}-part`}>
+        <Disclosure alone label="Save part of it to another account" open={open} onOpenChange={onOpen} id={`${partId}-part`}>
           <div className="mt-2 grid gap-4 rounded-lg border p-4">
             {sources.map((source) => {
               const key = sourceKey(source);

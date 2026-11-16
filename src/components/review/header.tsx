@@ -40,7 +40,7 @@ export function ReviewHeader({
         <h2 id={ids.heading} tabIndex={-1} className="text-xl font-semibold">
           {title}
         </h2>
-        <LinkButton id={ids.another} type="button" onClick={() => (changes > 0 || unfinished ? onDiscard() : onAnother())}>
+        <LinkButton id={ids.another} alone type="button" onClick={() => (changes > 0 || unfinished ? onDiscard() : onAnother())}>
           Use another file
         </LinkButton>
       </div>

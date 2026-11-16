@@ -171,6 +171,7 @@ export function SaveToDetailed({
             {box.pan && (
               <div className="flex flex-wrap items-baseline gap-x-2 gap-y-2 text-sm">
                 <Disclosure
+                  alone
                   label="Save part of it to another account"
                   ariaLabel={`Save part of it to another account: ${box.title}`}
                   open={!!open[box.key]}
