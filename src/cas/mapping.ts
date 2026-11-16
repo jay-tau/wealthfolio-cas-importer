@@ -446,6 +446,11 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
       continue;
     }
     charge.attached = true;
+    const owner = equalOwner(state.entries, charge, candidates);
+    if (owner) {
+      owner.charges.push(charge.row);
+      continue;
+    }
     for (const entry of candidates) {
       if (candidates.length > 1) {
         entry.problem ??= `Can't tell which of the ${candidates.length} transactions on this day the ₹${charge.row.amount} ${rule.name} belongs to.`;
@@ -505,6 +510,27 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
     }
   }
   return state;
+}
+
+/** Two printed numbers that are equal, or both missing. */
+const sameNumber = (a: string | null, b: string | null) => (a === null || b === null ? a === b : cmp(dec(a), dec(b)) === 0);
+
+/**
+ * #262: the transaction a charge goes with when its day has more than one it can belong to, all
+ * equal (type, units and amount), and its kind has one equal positive charge row on that day for
+ * each. The charges then go one to each, in the statement's order; any pairing imports the same
+ * activities. Otherwise there's none, and the caller leaves the candidates out.
+ */
+function equalOwner(entries: Entry[], charge: Entry, candidates: Entry[]): Entry | undefined {
+  const [first] = candidates;
+  const equal = candidates.every(
+    ({ kind, row }) => kind && row.type === first.row.type && sameNumber(row.units, first.row.units) && sameNumber(row.amount, first.row.amount),
+  );
+  if (candidates.length < 2 || !equal) return undefined;
+  const charges = entries.filter(({ row }) => row.type === charge.row.type && row.date === charge.row.date);
+  const amount = charge.row.amount;
+  if (charges.length !== candidates.length || amount === null || dec(amount).n <= 0n) return undefined;
+  return charges.every(({ row }) => sameNumber(row.amount, amount)) ? candidates[charges.indexOf(charge)] : undefined;
 }
 
 /** #1: a merger is imported as a fund conversion only when both legs can be matched. */

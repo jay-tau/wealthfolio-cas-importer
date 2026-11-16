@@ -367,6 +367,124 @@ describe("amounts and charges", () => {
     );
   });
 
+  test("equal same-day transactions with one equal charge of each kind each get one, in the statement's order", () => {
+    // #262: two equal purchases, each followed by its own stamp duty, or listed before both.
+    const purchase = (description = "Purchase - Online") => tx("2023-05-05", "PURCHASE", "5000.00", "499.975", "10.0000", { description });
+    const stamp = (description) => tx("2023-05-05", "STAMP_DUTY_TAX", "0.25", null, null, { description });
+    const owners = (mapping) => mapping.transactions.map(({ rows, activity }) => [rows.map((row) => row.description), activity.charges]);
+    const line = [{ category: "tax", label: "Stamp duty", amount: "0.25" }];
+    for (const rows of [
+      [purchase("first"), stamp("first's"), purchase("second"), stamp("second's")],
+      [purchase("first"), purchase("second"), stamp("first's"), stamp("second's")],
+    ]) {
+      const mapping = map(statement(scheme("A", rows)));
+      assert.deepEqual(summary(mapping), {
+        rows: Array(2).fill(["BUY", "", "499.975", "5000", "0.25", "DEPOSIT"]),
+        warnings: [],
+      });
+      assert.deepEqual(owners(mapping), [
+        [["first", "first's"], line],
+        [["second", "second's"], line],
+      ]);
+      assert.notEqual(mapping.transactions[0].activity.sourceRecordId, mapping.transactions[1].activity.sourceRecordId);
+    }
+
+    // A reinvested dividend's stamp duty and TDS: one of each per transaction.
+    const reinvest = () => tx("2023-09-25", "DIVIDEND_REINVEST", "1312.46", "84.054", "15.6145", { dividend_rate: "0.40" });
+    const reinvested = map(
+      statement(
+        scheme("A", [
+          reinvest(),
+          charge("2023-09-25", "STAMP_DUTY_TAX", "0.07"),
+          charge("2023-09-25", "TDS_TAX", "131.25"),
+          reinvest(),
+          charge("2023-09-25", "STAMP_DUTY_TAX", "0.07"),
+          charge("2023-09-25", "TDS_TAX", "131.25"),
+        ]),
+      ),
+    );
+    assert.deepEqual(
+      reinvested.transactions.map(({ rows, activity }) => [rows.map((row) => row.type), activity.tax]),
+      Array(2).fill([["DIVIDEND_REINVEST", "STAMP_DUTY_TAX", "TDS_TAX"], "131.32"]),
+    );
+    assert.deepEqual(reinvested.warnings, []);
+  });
+
+  test("equal candidates compare decimal values and allow different NAVs and missing dividend units", () => {
+    const purchases = map(statement(scheme("A", [
+      tx("2023-05-05", "PURCHASE", "5000.00", "499.975", "10.0000"),
+      charge("2023-05-05", "STAMP_DUTY_TAX", "0.25"),
+      tx("2023-05-05", "PURCHASE", "5e3", "499.9750", "10.00001"),
+      charge("2023-05-05", "STAMP_DUTY_TAX", "0.250"),
+    ])));
+    assert.deepEqual(summary(purchases), {
+      rows: [
+        ["BUY", "", "499.975", "5000", "0.25", "DEPOSIT"],
+        ["BUY", "", "499.9750", "5000.00499975", "0.25", "DEPOSIT"],
+      ],
+      warnings: [],
+    });
+
+    const payouts = map(statement(scheme("A", [
+      tx("2023-06-01", "PURCHASE", "1000", "100", "10"),
+      tx("2023-12-28", "DIVIDEND_PAYOUT", "10.00", null, null, { dividend_rate: "0.10" }),
+      charge("2023-12-28", "TDS_TAX", "1.00"),
+      tx("2023-12-28", "DIVIDEND_PAYOUT", "10", null, null, { dividend_rate: "0.10" }),
+      charge("2023-12-28", "TDS_TAX", "1"),
+    ])));
+    assert.deepEqual(summary(payouts), {
+      rows: [
+        ["BUY", "", "100", "1000", "", "DEPOSIT"],
+        ["DIVIDEND", "", "", "9", "1", "WITHDRAWAL"],
+        ["DIVIDEND", "", "", "9", "1", "WITHDRAWAL"],
+      ],
+      warnings: [],
+    });
+  });
+
+  test("each charge kind uses its own candidates even when another kind pairs", () => {
+    const reinvest = () => tx("2023-09-25", "DIVIDEND_REINVEST", "1312.46", "84.054", "15.6145");
+    const first = reinvest(), second = reinvest();
+    const stamp1 = charge("2023-09-25", "STAMP_DUTY_TAX", "0.07"), stamp2 = { ...stamp1 };
+    const sale = tx("2023-09-25", "REDEMPTION", "-100", "-10", "10");
+    const tds = charge("2023-09-25", "TDS_TAX", "1");
+    const mapping = map(statement(scheme("A", [first, stamp1, second, stamp2, sale, tds])));
+    const message = "Can't tell which of the 3 transactions on this day the ₹1 TDS belongs to.";
+    assert.deepEqual(summary(mapping), { rows: [], warnings: [message, message, message] });
+    assert.deepEqual(mapping.warnings.map(({ rows }) => rows), [[first, stamp1, tds], [second, stamp2, tds], [sale, tds]]);
+    assert.deepEqual(mapping.outcomes.map(({ row, leftOut }) => [row, leftOut.reason]), [[first, message], [second, message], [sale, message]]);
+  });
+
+  test("same-day transactions that differ, or whose charges differ or don't come one each, are still left out", () => {
+    const purchase = (type = "PURCHASE", amount = "5000.00", units = "499.975") => tx("2023-05-05", type, amount, units, "10.0000");
+    const stamp = (amount = "0.25") => charge("2023-05-05", "STAMP_DUTY_TAX", amount);
+    const unclear = (amount, name = "stamp duty") => `Can't tell which of the 2 transactions on this day the ₹${amount} ${name} belongs to.`;
+    const cases = [
+      ["another type", [purchase(), stamp(), purchase("PURCHASE_SIP"), stamp()], unclear("0.25")],
+      ["other units", [purchase(), stamp(), purchase("PURCHASE", "5000.00", "499.976"), stamp()], unclear("0.25")],
+      ["another amount", [purchase(), stamp(), purchase("PURCHASE", "5000.01"), stamp()], unclear("0.25")],
+      ["unequal charges", [purchase(), stamp(), purchase(), stamp("0.30")], unclear("0.25")],
+      ["a missing charge", [purchase(), stamp(), purchase()], unclear("0.25")],
+      ["an extra charge", [purchase(), stamp(), purchase(), stamp(), stamp()], unclear("0.25")],
+      ["no positive charge", [purchase(), stamp("0.00"), purchase(), stamp("0.00")], unclear("0.00")],
+      [
+        "a kind with a charge for only one",
+        [
+          tx("2023-09-25", "DIVIDEND_REINVEST", "1312.46", "84.054", "15.6145", { dividend_rate: "0.40" }),
+          charge("2023-09-25", "STAMP_DUTY_TAX", "0.07"),
+          charge("2023-09-25", "TDS_TAX", "131.25"),
+          tx("2023-09-25", "DIVIDEND_REINVEST", "1312.46", "84.054", "15.6145", { dividend_rate: "0.40" }),
+          charge("2023-09-25", "STAMP_DUTY_TAX", "0.07"),
+        ],
+        unclear("131.25", "TDS"),
+      ],
+    ];
+    for (const [name, rows, message] of cases) {
+      const mapping = map(statement(scheme("A", rows)));
+      assert.deepEqual(summary(mapping), { rows: [], warnings: [message, message] }, name);
+    }
+  });
+
   test("same-day charges of different kinds go to the transaction each can belong to", () => {
     const mapping = map(
       statement(
