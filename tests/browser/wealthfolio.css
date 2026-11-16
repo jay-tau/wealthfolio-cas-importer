@@ -4,6 +4,15 @@
 @import "tailwindcss" source(none);
 @source "../../src";
 @source "../../node_modules/@wealthfolio/ui/dist/index.js";
+/* Classic's input height, including its sizing utilities. */
+@theme inline {
+  --spacing-input-height: var(--input-height);
+}
+:root {
+  --input-height: 2.75rem;
+}
+/* As in Wealthfolio, dark mode is a class on the root. */
+@custom-variant dark (&:where(.dark, .dark *));
 
 /* From Wealthfolio v3.13.0's apps/frontend/src/globals.css, without the rules for Wealthfolio's own
    pages. Unlayered, so it beats normal utilities: up to 1,024 px, every .flex and .grid hides what
@@ -37,6 +46,24 @@
   .flex {
     max-width: 100%;
     overflow-x: hidden;
+  }
+
+  /* Wealthfolio main's change to it (191228f30 and the two after it, not released yet), on with a
+     data-wealthfolio-main attribute on the root: a .flex or .grid with no overflow class of its own
+     clips only sideways, so it doesn't scroll, and can shrink to nothing. */
+  :where(:root[data-wealthfolio-main]) :where(.grid, .flex):not([class*="overflow"]) {
+    overflow-x: clip;
+  }
+
+  :where(:root[data-wealthfolio-main]) :where(.grid, .flex):is([class~="overflow-x-auto"], [class~="overflow-x-scroll"]) {
+    overflow-x: revert-layer;
+  }
+
+  @layer base {
+    :where(:root[data-wealthfolio-main]) :where(.grid, .flex):not([class*="overflow"]) {
+      min-width: 0;
+      min-height: 0;
+    }
   }
 
   @media (width >= 640px) {

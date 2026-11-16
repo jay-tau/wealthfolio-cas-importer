@@ -20,14 +20,6 @@ const PASSWORD_WORDS = {
 };
 
 /**
- * Up to 1,024 px wide, Wealthfolio's CSS hides what reaches past the sides of every `.flex` and
- * `.grid`, which makes one scroll up and down when something reaches past its top or bottom, as a
- * checkbox's touch area does past a line of text. That rule beats normal utility classes; an inline
- * style overrides it.
- */
-const UNCLIPPED = { overflow: "visible" } as const;
-
-/**
  * Adding a statement: the PDF, chosen or dropped, its password, and Read statement. Every failure
  * says what to do next and keeps the file and the password typed: a wrong password goes back to its
  * field, a reader that stopped reads the same file again with Try again, and accounts that couldn't
@@ -340,8 +332,8 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
             <p id={ids.hint} className="text-muted-foreground text-xs">
               Leave it empty for a statement without a password.
             </p>
-            <div className="flex flex-wrap items-center gap-3" style={UNCLIPPED}>
-              <Label className="flex items-center gap-2" style={UNCLIPPED}>
+            <div className="flex flex-wrap items-center gap-3">
+              <Label className="flex items-center gap-2">
                 <Checkbox checked={remember} disabled={locked} onCheckedChange={(checked) => setRemember(checked === true)} />
                 {saved !== null ? "Remember this password (replaces the saved one)" : "Remember this password"}
               </Label>
