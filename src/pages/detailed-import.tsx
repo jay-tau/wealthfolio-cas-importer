@@ -3,7 +3,7 @@ import { QueryKeys } from "@wealthfolio/addon-sdk";
 import { Alert, AlertDescription, AlertTitle, Badge, Button, Spinner } from "@wealthfolio/ui";
 import { type ReactNode, useEffect, useId, useMemo, useRef, useState } from "react";
 import { type EntryFacts, readEntryFacts, recheckEntries, recheckLink, reuseBankEntry, type StaleEntry } from "../cas/bank-entries";
-import { abs, add, dec, format, mul } from "../cas/decimal";
+import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, sub } from "../cas/decimal";
 import { type Mapping, mapStatement } from "../cas/mapping";
 import {
   bankCandidates,
@@ -58,7 +58,7 @@ import {
 } from "../components/preview";
 import { BankCheck, type BankCheckModel, checkReceipt, paid } from "../components/review/bank-check";
 import { AskAnswered, AskCard } from "../components/review/asks";
-import { type EarlierFund, type LeftOutFund, NotIncludedDetailed, nothingWords, TransactionsSummary } from "../components/review/detailed-parts";
+import { type EarlierFund, type EarlierHeld, type LeftOutFund, NotIncludedDetailed, nothingWords, TransactionsSummary } from "../components/review/detailed-parts";
 import { useReviewFocus } from "../components/review/focus";
 import { Footer, type Narrow } from "../components/review/footer";
 import { type FundRow, type FundRowHandlers, FundsReadyTable } from "../components/review/funds-ready";
@@ -873,35 +873,46 @@ export function DetailedImport({
       }
     }
     // Each scheme's account and folio, as the units check grouped them.
-    const accountOf = new Map(current.opening.flatMap((f) => f.schemes.map((s) => [s, f.accountId] as const)));
+    const unitsOfScheme = new Map(current.opening.flatMap((f) => f.schemes.map((s) => [s, f] as const)));
     const folioOf = new Map(data.folios.flatMap((f) => f.schemes.map((s) => [s, f.folio] as const)));
-    const unitsOf = (schemes: CasScheme[]) => units(format(schemes.reduce((total, s) => add(total, dec(s.open)), dec("0"))));
+    const sumOf = (schemes: CasScheme[]) => schemes.reduce((total, s) => add(total, dec(s.open)), dec("0"));
+    const unitsOf = (schemes: CasScheme[]) => units(format(sumOf(schemes)));
+    /** Units as the screen shows them, with a minus sign. */
+    const shown = (value: Dec) => units(format(value)).replace(/^-/, "−");
+    /** What Wealthfolio has of the fund in this account before the statement, when it isn't nothing. */
+    const heldOf = (f: FundUnits, key: string): EarlierHeld | undefined => {
+      if (f.held === undefined) return { kind: "uncounted", by: (f.uncounted ?? []).map((u) => ({ ...u, day: longDate(u.day) })) };
+      // Another fund of the statement that goes to the same Wealthfolio fund in this account shares
+      // what it has, so neither can say how many of those are its own.
+      if (isZero(f.held) || f.schemes.some((s) => fundKey(s) !== key)) return undefined;
+      const gap = sub(f.statement, f.held);
+      return cmp(gap, dec("0")) > 0 ? { kind: "short", has: shown(f.held), add: shown(gap) } : { kind: "over", has: shown(f.held), extra: shown(neg(gap)) };
+    };
     // A new account is created only when transactions ready to import go into it, as the bar says.
     const creating = new Set(rows.map((r) => r.group.accountId));
     const uncreated = (accountId: string) => isProposed(accountId) && !created.current.has(accountId) && !creating.has(accountId);
     return [...waiting].map(([key, { schemes, count }]) => {
       // A fund whose folios go to more than one account says which account needs which units.
       const spread = new Set(current.opening.filter((f) => f.schemes.some((s) => fundKey(s) === key)).map((f) => f.accountId)).size > 1;
-      const byAccount = new Map<string, CasScheme[]>();
+      const byAccount = new Map<FundUnits, CasScheme[]>();
       // In the statement's order: events-only schemes join `waiting` after the others.
       for (const s of [...folioOf.keys()].filter((s) => schemes.includes(s))) {
-        const accountId = accountOf.get(s)!;
-        byAccount.set(accountId, [...(byAccount.get(accountId) ?? []), s]);
+        const f = unitsOfScheme.get(s)!;
+        byAccount.set(f, [...(byAccount.get(f) ?? []), s]);
       }
+      const accounts = [...byAccount].map(([f, list]) => {
+        const held = heldOf(f, key);
+        return { units: unitsOf(list), account: accountName(f.accountId), folios: [...new Set(list.map((s) => folioOf.get(s)!))], ...(held && { held }) };
+      });
       return {
         key,
         name: shownName(itemOf.get(key)!, fundOf(key)),
         units: `${unitsOf(schemes)} units`,
         waiting: count,
-        accounts: spread
-          ? [...byAccount].map(([accountId, list]) => ({
-              units: unitsOf(list),
-              account: accountName(accountId),
-              folios: [...new Set(list.map((s) => folioOf.get(s)!))],
-            }))
-          : undefined,
-        uncreated: [...byAccount].filter(([accountId]) => uncreated(accountId)).map(([accountId, list]) => ({
-          account: accountName(accountId),
+        // A fund in one account that has none of them says only its units.
+        accounts: spread || accounts.some((a) => a.held) ? accounts : undefined,
+        uncreated: [...byAccount].filter(([f]) => uncreated(f.accountId)).map(([f, list]) => ({
+          account: accountName(f.accountId),
           folios: [...new Set(list.map((s) => folioOf.get(s)!))],
         })),
       };
@@ -2380,6 +2391,7 @@ export function DetailedImport({
         notImported={notImported.map((f) => `${folioName(f)} (${plural(f.schemes.length, "fund")})`)}
         leftOut={leftOutFunds}
         registrar={registrar}
+        from={longDate(from)}
         open={open}
         setOpen={setOpen}
         partId={id("not-included")}

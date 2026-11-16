@@ -698,16 +698,24 @@ export function unitsHeld(
   range: (day: string) => boolean,
   timeZone: string,
 ) {
-  const ref = fundRef(asset.symbol, asset.exchangeMic);
-  return countUnits(activities.filter((a) => a.accountId === accountId && a.assetId && funds.get(a.assetId) === ref), range, timeZone);
+  return countUnits(activitiesOf(activities, accountId, asset, funds), range, timeZone);
 }
+
+/** The activities of one asset in one account. */
+function activitiesOf(activities: ActivityDetails[], accountId: string, asset: Pick<FundAsset, "symbol" | "exchangeMic">, funds: FundRefs) {
+  const ref = fundRef(asset.symbol, asset.exchangeMic);
+  return activities.filter((a) => a.accountId === accountId && a.assetId && funds.get(a.assetId) === ref);
+}
+
+/** A split or an option expiry: Wealthfolio's portfolio engine counts units across it, the add-on can't. */
+const uncountable = (a: ActivityDetails) => a.activityType === "SPLIT" || (a.activityType === "ADJUSTMENT" && a.subtype === "OPTION_EXPIRY");
 
 /** `unitsHeld` for activities already narrowed to one asset in one account. */
 export function countUnits(activities: ActivityDetails[], range: (day: string) => boolean, timeZone: string) {
   let units = dec("0");
   for (const a of activities) {
     if (a.status !== "POSTED" || !range(localDay(a.date, timeZone))) continue;
-    if (a.activityType === "SPLIT" || (a.activityType === "ADJUSTMENT" && a.subtype === "OPTION_EXPIRY")) return undefined;
+    if (uncountable(a)) return undefined;
     if (!a.quantity) continue;
     const q = abs(dec(a.quantity));
     const type = a.activityType as string;
@@ -730,6 +738,11 @@ export interface FundUnits {
   statement: Dec;
   /** Wealthfolio's, when the account's activity history is sufficient to count them. */
   held: Dec | undefined;
+  /**
+   * For opening units that can't be counted: the posted splits and option expiries before the
+   * statement that keep them from being counted, by day.
+   */
+  uncounted?: { day: string; kind: "split" | "option expiry" }[];
 }
 
 type Target = (folio: CasFolio, scheme: CasScheme) => { accountId: string; asset: FundAsset } | undefined;
@@ -760,11 +773,18 @@ export function openingUnits(
   timeZone: string,
 ): FundUnits[] {
   const from = statementDay(data.statement_period.from);
-  return byFund(data, target).map((f) => ({
-    ...f,
-    statement: sum(f.schemes.map((s) => s.open)),
-    held: unitsHeld(activities, f.accountId, f.asset, funds, (d) => d < from, timeZone),
-  }));
+  const before = (day: string) => day < from;
+  return byFund(data, target).map((f) => {
+    const own = activitiesOf(activities, f.accountId, f.asset, funds);
+    const held = countUnits(own, before, timeZone);
+    const statement = sum(f.schemes.map((s) => s.open));
+    if (held !== undefined) return { ...f, statement, held };
+    const uncounted = own
+      .filter((a) => a.status === "POSTED" && uncountable(a) && before(localDay(a.date, timeZone)))
+      .map((a) => ({ day: localDay(a.date, timeZone), kind: a.activityType === "SPLIT" ? ("split" as const) : ("option expiry" as const) }))
+      .sort((a, b) => a.day.localeCompare(b.day));
+    return { ...f, statement, held, uncounted };
+  });
 }
 
 /** Closing units against what Wealthfolio holds at the statement's end. */
