@@ -678,6 +678,82 @@ test("chips count each PAN's own rows when one shared fund waits for earlier pur
   assert.match(textOf(run.tree), /2 funds0 ready2 not included/);
 });
 
+test("a fund waiting for earlier purchases says how many units each account needs when its folios go to two", async () => {
+  /** The Liquid Fund in three folios, starting with 100, 200 and 50 units. */
+  const change = (data) => {
+    const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    const opening = (units) => ({ ...structuredClone(liquid), open: units, close: String(Number(liquid.close) + Number(units)), close_calculated: String(Number(liquid.close) + Number(units)) });
+    data.folios = [["7712045", "100"], ["91234567", "200"], ["3301", "50"]].map(([folio, units]) => ({ ...data.folios[0], folio, schemes: [opening(units)] }));
+    return data;
+  };
+  const pan = choices.panKey("ABCDE1234F");
+  const folio = (number) => choices.folioKey({ amc: fixture.folios[0].amc, folio: number });
+  const toOther = { [pan]: "mf", [folio("91234567")]: "other", [folio("3301")]: "other" };
+  const earlierOf = (run) => find(run, "NotIncludedDetailed").earlier;
+
+  // Into one account: the units together, as before.
+  let { run } = setup({ entries: [], change });
+  await run.flush();
+  assert.deepEqual(earlierOf(run).map(({ units, waiting, accounts }) => ({ units, waiting, accounts })), [{ units: "350.000 units", waiting: 9, accounts: undefined }]);
+  run.dispose();
+
+  // Into two: each account's units and folios, in the statement's order.
+  ({ run } = setup({ entries: [], change, remembered: toOther }));
+  await run.flush();
+  assert.deepEqual(earlierOf(run).map(({ units, waiting, accounts }) => ({ units, waiting, accounts })), [{ units: "350.000 units", waiting: 9, accounts: [
+    { units: "100.000", account: "Mutual funds", folios: ["7712045"] },
+    { units: "250.000", account: "Other funds", folios: ["91234567", "3301"] },
+  ] }]);
+  run.dispose();
+
+  // Two accounts of one name: each named as the rest of the screen names it.
+  let props;
+  ({ run, props } = setup({ entries: [], change, remembered: toOther }));
+  props.accounts = props.allAccounts = ACCOUNTS.map((a) => (a.id === "other" ? { ...a, name: "Mutual funds", accountNumber: "1234 7310" } : a.id === "mf" ? { ...a, accountNumber: "5678 4821" } : a));
+  await run.flush();
+  assert.deepEqual(earlierOf(run)[0].accounts.map((a) => a.account), ["Mutual funds (ending 4821)", "Mutual funds (ending 7310)"]);
+  run.dispose();
+
+  // Other funds already has its 250 units: only Mutual funds waits, and it's still named.
+  let profiles, activities;
+  ({ run, props, profiles, activities } = setup({ entries: [], change, remembered: toOther }));
+  const symbol = Object.values(props.fundChoices)[0].fund.symbol;
+  profiles.asset = { instrumentSymbol: symbol, instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+  activities.push({
+    id: "other-buy", accountId: "other", activityType: "BUY", subtype: null, status: "POSTED", date: "2023-03-01T00:00:00Z",
+    quantity: "250", unitPrice: "50", amount: "12500", fee: null, tax: null, currency: "INR", needsReview: false,
+    comment: null, assetId: "asset", assetSymbol: symbol, sourceRecordId: null,
+  });
+  await run.flush();
+  assert.deepEqual(earlierOf(run).map(({ units, waiting, accounts }) => ({ units, waiting, accounts })), [{ units: "100.000 units", waiting: 3, accounts: [
+    { units: "100.000", account: "Mutual funds", folios: ["7712045"] },
+  ] }]);
+});
+
+test("earlier-purchase folios stay in statement order with events-only schemes and appear once per account", async () => {
+  const { run } = setup({ entries: [], remembered: {
+    [choices.panKey("ABCDE1234F")]: "mf",
+    [choices.folioKey({ amc: fixture.folios[0].amc, folio: "3301" })]: "other",
+  }, change(data) {
+    const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    const opening = (units) => ({ ...structuredClone(liquid), open: units, close: String(Number(liquid.close) + Number(units)), close_calculated: String(Number(liquid.close) + Number(units)) });
+    const events = { ...opening("100"), close: "100", close_calculated: "100", transactions: [
+      { date: "2023-04-02", description: "Nominee registered", type: "MISC", units: null, amount: null, nav: null, balance: "100" },
+    ] };
+    data.folios = [
+      { ...data.folios[0], folio: "7712045", schemes: [events] },
+      { ...data.folios[0], folio: "91234567", schemes: [opening("200"), opening("25")] },
+      { ...data.folios[0], folio: "3301", schemes: [opening("50")] },
+    ];
+    return data;
+  } });
+  await run.flush();
+  assert.deepEqual(find(run, "NotIncludedDetailed").earlier.map(({ units, waiting, accounts }) => ({ units, waiting, accounts })), [{ units: "375.000 units", waiting: 9, accounts: [
+    { units: "325.000", account: "Mutual funds", folios: ["7712045", "91234567"] },
+    { units: "50.000", account: "Other funds", folios: ["3301"] },
+  ] }]);
+});
+
 test("a withheld statement-price asset keeps an AMFI result unconfirmed", async () => {
   for (const providerId of [undefined, "AMFI"]) {
     const { run, props, api } = setup({ entries: [], change(data) {

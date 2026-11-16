@@ -15,7 +15,16 @@ export interface EarlierFund {
   units: string;
   /** Its transactions that wait. */
   waiting: number;
+  /**
+   * When its folios go to more than one account: each waiting account's units ("100.000"), its
+   * name as the screen gives it, and its folios' numbers.
+   */
+  accounts?: { units: string; account: string; folios: string[] }[];
 }
+
+/** "100.000 units in Mutual funds, from folio 7712045; 200.000 units in Family funds, from folios 91234567 and 3301". */
+const accountParts = (accounts: NonNullable<EarlierFund["accounts"]>, noun: string) =>
+  accounts.map((a) => `${a.units}${noun} in ${a.account}, from ${a.folios.length === 1 ? "folio" : "folios"} ${list(a.folios)}`).join("; ");
 
 /** A fund with transactions left out for a reason of their own, each said in a line. */
 export interface LeftOutFund {
@@ -79,6 +88,7 @@ export function NotIncludedDetailed({
             <span>
               <span className="font-semibold">Earlier purchases needed</span>: {fund.name} starts with {fund.units} bought before this statement,
               so its {plural(fund.waiting, "transaction")} {fund.waiting === 1 ? "waits" : "wait"}.
+              {fund.accounts && ` Units needed: ${accountParts(fund.accounts, "")}.`}
             </span>
             <LinkButton type="button" aria-label={`Change: ${fund.name}${nameNumber(earlier, i, "fund")}, earlier purchases needed`} onClick={() => onReopen(fund.key)}>
               Change
@@ -91,8 +101,11 @@ export function NotIncludedDetailed({
               onOpenChange={(yes) => setOpen(`how:${fund.key}`, yes)}
             >
               <p className="text-muted-foreground mt-1">
-                Read an earlier {registrar} statement that includes its first purchase, or add the {fund.units} in Wealthfolio as a buy with their
-                cost and date. Then read this statement again: transactions already imported are skipped.
+                Read an earlier {registrar} statement that includes its first purchase, or{" "}
+                {fund.accounts
+                  ? `add the units in Wealthfolio as ${fund.accounts.length === 1 ? "a buy" : "buys"} with their cost and date: ${accountParts(fund.accounts, " units")}.`
+                  : `add the ${fund.units} in Wealthfolio as a buy with their cost and date.`}{" "}
+                Then read this statement again: transactions already imported are skipped.
               </p>
             </Disclosure>
           </div>

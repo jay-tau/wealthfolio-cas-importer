@@ -92,9 +92,11 @@ the statement is read, one Review screen shows, in this order:
   just changed show until **Show all**. A fund with nothing new is one line under the table. A family
   statement's funds are grouped by investor and account ("A. Investor → Mutual funds").
 - **Not included in this import**: a fund that starts with units bought before the statement, which
-  Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**); funds you skipped;
-  folios set to "Don't import"; funds you skipped because their rows don't add up, with **Change**;
-  and transactions left out, each with why.
+  Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**), saying how many units
+  each account needs and from which folios when its folios go to more than one ("Units needed:
+  100.000 in Mutual funds, from folio 7712045; 200.000 in Family funds, from folio 91234567.");
+  funds you skipped; folios set to "Don't import"; funds you skipped because their rows don't add
+  up, with **Change**; and transactions left out, each with why.
 - **Transactions in this statement**: how many there are, and what happens to each: to import,
   imported before, possible duplicates waiting for your answer or skipped or imported by it, waiting
   for your answers or for earlier purchases, in skipped funds or folios not imported, or left out,
@@ -151,7 +153,8 @@ second purchase** (or redemption, or cash dividend) imports it. Fully matched tr
 imported before and aren't offered again. Before
 Wealthfolio 3.12.0, Wealthfolio's check also missed the trades of a fund that an earlier import
 created. A fund whose statement starts with units needs
-those units in Wealthfolio first, from an earlier statement or entered by hand.
+those units in Wealthfolio first, from an earlier statement or entered by hand, each folio's in the
+account it goes to: the units are checked in each account on their own.
 The units check counts posted account history, each activity on its day in Wealthfolio's timezone
 setting (UTC if none is set); splits or option expiry in that history need review.
 Activities show an asset's display code, which can be changed, so rows and units go by the fund's
