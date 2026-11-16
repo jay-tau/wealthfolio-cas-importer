@@ -2237,7 +2237,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Waits until each holding is looked up and what will be saved is worked out.
     const settled = async () => {
       try {
-        await lookingUp.waitFor({ state: "detached" });
+        // The status region can say the footer's words too; first() waits out both instead of failing strict mode (#248).
+        await lookingUp.first().waitFor({ state: "detached" });
         await workingOut.waitFor({ state: "detached" });
       } catch (error) {
         console.log("  While settling:", await settleDetails().catch((error) => `diagnostics failed: ${error.message}`));
