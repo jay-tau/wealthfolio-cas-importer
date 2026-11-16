@@ -76,12 +76,15 @@ export function checkReceipt(check: BankCheckModel, linked: number) {
   return `${linked} of ${n} ${noun[1]} linked to entries already in ${check.bankName}; the rest get new transfers`;
 }
 
-/** A movement as today's preview words it: "Purchase · 5 Jan 2026 · ₹5,000, from Savings account". */
-export function movementWords(pair: BankPair, bankName: string) {
+/**
+ * A movement as today's preview words it, with its place among equal rows on the statement when it
+ * has one: "Purchase (1 of 2) · 5 Jan 2026 · ₹5,000, from Savings account".
+ */
+export function movementWords(pair: BankPair, bankName: string, place = "") {
   const { rows, bank } = pair.t.transaction;
   // The amount the entry matched, printed or with charges, else the transfer's.
   const amount = pair.exact && pair.entry.amount !== null ? pair.entry.amount : String(bank!.amount);
-  return `${MOVEMENT[rows[0].type] ?? "Payment"} · ${longDate(String(bank!.date))} · ${rupees(amount)}, ${paid(pair) ? "from" : "to"} ${bankName}`;
+  return `${MOVEMENT[rows[0].type] ?? "Payment"}${place} · ${longDate(String(bank!.date))} · ${rupees(amount)}, ${paid(pair) ? "from" : "to"} ${bankName}`;
 }
 
 /** The bank entry: its description, day and amount, with a sign for money out. */
@@ -99,6 +102,7 @@ export function BankCheck({
   answered,
   facts,
   fundName,
+  place,
   headingId,
   changeId,
   pairId,
@@ -112,7 +116,10 @@ export function BankCheck({
   /** The answer, as how many pairs it links; undefined while it's open. */
   answered?: number;
   facts: ReadonlyMap<string, EntryFacts>;
+  /** A pair's fund as the screen names it, with its folio when the fund has an equal row in another. */
   fundName: (pair: BankPair) => string;
+  /** Its transaction's place among equal rows of its fund and folio on the statement: " (1 of 2)", or "". */
+  place: (pair: BankPair) => string;
   headingId: string;
   changeId: string;
   /** The id of a pair's checkbox. */
@@ -175,7 +182,7 @@ export function BankCheck({
                     {fundName(pair)}
                   </span>
                   <span id={`${pairId(pair)}-movement`} className="text-muted-foreground">
-                    {movementWords(pair, check.bankName)}
+                    {movementWords(pair, check.bankName, place(pair))}
                   </span>
                   <span id={`${pairId(pair)}-entry`} style={{ overflowWrap: "anywhere" }}>
                     {check.bankName}: <span className="font-medium">{pair.entry.comment?.trim() || "No description"}</span> ·{" "}

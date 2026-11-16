@@ -88,7 +88,11 @@ the statement is read, one Review screen shows, in this order:
   2026 · Purchase (1 of 2) · Fictiva Liquid Fund · 61.350 units · ₹5,000", "₹5,000 purchase (1 of 2)
   of Fictiva Liquid Fund on 3 Jul 2026: skipped". The card says what's counted: "The statement lists
   2 purchases of ₹5,000 in this fund and folio on 3 Jul 2026; this is the first." A card is numbered
-  even when it's the only one of them asked about.
+  even when it's the only one of them asked about. A bank check's pairs and the rows of **See every
+  transaction** are numbered the same way after their movement, asked about or not and whatever was
+  skipped ("Purchase (1 of 2) · 3 Jul 2026 · ₹5,000, from Savings", "purchase (1 of 2)"), and name
+  the folio when a fund the screen names the same has an equal row in another folio ("Fictiva Liquid
+  Fund, folio 7712045"), so each can be matched to its card and its row in the PDF.
 - **Ready to import**: each fund with new transactions, with its plan and option, where its prices
   come from (and whether it was chosen before or by you) and **Change**, its **New transactions**
   ("38 imported before" under them) and its **Units after import**: the units Wealthfolio has at the
@@ -266,6 +270,8 @@ evidence is strong: it's the only entry for that transaction and the only transa
 it's at most a day apart, and the entry's description names the fund house or says MF or mutual
 fund. Its reason says what was found ("Same day · names the fund house"); every other pair says what
 to check ("6 days apart, and it doesn't name a fund house: check it", "2 entries match: check it").
+A fund's equal transactions are told apart as on the possible duplicates' cards: "Fictiva Liquid Fund,
+folio 7712045" and "Purchase (1 of 2) · 3 Jul 2026 · ₹5,000, from Savings".
 **Link 4 selected** uses the ticked entries; **Create new transfers instead** uses none. Either way,
 the unlinked ones get new transfers, which would count a payment twice if an entry above is it. The
 answer becomes one line with **Change answer** ("4 of 6 payments and payouts linked to entries already

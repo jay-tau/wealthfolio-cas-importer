@@ -105,7 +105,7 @@ const bankPair = (type, key) => {
 };
 const bankProps = (pairs, label = "A. Investor's funds · Savings account") => ({
   check: { id: label, bankName: label.split(" · ")[1], label, box: label.split(" · ")[0], pairs }, ticked: new Set(pairs.map((p) => p.key)), facts: new Map(),
-  fundName: () => "Fictiva Fund", headingId: "bank-heading", changeId: "bank-change", pairId: (pair) => pair.key,
+  fundName: () => "Fictiva Fund", place: () => "", headingId: "bank-heading", changeId: "bank-change", pairId: (pair) => pair.key,
   onTick() {}, onLink() {}, onNone() {}, onChange() {},
 });
 
@@ -161,6 +161,26 @@ test("equal bank pairs keep their visible labels and distinct names within and a
     });
   }
   assert.equal(new Set(contexts).size, 4);
+});
+
+test("every transaction's second row tells its own statement row from equal ones, by its place and folio", () => {
+  const row = (type) => ({ type });
+  const activity = (activityType, subtype = null) => ({ date: "2024-06-03", activityType, subtype, quantity: "10", amount: "500", accountId: "mf" });
+  const gave = row("GIFT_OUT"), got = row("GIFT_IN"), out = row("SWITCH_OUT_MERGER"), into = row("SWITCH_IN_MERGER");
+  const plan = [
+    // A gift between two folios: its received side is in the other folio.
+    { transaction: { folio: "11111111", scheme: "Fictiva Liquid Fund", rows: [gave], activity: activity("TRANSFER_OUT"),
+      receiving: { folio: "33333333", scheme: "Fictiva Liquid Fund", rows: [got], activity: activity("TRANSFER_IN") } } },
+    // A merger: its new fund is in the same folio.
+    { transaction: { folio: "11111111", scheme: "Fictiva Old Fund", rows: [out], activity: activity("ADJUSTMENT", "CONVERSION_OUT"),
+      arriving: { scheme: "Fictiva New Fund", rows: [into], activity: activity("ADJUSTMENT", "CONVERSION_IN") } } },
+  ].map((t) => ({ ...t, status: "new", rows: [] }));
+  const which = (r) => ({ place: r === got || r === into ? " (2 of 2)" : "", folio: r === got || r === into });
+  const shown = text("ActivityTable", { mapping: { warnings: [] }, plan, sent: () => true, linked: () => false, accountName: (id) => id, which, label: "Every transaction" });
+  assert.ok(shown.includes(" 2024-06-03 Fictiva Liquid Fund transfer out 10 500 "), shown);
+  assert.ok(shown.includes(" 2024-06-03 Fictiva Liquid Fund, folio 33333333 transfer in (2 of 2) 10 500 "), shown);
+  assert.ok(shown.includes(" 2024-06-03 Fictiva Old Fund fund conversion out 10 500 "), shown);
+  assert.ok(shown.includes(" 2024-06-03 Fictiva New Fund, folio 11111111 fund conversion in (2 of 2) 10 500 "), shown);
 });
 
 test("earlier-purchase help and Change distinguish equal funds and their separate reasons", () => {

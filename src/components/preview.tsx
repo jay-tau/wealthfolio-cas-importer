@@ -20,6 +20,7 @@ import type { EntryFacts, Reused, StaleEntry } from "../cas/bank-entries";
 import { LinkButton, WrapButton } from "./review/parts";
 import { format } from "../cas/decimal";
 import type { Mapping } from "../cas/mapping";
+import type { CasTransaction } from "../cas/types";
 import {
   conversionSide,
   day,
@@ -142,6 +143,7 @@ export function ActivityTable({
   sent,
   linked,
   accountName,
+  which,
   label: tableLabel,
 }: {
   mapping: Mapping;
@@ -150,6 +152,12 @@ export function ActivityTable({
   linked: (t: PlannedTransaction) => boolean;
   /** An account as the screen names it: told apart from another account of the same name. */
   accountName: (id: string) => string;
+  /**
+   * How a statement row is told from equal ones, as on its question card: its place among its fund
+   * and folio's rows with its movement, day and amount (" (1 of 2)", or ""), and whether to name its
+   * folio, as its fund has such a row in another.
+   */
+  which: (row: CasTransaction) => { place: string; folio: boolean };
   label: string;
 }) {
   const caveats = mapping.warnings.filter((w) => !w.leftOut);
@@ -183,23 +191,30 @@ export function ActivityTable({
             ...currencyNotes(t),
             forced ? "Imported anyway, by your answer." : undefined,
           ].filter((note) => note !== undefined);
-          const cells = (scheme: string, row: ActivityImport, standIns: (keyof ActivityImport)[] = []) => (
-            <>
-              <TableCell className="px-1.5 whitespace-nowrap">{String(row.date)}</TableCell>
-              <TableCell className="px-1.5">{scheme}</TableCell>
-              <TableCell className="px-1.5">{label(row)}</TableCell>
-              <TableCell className="px-1.5 text-end tabular-nums">{row.quantity ?? ""}</TableCell>
-              <TableCell className="px-1.5 text-end tabular-nums">{row.unitPrice ?? ""}</TableCell>
-              <TableCell className="px-1.5 text-end tabular-nums">{row.tax ?? ""}</TableCell>
-              <TableCell className="px-1.5 text-end tabular-nums">
-                {row.amount ?? ""}
-                {standIns.includes("amount") && <span className="text-muted-foreground block text-xs">stand-in</span>}
-              </TableCell>
-            </>
-          );
+          // Each row's own statement row tells it from equal ones: its place, and its folio when needed.
+          const cells = (side: { scheme: string; folio: string; rows: CasTransaction[] }, row: ActivityImport, standIns: (keyof ActivityImport)[] = []) => {
+            const told = which(side.rows[0]);
+            return (
+              <>
+                <TableCell className="px-1.5 whitespace-nowrap">{String(row.date)}</TableCell>
+                <TableCell className="px-1.5">{told.folio ? `${side.scheme}, folio ${side.folio}` : side.scheme}</TableCell>
+                <TableCell className="px-1.5">
+                  {label(row)}
+                  {told.place}
+                </TableCell>
+                <TableCell className="px-1.5 text-end tabular-nums">{row.quantity ?? ""}</TableCell>
+                <TableCell className="px-1.5 text-end tabular-nums">{row.unitPrice ?? ""}</TableCell>
+                <TableCell className="px-1.5 text-end tabular-nums">{row.tax ?? ""}</TableCell>
+                <TableCell className="px-1.5 text-end tabular-nums">
+                  {row.amount ?? ""}
+                  {standIns.includes("amount") && <span className="text-muted-foreground block text-xs">stand-in</span>}
+                </TableCell>
+              </>
+            );
+          };
           return [
             <TableRow key={i}>
-              {cells(t.transaction.scheme, activity, t.transaction.standIns)}
+              {cells(t.transaction, activity, t.transaction.standIns)}
               <TableCell className="px-1.5">
                 {cash && (
                   <>
@@ -232,7 +247,7 @@ export function ActivityTable({
             ...(second
               ? [
                   <TableRow key={`${i}-second`}>
-                    {cells(second.scheme, second.activity)}
+                    {cells({ folio: t.transaction.folio, ...second }, second.activity)}
                     <TableCell className="px-1.5" />
                   </TableRow>,
                 ]

@@ -2045,13 +2045,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await answerFunds();
     await seeEvery();
     const segregatedRows = everyTable.getByRole("row").filter({ hasText: "Fictiva Credit Risk Fund - Segregated Portfolio 1" });
-    const credits = segregatedRows.filter({ has: frame.locator("td:nth-child(3)", { hasText: /^purchase$/ }) });
+    // Two credits on one day with no amount: numbered by their place on the statement, whatever their units.
+    const credits = segregatedRows.filter({ has: frame.locator("td:nth-child(3)", { hasText: /^purchase \([12] of 2\)$/ }) });
     const payouts = segregatedRows.filter({ has: frame.locator("td:nth-child(3)", { hasText: /^sale$/ }) });
     assert.equal(await credits.count(), 2);
     for (const [i, quantity] of ["3067.468", "0.013"].entries()) {
       const creditCells = await cellTexts(credits.nth(i));
       assert.deepEqual(creditCells.slice(0, 8), [
-        "2024-02-16", "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth", "purchase", quantity, "", "", "0stand-in", "",
+        "2024-02-16", "Fictiva Credit Risk Fund - Segregated Portfolio 1 - Direct Plan - Growth", `purchase (${i + 1} of 2)`, quantity, "", "", "0stand-in", "",
       ]);
       assert.match(creditCells[8], /^NewUnits credited in a segregated portfolio, imported at a stand-in cost of ₹0 with no cash\./);
     }
