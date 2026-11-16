@@ -70,8 +70,8 @@ the statement is read, one Review screen shows, in this order:
   Purchase · Fictiva Midcap Fund · 61.350 units · ₹5,000" and "Already in Mutual funds: 3 Jul 2026 ·
   Buy · … · entered by hand on 4 Jul 2026". Both can be real, and the card says what they share,
   calling them equal only when their day, units and amount are ("Two transactions on one day with the
-  same units can both be real."): **Skip this transaction** is the safe answer, and **Import it as a
-  second purchase** imports it. More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
+  same units can both be real."): **Skip this transaction** is the safe answer, and **Import it as
+  another purchase** imports it. More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
   Credit Risk Fund's transactions don't add up. They add up to 1,204.500 units; the statement says
   1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**. When
   an equal question is about another folio, each card names its folio in its heading, its buttons
@@ -80,14 +80,22 @@ the statement is read, one Review screen shows, in this order:
   summary in the bar and, once skipped, its line under **Not included** name its folio too, and a possible
   duplicate's "On this statement:" and "Also on this statement:" lines name each line's folio
   ("3 Jul 2026 · Purchase · Fictiva Liquid Fund, folio 7712045 · …"), as they do when the line a
-  transaction repeats is in another folio.
+  transaction repeats is in another folio. When the statement lists more than one row of a fund in
+  one folio with the same movement, day and amount, such as two SIPs of ₹5,000 on one day, each one
+  is numbered by its place among them in the statement's order, which no answer changes, after its
+  movement in its card's heading, its "On this statement:" and "Also on this statement:" lines, its
+  buttons and its answered line: "This purchase (1 of 2) may already be in Mutual funds", "3 Jul
+  2026 · Purchase (1 of 2) · Fictiva Liquid Fund · 61.350 units · ₹5,000", "₹5,000 purchase (1 of 2)
+  of Fictiva Liquid Fund on 3 Jul 2026: skipped". The card says what's counted: "The statement lists
+  2 purchases of ₹5,000 in this fund and folio on 3 Jul 2026; this is the first." A card is numbered
+  even when it's the only one of them asked about.
 - **Ready to import**: each fund with new transactions, with its plan and option, where its prices
   come from (and whether it was chosen before or by you) and **Change**, its **New transactions**
   ("38 imported before" under them) and its **Units after import**: the units Wealthfolio has at the
   statement's end, with what the import sends. A fund whose units then won't match the statement's
   says so ("After import: 1,204.500 units · Statement: 1,250.000. Imported with the difference you
-  accepted.", or "Includes the second purchase you chose."; a second cash dividend you chose adds
-  income instead: "Includes the second cash dividend you chose: ₹500 more income.") and always
+  accepted.", or "Includes another purchase you chose."; another cash dividend you chose adds
+  income instead: "Includes another cash dividend you chose: ₹500 more income.") and always
   shows; with more than five rows, only the first three, those and the ones
   just changed show until **Show all**. A fund with nothing new is one line under the table. A family
   statement's funds are grouped by investor and account ("A. Investor → Mutual funds").
@@ -121,7 +129,7 @@ statement's name. When Wealthfolio then fetches the fund's profile, a name in it
 listing's, replaces the statement's; a Yahoo listing without a name keeps it. A fund whose rows don't
 add up to its closing balance is asked about, and left out unless you answer **Import with this
 difference**; then check its rows against the PDF and add or correct the missing ones in Wealthfolio
-after importing. The result after importing reports its unit difference, as it does for a second
+after importing. The result after importing reports its unit difference, as it does for another
 transaction you chose to import.
 
 A purchase costs the statement's units × NAV plus stamp duty; a redemption pays units × NAV less
@@ -149,8 +157,8 @@ you edit that activity, so equal transactions, such as the same purchase on one 
 each go in once. Activities without these IDs, imported by version 2.2.0 or earlier or entered by
 hand, are compared with each row by their values, each with one row at most. Wealthfolio's own check
 can still report an equal row as a duplicate of such an activity; if the transaction is otherwise
-valid and isn't already fully matched, it's asked about as a possible duplicate, and **Import it as a
-second purchase** (or redemption, or cash dividend) imports it. Fully matched transactions count as
+valid and isn't already fully matched, it's asked about as a possible duplicate, and **Import it as
+another purchase** (or redemption, or cash dividend) imports it. Fully matched transactions count as
 imported before and aren't offered again. Before
 Wealthfolio 3.12.0, Wealthfolio's check also missed the trades of a fund that an earlier import
 created. A fund whose statement starts with units needs

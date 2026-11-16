@@ -40,7 +40,7 @@ import {
   unitsDiffer,
   type Waiting,
 } from "../cas/review";
-import type { CasData, CasFolio, CasScheme } from "../cas/types";
+import type { CasData, CasFolio, CasScheme, CasTransaction } from "../cas/types";
 import { type Ignored, NewAccountLine, type Proposed, type Renaming } from "../components/account-choices";
 import type { AmfiCheck } from "../components/amfi-banner";
 import { type FundChoice, type FundItem, fundItems } from "../components/fund-choices";
@@ -80,7 +80,7 @@ import { isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedN
 import { warningLines } from "../lib/parse-warnings";
 import { plural } from "../lib/plural";
 import { longDate, rupees, STATEMENT_WORDS, units } from "../lib/review-format";
-import { answerNames, type AskWords, bothRealWords, type LineFacts } from "../lib/asks";
+import { answerNames, type AskWords, bothRealWords, type LineFacts, placeWords } from "../lib/asks";
 import { type OpenQuestions, questionParts, questionsHeading, questionTotal } from "../lib/questions-left";
 import { sha256 } from "../lib/sha256";
 
@@ -794,7 +794,7 @@ export function DetailedImport({
         ? "Imported with the difference you accepted."
         : group.forced
           ? group.forced === 1
-            ? `Includes the second ${statementWord(sentPlan.find((t) => t.status !== "new" && groupsOfTransaction(t).includes(group.key))!, group.accountId)} you chose.`
+            ? `Includes another ${statementWord(sentPlan.find((t) => t.status !== "new" && groupsOfTransaction(t).includes(group.key))!, group.accountId)} you chose.`
             : `Includes the ${group.forced} possible duplicates you chose.`
           : group.other
             ? `${plural(group.other, "transaction")} of this fund ${group.other === 1 ? "isn't" : "aren't"} imported now.`
@@ -802,12 +802,12 @@ export function DetailedImport({
       note = `After import: ${units(format(group.after!))} units · Statement: ${units(format(group.statement))}. ${why}`;
     }
     if (group.forced) {
-      // A second cash dividend changes no units, only the income.
+      // Another cash dividend changes no units, only the income.
       const income = sentPlan.filter((t) => t.status !== "new" && groupsOfTransaction(t).includes(group.key) && rowUnits(t.transaction.activity) === undefined);
       if (income.length) {
         const amount = income.reduce((total, t) => add(total, abs(dec(String(t.transaction.activity.amount ?? t.transaction.cash?.amount ?? "0")))), dec("0"));
         const incomeNote = income.length === 1
-          ? `Includes the second ${statementWord(income[0], group.accountId)} you chose: ${rupees(format(amount))} more income.`
+          ? `Includes another ${statementWord(income[0], group.accountId)} you chose: ${rupees(format(amount))} more income.`
           : `Includes ${income.length} possible duplicates you chose: ${rupees(format(amount))} more income.`;
         note = note ? `${note} ${incomeNote}` : incomeNote;
       }
@@ -991,7 +991,32 @@ export function DetailedImport({
     };
   });
   const offered = (shown?.plan ?? []).filter(canImportAnyway);
-  const amountOf = (row: PlannedTransaction["transaction"]["rows"][number]) => (row.amount ? rupees(format(abs(dec(row.amount)))) : undefined);
+  const amountOf = (row: CasTransaction) => (row.amount ? rupees(format(abs(dec(row.amount)))) : undefined);
+  const rowWord = (row: CasTransaction) => STATEMENT_WORDS[row.type] ?? row.type.toLowerCase();
+  /**
+   * A statement row's place among the rows of its fund and folio with the same movement, day and
+   * amount, in the statement's order, which no answer changes; undefined when no other row is equal.
+   * Index each scheme's own rows once per statement: two fund houses' folios can share a number.
+   */
+  const places = useMemo(() => {
+    const places = new Map<CasTransaction, { n: number; of: number }>();
+    for (const folio of data.folios) for (const scheme of folio.schemes) {
+      const groups = new Map<string, CasTransaction[]>();
+      for (const row of scheme.transactions) {
+        const key = JSON.stringify([row.date, rowWord(row), amountOf(row)]);
+        const group = groups.get(key) ?? [];
+        group.push(row);
+        groups.set(key, group);
+      }
+      for (const group of groups.values()) {
+        if (group.length > 1) group.forEach((row, i) => places.set(row, { n: i + 1, of: group.length }));
+      }
+    }
+    return places;
+  }, [data]);
+  const placeOf = (row: CasTransaction) => places.get(row);
+  /** " (1 of 2)" after a movement, for a row with a place. */
+  const marker = (place: ReturnType<typeof placeOf>) => (place ? ` (${place.n} of ${place.of})` : "");
   // What a possible duplicate's line and buttons name it by: its fund, movement, amount and day.
   const duplicateWords = offered.map((t) => ({
     fund: transactionFund(t), word: statementWord(t), money: amountOf(t.transaction.rows[0]), when: longDate(t.transaction.rows[0].date),
@@ -1014,11 +1039,18 @@ export function DetailedImport({
     const twice = twin || (!!repeated && repeated.transaction.folio !== folio);
     const says = twice ? `${fund}, folio ${folio}` : fund;
     const inFolio = twin ? ` in folio ${folio}` : "";
+    // Equal transactions in this folio: this one's place among them on the statement.
+    const place = placeOf(first);
+    const which = marker(place);
     const unitsOf = (row: typeof first) => (row.units && dec(row.units).n !== 0n ? `${units(format(abs(dec(row.units))))} units` : undefined);
     const factsOf = (row: typeof first): LineFacts => ({ day: longDate(row.date), units: unitsOf(row), amount: amountOf(row) });
-    const statementLine = (row: typeof first, inFolio: string) =>
-      [longDate(row.date), capital(STATEMENT_WORDS[row.type] ?? row.type.toLowerCase()), twice ? `${fund}, folio ${inFolio}` : fund, unitsOf(row), amountOf(row)]
+    // A transaction's statement line, with its own fund and place.
+    const statementLine = (of: PlannedTransaction) => {
+      const { folio, rows: [row] } = of.transaction;
+      const name = transactionFund(of);
+      return [longDate(row.date), capital(rowWord(row)) + marker(placeOf(row)), twice ? `${name}, folio ${folio}` : name, unitsOf(row), amountOf(row)]
         .filter(Boolean).join(" · ");
+    };
     const thereFacts = there && ((): LineFacts => {
       const amount = there.amount ?? (there.quantity && there.unitPrice ? format(mul(dec(String(there.quantity)), dec(String(there.unitPrice)))) : null);
       return {
@@ -1039,12 +1071,12 @@ export function DetailedImport({
     const evidence = (
       <>
         <p>
-          <span className="text-foreground font-medium">On this statement:</span> {statementLine(first, folio)}
+          <span className="text-foreground font-medium">On this statement:</span> {statementLine(t)}
         </p>
         <p>
           {repeated ? (
             <>
-              <span className="text-foreground font-medium">Also on this statement:</span> {statementLine(repeated.transaction.rows[0], repeated.transaction.folio)}
+              <span className="text-foreground font-medium">Also on this statement:</span> {statementLine(repeated)}
             </>
           ) : (
             <>
@@ -1053,22 +1085,24 @@ export function DetailedImport({
           )}
         </p>
         <p>{bothRealWords(factsOf(first), repeated ? factsOf(repeated.transaction.rows[0]) : thereFacts)}</p>
+        {place && <p>{placeWords(place, word, money, when)}</p>}
       </>
     );
     return {
       id: `duplicate|${key}`,
       words: {
-        title: repeated ? `This ${word}${inFolio} is on this statement twice`
-          : row?.activity === t.transaction.bank ? `The bank entry for this ${word}${inFolio} may already be in ${account}`
-          : `This ${word}${inFolio} may already be in ${account}`,
+        // A row repeated in its own folio has a place: its heading says which one repeats.
+        title: repeated ? (place ? `This ${word}${which}${inFolio} matches an earlier ${word} on this statement` : `This ${word}${inFolio} is on this statement twice`)
+          : row?.activity === t.transaction.bank ? `The bank entry for this ${word}${which}${inFolio} may already be in ${account}`
+          : `This ${word}${which}${inFolio} may already be in ${account}`,
         line: "",
         main: "Skip this transaction",
-        other: `Import it as a second ${word}`,
-        receipt: (skip) => `${money ? `${money} ` : ""}${word} of ${says} on ${when}: ${skip ? "skipped" : `imported as a second ${word}`}`,
+        other: `Import it as another ${word}`,
+        receipt: (skip) => `${money ? `${money} ` : ""}${word}${which} of ${says} on ${when}: ${skip ? "skipped" : `imported as another ${word}`}`,
         done: (skip) => (skip ? "skipped" : "imported"),
       },
       evidence,
-      target: `${says}, ${word}${money ? ` of ${money}` : ""} on ${when}`,
+      target: `${says}, ${word}${which}${money ? ` of ${money}` : ""} on ${when}`,
       answer: duplicateAnswers.get(key),
       set: (answer) => setDuplicateAnswers((all) => {
         const next = new Map(all);

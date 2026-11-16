@@ -1185,10 +1185,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Their amounts differ, so they aren't called equal.
     await duplicateCard.getByText("Two transactions on one day with the same units can both be real.", { exact: true }).waitFor();
     const skipDuplicate = duplicateCard.getByRole("button", { name: "Skip this transaction: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
-    const importDuplicate = duplicateCard.getByRole("button", { name: "Import it as a second switch in: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
+    const importDuplicate = duplicateCard.getByRole("button", { name: "Import it as another switch in: Fund INFZ90K01LQ6, switch in of ₹9,162.28 on 20 Jun 2024", exact: true });
     await skipDuplicate.waitFor();
     // Nothing is chosen yet, so neither answer looks chosen: both outline, the safe one first.
-    assert.deepEqual(await answerLooks(duplicateCard), ["Skip this transaction outline", "Import it as a second switch in outline"]);
+    assert.deepEqual(await answerLooks(duplicateCard), ["Skip this transaction outline", "Import it as another switch in outline"]);
     assert.equal(await transactionParts(), "12 imported before, skipped · 1 possible duplicate, waiting for your answer · 26 waiting for earlier purchases");
     await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
     assert.equal(await importButton.isDisabled(), true);
@@ -1209,7 +1209,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await importDuplicate.click();
     await dSettled();
     // Imported, its units count too: the fund's row says so and doesn't fold away, and so does the footer.
-    await readyFund("Fund INFZ90K01LQ6").getByText("After import: 11.359 units · Statement: 8.053. Includes the second switch in you chose.", { exact: true }).waitFor();
+    await readyFund("Fund INFZ90K01LQ6").getByText("After import: 11.359 units · Statement: 8.053. Includes another switch in you chose.", { exact: true }).waitFor();
     assert.deepEqual(await cellsOf(readyFund("Fund INFZ90K01LQ6")), [["1 2 imported before", "11.359"]]);
     await dFooter.getByText("Import 1 transaction for 1 fund into Mutual funds.", { exact: true }).waitFor();
     await dFooter.getByText("1 fund's units won't match the statement after importing: Fund INFZ90K01LQ6.", { exact: true }).waitFor();

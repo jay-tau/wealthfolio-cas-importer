@@ -3,7 +3,7 @@ import { type AccountPlan, assetName, assetNames, type Choices, included, type P
 import { fundRef } from "../cas/plan.ts";
 import { nameNumber } from "./name-number.ts";
 import { plural } from "./plural.ts";
-import { longDate, shortDate, units } from "./review-format.ts";
+import { longDate, movements, ordinal, shortDate, units } from "./review-format.ts";
 
 // What the Review screen's rare questions say: a plain heading, at most one line of evidence, the safe
 // answer first, and what each answer did, for its line once answered and for the bar.
@@ -51,6 +51,16 @@ export function bothRealWords(line: LineFacts, other?: LineFacts) {
   if (day && amount && line.units === other.units) return BOTH_EQUAL;
   const same = units && amount ? " with the same units and amount" : units ? " with the same units" : amount ? " for the same amount" : "";
   return `Two transactions${day ? " on one day" : ""}${same} can both be real.`;
+}
+
+/**
+ * What a numbered possible duplicate's card says its number counts: the statement's rows of its
+ * fund and folio with its movement, day and amount, in the statement's order. Rows without an
+ * amount are counted apart from rows with one, so it says so.
+ */
+export function placeWords(place: { n: number; of: number }, word: string, money: string | undefined, day: string) {
+  const amount = money ? ` of ${money}` : " with no amount shown";
+  return `The statement lists ${plural(place.of, word, movements(word))}${amount} in this fund and folio on ${day}; this is the ${ordinal(place.n)}.`;
 }
 
 /**

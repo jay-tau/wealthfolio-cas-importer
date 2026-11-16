@@ -21,6 +21,18 @@ export const STATEMENT_WORDS: Record<string, string> = {
   SWITCH_OUT: "switch out", SWITCH_OUT_MERGER: "switch out", DIVIDEND_PAYOUT: "cash dividend", DIVIDEND_REINVEST: "reinvested dividend",
 };
 
+/** A movement's plural: "purchases", "SIP purchases", "switches in", "gifts received". */
+export const movements = (word: string) =>
+  word.startsWith("switch ") ? word.replace("switch ", "switches ") : word.startsWith("gift ") ? word.replace("gift ", "gifts ") : `${word}s`;
+
+const ORDINALS = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth"];
+/** "first" to "tenth", then "11th", "21st", "22nd", "23rd". */
+export function ordinal(n: number) {
+  if (ORDINALS[n - 1]) return ORDINALS[n - 1];
+  const teen = Math.floor(n / 10) % 10 === 1;
+  return `${n}${!teen && n % 10 === 1 ? "st" : !teen && n % 10 === 2 ? "nd" : !teen && n % 10 === 3 ? "rd" : "th"}`;
+}
+
 /** An integer's digits with Indian grouping: "102310" → "1,02,310". */
 function indian(digits: string) {
   if (digits.length <= 3) return digits;
