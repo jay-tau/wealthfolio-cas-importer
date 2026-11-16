@@ -1008,26 +1008,54 @@ export function DetailedImport({
    * A statement row's place among the rows of its fund and folio with the same movement, day and
    * amount, in the statement's order, which no answer changes; undefined when no other row is equal.
    * Index each scheme's own rows once per statement: two fund houses' folios can share a number.
+   * Each row also gets its folio, fund and equality key to tell when its fund has one in another folio.
    */
-  const places = useMemo(() => {
+  const { places, equals } = useMemo(() => {
     const places = new Map<CasTransaction, { n: number; of: number }>();
+    const equals = new Map<CasTransaction, { folio: string; fund: string; key: string }>();
     for (const folio of data.folios) for (const scheme of folio.schemes) {
       const groups = new Map<string, CasTransaction[]>();
+      const where = { folio: folio.folio, fund: fundKey(scheme) };
       for (const row of scheme.transactions) {
         const key = JSON.stringify([row.date, rowWord(row), amountOf(row)]);
         const group = groups.get(key) ?? [];
         group.push(row);
         groups.set(key, group);
+        equals.set(row, { ...where, key });
       }
       for (const group of groups.values()) {
         if (group.length > 1) group.forEach((row, i) => places.set(row, { n: i + 1, of: group.length }));
       }
     }
-    return places;
+    return { places, equals };
   }, [data]);
   const placeOf = (row: CasTransaction) => places.get(row);
   /** " (1 of 2)" after a movement, for a row with a place. */
   const marker = (place: ReturnType<typeof placeOf>) => (place ? ` (${place.n} of ${place.of})` : "");
+  // Group by today's screen names once, so rendering each table row needs only a lookup.
+  const equalFolios = useMemo(() => {
+    const names = new Map(items.map(({ key }) => [key, fundNameOf(key)]));
+    const groups = new Map<string, Set<string>>();
+    const folios = new Map<CasTransaction, Set<string>>();
+    for (const [row, own] of equals) {
+      const key = JSON.stringify([own.key, names.get(own.fund)]);
+      const all = groups.get(key) ?? new Set<string>();
+      all.add(own.folio);
+      groups.set(key, all);
+      folios.set(row, all);
+    }
+    return folios;
+  }, [equals, items, answers, matched, fundChoices]);
+  /**
+   * Whether a statement row's fund, as the screen names it, has a row with its movement, day and
+   * amount in another folio, whatever the answers: then the row needs its folio named too.
+   */
+  const inTwoFolios = (row: CasTransaction) => (equalFolios.get(row)?.size ?? 0) > 1;
+  /** How a statement row is told from equal ones: its place, and whether to name its folio. */
+  const whichRow = (row: CasTransaction) => ({ place: marker(placeOf(row)), folio: inTwoFolios(row) });
+  /** A transaction's fund as the screen names it, with its folio when that fund has an equal row in another. */
+  const fundInFolio = (t: PlannedTransaction) =>
+    inTwoFolios(t.transaction.rows[0]) ? `${transactionFund(t)}, folio ${t.transaction.folio}` : transactionFund(t);
   // What a possible duplicate's line and buttons name it by: its fund, movement, amount and day.
   const duplicateWords = offered.map((t) => ({
     fund: transactionFund(t), word: statementWord(t), money: amountOf(t.transaction.rows[0]), when: longDate(t.transaction.rows[0].date),
@@ -2092,7 +2120,8 @@ export function DetailedImport({
             ticked={ticked}
             answered={answer ? (answer.linked ? ticked.size : 0) : undefined}
             facts={current!.facts}
-            fundName={(pair) => transactionFund(pair.t)}
+            fundName={(pair) => fundInFolio(pair.t)}
+            place={(pair) => marker(placeOf(pair.t.transaction.rows[0]))}
             headingId={ids.check(check.id)}
             changeId={ids.checkChange(check.id)}
             pairId={(pair) => id(`pair-${pair.key}`)}
@@ -2430,7 +2459,15 @@ export function DetailedImport({
       )}
       {open.every && current && (
         <section id={ids.every} aria-label="Every transaction on this statement">
-          <ActivityTable mapping={current.mapping} plan={plan} sent={sentOf} linked={reused} accountName={accountName} label="Every transaction on this statement" />
+          <ActivityTable
+            mapping={current.mapping}
+            plan={plan}
+            sent={sentOf}
+            linked={reused}
+            accountName={accountName}
+            which={whichRow}
+            label="Every transaction on this statement"
+          />
         </section>
       )}
       <Footer

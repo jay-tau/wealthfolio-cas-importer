@@ -4,6 +4,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { after, afterEach, before, test } from "node:test";
+import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { proposedId } from "../src/lib/new-accounts.ts";
 
@@ -1035,15 +1036,18 @@ test("equal possible duplicates are numbered in a folio whose number another fun
     ["Purchase · Testbridge Liquid Fund", "Purchase (1 of 2) · Fictiva Liquid Fund", "Purchase (2 of 2) · Fictiva Liquid Fund"]);
 });
 
+/** `equalPurchases()`, with the same purchase once more in a second folio, 222222222. */
+const equalInTwoFolios = (d) => {
+  equalPurchases()(d);
+  const [scheme] = d.folios[0].schemes;
+  const other = { ...scheme, transactions: [structuredClone(scheme.transactions[0])] };
+  other.close = other.close_calculated = other.transactions[0].units;
+  d.folios.push({ ...structuredClone(d.folios[0]), folio: "222222222", schemes: [other] });
+  return d;
+};
+
 test("equal possible duplicates in one folio and another name the folio and their place in it", async () => {
-  const { run, api, data } = setup({ entries: [], change(d) {
-    equalPurchases()(d);
-    const [scheme] = d.folios[0].schemes;
-    const other = { ...scheme, transactions: [structuredClone(scheme.transactions[0])] };
-    other.close = other.close_calculated = other.transactions[0].units;
-    d.folios.push({ ...structuredClone(d.folios[0]), folio: "222222222", schemes: [other] });
-    return d;
-  } });
+  const { run, api, data } = setup({ entries: [], change: equalInTwoFolios });
   api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
   await run.flush();
   const [first, second] = data.folios.map((f) => f.folio);
@@ -1057,6 +1061,188 @@ test("equal possible duplicates in one folio and another name the folio and thei
   assert.deepEqual(askAnswers(run).map((a) => a.text.replace(/^₹[\d,.]+ /, "").replace(new RegExp(` on ${DAY}`), "")), [
     `purchase (1 of 2) of Fictiva Liquid Fund, folio ${first}: skipped`, `purchase (2 of 2) of Fictiva Liquid Fund, folio ${first}: skipped`,
     `purchase of Fictiva Liquid Fund, folio ${second}: skipped`,
+  ]);
+});
+
+/** Markup as shown, its text nodes joined. */
+const markup = (node) => renderToStaticMarkup(node).replaceAll("<!-- -->", "").replaceAll("&#x27;", "'").replaceAll("&amp;", "&");
+/** The text of the element with this id in `html`, its tags dropped. */
+function textById(html, id) {
+  const start = html.indexOf(`id="${id}"`);
+  assert.ok(start >= 0, `an element with id ${id}`);
+  const from = html.indexOf(">", start) + 1;
+  const tag = /<(\/?)[a-z]+[^>]*?(\/?)>/g;
+  tag.lastIndex = from;
+  let depth = 1;
+  for (let m; (m = tag.exec(html));) {
+    if (m[2]) continue;
+    depth += m[1] ? -1 : 1;
+    if (!depth) return html.slice(from, m.index).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+}
+/** A bank check's pairs as shown: each one's fund, movement, and its checkbox's accessible name. */
+function shownPairs(node) {
+  const html = markup(node);
+  return [...html.matchAll(/aria-labelledby="([^"]+ [^"]+ [^"]+ [^"]+)"/g)].map(([, ids]) => {
+    const [fund, movement] = ids.split(" ").map((id) => textById(html, id));
+    return { fund, movement, name: ids.split(" ").map((id) => textById(html, id)).join(" ") };
+  });
+}
+/** The bank checks under the bank choice with this key, as elements. */
+const checkNodes = (run, key) => nodes(saveTo(run).checks(key)).filter((node) => node.type?.name === "BankCheck");
+/** See every transaction's rows as shown: each one's cells' text. */
+async function shownTable(run) {
+  if (!find(run, "ActivityTable")) {
+    nodes(find(run, "Footer").lines).find((node) => node.props?.children === "See every transaction").props.onClick();
+    await run.flush();
+  }
+  const html = markup(nodes(run.tree).find((node) => node.type?.name === "ActivityTable"));
+  return [...html.slice(html.indexOf("<tbody")).matchAll(/<tr[^>]*>(.*?)<\/tr>/g)].map(([, row]) =>
+    [...row.matchAll(/<td[^>]*>(.*?)<\/td>/g)].map(([, cell]) => cell.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim()));
+}
+/** Three equal withdrawals from Savings, each one the made-up Liquid Fund purchase's. */
+const EQUAL_WITHDRAWALS = [1, 2, 3].map((n) => entry(`neft-${n}`, "WITHDRAWAL", "24998.75", "2023-05-05", "NEFT FICTIVA MF"));
+/** The PAN's funds going to Mutual funds, with Savings for their cash. */
+const withSavings = () => ({ [choices.panKey("ABCDE1234F")]: "mf", [choices.bankKey(choices.panKey("ABCDE1234F"))]: "bank" });
+
+test("table row identity doesn't recalculate every equal row's fund name", async () => {
+  const { run, props } = setup({ entries: [], change(d) {
+    equalPurchases()(d);
+    const [folio] = d.folios;
+    const [scheme] = folio.schemes;
+    d.folios = Array.from({ length: 40 }, (_, i) => ({
+      ...folio, folio: String(7712000 + i), schemes: [{
+        ...scheme, scheme: `Fictiva Test ${i} Fund - Direct Plan - Growth`, isin: `FICTIVA${i}`,
+        transactions: [structuredClone(scheme.transactions[0])], close: scheme.transactions[0].units, close_calculated: scheme.transactions[0].units,
+      }],
+    }));
+    return d;
+  } });
+  await run.flush();
+  await shownTable(run);
+  let namesRead = 0;
+  for (const { fund } of Object.values(props.fundChoices)) {
+    const name = fund.name;
+    Object.defineProperty(fund, "name", { get() { namesRead++; return name; } });
+  }
+  const table = find(run, "ActivityTable");
+  assert.equal(table.plan.length, 40);
+  assert.deepEqual(table.plan.map((t) => table.which(t.transaction.rows[0])), Array(40).fill({ place: "", folio: false }));
+  assert.ok(namesRead <= 40, `${namesRead} fund-name reads for 40 row labels`);
+  // Changing a chosen listing's name must update the cached folio rule, even though the statement stays.
+  const keys = Object.keys(props.fundChoices);
+  const renamed = { ...props.fundChoices, [keys[1]]: { fund: { ...props.fundChoices[keys[1]].fund, name: props.fundChoices[keys[0]].fund.name } } };
+  run.update({ fundChoices: renamed });
+  await run.flush();
+  const changed = find(run, "ActivityTable");
+  assert.deepEqual(changed.plan.map((t) => changed.which(t.transaction.rows[0]).folio), [true, true, ...Array(38).fill(false)]);
+});
+
+test("equal purchases' bank pairs and table rows say which they are on the statement, with no question about them", async () => {
+  const { run, keys, data } = setup({ entries: EQUAL_WITHDRAWALS, remembered: withSavings(), change: equalInTwoFolios });
+  await run.flush();
+  assert.equal(askCards(run).length, 0);
+  const [first, second] = data.folios.map((f) => f.folio);
+  // Each pair's fund names its folio, as the fund has an equal purchase in the other, and its
+  // movement says which of the folio's equal purchases it is.
+  const [check, ...more] = checkNodes(run, choices.bankKey(keys.pan));
+  assert.equal(more.length, 0);
+  const pairs = shownPairs(check);
+  assert.deepEqual(pairs.map((p) => [p.fund, p.movement]), [
+    [`Fictiva Liquid Fund, folio ${first}`, "Purchase (1 of 2) · 5 May 2023 · ₹24,998.75, from Savings"],
+    [`Fictiva Liquid Fund, folio ${first}`, "Purchase (2 of 2) · 5 May 2023 · ₹24,998.75, from Savings"],
+    [`Fictiva Liquid Fund, folio ${second}`, "Purchase · 5 May 2023 · ₹24,998.75, from Savings"],
+  ]);
+  // The equal entries read the same, so the checkboxes' names differ by fund, folio and place.
+  pairs.forEach((p, i) => assert.equal(p.name, `${p.fund} ${p.movement} Savings: NEFT FICTIVA MF · 5 May 2023 · −₹24,998.75 Pair ${i + 1}: ANANYA R TESTWALA's funds · Savings`));
+  // Answered, the check lets the table open; its rows say the same.
+  check.props.onNone();
+  await run.flush();
+  assert.deepEqual((await shownTable(run)).map((row) => row.slice(0, 3)), [
+    ["2023-05-05", `Fictiva Liquid Fund - Direct Plan - Growth, folio ${first}`, "purchase (1 of 2)"],
+    ["2023-05-05", `Fictiva Liquid Fund - Direct Plan - Growth, folio ${first}`, "purchase (2 of 2)"],
+    ["2023-05-05", `Fictiva Liquid Fund - Direct Plan - Growth, folio ${second}`, "purchase"],
+  ]);
+});
+
+test("a bank pair and table row name the folio only when a fund named the same has an equal row in another folio", async () => {
+  const { run, keys, data } = setup({
+    entries: [...EQUAL_WITHDRAWALS, entry("neft-small", "WITHDRAWAL", "1000.00", "2023-05-05", "NEFT FICTIVA MF")],
+    remembered: withSavings(),
+    change(d) {
+      equalPurchases("1000.00")(d);
+      // The Regular plan, another fund the screen names the same, in another folio.
+      const [direct] = d.folios[0].schemes;
+      const regular = {
+        ...structuredClone(direct), scheme: "Fictiva Liquid Fund - Regular Plan - Growth", isin: "INFZ90K01LR4", rta_code: "FLQRG",
+        transactions: [structuredClone(direct.transactions[0])],
+      };
+      regular.close = regular.close_calculated = regular.transactions[0].units;
+      d.folios.push({ ...structuredClone(d.folios[0]), folio: "222222222", schemes: [regular] });
+      return d;
+    },
+  });
+  await run.flush();
+  const [first, second] = data.folios.map((f) => f.folio);
+  const [check] = checkNodes(run, choices.bankKey(keys.pan));
+  // The purchase of ₹1,000 has no equal row anywhere: no folio and no number.
+  assert.deepEqual(shownPairs(check).map((p) => `${p.fund} · ${p.movement}`), [
+    `Fictiva Liquid Fund, folio ${first} · Purchase (1 of 2) · 5 May 2023 · ₹24,998.75, from Savings`,
+    "Fictiva Liquid Fund · Purchase · 5 May 2023 · ₹1,000, from Savings",
+    `Fictiva Liquid Fund, folio ${first} · Purchase (2 of 2) · 5 May 2023 · ₹24,998.75, from Savings`,
+    `Fictiva Liquid Fund, folio ${second} · Purchase · 5 May 2023 · ₹24,998.75, from Savings`,
+  ]);
+  check.props.onNone();
+  await run.flush();
+  assert.deepEqual((await shownTable(run)).map((row) => row.slice(1, 3)), [
+    [`Fictiva Liquid Fund - Direct Plan - Growth, folio ${first}`, "purchase (1 of 2)"],
+    ["Fictiva Liquid Fund - Direct Plan - Growth", "purchase"],
+    [`Fictiva Liquid Fund - Direct Plan - Growth, folio ${first}`, "purchase (2 of 2)"],
+    [`Fictiva Liquid Fund - Regular Plan - Growth, folio ${second}`, "purchase"],
+  ]);
+});
+
+test("equal possible duplicates' bank pairs and table rows keep their statement numbers through skip and import answers", async () => {
+  const { run, api, keys, data } = setup({ entries: EQUAL_WITHDRAWALS, remembered: withSavings(), change: equalInTwoFolios });
+  api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  const [first, second] = data.folios.map((f) => f.folio);
+  const shownChecks = () => checkNodes(run, choices.bankKey(keys.pan)).map((node) => shownPairs(node).map((p) => `${p.fund} · ${p.movement.split(" · ")[0]}`));
+  // Nothing goes to the bank until a possible duplicate is imported.
+  assert.deepEqual(shownChecks(), []);
+  // Skip the first, import the others: the second keeps its number, and the table says which went in.
+  const cards = askCards(run);
+  cards[0].main.onClick();
+  cards[1].other.onClick();
+  cards[2].other.onClick();
+  await run.flush();
+  assert.deepEqual(shownChecks(), [[`Fictiva Liquid Fund, folio ${first} · Purchase (2 of 2)`, `Fictiva Liquid Fund, folio ${second} · Purchase`]]);
+  checkNodes(run, choices.bankKey(keys.pan))[0].props.onNone();
+  await run.flush();
+  const statuses = (rows) => rows.map((row) => [row[2], row.at(-1)]);
+  const anyway = "Possible duplicate Wealthfolio reports this purchase as a duplicate. Imported anyway, by your answer.";
+  assert.deepEqual(statuses(await shownTable(run)), [
+    ["purchase (1 of 2)", "Possible duplicate Wealthfolio reports this purchase as a duplicate."],
+    ["purchase (2 of 2)", anyway],
+    ["purchase", anyway],
+  ]);
+  // The other way round in the folio: the first is imported and the second skipped.
+  askAnswers(run)[1].onChange();
+  await run.flush();
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  askAnswers(run)[0].onChange();
+  await run.flush();
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.deepEqual(askAnswers(run).map((a) => a.text.replace(/^₹[\d,.]+ /, "").replace(new RegExp(` on ${DAY}`), "")), [
+    `purchase (1 of 2) of Fictiva Liquid Fund, folio ${first}: imported as another purchase`,
+    `purchase (2 of 2) of Fictiva Liquid Fund, folio ${first}: skipped`,
+    `purchase of Fictiva Liquid Fund, folio ${second}: imported as another purchase`,
+  ]);
+  assert.deepEqual(shownChecks(), [[`Fictiva Liquid Fund, folio ${first} · Purchase (1 of 2)`, `Fictiva Liquid Fund, folio ${second} · Purchase`]]);
+  assert.deepEqual(statuses(await shownTable(run)).map(([activity, status]) => [activity, status === anyway]), [
+    ["purchase (1 of 2)", true], ["purchase (2 of 2)", false], ["purchase", true],
   ]);
 });
 
