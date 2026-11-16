@@ -181,6 +181,33 @@ test("earlier-purchase help and Change distinguish equal funds and their separat
   assert.ok(shown.includes("Skipped because their transactions don't add up (2) , by your answer: Fictiva Fund · Change Fictiva Fund · Change"));
 });
 
+test("a fund waiting for earlier purchases in two accounts says how many units each needs and from which folios", () => {
+  const props = (accounts, units) => ({
+    earlier: [{ key: "1", name: "Fictiva Liquid Fund", units, waiting: 12, accounts }],
+    unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: { "how:1": true }, setOpen() {},
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+  });
+  const two = text("NotIncludedDetailed", props([
+    { units: "100.000", account: "Mutual funds", folios: ["7712045"] },
+    { units: "200.000", account: "Funds (ending 4821)", folios: ["91234567", "3301"] },
+  ], "300.000 units"));
+  assert.ok(two.includes(
+    "Earlier purchases needed : Fictiva Liquid Fund starts with 300.000 units bought before this statement, so its 12 transactions wait. " +
+    "Units needed: 100.000 in Mutual funds, from folio 7712045; 200.000 in Funds (ending 4821), from folios 91234567 and 3301. Change How to fix " +
+    "Read an earlier CAMS statement that includes its first purchase, or add the units in Wealthfolio as buys with their cost and date: " +
+    "100.000 units in Mutual funds, from folio 7712045; 200.000 units in Funds (ending 4821), from folios 91234567 and 3301. " +
+    "Then read this statement again: transactions already imported are skipped.",
+  ), two);
+  // Only one of its accounts waits: that one is still named.
+  const one = text("NotIncludedDetailed", props([{ units: "200.000", account: "Family funds", folios: ["91234567"] }], "200.000 units"));
+  assert.ok(one.includes("so its 12 transactions wait. Units needed: 200.000 in Family funds, from folio 91234567. Change How to fix"), one);
+  assert.ok(one.includes("or add the units in Wealthfolio as a buy with their cost and date: 200.000 units in Family funds, from folio 91234567. Then"), one);
+  // In one account, the line and How to fix say the units as before.
+  const plain = text("NotIncludedDetailed", props(undefined, "300.000 units"));
+  assert.ok(plain.includes("so its 12 transactions wait. Change How to fix Read an earlier CAMS statement that includes its first purchase, " +
+    "or add the 300.000 units in Wealthfolio as a buy with their cost and date. Then read this statement again"), plain);
+});
+
 test("one fund's Ready and Not included Change controls have distinct names", () => {
   const item = { key: "fund", name: "Fictiva Fund", noun: "fund" };
   const ready = createElement(components.FundsReadyTable, {

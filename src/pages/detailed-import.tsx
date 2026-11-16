@@ -872,12 +872,33 @@ export function DetailedImport({
         waiting.set(key, entry);
       }
     }
-    return [...waiting].map(([key, { schemes, count }]) => ({
-      key,
-      name: shownName(itemOf.get(key)!, fundOf(key)),
-      units: `${units(format(schemes.reduce((total, s) => add(total, dec(s.open)), dec("0"))))} units`,
-      waiting: count,
-    }));
+    // Each scheme's account and folio, as the units check grouped them.
+    const accountOf = new Map(current.opening.flatMap((f) => f.schemes.map((s) => [s, f.accountId] as const)));
+    const folioOf = new Map(data.folios.flatMap((f) => f.schemes.map((s) => [s, f.folio] as const)));
+    const unitsOf = (schemes: CasScheme[]) => units(format(schemes.reduce((total, s) => add(total, dec(s.open)), dec("0"))));
+    return [...waiting].map(([key, { schemes, count }]) => {
+      // A fund whose folios go to more than one account says which account needs which units.
+      const spread = new Set(current.opening.filter((f) => f.schemes.some((s) => fundKey(s) === key)).map((f) => f.accountId)).size > 1;
+      const byAccount = new Map<string, CasScheme[]>();
+      // In the statement's order: events-only schemes join `waiting` after the others.
+      for (const s of [...folioOf.keys()].filter((s) => schemes.includes(s))) {
+        const accountId = accountOf.get(s)!;
+        byAccount.set(accountId, [...(byAccount.get(accountId) ?? []), s]);
+      }
+      return {
+        key,
+        name: shownName(itemOf.get(key)!, fundOf(key)),
+        units: `${unitsOf(schemes)} units`,
+        waiting: count,
+        accounts: spread
+          ? [...byAccount].map(([accountId, list]) => ({
+              units: unitsOf(list),
+              account: accountName(accountId),
+              folios: [...new Set(list.map((s) => folioOf.get(s)!))],
+            }))
+          : undefined,
+      };
+    });
   })();
   const skipped = items.filter((item) => {
     const choice = choiceOf(item.key);
