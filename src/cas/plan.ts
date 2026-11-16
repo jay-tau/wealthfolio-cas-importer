@@ -10,8 +10,9 @@ import type { CasData, CasFolio, CasScheme } from "./types.ts";
 // no ID from the add-on, on the import key's fields: imports from before the IDs, and activities
 // entered by hand. Each activity matches one row at most. Wealthfolio's checkImport can't count
 // copies among those: a duplicate row imported with "Import anyway" is stored without a duplicate
-// key and isn't found by later checks. Wealthfolio before 3.13.0 drops the IDs, so there two rows
-// with equal values are duplicates too. Before Wealthfolio 3.12.0,
+// key and isn't found by later checks. Rows of one import aren't compared with each other: each has
+// its own ID, which Wealthfolio 3.13.0, the oldest version the add-on installs on, keeps, and a row
+// Wealthfolio's check reports as equal to another line is flagged. Before Wealthfolio 3.12.0,
 // checkImport also missed a trade that an earlier import saved when that import created the
 // fund: the import keyed the trade by symbol and exchange, and checkImport keyed it by the
 // asset's ID. A merger's conversion rows also go by their direction and group, as Wealthfolio
@@ -22,7 +23,7 @@ export type Status =
   | "new"
   /** Wealthfolio has every row. */
   | "existing"
-  /** Some row equals an activity Wealthfolio has or another row of this import. */
+  /** Some row equals an activity Wealthfolio has, or Wealthfolio's check reports it as a duplicate. */
   | "duplicate"
   /** checkImport rejected a row. */
   | "invalid";
@@ -36,8 +37,6 @@ export interface PlannedRow {
   existingId?: string;
   /** The type of that activity, when it's the transaction's cash under the other type: a deposit for a transfer in, say. */
   existingType?: ActivityType;
-  /** The line of an earlier row of this import that this row equals. */
-  repeatsLine?: number;
   /** checkImport found a duplicate. */
   flagged: boolean;
   /** The Wealthfolio activity checkImport says it duplicates, when it names one. */
@@ -273,11 +272,8 @@ export function planImport(
 ): PlannedTransaction[] {
   const { index: available, records } = indexActivities(existing, funds);
   const byId = new Map(existing.map((a) => [a.id, a]));
-  // Wealthfolio 3.13.0 and newer return the rows' IDs; older versions drop them.
-  const keepsIds = checked.some((r) => r?.sourceRecordId);
   // Stored group rows can make a new conversion fail the whole import.
   const groups = new Set(existing.flatMap((a) => groupOf(a) ?? []));
-  const seen = new Map<string, number>();
   let position = 0;
   const planned: PlannedTransaction[] = mapping.transactions.map((transaction) => {
     let tradeFound = false;
@@ -287,8 +283,6 @@ export function planImport(
       // bank account was chosen; the bank's side never does: its deposits and withdrawals are the
       // bank's own rows.
       const keys = activity === transaction.cash ? cashIdentities(activity) : [{ key: rowIdentity(activity), type: undefined }];
-      // Rows with different IDs aren't duplicates of each other where Wealthfolio keeps the IDs.
-      const own = keepsIds && activity.sourceRecordId ? `record:${recordKey(activity.accountId, activity.sourceRecordId)}` : keys[0].key;
       const recorded = settled || !activity.sourceRecordId ? undefined : records.get(recordKey(activity.accountId, activity.sourceRecordId))?.shift();
       const recordedType = recorded && byId.get(recorded)!.activityType;
       const deferCash = activity === transaction.cash && !tradeFound;
@@ -304,14 +298,12 @@ export function planImport(
         warnings: messages(result?.warnings, "_duplicate"),
         existingId: recorded ?? (at < 0 ? undefined : ids!.splice(at, 1)[0]),
         existingType: recordedType ? (recordedType === activity.activityType ? undefined : recordedType) : match?.type,
-        repeatsLine: settled ? undefined : seen.get(own),
         flagged: !!(result?.duplicateOfId || result?.duplicateOfLineNumber),
         ...(result?.duplicateOfId && { duplicateOfId: result.duplicateOfId }),
         ...(result?.duplicateOfLineNumber !== undefined && { duplicateOfLineNumber: result.duplicateOfLineNumber }),
       };
       if (!result) row.errors.push("Wealthfolio didn't check this row.");
       else if (!result.isValid && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
-      if (!settled && !seen.has(own)) seen.set(own, activity.lineNumber ?? position);
       return row;
     };
     const rows = [plan(transaction.activity)];
@@ -437,7 +429,7 @@ export function planImport(
       ? "invalid"
       : settled || completeEarlier(t)
         ? "existing"
-        : t.rows.some((r) => r.existingId || r.repeatsLine !== undefined || r.flagged)
+        : t.rows.some((r) => r.existingId || r.flagged)
           ? "duplicate"
           : "new";
   }

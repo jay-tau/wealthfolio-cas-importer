@@ -190,35 +190,53 @@ describe("duplicates", () => {
     );
   });
 
-  test("two equal purchases of different funds on one day keep both deposits, which their IDs tell apart", () => {
+  // checkImport's answer with the rows' IDs, as Wealthfolio 3.13.0 gives it, and without them, with
+  // how Wealthfolio stores the import that follows each.
+  const checkers = [["with IDs", check, storedWithId], ["without IDs", checkWithoutIds, stored]];
+
+  test("two equal purchases of different funds on one day keep both deposits, with or without the rows' IDs", () => {
+    // The two funds are in one folio, so their deposits are equal in its account.
     const twins = statement(scheme("A", sip("2023-04-10")), scheme("B", sip("2023-04-10")));
-    const planned = plan(twins);
-    assert.deepEqual(statuses(planned), ["new", "new"]);
-    assert.equal(planned[1].rows[1].repeatsLine, undefined);
-    const sent = importRows(planned, () => false);
-    assert.equal(sent.length, 4);
-    assert.ok(sent.every((r) => !r.forceImport));
-    const again = plan(twins, sent.map(storedWithId));
-    assert.deepEqual(statuses(again), ["existing", "existing"]);
+    for (const [name, checker, store] of checkers) {
+      const planned = plan(twins, [], {}, undefined, fundsOf(twins), checker);
+      assert.deepEqual(statuses(planned), ["new", "new"], name);
+      const sent = importRows(planned, () => false);
+      assert.equal(sent.length, 4, name);
+      assert.ok(sent.every((r) => !r.forceImport), name);
+      assert.deepEqual(statuses(plan(twins, sent.map(store), {}, undefined, fundsOf(twins), checker)), ["existing", "existing"], name);
+    }
   });
 
-  test("before Wealthfolio 3.13.0, two equal purchases of different funds on one day keep both deposits once confirmed", () => {
+  test("two equal purchases of one fund on one day each go in once, with or without the rows' IDs", () => {
+    const purchase = tx("2023-04-10", "PURCHASE", "5000.00", "103.093", "48.5000");
+    const twice = statement(scheme("A", [purchase, purchase]));
+    for (const [name, checker, store] of checkers) {
+      const planned = plan(twice, [], {}, undefined, fundsOf(twice), checker);
+      assert.deepEqual(statuses(planned), ["new", "new"], name);
+      const sent = importRows(planned, () => false);
+      assert.equal(sent.length, 4, name);
+      assert.ok(sent.every((r) => !r.forceImport), name);
+      assert.deepEqual(statuses(plan(twice, sent.map(store), {}, undefined, fundsOf(twice), checker)), ["existing", "existing"], name);
+    }
+  });
+
+  test("a row Wealthfolio's check reports as equal to another line of the import needs a decision", () => {
+    // Wealthfolio before 3.13.0 checked the rows without their IDs, by their values.
     const twins = statement(scheme("A", sip("2023-04-10")), scheme("B", sip("2023-04-10")));
-    const planned = planWithoutIds(twins);
+    const mapping = map(twins);
+    const checked = checkWithoutIds(rowsOf(mapping)).map((r) => r.lineNumber === 4
+      ? { ...r, duplicateOfLineNumber: 2, warnings: { _duplicate: ["Duplicate of line 2 in this import batch"] } }
+      : r);
+    const planned = planImport(mapping, [], checked, fundsOf(twins));
     assert.deepEqual(statuses(planned), ["new", "duplicate"]);
     const [, second] = planned;
-    assert.equal(second.rows[0].repeatsLine, undefined, "the purchases are of different funds");
-    assert.equal(second.rows[1].repeatsLine, 2, "the deposit repeats line 2");
+    assert.deepEqual(second.rows.map((r) => [r.flagged, r.duplicateOfLineNumber]), [[false, undefined], [true, 2]]);
+    assert.deepEqual(second.rows[1].warnings, [], "the duplicate warning is shown as a reason, not repeated");
     assert.equal(importRows(planned, () => false).length, 2, "skipped unless confirmed");
-
-    const sent = importRows(planned, (t) => t === second);
     assert.deepEqual(
-      sent.map((r) => `${r.activityType} ${r.forceImport ? "forced" : ""}`),
+      importRows(planned, (t) => t === second).map((r) => `${r.activityType} ${r.forceImport ? "forced" : ""}`),
       ["BUY ", "DEPOSIT ", "BUY forced", "DEPOSIT forced"],
     );
-    // Wealthfolio stores a forced row without its duplicate key; the add-on still recognises it.
-    const again = planWithoutIds(twins, sent.map(stored));
-    assert.deepEqual(statuses(again), ["existing", "existing"]);
   });
 
   test("a transaction Wealthfolio has only half of needs a decision, and goes in whole", () => {
@@ -235,15 +253,14 @@ describe("duplicates", () => {
     const twice = statement(scheme("A", [purchase, purchase]));
     const [buy, deposit] = importRows(plan(twice), () => false);
     const existing = [stored(buy), stored(deposit)];
-    const before = planWithoutIds(twice, existing);
-    assert.deepEqual(statuses(before), ["existing", "duplicate"]);
-    assert.equal(before[1].rows[0].repeatsLine, 1);
+    // The add-on matches the stored purchase and its deposit to the first purchase only.
+    assert.deepEqual(statuses(plan(twice, existing)), ["existing", "new"]);
     // Wealthfolio 3.13.0 reports the second as a duplicate of the same activity, by its values.
     const mapping = map(twice, existing);
     const checked = check(rowsOf(mapping)).map((r) => (r.lineNumber > 2 ? { ...r, duplicateOfId: existing[r.lineNumber - 3].id } : r));
     const planned = planImport(mapping, existing, checked, fundsOf(twice));
     assert.deepEqual(statuses(planned), ["existing", "duplicate"]);
-    assert.deepEqual(planned[1].rows.map((r) => [r.existingId, r.repeatsLine, r.flagged]), [[undefined, undefined, true], [undefined, undefined, true]]);
+    assert.deepEqual(planned[1].rows.map((r) => [r.existingId, r.flagged]), [[undefined, true], [undefined, true]]);
   });
 
   test("a row checkImport rejects keeps its whole transaction out", () => {
@@ -999,18 +1016,18 @@ describe("segregated portfolios", () => {
     assert.deepEqual(statuses(one), ["existing", "existing", "new"]);
   });
 
-  test("before Wealthfolio 3.13.0, equal credits of a day are possible duplicates of each other, and import anyway sends each once", () => {
+  test("without the rows' IDs in checkImport's answer, equal credits of a day each go in once too", () => {
     const data = credited("50.000", "50.000");
     const planned = planWithoutIds(data);
-    assert.deepEqual(statuses(planned), ["new", "new", "duplicate"]);
-    const sent = importRows(planned, (t) => t === planned[2]);
-    assert.deepEqual(segregation(sent).map((r) => [r.quantity, r.forceImport ?? false]), [["50.000", false], ["50.000", true]]);
+    assert.deepEqual(statuses(planned), ["new", "new", "new"]);
+    const sent = importRows(planned, () => false);
+    assert.deepEqual(segregation(sent).map((r) => [r.quantity, r.forceImport ?? false]), [["50.000", false], ["50.000", false]]);
     // Wealthfolio stores both; a second read finds one for each.
     assert.deepEqual(statuses(planWithoutIds(data, sent.map(stored))), ["existing", "existing", "existing"]);
-    // With only one in Wealthfolio, the other is still a possible duplicate, of this statement's first.
+    // With only one in Wealthfolio, the other is new.
     const main = sent.filter((r) => r.symbol !== "s").map(stored);
     const one = planWithoutIds(data, [...main, stored(segregation(sent)[0])]);
-    assert.deepEqual(statuses(one), ["existing", "existing", "duplicate"]);
+    assert.deepEqual(statuses(one), ["existing", "existing", "new"]);
   });
 
   test("credits use gifts' date handling for manual entries, imports and edited imports", () => {

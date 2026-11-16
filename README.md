@@ -78,21 +78,20 @@ the statement is read, one Review screen shows, in this order:
   and its answered line ("This purchase in folio 7712045 may already be in Mutual funds",
   "Fictiva Credit Risk Fund's transactions in folio 7712045 don't add up"). An unbalanced fund's
   summary in the bar and, once skipped, its line under **Not included** name its folio too, and a possible
-  duplicate's "On this statement:" and "Also on this statement:" lines name each line's folio
-  ("3 Jul 2026 · Purchase · Fictiva Liquid Fund, folio 7712045 · …"), as they do when the line a
-  transaction repeats is in another folio. When the statement lists more than one row of a fund in
-  one folio with the same movement, day and amount, such as two SIPs of ₹5,000 on one day, each one
-  is numbered by its place among them in the statement's order, which no answer changes, after its
-  movement in its card's heading, its "On this statement:" and "Also on this statement:" lines, its
-  buttons and its answered line: "This purchase (1 of 2) may already be in Mutual funds", "3 Jul
-  2026 · Purchase (1 of 2) · Fictiva Liquid Fund · 61.350 units · ₹5,000", "₹5,000 purchase (1 of 2)
-  of Fictiva Liquid Fund on 3 Jul 2026: skipped". The card says what's counted: "The statement lists
-  2 purchases of ₹5,000 in this fund and folio on 3 Jul 2026; this is the first." A card is numbered
-  even when it's the only one of them asked about. A bank check's pairs and the rows of **See every
-  transaction** are numbered the same way after their movement, asked about or not and whatever was
-  skipped ("Purchase (1 of 2) · 3 Jul 2026 · ₹5,000, from Savings", "purchase (1 of 2)"), and name
-  the folio when a fund the screen names the same has an equal row in another folio ("Fictiva Liquid
-  Fund, folio 7712045"), so each can be matched to its card and its row in the PDF.
+  duplicate's "On this statement:" line names its folio ("3 Jul 2026 · Purchase · Fictiva Liquid Fund,
+  folio 7712045 · …"). When the statement lists more than one row of a fund in one folio with the
+  same movement, day and amount, such as two SIPs of ₹5,000 on one day, each one is numbered by its
+  place among them in the statement's order, which no answer changes, after its movement in its
+  card's heading, its "On this statement:" line, its buttons and its answered line: "This purchase
+  (1 of 2) may already be in Mutual funds", "3 Jul 2026 · Purchase (1 of 2) · Fictiva Liquid Fund ·
+  61.350 units · ₹5,000", "₹5,000 purchase (1 of 2) of Fictiva Liquid Fund on 3 Jul 2026: skipped".
+  The card says what's counted: "The statement lists 2 purchases of ₹5,000 in this fund and folio on
+  3 Jul 2026; this is the first." A card is numbered even when it's the only one of them asked about.
+  A bank check's pairs and the rows of **See every transaction** are numbered the same way after their
+  movement, asked about or not and whatever was skipped ("Purchase (1 of 2) · 3 Jul 2026 · ₹5,000,
+  from Savings", "purchase (1 of 2)"), and name the folio when a fund the screen names the same has an
+  equal row in another folio ("Fictiva Liquid Fund, folio 7712045"), so each can be matched to its
+  card and its row in the PDF.
 - **Ready to import**: each fund with new transactions, with its plan and option, where its prices
   come from (and whether it was chosen before or by you) and **Change**, its **New transactions**
   ("38 imported before" under them) and its **Units after import**: the units Wealthfolio has at the

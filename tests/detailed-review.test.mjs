@@ -979,40 +979,43 @@ test("a lone amount-less gift question counts unasked rows with different units,
   assert.match(cards[0].main.name, /gift received \(2 of 2\) on /);
 });
 
-test("a purchase on the statement twice in one folio says which line is which", async () => {
-  // Without Wealthfolio's row IDs, the second purchase repeats the first's line.
-  const { run, api } = setup({ entries: [], change: equalPurchases() });
-  api.activities.checkImport = async (rows) => rows.map((r) => { const { sourceRecordId, ...rest } = r; return rest; });
-  await run.flush();
-  const [twice, ...more] = askCards(run);
-  assert.equal(more.length, 0);
-  // Its heading says which one repeats an earlier one.
-  assert.equal(twice.title, "This purchase (2 of 2) matches an earlier purchase on this statement");
-  assert.match(textOf(twice.children), /^On this statement: [^·]+ · Purchase \(2 of 2\) · Fictiva Liquid Fund · .*Also on this statement: [^·]+ · Purchase \(1 of 2\) · Fictiva Liquid Fund · /);
-  assert.match(textOf(twice.children), new RegExp(`The statement lists 2 purchases of ₹24,998\\.75 in this fund and folio on ${DAY}; this is the second\\.$`));
-  assert.match(twice.main.name, /^Skip this transaction: Fictiva Liquid Fund, purchase \(2 of 2\) of /);
-  twice.main.onClick();
-  await run.flush();
-  assert.match(askAnswers(run)[0].text, new RegExp(`^₹[\\d,.]+ purchase \\(2 of 2\\) of Fictiva Liquid Fund on ${DAY}: skipped$`));
-});
+/** The made-up statement's Liquid Fund in its first folio only, with its purchase alone. */
+const onePurchase = (data) => {
+  const [liquid] = equalPurchases()(data).folios[0].schemes;
+  const purchase = liquid.transactions[0];
+  liquid.transactions = [purchase];
+  liquid.close = liquid.close_calculated = purchase.units;
+  return data;
+};
 
-test("a line another fund's cash repeats names each line's own fund", async () => {
-  // Without Wealthfolio's row IDs, two funds' purchases of one amount on one day have equal deposits.
-  const { run, api } = setup({ entries: [], change(d) {
-    const [liquid] = equalPurchases()(d).folios[0].schemes;
-    const purchase = liquid.transactions[0];
-    liquid.transactions = [purchase];
-    liquid.close = liquid.close_calculated = purchase.units;
-    const other = {
-      ...structuredClone(liquid), scheme: "Fictiva Overnight Fund - Direct Plan - Growth", isin: "INFZ90K01ON9", rta_code: "FONDG",
-    };
-    d.folios[0].schemes.push(other);
-    return d;
-  } });
-  api.activities.checkImport = async (rows) => rows.map((r) => { const { sourceRecordId, ...rest } = r; return rest; });
-  await run.flush();
-  const [card] = askCards(run);
-  assert.match(textOf(card.children), /^On this statement: [^·]+ · Purchase · Fictiva Overnight Fund · .*Also on this statement: [^·]+ · Purchase · Fictiva Liquid Fund · /);
+test("equal statement rows aren't asked about, with or without their IDs in Wealthfolio's check", async () => {
+  const statements = {
+    // Two purchases of one fund in one folio on one day, of one amount.
+    "one fund": equalPurchases(),
+    // Two funds' purchases in one folio: their deposits in the folio's account are equal.
+    "two funds"(d) {
+      const [liquid] = onePurchase(d).folios[0].schemes;
+      d.folios[0].schemes.push({
+        ...structuredClone(liquid), scheme: "Fictiva Overnight Fund - Direct Plan - Growth", isin: "INFZ90K01ON9", rta_code: "FONDG",
+      });
+      return d;
+    },
+    // One fund's purchase in two folios that go to one account.
+    "two folios"(d) {
+      onePurchase(d);
+      d.folios.push({ ...structuredClone(d.folios[0]), folio: "222222222" });
+      return d;
+    },
+  };
+  for (const [name, change] of Object.entries(statements)) {
+    for (const ids of [true, false]) {
+      const { run, api } = setup({ entries: [], change });
+      if (!ids) api.activities.checkImport = async (rows) => rows.map(({ sourceRecordId: _, ...rest }) => rest);
+      await run.flush();
+      assert.deepEqual(askCards(run), [], `${name}, ${ids ? "with" : "without"} IDs`);
+      assert.equal(find(run, "Footer").action.label, "Import 2 transactions", `${name}, ${ids ? "with" : "without"} IDs`);
+    }
+  }
 });
 
 test("equal possible duplicates are numbered in a folio whose number another fund house's folio also has", async () => {
@@ -1300,30 +1303,6 @@ test("open possible duplicates in two folios name each folio in their statement 
   const lines = askCards(run).map((card) => textOf(card.children).split("Already in")[0]);
   assert.deepEqual(lines.map((line) => line.replace(/ · [\d,.]+ units · ₹[\d,.]+$/, "").replace(/\d+ \w+ \d{4}/, "<day>")),
     data.folios.map((f) => `On this statement: <day> · Purchase · Fictiva Liquid Fund, folio ${f.folio}`));
-  // Without Wealthfolio's row IDs, the second folio's purchase repeats the first's line: its card names
-  // both lines' folios, and its buttons and answered line its own.
-  const second = setup({ entries: [], change(d) {
-    const scheme = d.folios[0].schemes.find((x) => x.scheme.includes("Liquid"));
-    const purchase = scheme.transactions.find((t) => t.type === "PURCHASE");
-    scheme.transactions = [purchase];
-    scheme.open = "0";
-    scheme.close = scheme.close_calculated = purchase.units;
-    const first = { ...d.folios[0], schemes: [scheme] };
-    d.folios = [first, { ...structuredClone(first), folio: "222222222" }];
-    return d;
-  } });
-  second.api.activities.checkImport = async (rows) => rows.map((r) => { const { sourceRecordId, ...rest } = r; return rest; });
-  await second.run.flush();
-  const [twice] = askCards(second.run);
-  const folios = second.data.folios.map((f) => f.folio);
-  // One question for both lines: its heading needs no folio.
-  assert.equal(twice.title, "This purchase is on this statement twice");
-  const shown = textOf(twice.children);
-  assert.match(shown, new RegExp(`^On this statement: [^·]+ · Purchase · Fictiva Liquid Fund, folio ${folios[1]} · .*Also on this statement: [^·]+ · Purchase · Fictiva Liquid Fund, folio ${folios[0]} · `));
-  assert.match(twice.main.name, new RegExp(`^Skip this transaction: Fictiva Liquid Fund, folio ${folios[1]}, purchase of `));
-  twice.main.onClick();
-  await second.run.flush();
-  assert.match(askAnswers(second.run)[0].text, new RegExp(`^₹[\\d,.]+ purchase of Fictiva Liquid Fund, folio ${folios[1]} on .+: skipped$`));
 });
 
 test("two transaction accounts of one name are told apart in Save to, the duplicate cards and the bar", async () => {
