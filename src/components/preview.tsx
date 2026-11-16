@@ -124,11 +124,9 @@ function reasons(row: PlannedRow) {
     ? row.existingType
       ? `Wealthfolio already has this ${name}, as a ${label({ activityType: row.existingType })}.`
       : `Wealthfolio already has this ${name}.`
-    : row.repeatsLine !== undefined
-      ? `This ${name} equals another one in this statement.`
-      : row.flagged
-        ? `Wealthfolio reports this ${name} as a duplicate.`
-        : "";
+    : row.flagged
+      ? `Wealthfolio reports this ${name} as a duplicate.`
+      : "";
   return [duplicate, ...row.errors, ...row.warnings].filter(Boolean);
 }
 

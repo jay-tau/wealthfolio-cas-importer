@@ -194,10 +194,10 @@ function duplicateEvidence({ plan, existing, timeZone }: Prepared) {
   const repeated = (line: number | undefined) => line === undefined ? undefined : byLine.get(line) ?? line;
   return new Map(plan.filter(canImportAnyway).map((t) => [transactionKey(t), JSON.stringify([
     timeZone,
-    t.rows.map(({ activity, repeatsLine, duplicateOfLineNumber, ...row }) => {
+    t.rows.map(({ activity, duplicateOfLineNumber, ...row }) => {
       // Answering an unrelated units question can renumber the same statement rows.
       const { lineNumber: _, ...values } = activity;
-      return [values, row, repeated(repeatsLine), repeated(duplicateOfLineNumber), byId.get(row.existingId ?? row.duplicateOfId ?? "")];
+      return [values, row, repeated(duplicateOfLineNumber), byId.get(row.existingId ?? row.duplicateOfId ?? "")];
     }),
   ])]));
 }
@@ -688,9 +688,9 @@ export function DetailedImport({
   // What the plan sends, and what the review says about it.
   const plan = current?.plan ?? [];
   const planned = plannedOf(plan);
-  // A possible duplicate is asked about: some of its rows equal what Wealthfolio has or another row of
-  // this statement, or Wealthfolio's check flags it. One Wealthfolio has all of, by its row IDs or by
-  // value, as an older import or one entered by hand, was imported before; a merger's isn't forced.
+  // A possible duplicate is asked about: some of its rows equal what Wealthfolio has, or Wealthfolio's
+  // check flags it. One Wealthfolio has all of, by its row IDs or by value, as an older import or one
+  // entered by hand, was imported before; a merger's isn't forced.
   const forced = (t: PlannedTransaction) => canImportAnyway(t) && duplicateAnswers.get(transactionKey(t)) === false;
   /** What became of each possible duplicate, for the transactions' counts. */
   const duplicateState = (t: PlannedTransaction): DuplicateState | undefined => {
@@ -1065,31 +1065,20 @@ export function DetailedImport({
     const key = transactionKey(t);
     const { activity, folio, rows: [first] } = t.transaction;
     const { fund, word, money, when } = duplicateWords[i];
-    const row = t.rows.find((r) => r.existingId || r.repeatsLine !== undefined || r.flagged);
+    const row = t.rows.find((r) => r.existingId || r.flagged);
     const there = row && shownById.get(row.existingId ?? row.duplicateOfId ?? "");
     const account = accountName(there?.accountId ?? row?.activity.accountId ?? activity.accountId);
     duplicateAccounts.add(account);
-    const repeated = row?.repeatsLine !== undefined && !there
-      ? (shown?.plan ?? []).find((other) => other !== t && other.rows.some((r) => r.activity.lineNumber === row.repeatsLine))
-      : undefined;
-    // An equal question in another folio: its heading names the folio too.
+    // An equal question in another folio: its heading, line, buttons and answered line name the folio too.
     const twin = duplicateWords.some((o, j) => offered[j].transaction.folio !== folio && o.fund === fund && o.word === word && o.money === money && o.when === when);
-    // That, or the line it repeats is in another folio: its lines, buttons and answered line name the folio.
-    const twice = twin || (!!repeated && repeated.transaction.folio !== folio);
-    const says = twice ? `${fund}, folio ${folio}` : fund;
+    const says = twin ? `${fund}, folio ${folio}` : fund;
     const inFolio = twin ? ` in folio ${folio}` : "";
     // Equal transactions in this folio: this one's place among them on the statement.
     const place = placeOf(first);
     const which = marker(place);
-    const unitsOf = (row: typeof first) => (row.units && dec(row.units).n !== 0n ? `${units(format(abs(dec(row.units))))} units` : undefined);
-    const factsOf = (row: typeof first): LineFacts => ({ day: longDate(row.date), units: unitsOf(row), amount: amountOf(row) });
-    // A transaction's statement line, with its own fund and place.
-    const statementLine = (of: PlannedTransaction) => {
-      const { folio, rows: [row] } = of.transaction;
-      const name = transactionFund(of);
-      return [longDate(row.date), capital(rowWord(row)) + marker(placeOf(row)), twice ? `${name}, folio ${folio}` : name, unitsOf(row), amountOf(row)]
-        .filter(Boolean).join(" · ");
-    };
+    const facts: LineFacts = { day: when, units: first.units && dec(first.units).n !== 0n ? `${units(format(abs(dec(first.units))))} units` : undefined, amount: money };
+    // The transaction's statement line, with its place.
+    const statementLine = [when, capital(rowWord(first)) + which, says, facts.units, money].filter(Boolean).join(" · ");
     const thereFacts = there && ((): LineFacts => {
       const amount = there.amount ?? (there.quantity && there.unitPrice ? format(mul(dec(String(there.quantity)), dec(String(there.unitPrice)))) : null);
       return {
@@ -1110,29 +1099,19 @@ export function DetailedImport({
     const evidence = (
       <>
         <p>
-          <span className="text-foreground font-medium">On this statement:</span> {statementLine(t)}
+          <span className="text-foreground font-medium">On this statement:</span> {statementLine}
         </p>
         <p>
-          {repeated ? (
-            <>
-              <span className="text-foreground font-medium">Also on this statement:</span> {statementLine(repeated)}
-            </>
-          ) : (
-            <>
-              <span className="text-foreground font-medium">Already in {account}:</span> {thereLine ?? "Wealthfolio reports an equal transaction there."}
-            </>
-          )}
+          <span className="text-foreground font-medium">Already in {account}:</span> {thereLine ?? "Wealthfolio reports an equal transaction there."}
         </p>
-        <p>{bothRealWords(factsOf(first), repeated ? factsOf(repeated.transaction.rows[0]) : thereFacts)}</p>
+        <p>{bothRealWords(facts, thereFacts)}</p>
         {place && <p>{placeWords(place, word, money, when)}</p>}
       </>
     );
     return {
       id: `duplicate|${key}`,
       words: {
-        // A row repeated in its own folio has a place: its heading says which one repeats.
-        title: repeated ? (place ? `This ${word}${which}${inFolio} matches an earlier ${word} on this statement` : `This ${word}${inFolio} is on this statement twice`)
-          : row?.activity === t.transaction.bank ? `The bank entry for this ${word}${which}${inFolio} may already be in ${account}`
+        title: row?.activity === t.transaction.bank ? `The bank entry for this ${word}${which}${inFolio} may already be in ${account}`
           : `This ${word}${which}${inFolio} may already be in ${account}`,
         line: "",
         main: "Skip this transaction",
