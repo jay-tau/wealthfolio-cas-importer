@@ -1435,6 +1435,31 @@ describe("units", () => {
     assert.equal(closingUnits(data, target, [buy, during], fundsOf(data), "UTC")[0].held, undefined);
   });
 
+  test("opening units that can't be counted name each split and option expiry before the statement, by day", () => {
+    const [buy] = importRows(plan(statement(scheme("A", sip("2023-03-10")))), () => false).map(stored);
+    const data = opening("103.088", "103.088", []);
+    const split = { ...buy, activityType: "SPLIT", quantity: null, amount: "2" };
+    const expiry = { ...buy, activityType: "ADJUSTMENT", subtype: "OPTION_EXPIRY", quantity: "10" };
+    const activities = [
+      buy,
+      { ...expiry, date: "2023-03-20T00:00:00Z" },
+      { ...split, date: "2022-01-05T00:00:00Z" },
+      // Not before the statement, not posted, in another account or of another fund: not named.
+      { ...split, date: "2023-04-01T00:00:00Z" },
+      { ...split, date: "2021-06-01T00:00:00Z", status: "DRAFT" },
+      { ...split, date: "2021-06-01T00:00:00Z", accountId: "another-account" },
+      otherFund({ ...split, date: "2021-06-01T00:00:00Z" }, "ANOTHER-FUND"),
+    ];
+    const [fund] = openingUnits(data, target, activities, fundsOf(data), "UTC");
+    assert.equal(fund.held, undefined);
+    assert.deepEqual(fund.uncounted, [{ day: "2022-01-05", kind: "split" }, { day: "2023-03-20", kind: "option expiry" }]);
+    // On its day in Wealthfolio's timezone: 31 Mar in Toronto is before a statement from 1 Apr.
+    const late = { ...split, date: "2023-04-01T02:00:00Z" };
+    assert.deepEqual(openingUnits(data, target, [buy, late], fundsOf(data), "America/Toronto")[0].uncounted, [{ day: "2023-03-31", kind: "split" }]);
+    // Units that can be counted name none.
+    assert.equal(openingUnits(data, target, [buy], fundsOf(data), "UTC")[0].uncounted, undefined);
+  });
+
   test("Wealthfolio's timezone setting, or UTC when it's missing or invalid", async () => {
     const settings = (timezone) => ({ get: async () => ({ timezone }) });
     for (const timezone of ["UTC", "America/Toronto", "Asia/Kolkata", "US/Eastern", "Etc/GMT+5"]) {

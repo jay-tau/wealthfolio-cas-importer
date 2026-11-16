@@ -7,6 +7,16 @@ import { Disclosure, LinkButton } from "./parts";
 /** "A, B and C". */
 const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
 
+/**
+ * What an account has of a waiting fund before the statement, when that isn't nothing: fewer units
+ * than its folios start with ("50.000", and "50.000" to add), more ("150.000", "50.000" too many),
+ * or none that can be counted, because of posted splits or option expiries ("5 Jan 2022").
+ */
+export type EarlierHeld =
+  | { kind: "short"; has: string; add: string }
+  | { kind: "over"; has: string; extra: string }
+  | { kind: "uncounted"; by: { day: string; kind: "split" | "option expiry" }[] };
+
 /** A fund that starts with units bought before the statement, which Wealthfolio doesn't have. */
 export interface EarlierFund {
   key: string;
@@ -16,10 +26,11 @@ export interface EarlierFund {
   /** Its transactions that wait. */
   waiting: number;
   /**
-   * When its folios go to more than one account: each waiting account's units ("100.000"), its
-   * name as the screen gives it, and its folios' numbers.
+   * When its folios go to more than one account, or an account has some of its units: each waiting
+   * account's units ("100.000"), its name as the screen gives it, its folios' numbers, and what it
+   * has of the fund before the statement.
    */
-  accounts?: { units: string; account: string; folios: string[] }[];
+  accounts?: { units: string; account: string; folios: string[]; held?: EarlierHeld }[];
   /**
    * The new accounts its waiting units go to that this import won't create, as nothing ready to
    * import goes into them: each one's name and its folios' numbers.
@@ -27,24 +38,65 @@ export interface EarlierFund {
   uncreated?: { account: string; folios: string[] }[];
 }
 
+type EarlierAccount = NonNullable<EarlierFund["accounts"]>[number];
+
 /** "folio 7712045", "folios 91234567 and 3301". */
 const folioWords = (folios: string[]) => `${folios.length === 1 ? "folio" : "folios"} ${list(folios)}`;
 
-/** "100.000 units in Mutual funds, from folio 7712045; 200.000 units in Family funds, from folios 91234567 and 3301". */
-const accountParts = (accounts: NonNullable<EarlierFund["accounts"]>, noun: string) =>
-  accounts.map((a) => `${a.units}${noun} in ${a.account}, from ${folioWords(a.folios)}`).join("; ");
+/** "a split on 5 Jan 2022", "splits on 5 Jan 2022 and 3 Mar 2022 and an option expiry on 1 Jun 2022". */
+function uncountedWords(by: Extract<EarlierHeld, { kind: "uncounted" }>["by"]) {
+  const kinds = (["split", "option expiry"] as const).map((kind) => by.filter((b) => b.kind === kind).map((b) => b.day)).map((days, i) =>
+    !days.length ? "" : days.length === 1 ? `${i ? "an option expiry" : "a split"} on ${days[0]}` : `${i ? "option expiries" : "splits"} on ${list(days)}`,
+  );
+  return list(kinds.filter(Boolean));
+}
+
+/** "100.000 in Mutual funds, from folio 7712045 (50.000 in this account before 1 Apr 2023, so 50.000 to add)". */
+function accountLine(a: EarlierAccount, from: string) {
+  const where = `${a.units} in ${a.account}, from ${folioWords(a.folios)}`;
+  const held = a.held;
+  if (!held) return where;
+  if (held.kind === "short") return `${where} (${held.has} in this account before ${from}, so ${held.add} to add)`;
+  if (held.kind === "over") return `${where} (${held.has} in this account before ${from}, so ${held.extra} too many)`;
+  return `${where} (${uncountedWords(held.by)} in this account ${held.by.length === 1 ? "keeps" : "keep"} the fund's units from being counted)`;
+}
+
+/** "100.000 units in Mutual funds, from folio 7712045", or just the units to add, with what the account already has. */
+function addLine(a: EarlierAccount, from: string) {
+  const held = a.held;
+  if (held?.kind !== "short") return `${a.units} units in ${a.account}, from ${folioWords(a.folios)}`;
+  return `${held.add} units in ${a.account}, from ${folioWords(a.folios)} (${held.has} in this account before ${from})`;
+}
+
+/** What to do about an account that has more units than its folios start with, or ones that can't be counted. */
+function checkLine(a: EarlierAccount, from: string) {
+  const held = a.held;
+  const startWith = `${a.units} that ${folioWords(a.folios)} ${a.folios.length === 1 ? "starts" : "start"} with`;
+  if (held?.kind === "over") {
+    return `In ${a.account}, this fund's transactions before ${from} come to ${held.has} units, ${held.extra} more than the ${startWith}: check them in Wealthfolio, and correct or delete the ones that don't belong.`;
+  }
+  if (held?.kind !== "uncounted") return "";
+  const one = held.by.length === 1;
+  return `In ${a.account}, the add-on can't count this fund's units across ${uncountedWords(held.by)}, so it can't check that they come to the ${startWith}. Check ${one ? "it" : "them"} in Wealthfolio: if ${one ? "it's" : "they're"} wrong, delete ${one ? "it" : "them"}; if not, add this statement's transactions for this fund from ${folioWords(a.folios)} in Wealthfolio by hand: the add-on will still leave them out.`;
+}
 
 /**
  * How to fix a fund waiting for earlier purchases: read an earlier statement, or add the units in
- * Wealthfolio, first creating each new account they go to that this import won't create.
+ * Wealthfolio, first creating each new account they go to that this import won't create; and check
+ * each account that has too many of them, or ones that can't be counted.
  */
-function howToFix(fund: EarlierFund, registrar: string) {
+function howToFix(fund: EarlierFund, registrar: string, from: string) {
   const earlier = `Read an earlier ${registrar} statement that includes its first purchase`;
-  const buys = fund.accounts
-    ? `add the units in Wealthfolio as ${fund.accounts.length === 1 ? "a buy" : "buys"} with their cost and date: ${accountParts(fund.accounts, " units")}.`
+  // An earlier statement or more units can't fix too many, or units that can't be counted.
+  const adds = fund.accounts?.filter((a) => !a.held || a.held.kind === "short");
+  const checks = (fund.accounts ?? []).map((a) => checkLine(a, from)).filter(Boolean).map((line) => `${line} `).join("");
+  const buys = adds
+    ? `add the units in Wealthfolio as ${adds.length === 1 ? "a buy" : "buys"} with their cost and date: ${adds.map((a) => addLine(a, from)).join("; ")}.`
     : `add the ${fund.units} in Wealthfolio as a buy with their cost and date.`;
   const missing = fund.uncreated ?? [];
-  if (!missing.length) return `${earlier}, or ${buys} Then read this statement again: transactions already imported are skipped.`;
+  if (!missing.length) {
+    return `${adds?.length === 0 ? "" : `${earlier}, or ${buys} `}${checks}Then read this statement again: transactions already imported are skipped.`;
+  }
   const again = `${earlier}, then this one again.`;
   const end = "Transactions already imported are skipped.";
   // In one account, the account is the fund's only one.
@@ -53,7 +105,7 @@ function howToFix(fund: EarlierFund, registrar: string) {
   }
   const one = missing.length === 1;
   const names = list(missing.map((a) => a.account));
-  return `${again} Or, as ${names} ${one ? "doesn't" : "don't"} exist yet, first create ${one ? "an account that tracks" : "accounts that track"} transactions in Wealthfolio for ${one ? "its" : "their"} units, then ${buys} Then read this statement again and choose ${one ? "it" : "them"} in “Save to” for ${one ? folioWords(missing[0].folios) : "their folios"}. ${end}`;
+  return `${checks}${again} Or, as ${names} ${one ? "doesn't" : "don't"} exist yet, first create ${one ? "an account that tracks" : "accounts that track"} transactions in Wealthfolio for ${one ? "its" : "their"} units, then ${buys} Then read this statement again and choose ${one ? "it" : "them"} in “Save to” for ${one ? folioWords(missing[0].folios) : "their folios"}. ${end}`;
 }
 
 /** A fund with transactions left out for a reason of their own, each said in a line. */
@@ -81,6 +133,7 @@ export function NotIncludedDetailed({
   unbalanced,
   leftOut,
   registrar,
+  from,
   open,
   setOpen,
   partId,
@@ -98,6 +151,8 @@ export function NotIncludedDetailed({
   leftOut: LeftOutFund[];
   /** "CAMS", "KFintech": whose earlier statement to read. */
   registrar: string;
+  /** The statement's first day: "1 Apr 2023". */
+  from: string;
   open: Record<string, boolean>;
   setOpen: (id: string, open: boolean) => void;
   partId: string;
@@ -118,7 +173,7 @@ export function NotIncludedDetailed({
             <span>
               <span className="font-semibold">Earlier purchases needed</span>: {fund.name} starts with {fund.units} bought before this statement,
               so its {plural(fund.waiting, "transaction")} {fund.waiting === 1 ? "waits" : "wait"}.
-              {fund.accounts && ` Units needed: ${accountParts(fund.accounts, "")}.`}
+              {fund.accounts && ` Units needed: ${fund.accounts.map((a) => accountLine(a, from)).join("; ")}.`}
               {!!fund.uncreated?.length &&
                 (fund.uncreated.length === 1
                   ? ` The new account ${fund.uncreated[0].account} won't be created: nothing ready to import goes into it.`
@@ -134,7 +189,7 @@ export function NotIncludedDetailed({
               open={!!open[`how:${fund.key}`]}
               onOpenChange={(yes) => setOpen(`how:${fund.key}`, yes)}
             >
-              <p className="text-muted-foreground mt-1">{howToFix(fund, registrar)}</p>
+              <p className="text-muted-foreground mt-1">{howToFix(fund, registrar, from)}</p>
             </Disclosure>
           </div>
         </div>

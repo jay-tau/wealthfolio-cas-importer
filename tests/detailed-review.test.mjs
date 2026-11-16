@@ -730,6 +730,118 @@ test("a fund waiting for earlier purchases says how many units each account need
   ] }]);
 });
 
+/** A posted activity of the Flexi Cap fund in Mutual funds before the made-up statement's 1 Apr 2023. */
+const flexiCap = (id, activityType, quantity, extra = {}) => ({
+  id, accountId: "mf", activityType, subtype: null, status: "POSTED", date: "2023-03-01T00:00:00Z",
+  quantity, unitPrice: "50", amount: quantity && String(Number(quantity) * 50), fee: null, tax: null, currency: "INR", needsReview: false,
+  comment: null, assetId: "flexi", assetSymbol: "INFZ90K01FC8", sourceRecordId: null, ...extra,
+});
+/** The made-up statement's review with `activities` in Wealthfolio: its Flexi Cap fund starts with 1,250 units. */
+async function earlierWith(activities, { edit = () => {}, ...options } = {}) {
+  const setUp = setup({ entries: [], ...options });
+  edit(setUp);
+  setUp.profiles.flexi = { instrumentSymbol: "INFZ90K01FC8", instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+  setUp.activities.push(...activities);
+  await setUp.run.flush();
+  return { ...setUp, earlier: find(setUp.run, "NotIncludedDetailed").earlier };
+}
+
+test("a fund waiting for earlier purchases says what its account already has of them", async () => {
+  const shape = (earlier) => earlier.map(({ units, waiting, accounts }) => ({ units, waiting, accounts }));
+  const mf = (held) => [{ units: "1,250.000", account: "Mutual funds", folios: ["91234567 / 12"], ...(held && { held }) }];
+
+  // Some of them, entered by hand: the rest to add.
+  let { run, earlier } = await earlierWith([flexiCap("hand", "BUY", "500")]);
+  assert.deepEqual(shape(earlier), [{ units: "1,250.000 units", waiting: 26, accounts: mf({ kind: "short", has: "500.000", add: "750.000" }) }]);
+  run.dispose();
+
+  // All of them and more, as when they were added by hand and an earlier statement also imported them.
+  ({ run, earlier } = await earlierWith([flexiCap("hand", "BUY", "1250"), flexiCap("again", "BUY", "250", { date: "2022-08-01T00:00:00Z" })]));
+  assert.deepEqual(shape(earlier), [{ units: "1,250.000 units", waiting: 26, accounts: mf({ kind: "over", has: "1,500.000", extra: "250.000" }) }]);
+  run.dispose();
+
+  // More sold than bought: the rest to add, with the minus sign.
+  ({ run, earlier } = await earlierWith([flexiCap("sold", "SELL", "20")]));
+  assert.deepEqual(shape(earlier), [{ units: "1,250.000 units", waiting: 26, accounts: mf({ kind: "short", has: "−20.000", add: "1,270.000" }) }]);
+  run.dispose();
+
+  // A split before the statement: none can be counted, by its day on the screen.
+  ({ run, earlier } = await earlierWith([flexiCap("hand", "BUY", "625"), flexiCap("split", "SPLIT", null, { date: "2022-01-05T00:00:00Z", amount: "2" })]));
+  assert.deepEqual(shape(earlier), [{ units: "1,250.000 units", waiting: 26, accounts: mf({ kind: "uncounted", by: [{ day: "5 Jan 2022", kind: "split" }] }) }]);
+  run.dispose();
+
+  // Nothing there, or only after the statement starts: the units alone, as before.
+  ({ run, earlier } = await earlierWith([flexiCap("later", "BUY", "500", { date: "2023-04-01T00:00:00Z" })]));
+  assert.deepEqual(shape(earlier), [{ units: "1,250.000 units", waiting: 26, accounts: undefined }]);
+  run.dispose();
+
+  // Exactly the opening units: this fund no longer waits.
+  ({ run, earlier } = await earlierWith([flexiCap("all", "BUY", "1250")]));
+  assert.deepEqual(earlier, []);
+  run.dispose();
+});
+
+test("a fund's own zero-opening folio doesn't hide what its account already has", async () => {
+  const { earlier } = await earlierWith([flexiCap("hand", "BUY", "500")], {
+    change(data) {
+      const flexi = structuredClone(data.folios[0].schemes.find((s) => s.scheme.includes("Flexi")));
+      flexi.close = String(Number(flexi.close) - Number(flexi.open));
+      flexi.close_calculated = flexi.close;
+      flexi.open = "0";
+      data.folios.push({ ...data.folios[0], folio: "3301", schemes: [flexi] });
+      return data;
+    },
+  });
+  assert.deepEqual(earlier[0].accounts, [{ units: "1,250.000", account: "Mutual funds", folios: ["91234567 / 12"], held: { kind: "short", has: "500.000", add: "750.000" } }]);
+});
+
+test("a fund waiting for earlier purchases in two accounts says what each has", async () => {
+  // Its folio's Flexi Cap units split over two folios: 250 to Other funds, which has 100, and 1,000 to Mutual funds, which has none.
+  const change = (data) => {
+    const flexi = data.folios[0].schemes.find((s) => s.scheme.includes("Flexi"));
+    const moved = { ...structuredClone(flexi), open: "250", transactions: [], close: "250", close_calculated: "250" };
+    flexi.open = "1000";
+    flexi.close = String(Number(flexi.close) - 250);
+    flexi.close_calculated = flexi.close;
+    data.folios.push({ ...data.folios[0], folio: "3301", schemes: [moved] });
+    return data;
+  };
+  const { earlier } = await earlierWith([flexiCap("other", "BUY", "100", { accountId: "other" })], {
+    change, remembered: { [choices.panKey("ABCDE1234F")]: "mf", [choices.folioKey({ amc: fixture.folios[0].amc, folio: "3301" })]: "other" },
+  });
+  assert.deepEqual(earlier.map(({ units, accounts }) => ({ units, accounts })), [{ units: "1,250.000 units", accounts: [
+    { units: "1,000.000", account: "Mutual funds", folios: ["91234567 / 12"] },
+    { units: "250.000", account: "Other funds", folios: ["3301"], held: { kind: "short", has: "100.000", add: "150.000" } },
+  ] }]);
+});
+
+for (const open of ["0", "100"]) test(`a Wealthfolio fund that two of the statement's funds go to doesn't say what either has (other opens with ${open})`, async () => {
+  // Liquid is confirmed as Flexi Cap's Wealthfolio fund, even when Liquid starts with no units.
+  const options = {
+    change(data) {
+      const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+      liquid.open = open;
+      liquid.close = String(Number(liquid.close) + Number(open));
+      liquid.close_calculated = liquid.close;
+      return data;
+    },
+    edit({ props }) {
+      const [flexi, liquid] = ["Flexi", "Liquid"].map((name) => choices.fundKey(props.data.folios[0].schemes.find((s) => s.scheme.includes(name))));
+      props.fundChoices = { ...props.fundChoices, [liquid]: props.fundChoices[flexi] };
+    },
+  };
+  let { run, earlier } = await earlierWith([flexiCap("hand", "BUY", "500")], options);
+  assert.deepEqual(earlier.map(({ units, accounts }) => ({ units, accounts })), [
+    { units: "1,250.000 units", accounts: undefined },
+    ...(open === "0" ? [] : [{ units: "100.000 units", accounts: undefined }]),
+  ]);
+  run.dispose();
+
+  // Shared funds still name an uncountable history in their account.
+  ({ earlier } = await earlierWith([flexiCap("split", "SPLIT", null, { date: "2022-01-05T00:00:00Z" })], options));
+  for (const fund of earlier) assert.deepEqual(fund.accounts[0].held, { kind: "uncounted", by: [{ day: "5 Jan 2022", kind: "split" }] });
+});
+
 test("earlier-purchase folios stay in statement order with events-only schemes and appear once per account", async () => {
   const { run } = setup({ entries: [], remembered: {
     [choices.panKey("ABCDE1234F")]: "mf",
@@ -1931,6 +2043,35 @@ test("a fund waiting for earlier purchases says when its new account won't be cr
   const [flexi] = find(run, "NotIncludedDetailed").earlier;
   assert.deepEqual(flexi.accounts.map((a) => [a.account, a.folios]), [["Mutual funds", ["91234567 / 12"]], ["Testbridge Mutual Fund folio 1040012345", ["1040012345"]]]);
   assert.deepEqual(flexi.uncreated, [{ account: "Testbridge Mutual Fund folio 1040012345", folios: ["1040012345"] }]);
+});
+
+test("a waiting fund keeps its held units separate from an account this import won't create", async () => {
+  for (const [activity, held] of [
+    [flexiCap("hand", "BUY", "500"), { kind: "short", has: "500.000", add: "750.000" }],
+    [flexiCap("hand", "BUY", "1500"), { kind: "over", has: "1,500.000", extra: "250.000" }],
+    [flexiCap("split", "SPLIT", null, { date: "2022-01-05T00:00:00Z" }), { kind: "uncounted", by: [{ day: "5 Jan 2022", kind: "split" }] }],
+  ]) {
+    const { run, keys, profiles, activities } = withNewAccounts({ accounts: [account("mf", "Mutual funds")], change(data) {
+      data.folios[1].schemes = [structuredClone(data.folios[0].schemes.find((s) => s.scheme.includes("Flexi")))];
+      return data;
+    } });
+    profiles.flexi = { instrumentSymbol: "INFZ90K01FC8", instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+    activities.push(activity);
+    await run.flush();
+    saveTo(run).onChange(keys.pan, "mf");
+    await run.flush();
+    saveTo(run).onChange(keys.testbridge, proposedId(keys.testbridge));
+    await run.flush();
+    assert.deepEqual(find(run, "NotIncludedDetailed").earlier.map(({ units, accounts, uncreated }) => ({ units, accounts, uncreated })), [{
+      units: "2,500.000 units",
+      accounts: [
+        { units: "1,250.000", account: "Mutual funds", folios: ["91234567 / 12"], held },
+        { units: "1,250.000", account: "Testbridge Mutual Fund folio 1040012345", folios: ["1040012345"] },
+      ],
+      uncreated: [{ account: "Testbridge Mutual Fund folio 1040012345", folios: ["1040012345"] }],
+    }]);
+    run.dispose();
+  }
 });
 
 /** Two investors, each with a PAN; the second's folio receives a gift from a folio of the first's. */

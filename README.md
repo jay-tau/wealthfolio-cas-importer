@@ -103,9 +103,13 @@ the statement is read, one Review screen shows, in this order:
   Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**), saying how many units
   each account needs and from which folios when its folios go to more than one ("Units needed:
   100.000 in Mutual funds, from folio 7712045; 200.000 in Family funds, from folio 91234567."),
-  and that a new account they go to won't be created when nothing ready to import goes into it
-  (see [New accounts](#new-accounts)); funds you skipped; folios set to "Don't import"; funds you
-  skipped because their rows don't add up, with **Change**; and transactions left out, each with why.
+  what an account already has of the fund before the statement: how many more to add ("50.000 in
+  this account before 1 Apr 2023, so 50.000 to add"), how many too many, with its transactions to
+  check, or that a split or option expiry there keeps its units from being counted, with that to
+  check instead, and that a new account they go to won't be created when nothing ready to import
+  goes into it (see [New accounts](#new-accounts)); funds you skipped; folios set to "Don't
+  import"; funds you skipped because their rows don't add up, with **Change**; and transactions
+  left out, each with why.
 - **Transactions in this statement**: how many there are, and what happens to each: to import,
   imported before, possible duplicates waiting for your answer or skipped or imported by it, waiting
   for your answers or for earlier purchases, in skipped funds or folios not imported, or left out,
@@ -163,7 +167,12 @@ imported before and aren't offered again. Before
 Wealthfolio 3.12.0, Wealthfolio's check also missed the trades of a fund that an earlier import
 created. A fund whose statement starts with units needs
 those units in Wealthfolio first, from an earlier statement or entered by hand, each folio's in the
-account it goes to: the units are checked in each account on their own.
+account it goes to: the units are checked in each account on their own, and the account must have
+exactly those before the statement starts, counting any it already has. A split or option expiry
+in that history keeps them from being counted. If it's wrong, delete it in Wealthfolio; otherwise,
+add this statement's transactions for the fund in that account by hand: the add-on will still leave
+them out. When two of the statement's funds go to one Wealthfolio fund in one account, neither says
+what that account has, as their units are counted together, unless they can't be counted at all.
 The units check counts posted account history, each activity on its day in Wealthfolio's timezone
 setting (UTC if none is set); splits or option expiry in that history need review.
 Activities show an asset's display code, which can be changed, so rows and units go by the fund's

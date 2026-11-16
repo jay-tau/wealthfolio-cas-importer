@@ -252,6 +252,87 @@ test("a fund waiting for earlier purchases in a new account this import won't cr
     "or add the 100.000 units in Wealthfolio as a buy with their cost and date. Then read this statement again: transactions already imported are skipped."), created);
 });
 
+test("a fund waiting for earlier purchases says what each account already has of them, and what to do", () => {
+  const props = (accounts) => ({
+    earlier: [{ key: "1", name: "Fictiva Liquid Fund", units: "100.000 units", waiting: 12, accounts }],
+    unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", from: "1 Apr 2023", open: { "how:1": true }, setOpen() {},
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+  });
+  const mf = (held, folios = ["7712045"]) => ({ units: "100.000", account: "Mutual funds", folios, held });
+  const shown = (held, folios) => text("NotIncludedDetailed", props([mf(held, folios)]));
+  const line = "Earlier purchases needed : Fictiva Liquid Fund starts with 100.000 units bought before this statement, so its 12 transactions wait. Units needed: 100.000 in Mutual funds, from folio 7712045";
+  const then = "Then read this statement again: transactions already imported are skipped.";
+
+  // Some of them: how many it has and how many to add.
+  let shows = shown({ kind: "short", has: "50.000", add: "50.000" });
+  assert.ok(shows.includes(`${line} (50.000 in this account before 1 Apr 2023, so 50.000 to add). Change How to fix ` +
+    "Read an earlier CAMS statement that includes its first purchase, or add the units in Wealthfolio as a buy with their cost and date: " +
+    `50.000 units in Mutual funds, from folio 7712045 (50.000 in this account before 1 Apr 2023). ${then}`), shows);
+  // More sold than bought.
+  shows = shown({ kind: "short", has: "−20.000", add: "120.000" });
+  assert.ok(shows.includes(`${line} (−20.000 in this account before 1 Apr 2023, so 120.000 to add). Change How to fix `), shows);
+  assert.ok(shows.includes(": 120.000 units in Mutual funds, from folio 7712045 (−20.000 in this account before 1 Apr 2023). Then"), shows);
+  // More than its folios start with: how many too many, and to check them rather than add any.
+  shows = shown({ kind: "over", has: "150.000", extra: "50.000" });
+  assert.ok(shows.includes(`${line} (150.000 in this account before 1 Apr 2023, so 50.000 too many). Change How to fix ` +
+    "In Mutual funds, this fund's transactions before 1 Apr 2023 come to 150.000 units, 50.000 more than the 100.000 that folio 7712045 starts with: " +
+    `check them in Wealthfolio, and correct or delete the ones that don't belong. ${then}`), shows);
+  assert.ok(!shows.includes("Read an earlier"), shows);
+  // None can be counted: the split, and what to check, rather than units to add.
+  shows = shown({ kind: "uncounted", by: [{ day: "5 Jan 2022", kind: "split" }] });
+  assert.ok(shows.includes(`${line} (a split on 5 Jan 2022 in this account keeps the fund's units from being counted). Change How to fix ` +
+    "In Mutual funds, the add-on can't count this fund's units across a split on 5 Jan 2022, so it can't check that they come to the 100.000 that folio 7712045 starts with. " +
+    `Check it in Wealthfolio: if it's wrong, delete it; if not, add this statement's transactions for this fund from folio 7712045 in Wealthfolio by hand: the add-on will still leave them out. ${then}`), shows);
+  assert.ok(!shows.includes("Read an earlier"), shows);
+  shows = shown({ kind: "uncounted", by: [{ day: "5 Jan 2022", kind: "split" }, { day: "3 Mar 2022", kind: "split" }, { day: "1 Jun 2022", kind: "option expiry" }] }, ["7712045", "3301"]);
+  assert.ok(shows.includes("from folios 7712045 and 3301 (splits on 5 Jan 2022 and 3 Mar 2022 and an option expiry on 1 Jun 2022 in this account keep the fund's units from being counted)."), shows);
+  assert.ok(shows.includes("so it can't check that they come to the 100.000 that folios 7712045 and 3301 start with. Check them in Wealthfolio: if they're wrong, delete them;"), shows);
+
+  // Option expiries on their own, singular and plural.
+  for (const days of [["1 Jun 2022"], ["1 Jun 2022", "1 Aug 2022"]]) {
+    shows = shown({ kind: "uncounted", by: days.map((day) => ({ day, kind: "option expiry" })) });
+    assert.ok(shows.includes(days.length === 1 ? "an option expiry on 1 Jun 2022 in this account keeps" : "option expiries on 1 Jun 2022 and 1 Aug 2022 in this account keep"), shows);
+    assert.ok(shows.includes("the add-on will still leave them out"), shows);
+    assert.ok(!shows.includes("Read an earlier"), shows);
+  }
+
+  // Each account in its own way, those to add together.
+  shows = text("NotIncludedDetailed", props([
+    { units: "100.000", account: "Mutual funds", folios: ["7712045"] },
+    { units: "200.000", account: "Family funds", folios: ["91234567"], held: { kind: "short", has: "150.000", add: "50.000" } },
+    { units: "250.000", account: "Funds (ending 4821)", folios: ["3301", "3302"], held: { kind: "over", has: "300.000", extra: "50.000" } },
+  ]));
+  assert.ok(shows.includes("Units needed: 100.000 in Mutual funds, from folio 7712045; 200.000 in Family funds, from folio 91234567 (150.000 in this account before 1 Apr 2023, so 50.000 to add); " +
+    "250.000 in Funds (ending 4821), from folios 3301 and 3302 (300.000 in this account before 1 Apr 2023, so 50.000 too many). Change How to fix " +
+    "Read an earlier CAMS statement that includes its first purchase, or add the units in Wealthfolio as buys with their cost and date: " +
+    "100.000 units in Mutual funds, from folio 7712045; 50.000 units in Family funds, from folio 91234567 (150.000 in this account before 1 Apr 2023). " +
+    "In Funds (ending 4821), this fund's transactions before 1 Apr 2023 come to 300.000 units, 50.000 more than the 250.000 that folios 3301 and 3302 start with:"), shows);
+
+  // Check existing history before either reread path; only accounts needing units get buys.
+  for (const [held, check] of [
+    [{ kind: "short", has: "200.000", add: "50.000" }, ""],
+    [{ kind: "over", has: "300.000", extra: "50.000" },
+      "In Family funds, this fund's transactions before 1 Apr 2023 come to 300.000 units, 50.000 more than the 250.000 that folio 3301 starts with: " +
+      "check them in Wealthfolio, and correct or delete the ones that don't belong. "],
+    [{ kind: "uncounted", by: [{ day: "5 Jan 2022", kind: "split" }] },
+      "In Family funds, the add-on can't count this fund's units across a split on 5 Jan 2022, so it can't check that they come to the 250.000 that folio 3301 starts with. " +
+      "Check it in Wealthfolio: if it's wrong, delete it; if not, add this statement's transactions for this fund from folio 3301 in Wealthfolio by hand: the add-on will still leave them out. "],
+  ]) {
+    const mixed = props([
+      { units: "100.000", account: "Mutual funds", folios: ["7712045"] },
+      { units: "250.000", account: "Family funds", folios: ["3301"], held },
+    ]);
+    Object.assign(mixed.earlier[0], { units: "350.000 units", uncreated: [{ account: "Mutual funds", folios: ["7712045"] }] });
+    shows = text("NotIncludedDetailed", mixed);
+    assert.ok(shows.includes("The new account Mutual funds won't be created: nothing ready to import goes into it. Change How to fix " + check +
+      "Read an earlier CAMS statement that includes its first purchase, then this one again. Or, as Mutual funds doesn't exist yet, " +
+      "first create an account that tracks transactions in Wealthfolio for its units, then add the units in Wealthfolio as " +
+      (held.kind === "short" ? "buys" : "a buy") + " with their cost and date: 100.000 units in Mutual funds, from folio 7712045" +
+      (held.kind === "short" ? "; 50.000 units in Family funds, from folio 3301 (200.000 in this account before 1 Apr 2023)" : "") +
+      ". Then read this statement again and choose it in “Save to” for folio 7712045. Transactions already imported are skipped."), shows);
+  }
+});
+
 test("one fund's Ready and Not included Change controls have distinct names", () => {
   const item = { key: "fund", name: "Fictiva Fund", noun: "fund" };
   const ready = createElement(components.FundsReadyTable, {
