@@ -1749,6 +1749,56 @@ test("a folio sent to its own new account gets one, named after it", async () =>
   assert.deepEqual(new Set(imported[0].map((r) => r.accountId)), new Set(["created-1", "created-2"]));
 });
 
+test("a fund waiting for earlier purchases says when its new account won't be created", async () => {
+  const earlierOf = (run) => find(run, "NotIncludedDetailed").earlier.map(({ name, uncreated }) => ({ name: name.split(" - ")[0], uncreated }));
+  // A new profile whose only fund, Flexi Cap, starts with units: nothing is ready, so Finish creates no account.
+  let { run, asked } = withNewAccounts({ change(data) {
+    data.folios = [{ ...data.folios[0], schemes: data.folios[0].schemes.filter((s) => s.scheme.includes("Flexi")) }];
+    return data;
+  } });
+  await run.flush();
+  assert.deepEqual(earlierOf(run), [{ name: "Fictiva Flexi Cap Fund", uncreated: [{ account: "Mutual funds", folios: ["91234567 / 12"] }] }]);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked, []);
+  run.dispose();
+
+  // Other funds import into Mutual funds, which this import creates: nothing more to say.
+  ({ run } = withNewAccounts());
+  await run.flush();
+  assert.deepEqual(earlierOf(run), [{ name: "Fictiva Flexi Cap Fund", uncreated: [] }]);
+  assert.match(footer(run)[0], /^Create the Wealthfolio account Mutual funds and import/);
+  run.dispose();
+
+  // Testbridge's folio goes to a new account of its own, and its only fund starts with units.
+  let keys;
+  ({ run, keys } = withNewAccounts({ change(data) {
+    const flexi = data.folios[0].schemes.find((s) => s.scheme.includes("Flexi"));
+    data.folios[0].schemes = data.folios[0].schemes.filter((s) => s !== flexi);
+    data.folios[1].schemes = [flexi];
+    return data;
+  } }));
+  await run.flush();
+  saveTo(run).onChange(keys.testbridge, proposedId(keys.testbridge));
+  await run.flush();
+  assert.deepEqual(earlierOf(run), [{ name: "Fictiva Flexi Cap Fund", uncreated: [{ account: "Testbridge Mutual Fund folio 1040012345", folios: ["1040012345"] }] }]);
+  assert.match(footer(run)[0], /^Create the Wealthfolio account Mutual funds and import/);
+  run.dispose();
+
+  // Flexi Cap in both folios: only the account nothing goes into is named, with its folio.
+  ({ run, keys } = withNewAccounts({ change(data) {
+    data.folios[1].schemes = [structuredClone(data.folios[0].schemes.find((s) => s.scheme.includes("Flexi")))];
+    return data;
+  } }));
+  await run.flush();
+  saveTo(run).onChange(keys.testbridge, proposedId(keys.testbridge));
+  await run.flush();
+  const [flexi] = find(run, "NotIncludedDetailed").earlier;
+  assert.deepEqual(flexi.accounts.map((a) => [a.account, a.folios]), [["Mutual funds", ["91234567 / 12"]], ["Testbridge Mutual Fund folio 1040012345", ["1040012345"]]]);
+  assert.deepEqual(flexi.uncreated, [{ account: "Testbridge Mutual Fund folio 1040012345", folios: ["1040012345"] }]);
+});
+
 /** Two investors, each with a PAN; the second's folio receives a gift from a folio of the first's. */
 function twoInvestorGift(data) {
   const base = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));

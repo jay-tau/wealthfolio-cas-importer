@@ -208,6 +208,50 @@ test("a fund waiting for earlier purchases in two accounts says how many units e
     "or add the 300.000 units in Wealthfolio as a buy with their cost and date. Then read this statement again"), plain);
 });
 
+test("a fund waiting for earlier purchases in a new account this import won't create says to create one first", () => {
+  const props = (fund) => ({
+    earlier: [{ key: "1", name: "Fictiva Liquid Fund", units: "100.000 units", waiting: 3, ...fund }],
+    unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: { "how:1": true }, setOpen() {},
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+  });
+  // In one account.
+  const one = text("NotIncludedDetailed", props({ uncreated: [{ account: "Mutual funds", folios: ["7712045"] }] }));
+  assert.ok(one.includes(
+    "Earlier purchases needed : Fictiva Liquid Fund starts with 100.000 units bought before this statement, so its 3 transactions wait. " +
+    "The new account Mutual funds won't be created: nothing ready to import goes into it. Change How to fix " +
+    "Read an earlier CAMS statement that includes its first purchase, then this one again. Or, as Mutual funds doesn't exist yet, " +
+    "create an account that tracks transactions in Wealthfolio, add the 100.000 units there as a buy with their cost and date, " +
+    "then read this statement again and choose that account in “Save to”. Transactions already imported are skipped.",
+  ), one);
+  // In two accounts, one of them new and not created.
+  const accounts = [
+    { units: "100.000", account: "Mutual funds", folios: ["7712045"] },
+    { units: "200.000", account: "Family funds", folios: ["91234567", "3301"] },
+  ];
+  const two = text("NotIncludedDetailed", props({ units: "300.000 units", accounts, uncreated: [{ account: "Family funds", folios: ["91234567", "3301"] }] }));
+  assert.ok(two.includes(
+    "Units needed: 100.000 in Mutual funds, from folio 7712045; 200.000 in Family funds, from folios 91234567 and 3301. " +
+    "The new account Family funds won't be created: nothing ready to import goes into it. Change How to fix " +
+    "Read an earlier CAMS statement that includes its first purchase, then this one again. Or, as Family funds doesn't exist yet, " +
+    "first create an account that tracks transactions in Wealthfolio for its units, then add the units in Wealthfolio as buys with their cost and date: " +
+    "100.000 units in Mutual funds, from folio 7712045; 200.000 units in Family funds, from folios 91234567 and 3301. " +
+    "Then read this statement again and choose it in “Save to” for folios 91234567 and 3301. Transactions already imported are skipped.",
+  ), two);
+  // Both new and not created.
+  const both = text("NotIncludedDetailed", props({ units: "300.000 units", accounts, uncreated: accounts.map(({ account, folios }) => ({ account, folios })) }));
+  assert.ok(both.includes("The new accounts Mutual funds and Family funds won't be created: nothing ready to import goes into them. Change How to fix"), both);
+  assert.ok(both.includes(
+    "Or, as Mutual funds and Family funds don't exist yet, first create accounts that track transactions in Wealthfolio for their units, " +
+    "then add the units in Wealthfolio as buys with their cost and date: " +
+    "100.000 units in Mutual funds, from folio 7712045; 200.000 units in Family funds, from folios 91234567 and 3301. " +
+    "Then read this statement again and choose them in “Save to” for their folios. Transactions already imported are skipped.",
+  ), both);
+  // A new account this import creates: as before.
+  const created = text("NotIncludedDetailed", props({ uncreated: [] }));
+  assert.ok(created.includes("so its 3 transactions wait. Change How to fix Read an earlier CAMS statement that includes its first purchase, " +
+    "or add the 100.000 units in Wealthfolio as a buy with their cost and date. Then read this statement again: transactions already imported are skipped."), created);
+});
+
 test("one fund's Ready and Not included Change controls have distinct names", () => {
   const item = { key: "fund", name: "Fictiva Fund", noun: "fund" };
   const ready = createElement(components.FundsReadyTable, {
