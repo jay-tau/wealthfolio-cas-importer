@@ -876,6 +876,9 @@ export function DetailedImport({
     const accountOf = new Map(current.opening.flatMap((f) => f.schemes.map((s) => [s, f.accountId] as const)));
     const folioOf = new Map(data.folios.flatMap((f) => f.schemes.map((s) => [s, f.folio] as const)));
     const unitsOf = (schemes: CasScheme[]) => units(format(schemes.reduce((total, s) => add(total, dec(s.open)), dec("0"))));
+    // A new account is created only when transactions ready to import go into it, as the bar says.
+    const creating = new Set(rows.map((r) => r.group.accountId));
+    const uncreated = (accountId: string) => isProposed(accountId) && !created.current.has(accountId) && !creating.has(accountId);
     return [...waiting].map(([key, { schemes, count }]) => {
       // A fund whose folios go to more than one account says which account needs which units.
       const spread = new Set(current.opening.filter((f) => f.schemes.some((s) => fundKey(s) === key)).map((f) => f.accountId)).size > 1;
@@ -897,6 +900,10 @@ export function DetailedImport({
               folios: [...new Set(list.map((s) => folioOf.get(s)!))],
             }))
           : undefined,
+        uncreated: [...byAccount].filter(([accountId]) => uncreated(accountId)).map(([accountId, list]) => ({
+          account: accountName(accountId),
+          folios: [...new Set(list.map((s) => folioOf.get(s)!))],
+        })),
       };
     });
   })();

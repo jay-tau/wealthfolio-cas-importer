@@ -94,9 +94,10 @@ the statement is read, one Review screen shows, in this order:
 - **Not included in this import**: a fund that starts with units bought before the statement, which
   Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**), saying how many units
   each account needs and from which folios when its folios go to more than one ("Units needed:
-  100.000 in Mutual funds, from folio 7712045; 200.000 in Family funds, from folio 91234567.");
-  funds you skipped; folios set to "Don't import"; funds you skipped because their rows don't add
-  up, with **Change**; and transactions left out, each with why.
+  100.000 in Mutual funds, from folio 7712045; 200.000 in Family funds, from folio 91234567."),
+  and that a new account they go to won't be created when nothing ready to import goes into it
+  (see [New accounts](#new-accounts)); funds you skipped; folios set to "Don't import"; funds you
+  skipped because their rows don't add up, with **Change**; and transactions left out, each with why.
 - **Transactions in this statement**: how many there are, and what happens to each: to import,
   imported before, possible duplicates waiting for your answer or skipped or imported by it, waiting
   for your answers or for earlier purchases, in skipped funds or folios not imported, or left out,
@@ -678,6 +679,15 @@ default, that tracks holdings for a summary or depository statement and transact
 one, with no provider link. It's created before anything is saved in it, and remembered for its
 investor, PAN, folio, demat account or PRAN once it exists, so the next statement preselects it
 ("Chosen last time").
+
+A new account for transactions is created only when transactions ready to import go into it. When
+a fund that starts with units bought before the statement waits, and nothing ready to import goes
+into its new account, its "Earlier purchases needed" line under **Not included in this import**
+says "The new account Mutual funds won't be created: nothing ready to import goes into it.", and
+**How to fix** says to read an earlier statement, or to create an account that tracks transactions
+in Wealthfolio, add the units there as a buy with their cost and date, then read the statement
+again and choose that account in **Save to**. With nothing ready to import, the bar's button is
+**Finish**, which creates no account.
 
 When Wealthfolio has accounts that fit but none was chosen before, nothing is preselected and
 choosing where to save is a question; the new account stays in the list. A remembered account that's

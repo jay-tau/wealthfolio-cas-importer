@@ -20,11 +20,41 @@ export interface EarlierFund {
    * name as the screen gives it, and its folios' numbers.
    */
   accounts?: { units: string; account: string; folios: string[] }[];
+  /**
+   * The new accounts its waiting units go to that this import won't create, as nothing ready to
+   * import goes into them: each one's name and its folios' numbers.
+   */
+  uncreated?: { account: string; folios: string[] }[];
 }
+
+/** "folio 7712045", "folios 91234567 and 3301". */
+const folioWords = (folios: string[]) => `${folios.length === 1 ? "folio" : "folios"} ${list(folios)}`;
 
 /** "100.000 units in Mutual funds, from folio 7712045; 200.000 units in Family funds, from folios 91234567 and 3301". */
 const accountParts = (accounts: NonNullable<EarlierFund["accounts"]>, noun: string) =>
-  accounts.map((a) => `${a.units}${noun} in ${a.account}, from ${a.folios.length === 1 ? "folio" : "folios"} ${list(a.folios)}`).join("; ");
+  accounts.map((a) => `${a.units}${noun} in ${a.account}, from ${folioWords(a.folios)}`).join("; ");
+
+/**
+ * How to fix a fund waiting for earlier purchases: read an earlier statement, or add the units in
+ * Wealthfolio, first creating each new account they go to that this import won't create.
+ */
+function howToFix(fund: EarlierFund, registrar: string) {
+  const earlier = `Read an earlier ${registrar} statement that includes its first purchase`;
+  const buys = fund.accounts
+    ? `add the units in Wealthfolio as ${fund.accounts.length === 1 ? "a buy" : "buys"} with their cost and date: ${accountParts(fund.accounts, " units")}.`
+    : `add the ${fund.units} in Wealthfolio as a buy with their cost and date.`;
+  const missing = fund.uncreated ?? [];
+  if (!missing.length) return `${earlier}, or ${buys} Then read this statement again: transactions already imported are skipped.`;
+  const again = `${earlier}, then this one again.`;
+  const end = "Transactions already imported are skipped.";
+  // In one account, the account is the fund's only one.
+  if (!fund.accounts) {
+    return `${again} Or, as ${missing[0].account} doesn't exist yet, create an account that tracks transactions in Wealthfolio, add the ${fund.units} there as a buy with their cost and date, then read this statement again and choose that account in “Save to”. ${end}`;
+  }
+  const one = missing.length === 1;
+  const names = list(missing.map((a) => a.account));
+  return `${again} Or, as ${names} ${one ? "doesn't" : "don't"} exist yet, first create ${one ? "an account that tracks" : "accounts that track"} transactions in Wealthfolio for ${one ? "its" : "their"} units, then ${buys} Then read this statement again and choose ${one ? "it" : "them"} in “Save to” for ${one ? folioWords(missing[0].folios) : "their folios"}. ${end}`;
+}
 
 /** A fund with transactions left out for a reason of their own, each said in a line. */
 export interface LeftOutFund {
@@ -89,6 +119,10 @@ export function NotIncludedDetailed({
               <span className="font-semibold">Earlier purchases needed</span>: {fund.name} starts with {fund.units} bought before this statement,
               so its {plural(fund.waiting, "transaction")} {fund.waiting === 1 ? "waits" : "wait"}.
               {fund.accounts && ` Units needed: ${accountParts(fund.accounts, "")}.`}
+              {!!fund.uncreated?.length &&
+                (fund.uncreated.length === 1
+                  ? ` The new account ${fund.uncreated[0].account} won't be created: nothing ready to import goes into it.`
+                  : ` The new accounts ${list(fund.uncreated.map((a) => a.account))} won't be created: nothing ready to import goes into them.`)}
             </span>
             <LinkButton type="button" aria-label={`Change: ${fund.name}${nameNumber(earlier, i, "fund")}, earlier purchases needed`} onClick={() => onReopen(fund.key)}>
               Change
@@ -100,13 +134,7 @@ export function NotIncludedDetailed({
               open={!!open[`how:${fund.key}`]}
               onOpenChange={(yes) => setOpen(`how:${fund.key}`, yes)}
             >
-              <p className="text-muted-foreground mt-1">
-                Read an earlier {registrar} statement that includes its first purchase, or{" "}
-                {fund.accounts
-                  ? `add the units in Wealthfolio as ${fund.accounts.length === 1 ? "a buy" : "buys"} with their cost and date: ${accountParts(fund.accounts, " units")}.`
-                  : `add the ${fund.units} in Wealthfolio as a buy with their cost and date.`}{" "}
-                Then read this statement again: transactions already imported are skipped.
-              </p>
+              <p className="text-muted-foreground mt-1">{howToFix(fund, registrar)}</p>
             </Disclosure>
           </div>
         </div>
