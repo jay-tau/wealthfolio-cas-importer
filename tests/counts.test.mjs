@@ -38,6 +38,7 @@ before(async () => {
     ...(await server.ssrLoadModule("/src/components/review/detailed-parts.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/bank-check.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/save-to-detailed.tsx")),
+    ...(await server.ssrLoadModule("/src/components/review/save-to.tsx")),
     ...(await server.ssrLoadModule("/src/components/review/funds-ready.tsx")),
     ...(await server.ssrLoadModule("/src/components/account-choices.tsx")),
   };
@@ -103,7 +104,7 @@ const bankPair = (type, key) => {
   };
 };
 const bankProps = (pairs, label = "A. Investor's funds · Savings account") => ({
-  check: { id: label, bankName: "Savings account", label, box: label.split(" · ")[0], bankLabel: label.split(" · ")[1], pairs }, ticked: new Set(pairs.map((p) => p.key)), facts: new Map(),
+  check: { id: label, bankName: label.split(" · ")[1], label, box: label.split(" · ")[0], pairs }, ticked: new Set(pairs.map((p) => p.key)), facts: new Map(),
   fundName: () => "Fictiva Fund", headingId: "bank-heading", changeId: "bank-change", pairId: (pair) => pair.key,
   onTick() {}, onLink() {}, onNone() {}, onChange() {},
 });
@@ -139,11 +140,11 @@ test("bank actions and receipts name their investor even when two checks use the
     const receiptName = markup({ answered: 1 }).match(/aria-label="(Change answer:[^"]+)"/)?.[1];
     assert.equal(receiptName, `Change answer: The payout is linked to an entry already in Savings account, for ${investor}. Investor's funds`);
   }
-  // A bank whose name another account has too goes by its number, in the name only.
-  const numbered = bankProps([bankPair("DIVIDEND_PAYOUT", "n")], "A. Investor's funds · Savings account, account 2");
-  const answered = renderToStaticMarkup(createElement(components.BankCheck, { ...numbered, answered: 0 })).replaceAll("&#x27;", "'").replaceAll("<!-- -->", "");
-  assert.ok(answered.includes(">Not linked: the payout gets a new transfer to Savings account</span>"));
-  assert.match(answered, /aria-label="Change answer: Not linked: the payout gets a new transfer to Savings account, account 2, for A\. Investor's funds"/);
+  // A bank whose name another account has too is told apart the same way in its line and Change answer's name.
+  const told = bankProps([bankPair("DIVIDEND_PAYOUT", "n")], "A. Investor's funds · Savings account (ending 4821)");
+  const answered = renderToStaticMarkup(createElement(components.BankCheck, { ...told, answered: 0 })).replaceAll("&#x27;", "'").replaceAll("<!-- -->", "");
+  assert.ok(answered.includes(">Not linked: the payout gets a new transfer to Savings account (ending 4821)</span>"));
+  assert.match(answered, /aria-label="Change answer: Not linked: the payout gets a new transfer to Savings account \(ending 4821\), for A\. Investor's funds"/);
 });
 
 test("equal bank pairs keep their visible labels and distinct names within and across checks", () => {
@@ -165,7 +166,7 @@ test("equal bank pairs keep their visible labels and distinct names within and a
 test("earlier-purchase help and Change distinguish equal funds and their separate reasons", () => {
   const earlier = [1, 2].map((n) => ({ key: String(n), name: "Fictiva Fund", units: "10.000 units", waiting: 1 }));
   const props = {
-    earlier, unbalanced: earlier.map((fund, i) => ({ key: fund.key, name: fund.name, label: `${fund.name}, fund ${i + 1}` })),
+    earlier, unbalanced: earlier.map((fund, i) => ({ id: `unbalanced|${fund.key}`, key: fund.key, name: fund.name, label: `${fund.name}, fund ${i + 1}` })),
     skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: {}, setOpen() {},
     partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
   };
@@ -218,7 +219,7 @@ test("bank choices and folio disclosures distinguish PAN boxes whose investors h
     key: pan, name: "A. Investor", title: `A. Investor (PAN ${pan})'s funds`, pan: true, folios: [],
   }));
   const props = {
-    boxes, targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }],
+    boxes, targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }], labels: new Map([["mf", { text: "Mutual funds", option: "Mutual funds (INR)" }]]),
     proposed: (key) => ({ id: `new-account:${key}`, name: "Mutual funds 2" }), newLine: () => null,
     values: Object.fromEntries(boxes.flatMap((box) => [[box.key, "mf"], [`bank-${box.key}`, ""]])),
     ignored: {}, conflicts: new Set(), remembered: "none", open: {}, onOpen() {}, onChange() {}, checks: () => null, partId: "save-to",
@@ -229,6 +230,24 @@ test("bank choices and folio disclosures distinguish PAN boxes whose investors h
     assert.ok(shown.includes(`Bank account for purchases and payouts (optional) : ${box.title}`));
     assert.ok(markup.includes(`aria-label="Save part of it to another account: ${box.title}"`));
   }
+});
+
+test("Save to says where an account's number comes from when nothing else tells two of one name apart, read with each select", async () => {
+  const { accountLabels } = await server.ssrLoadModule("/src/lib/account-labels.ts");
+  const targets = ["a", "b"].map((id) => ({ id, name: "Funds", currency: "INR", trackingMode: "HOLDINGS" }));
+  const props = (accounts) => ({
+    investorName: "A. Investor", investorKey: "pan", sources: [], targets: accounts, labels: accountLabels(accounts), proposed: () => undefined, newLine: () => null,
+    values: { pan: "b" }, ignored: {}, remembered: true, open: false, onOpen() {}, onChange() {}, partId: "save-to",
+  });
+  const note = "A number after a name, as in Funds (account 1), is the account's place among the accounts of that name in Wealthfolio under Settings → Accounts, counting hidden and archived ones. Giving them different names in Wealthfolio tells them apart.";
+  const shown = text("SaveTo", props(targets));
+  assert.ok(shown.includes(note), shown);
+  assert.ok(shown.includes("Funds (account 2)"), shown);
+  assert.match(renderToStaticMarkup(createElement(components.SaveTo, props(targets))), /aria-describedby="save-to-numbered"/);
+  // Told apart by their account numbers, they need no note.
+  const numbered = targets.map((a, i) => ({ ...a, accountNumber: `00${i}` }));
+  assert.ok(!text("SaveTo", props(numbered)).includes("A number after a name"));
+  assert.ok(!renderToStaticMarkup(createElement(components.SaveTo, props(numbered))).includes("aria-describedby"));
 });
 
 /** A search state with nothing searched yet, and searches that do nothing, for rendering a question. */
@@ -454,7 +473,7 @@ test("separately compared funds keep their accounts' global labels in headings a
 const importResult = (props) => text("ImportResult", {
   imported: (props.outcomes ?? []).reduce((n, a) => n + a.imported, 0),
   result: { activities: [], summary: { success: true, total: 0, imported: 0, duplicates: 0, assetsCreated: 0 } },
-  sent: [], total: 1, outcomes: [], closing: undefined, links: [], fundName: (t) => t.transaction.scheme, accounts: [], base: "r",
+  sent: [], total: 1, outcomes: [], closing: undefined, links: [], fundName: (t) => t.transaction.scheme, accountName: () => "the bank account", base: "r",
   onRetryAccount() {}, onRetryLink() {}, onCheckAgain() {}, onOpenAccount() {}, ...props,
 });
 const outcome = (fields) => ({ key: "k", name: "Mutual funds", isNew: false, imported: 0, waiting: 0, state: "imported", ...fields });
@@ -504,11 +523,11 @@ test("the import result's units check: couldn't run, every fund matching, or uni
   const fund = (scheme, statement, held) => ({
     accountId: "account-1", asset: { symbol: scheme }, schemes: [{ scheme }], statement: dec(statement), held: held === undefined ? undefined : dec(held),
   });
-  const accounts = [{ id: "account-1", name: "Mutual funds" }];
-  assert.match(importResult({ closing: [fund("A", "10", "10")], accounts }), / ✓ Checked in Wealthfolio: units match the statement for the fund\. $/);
-  assert.match(importResult({ closing: [fund("A", "10", "10"), fund("B", "5", "5")], accounts }), / for all 2 funds\. $/);
-  assert.match(importResult({ closing: [fund("A", "10", "9")], accounts }), /Checked in Wealthfolio: units differ for 1 of 1 fund\./);
-  const differ = importResult({ closing: [fund("A", "10", "10"), fund("B", "1234.5", "1224.5"), fund("C", "3", undefined)], accounts });
+  const accountName = (id) => (id === "account-1" ? "Mutual funds" : "?");
+  assert.match(importResult({ closing: [fund("A", "10", "10")], accountName }), / ✓ Checked in Wealthfolio: units match the statement for the fund\. $/);
+  assert.match(importResult({ closing: [fund("A", "10", "10"), fund("B", "5", "5")], accountName }), / for all 2 funds\. $/);
+  assert.match(importResult({ closing: [fund("A", "10", "9")], accountName }), /Checked in Wealthfolio: units differ for 1 of 1 fund\./);
+  const differ = importResult({ closing: [fund("A", "10", "10"), fund("B", "1234.5", "1224.5"), fund("C", "3", undefined)], accountName });
   assert.ok(differ.includes(" Checked in Wealthfolio: units differ for 2 of 3 funds. " +
     "B: Wealthfolio has 1,224.500 units, the statement says 1,234.500. Open Mutual funds " +
     "C: its units need a look in Wealthfolio, after a split or an option's expiry. Open Mutual funds "), differ);
@@ -525,7 +544,7 @@ test("the import result names each bank entry the add-on changed, and says how f
     { transaction, bankRow: bankRow("b", "TRANSFER_OUT"), facts: {}, changes: [], warnings: [] },
     { transaction, bankRow: bankRow("c", "WITHDRAWAL"), facts: {}, error: "Added the fund account's transfer, but couldn't link it.", stage: "link", changes: [], warnings: ["Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio."] },
   ];
-  const shown = importResult({ total: 3, outcomes: [outcome({ imported: 3 })], links, fundName, accounts: [{ id: "bank-1", name: "Savings" }] });
+  const shown = importResult({ total: 3, outcomes: [outcome({ imported: 3 })], links, fundName, accountName: (id) => (id === "bank-1" ? "Savings" : "?") });
   assert.match(shown, / ✓ Linked 2 of 3 bank entries you chose with their transactions\. /);
   assert.ok(shown.includes(
     " ✗ Purchase of Fictiva Liquid Fund on 5 May 2023: The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't linked. Try again : link the bank entry of 4 May 2023 ",

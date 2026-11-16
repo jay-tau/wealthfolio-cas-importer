@@ -9,6 +9,7 @@ import type { Ignored } from "../components/account-choices";
 import { AmfiBanner, useAmfiCheck } from "../components/amfi-banner";
 import { type FundChoice, fundsOf } from "../components/fund-choices";
 import { StatementForm } from "../components/statement-form";
+import { accountLabels } from "../lib/account-labels";
 import { bankKey, folioKey, forgetFund, investorKey, LEFT_OUT, NO_BANK, panKey, readFund, saveFund, sourceKey } from "../lib/choices";
 import { focusDropped } from "../lib/focus";
 import { DetailedImport } from "./detailed-import";
@@ -72,13 +73,15 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
       ([, id]) => id === LEFT_OUT || id === NO_BANK || accounts?.some((a) => a.id === id),
     ),
   );
+  // How the review names each account: told apart from another account of the same name.
+  const labels = allAccounts && accountLabels(allAccounts);
   const unavailable: Record<string, Ignored> = Object.fromEntries(
     Object.entries(remembered ?? {}).flatMap(([key, id]) => {
       // Empty goes with the PAN or the statement.
       if (!allAccounts || !id || key in accountChoices) return [];
       const account = allAccounts.find((a) => a.id === id);
       const state = account && [!account.isActive && "hidden", account.isArchived && "archived"].filter(Boolean).join(" and ");
-      return [[key, account ? { name: account.name, state } : {}]];
+      return [[key, account ? { name: labels?.get(account.id)?.text ?? account.name, state } : {}]];
     }),
   );
 

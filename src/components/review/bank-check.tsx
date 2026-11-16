@@ -13,13 +13,12 @@ export interface BankCheckModel {
   /** The key of the bank choice that set it, which it's shown under. */
   anchor: string;
   bankId: string;
+  /** The bank as the screen names it: told apart from another account of the same name. */
   bankName: string;
   /** Its investor's box and bank, distinguishing repeated controls. */
   label: string;
   /** Its investor's box, which Change answer names after the answer's line. */
   box: string;
-  /** The bank's name, numbered when another account has the same one, for Change answer's name. */
-  bankLabel: string;
   pairs: BankPair[];
   /** The pairs' keys, which an answer and ticks hold on to. */
   signature: string;
@@ -135,7 +134,7 @@ export function BankCheck({
           id={changeId}
           type="button"
           // The line names the bank once; its box follows.
-          aria-label={`Change answer: ${checkReceipt({ ...check, bankName: check.bankLabel }, answered)}, for ${check.box}`}
+          aria-label={`Change answer: ${text}, for ${check.box}`}
           onClick={onChange}
         >
           Change answer

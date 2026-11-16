@@ -80,17 +80,16 @@ export const MISSING_WHY =
   "A statement can leave out a fund you still hold, for example one that covers only some fund houses. Set it to zero only if you no longer own any of its units; otherwise keep them, and check a statement that lists this fund.";
 
 /**
- * The words of a position's question (`position.ask`) in `plan`'s account. `name` gives a position's
+ * The words of a position's question (`position.ask`) in `plan`'s account, which `account` names as
+ * the screen does: told apart from another account of the same name. `name` gives a position's
  * name as the Review screen shows it, and `statement` a statement row's name as the statement prints
  * it; `provider` the price source of a statement row's chosen asset.
  */
 export function holdingAskWords(
   plan: AccountPlan,
   position: PlannedPosition,
-  { account, label = account, name, statement = name, provider }: {
+  { account, name, statement = name, provider }: {
     account: string;
-    /** The account in the answered line: numbered when another account has the same name. */
-    label?: string;
     name: (p: PlannedPosition) => string;
     statement?: (p: PlannedPosition) => string;
     provider?: (p: PlannedPosition) => string | undefined;
@@ -107,7 +106,7 @@ export function holdingAskWords(
       main: `Keep ${held} units`,
       other: zero,
       why: MISSING_WHY,
-      receipt: (keep) => (keep ? `${own}: ${held} units kept in ${label}` : `${own}: set to zero in ${label} on ${shortDate(plan.date)}`),
+      receipt: (keep) => (keep ? `${own}: ${held} units kept in ${account}` : `${own}: set to zero in ${account} on ${shortDate(plan.date)}`),
       done: (keep) => (keep ? `${own} kept at ${held} units` : `${own} set to zero`),
     };
   }
@@ -121,7 +120,7 @@ export function holdingAskWords(
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
       caution: `Remove them only if all of them came from ${one ? thisOne(moved[0]) : titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
-      receipt: (keep) => `${own}: ${keep ? "kept in" : "removed from"} ${label}`,
+      receipt: (keep) => `${own}: ${keep ? "kept in" : "removed from"} ${account}`,
       done: (keep) => `${own} ${keep ? "kept in" : "removed from"} ${account}`,
     };
   }
@@ -134,7 +133,7 @@ export function holdingAskWords(
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
       caution: `Remove them only if all of them came from ${titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
-      receipt: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${label}`,
+      receipt: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${account}`,
       done: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${account}`,
     };
   }
@@ -153,7 +152,7 @@ export function holdingAskWords(
     note: `${capital(now)} isn't saved, so its units aren't counted twice.`,
     other: `Replace ${old} with ${now}`,
     caution: `Replace ${old} only if all ${olds.length > 1 ? "their" : "its"} units came from ${titles(ask.recorded ?? position.lines.map((l) => l.source))}: ${IMPORTS_DONT_RECORD}.`,
-    receipt: (keep) => (keep ? `${printed}: kept as ${old} in ${label} for now` : `${printed}: ${old} replaced with ${now} in ${label}`),
+    receipt: (keep) => (keep ? `${printed}: kept as ${old} in ${account} for now` : `${printed}: ${old} replaced with ${now} in ${account}`),
     done: (keep) => (keep ? `${printed} kept as ${old}` : `${old} replaced with ${now}`),
   };
 }
@@ -207,15 +206,15 @@ export function sameDateChanges(plan: AccountPlan, choices: Choices, name: (p: P
 
 /**
  * The same-date question's words, for an account that has holdings saved for the statement's date.
- * `label` is the account in the answered line: numbered when another account has the same name.
+ * `account` is as the screen names it: told apart from another account of the same name.
  */
-export function sameDateWords(account: string, date: string, label = account): Omit<AskWords, "line"> {
+export function sameDateWords(account: string, date: string): Omit<AskWords, "line"> {
   const on = longDate(date);
   return {
     title: `${account} already has holdings saved for ${on}`,
     main: "Keep the saved ones",
     other: "Replace them with this statement",
-    receipt: (keep) => (keep ? `${label}: kept the holdings already saved for ${on}` : `${label}: replaced the holdings saved for ${on} with this statement`),
+    receipt: (keep) => (keep ? `${account}: kept the holdings already saved for ${on}` : `${account}: replaced the holdings saved for ${on} with this statement`),
     done: (keep) => (keep ? `${account}: existing holdings kept for ${on}.` : `${account}: the holdings saved for ${on} are replaced.`),
   };
 }

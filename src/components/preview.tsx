@@ -1,4 +1,4 @@
-import type { Account, ActivityDetails, ActivityImport, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
+import type { ActivityDetails, ActivityImport, ImportActivitiesResult } from "@wealthfolio/addon-sdk";
 import {
   Alert,
   AlertDescription,
@@ -141,19 +141,19 @@ export function ActivityTable({
   plan,
   sent,
   linked,
-  accounts,
+  accountName,
   label: tableLabel,
 }: {
   mapping: Mapping;
   plan: PlannedTransaction[];
   sent: (t: PlannedTransaction) => boolean;
   linked: (t: PlannedTransaction) => boolean;
-  accounts: Account[];
+  /** An account as the screen names it: told apart from another account of the same name. */
+  accountName: (id: string) => string;
   label: string;
 }) {
   const caveats = mapping.warnings.filter((w) => !w.leftOut);
   const caveatsOf = (t: PlannedTransaction) => caveats.filter((w) => w.rows[0] === t.transaction.rows[0]);
-  const accountName = (id: string) => accounts.find((a) => a.id === id)?.name ?? "the bank account";
   return (
     // Narrow padding and wrapping Cash keep Status visible with Extra large text in a 1440 px window.
     <Table aria-label={tableLabel}>
@@ -331,7 +331,7 @@ export function ImportResult({
   closing,
   links,
   fundName,
-  accounts,
+  accountName,
   base,
   onRetryAccount,
   onRetryLink,
@@ -349,7 +349,8 @@ export function ImportResult({
   links: BankLink[];
   /** The name each link's fund goes by on the Review screen. */
   fundName: FundName;
-  accounts: Account[];
+  /** An account as the screen names it: told apart from another account of the same name. */
+  accountName: (id: string) => string;
   /** Prefix of the ids of its lines (`importIds`). */
   base: string;
   onRetryAccount: (key: string) => void;
@@ -366,7 +367,6 @@ export function ImportResult({
   }, []);
   const failedLinks = links.filter((l) => l.stage);
   const changedLinks = links.filter((l) => l.changes.length || l.warnings.length);
-  const accountName = (id: string) => accounts.find((a) => a.id === id)?.name ?? "the bank account";
   const failed = result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0);
   // Rows Wealthfolio skipped that the preview didn't expect to be duplicates.
   const forced = new Set(sent.filter((r) => r.forceImport).map((r) => r.lineNumber));

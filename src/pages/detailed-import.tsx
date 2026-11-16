@@ -74,6 +74,7 @@ import { readableName } from "../lib/fund-name";
 import { explanation, Explained } from "../lib/explained";
 import { nextOpen, type QuestionStop } from "../lib/focus";
 import { instrumentType } from "../lib/instrument-type";
+import { accountLabels } from "../lib/account-labels";
 import { nameNumber } from "../lib/name-number";
 import { isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames } from "../lib/new-accounts";
 import { warningLines } from "../lib/parse-warnings";
@@ -233,6 +234,8 @@ interface Ask {
   warn?: boolean;
   /** The fund it's about, for a fund whose rows don't add up. */
   fundKey?: string;
+  /** Its folio, when the same fund's rows don't add up in another folio too. */
+  folio?: string;
   set: (answer: boolean | undefined) => void;
 }
 
@@ -293,14 +296,18 @@ export function DetailedImport({
   const targets = accounts.filter((a) => a.trackingMode !== "HOLDINGS");
   // The accounts this review created, by proposed ID: importing again goes into them, never creating another.
   const created = useRef(new Map<string, Account>());
+  // How the screen names each account: told apart from another account of the same name.
+  const labels = accountLabels(allAccounts);
+  /**
+   * The account as the screen names it, shown and in accessible names: told apart from another
+   * account of the same name. A new account's name is its own: no other account has it.
+   */
   function accountName(accountId: string) {
-    const account = created.current.get(accountId);
-    if (account) return account.name;
+    const account = created.current.get(accountId) ?? [...created.current.values()].find((a) => a.id === accountId);
+    if (account) return labels.get(account.id)?.text ?? account.name;
     if (isProposed(accountId)) return proposalNames.get(proposalKey(accountId)) ?? "";
-    return allAccounts.find((a) => a.id === accountId)?.name ?? [...created.current.values()].find((a) => a.id === accountId)?.name ?? "the bank account";
+    return labels.get(accountId)?.text ?? "the bank account";
   }
-  const accountLabel = (accountId: string) =>
-    isProposed(accountId) ? accountName(accountId) : `${accountName(accountId)}${nameNumber(allAccounts, allAccounts.findIndex((a) => a.id === accountId), "account")}`;
 
   // Who each folio belongs to: a box per PAN, and one per folio printed without a PAN.
   const boxes = useMemo(() => {
@@ -348,7 +355,7 @@ export function DetailedImport({
       ...boxes.map((box, i) => ({ key: box.key, base: "Mutual funds", who: i ? box.name : undefined })),
       ...boxes.filter((b) => b.pan).flatMap((b) => b.folios.map((f) => ({ key: folioKey(f), base: folioName(f) }))),
     ],
-    allAccounts.map((a) => a.name),
+    allAccounts.flatMap((a) => [a.name, labels.get(a.id)!.text]),
     { ...tried.current, ...renamed },
   );
   const proposed = (key: string): Proposed => ({ id: proposedId(key), name: proposalNames.get(key) ?? "" });
@@ -366,7 +373,7 @@ export function DetailedImport({
     ...Object.fromEntries(
       Object.entries(accountChoices).flatMap(([key, value]) => {
         const found = accounts.find((a) => a.id === value && a.trackingMode === "HOLDINGS");
-        return found ? [[key, { name: found.name }]] : [];
+        return found ? [[key, { name: labels.get(found.id)?.text ?? found.name }]] : [];
       }),
     ),
   };
@@ -724,7 +731,7 @@ export function DetailedImport({
     if (!check) {
       check = {
         id: `${box.key}|${bankId}`, anchor, bankId, bankName: accountName(bankId),
-        label: `${box.title} · ${accountLabel(bankId)}`, box: box.title, bankLabel: accountLabel(bankId),
+        label: `${box.title} · ${accountName(bankId)}`, box: box.title,
         pairs: [], signature: "",
       };
       checks.push(check);
@@ -921,28 +928,30 @@ export function DetailedImport({
     const scheme = data.folios.flatMap((f) => (f.folio === folio ? f.schemes : [])).find((s) => s.scheme === name);
     return scheme ? fundNameOf(fundKey(scheme)) : name;
   };
-  const unbalancedWarnings = (shown?.mapping.warnings ?? []).filter((w) => w.unbalanced);
-  const unbalancedAsks: Ask[] = unbalancedWarnings.map((w) => {
-    const key = schemeKey(w.folio, w.scheme);
+  const unbalancedFunds = (shown?.mapping.warnings ?? []).filter((w) => w.unbalanced).map((w) => {
     const scheme = data.folios.find((f) => f.folio === w.folio)?.schemes.find((s) => s.scheme === w.scheme);
-    const fund = scheme ? fundNameOf(fundKey(scheme)) : w.scheme;
-    const twice = unbalancedWarnings.filter((other) => other.scheme === w.scheme).length > 1;
+    return { warning: w, scheme, fund: scheme ? fundNameOf(fundKey(scheme)) : w.scheme };
+  });
+  const unbalancedAsks: Ask[] = unbalancedFunds.map(({ warning: w, scheme, fund }) => {
+    const key = schemeKey(w.folio, w.scheme);
+    const twice = unbalancedFunds.some((other) => other.warning.folio !== w.folio && other.fund === fund);
     const added = units(w.units?.added ?? "");
     const closing = units(w.units?.closing ?? "");
-    // In two folios, its line and buttons name the folio.
+    // In two folios, its heading, buttons, answered line and the bar name the folio.
     const which = twice ? `${fund}, folio ${w.folio}` : fund;
     return {
       id: `unbalanced|${key}`,
       words: {
-        title: `${fund}'s transactions don't add up`,
-        line: `${twice ? `In folio ${w.folio}, they` : "They"} add up to ${added} units; the statement says ${closing}. A row may be missing or misread.`,
+        title: `${fund}'s transactions${twice ? ` in folio ${w.folio}` : ""} don't add up`,
+        line: `They add up to ${added} units; the statement says ${closing}. A row may be missing or misread.`,
         main: "Skip this fund",
         other: "Import with this difference",
         receipt: (skip) => `${which}: ${skip ? "skipped" : "imported with the difference"}`,
-        done: (skip) => `${fund} ${skip ? "skipped" : "imported with the difference"}, by your answer`,
+        done: (skip) => `${which} ${skip ? "skipped" : "imported with the difference"}, by your answer`,
       },
       target: which,
       fundKey: scheme && fundKey(scheme),
+      folio: twice ? w.folio : undefined,
       answer: unbalancedAnswers.get(key),
       warn: unbalancedAnswers.get(key) === false,
       set: (answer) => setUnbalancedAnswers((all) => {
@@ -964,13 +973,6 @@ export function DetailedImport({
     const key = transactionKey(t);
     const { activity, folio, rows: [first] } = t.transaction;
     const { fund, word, money, when } = duplicateWords[i];
-    // An equal one in another folio: each names its folio too.
-    const twice = duplicateWords.some((o, j) => offered[j].transaction.folio !== folio && o.fund === fund && o.word === word && o.money === money && o.when === when);
-    const says = twice ? `${fund}, folio ${folio}` : fund;
-    const unitsOf = (row: typeof first) => (row.units && dec(row.units).n !== 0n ? `${units(format(abs(dec(row.units))))} units` : undefined);
-    const factsOf = (row: typeof first): LineFacts => ({ day: longDate(row.date), units: unitsOf(row), amount: amountOf(row) });
-    const statementLine = (row: typeof first) =>
-      [longDate(row.date), capital(STATEMENT_WORDS[row.type] ?? row.type.toLowerCase()), fund, unitsOf(row), amountOf(row)].filter(Boolean).join(" · ");
     const row = t.rows.find((r) => r.existingId || r.repeatsLine !== undefined || r.flagged);
     const there = row && shownById.get(row.existingId ?? row.duplicateOfId ?? "");
     const account = accountName(there?.accountId ?? row?.activity.accountId ?? activity.accountId);
@@ -978,6 +980,17 @@ export function DetailedImport({
     const repeated = row?.repeatsLine !== undefined && !there
       ? (shown?.plan ?? []).find((other) => other !== t && other.rows.some((r) => r.activity.lineNumber === row.repeatsLine))
       : undefined;
+    // An equal question in another folio: its heading names the folio too.
+    const twin = duplicateWords.some((o, j) => offered[j].transaction.folio !== folio && o.fund === fund && o.word === word && o.money === money && o.when === when);
+    // That, or the line it repeats is in another folio: its lines, buttons and answered line name the folio.
+    const twice = twin || (!!repeated && repeated.transaction.folio !== folio);
+    const says = twice ? `${fund}, folio ${folio}` : fund;
+    const inFolio = twin ? ` in folio ${folio}` : "";
+    const unitsOf = (row: typeof first) => (row.units && dec(row.units).n !== 0n ? `${units(format(abs(dec(row.units))))} units` : undefined);
+    const factsOf = (row: typeof first): LineFacts => ({ day: longDate(row.date), units: unitsOf(row), amount: amountOf(row) });
+    const statementLine = (row: typeof first, inFolio: string) =>
+      [longDate(row.date), capital(STATEMENT_WORDS[row.type] ?? row.type.toLowerCase()), twice ? `${fund}, folio ${inFolio}` : fund, unitsOf(row), amountOf(row)]
+        .filter(Boolean).join(" · ");
     const thereFacts = there && ((): LineFacts => {
       const amount = there.amount ?? (there.quantity && there.unitPrice ? format(mul(dec(String(there.quantity)), dec(String(there.unitPrice)))) : null);
       return {
@@ -998,12 +1011,12 @@ export function DetailedImport({
     const evidence = (
       <>
         <p>
-          <span className="text-foreground font-medium">On this statement:</span> {statementLine(first)}
+          <span className="text-foreground font-medium">On this statement:</span> {statementLine(first, folio)}
         </p>
         <p>
           {repeated ? (
             <>
-              <span className="text-foreground font-medium">Also on this statement:</span> {statementLine(repeated.transaction.rows[0])}
+              <span className="text-foreground font-medium">Also on this statement:</span> {statementLine(repeated.transaction.rows[0], repeated.transaction.folio)}
             </>
           ) : (
             <>
@@ -1017,9 +1030,9 @@ export function DetailedImport({
     return {
       id: `duplicate|${key}`,
       words: {
-        title: repeated ? `This ${word} is on this statement twice`
-          : row?.activity === t.transaction.bank ? `The bank entry for this ${word} may already be in ${account}`
-          : `This ${word} may already be in ${account}`,
+        title: repeated ? `This ${word}${inFolio} is on this statement twice`
+          : row?.activity === t.transaction.bank ? `The bank entry for this ${word}${inFolio} may already be in ${account}`
+          : `This ${word}${inFolio} may already be in ${account}`,
         line: "",
         main: "Skip this transaction",
         other: `Import it as a second ${word}`,
@@ -1321,7 +1334,7 @@ export function DetailedImport({
   );
   const handlers: FundRowHandlers = {
     ids: ids.row,
-    label: (row, item) => `${labelOf.get(item.key)!} in ${accountLabel(row.group.accountId)}`,
+    label: (row, item) => `${labelOf.get(item.key)!} in ${accountName(row.group.accountId)}`,
     changing: editor?.rowId,
     changingItem: editor?.itemKey,
     nag,
@@ -1402,7 +1415,9 @@ export function DetailedImport({
       onDraft={(draft) => setRenaming((r) => r && { ...r, draft })}
       onSave={() => {
         if (!renaming) return;
-        const problem = nameProblem(renaming.draft);
+        const problem = nameProblem(renaming.draft, allAccounts.map((a) => a.name),
+          Object.entries({ ...tried.current, ...renamed }).filter(([other]) => other !== key).map(([, typed]) => typed),
+          [...labels.values()].map((l) => l.text));
         if (problem) {
           setRenaming({ ...renaming, error: problem });
           announce(problem);
@@ -1928,7 +1943,7 @@ export function DetailedImport({
           closing={imported.closing}
           links={imported.links}
           fundName={transactionFund}
-          accounts={[...allAccounts, ...created.current.values()]}
+          accountName={accountName}
           base={id("result")}
           onRetryAccount={(key) => void retryAccount(key)}
           onRetryLink={(link) => void retryLink(link)}
@@ -2123,6 +2138,7 @@ export function DetailedImport({
       <SaveToDetailed
         boxes={boxes}
         targets={targets}
+        labels={labels}
         proposed={(key) => created.current.has(proposedId(key)) ? undefined : proposed(key)}
         newLine={newLine}
         values={values}
@@ -2294,7 +2310,11 @@ export function DetailedImport({
       <NotIncludedDetailed
         earlier={earlier}
         skipped={skipped.map((item) => labelOf.get(item.key)!)}
-        unbalanced={[...new Set(unbalancedAsks.filter((a) => a.answer === true).map((a) => a.fundKey!))].map((key) => ({ key, name: fundNameOf(key), label: labelOf.get(key)! }))}
+        // One line for each question skipped, its folio named where the fund's in two, as its card does.
+        unbalanced={unbalancedAsks.filter((a) => a.answer === true).map((a) => {
+          const inFolio = a.folio ? `, folio ${a.folio}` : "";
+          return { id: a.id, key: a.fundKey!, name: `${fundNameOf(a.fundKey!)}${inFolio}`, label: `${labelOf.get(a.fundKey!)!}${inFolio}` };
+        })}
         notImported={notImported.map((f) => `${folioName(f)} (${plural(f.schemes.length, "fund")})`)}
         leftOut={leftOutFunds}
         registrar={registrar}
@@ -2336,7 +2356,7 @@ export function DetailedImport({
       )}
       {open.every && current && (
         <section id={ids.every} aria-label="Every transaction on this statement">
-          <ActivityTable mapping={current.mapping} plan={plan} sent={sentOf} linked={reused} accounts={allAccounts} label="Every transaction on this statement" />
+          <ActivityTable mapping={current.mapping} plan={plan} sent={sentOf} linked={reused} accountName={accountName} label="Every transaction on this statement" />
         </section>
       )}
       <Footer

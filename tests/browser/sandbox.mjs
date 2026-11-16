@@ -3064,9 +3064,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       pricingModes: window.host.pricingModes, storage: [...window.host.storage], accounts: window.host.accounts,
     }));
     const longKeptHolding = "HoldingWithALongNameAndNoSpacesInTheKeptStatementDisclosure";
-    const resetKeptDate = async (allInDemat = false, accountName = "Demat") => {
+    const resetKeptDate = async (allInDemat = false, accountName = "Demat", accountFields = {}) => {
       await leaveReview();
-      await hosted(([saved, allInDemat, accountName, keys, longHolding]) => {
+      await hosted(([saved, allInDemat, accountName, keys, longHolding, accountFields]) => {
         const { storage, ...state } = JSON.parse(saved);
         Object.assign(window.host, state, { storage: new Map(storage) });
         const [statement, nsdl, cdsl, folio, leftOut] = keys;
@@ -3078,6 +3078,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         // Demat must remove its question.
         window.host.storage.delete("isin:INEZ90C01021");
         window.host.accounts.find((a) => a.id === "holdings-1").name = accountName;
+        for (const [id, fields] of Object.entries(accountFields)) Object.assign(window.host.accounts.find((a) => a.id === id), fields);
         if (accountName !== "Demat") {
           const key = "isin:INEZ90A01017";
           window.host.storage.set(key, JSON.stringify({ ...JSON.parse(window.host.storage.get(key)), name: longHolding }));
@@ -3086,7 +3087,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         // Demat still holds the Liquid fund even when its folio is now sent elsewhere.
         const liquid = window.host.snapshots["holdings-2"]["2025-03-31"].holdings.find((h) => h.symbol === "INFZ90K01LQ6");
         window.host.snapshots["holdings-1"]["2025-03-31"].holdings.push(structuredClone(liquid));
-      }, [beforeKeptDate, allInDemat, accountName, [statementKey, nsdlKey, cdslKey, otherFolioKey, leftOutFolioKey], longKeptHolding]);
+      }, [beforeKeptDate, allInDemat, accountName, [statementKey, nsdlKey, cdslKey, otherFolioKey, leftOutFolioKey], longKeptHolding, accountFields]);
       await readHoldings();
     };
     const keptDateCard = (account = "Demat") => askCard(`${account} already has holdings saved for 31 Mar 2025`);
@@ -3194,6 +3195,43 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await textFits(frame.getByText(doubleWarning.replace(/^Demat /, `${longAccount} `), { exact: true }), "double-count result warning at 320 px");
     await reviewFits("kept-account result at 320 px");
     await frameWidth(1000);
+    await hosted((saved) => {
+      const { storage, ...state } = JSON.parse(saved);
+      Object.assign(window.host, state, { storage: new Map(storage) });
+    }, beforeKeptDate);
+
+    // Two accounts named Demat, each with holdings saved for the date: what Wealthfolio shows beside
+    // them, the end of their account numbers, tells them apart on every card, line, list and the bar,
+    // shown and in accessible names.
+    await resetKeptDate(false, "Demat", { "holdings-1": { accountNumber: "1234 5678 4821" }, "holdings-2": { name: "Demat", accountNumber: "8765 7310" } });
+    const [ending4821, ending7310] = ["Demat (ending 4821)", "Demat (ending 7310)"];
+    await keptDateCard(ending4821).waitFor();
+    await keptDateCard(ending7310).waitFor();
+    await investorSelect.click();
+    // The list opens a moment after the click in WebKit: read it once its last option is there.
+    await frame.getByRole("option", { name: `${ending7310} · INR`, exact: true }).waitFor();
+    assert.deepEqual(await frame.getByRole("option", { name: /^Demat / }).allTextContents(), [`${ending4821} · INR`, `${ending7310} · INR`]);
+    await tab.keyboard.press("Escape");
+    await keepSaved(ending4821).click();
+    await settled();
+    await sameDay(ending7310).click();
+    await settled();
+    await changeAnswer(`Change answer: ${ending4821}: kept the holdings already saved for 31 Mar 2025`);
+    await frame.getByText(`${ending4821}: kept the holdings already saved for 31 Mar 2025`, { exact: true }).waitFor();
+    await frame.getByText(`${ending7310}: replaced the holdings saved for 31 Mar 2025 with this statement`, { exact: true }).waitFor();
+    await footer.getByText(`${ending4821} will still hold Fund INFZ90K01LQ6. Saving it in ${ending7310} too would count its units twice.`, { exact: true }).waitFor();
+    assert.equal(await statusOf(await snapshotTable(ending7310), "Fund INFZ90K01LQ6"), "Updated");
+    // Its preview's heading says whose holdings it shows.
+    await frame.getByRole("heading", { name: `Holdings in ${ending7310} on 31 Mar 2025 after saving`, exact: true }).waitFor();
+    // Reopened, a card names its account as its line did.
+    await (await changeAnswer(`Change answer: ${ending7310}: replaced the holdings saved for 31 Mar 2025 with this statement`)).click();
+    await keptDateCard(ending7310).waitFor();
+    await sameDay(ending7310).click();
+    await settled();
+    await saveHoldings.click();
+    await frame.getByText(`${ending4821}: the holdings already saved for 31 Mar 2025 were kept; nothing changed there.`, { exact: true }).waitFor();
+    await frame.getByText(new RegExp(`^Saved \\d+ holdings? in ${escaped(ending7310)} on 31 Mar\\.$`)).waitFor();
+    await leaveReview();
     await hosted((saved) => {
       const { storage, ...state } = JSON.parse(saved);
       Object.assign(window.host, state, { storage: new Map(storage) });

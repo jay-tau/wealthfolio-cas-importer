@@ -3,9 +3,10 @@ import { Label } from "@wealthfolio/ui";
 import type { ReactNode } from "react";
 import type { CasFolio } from "../../cas/types";
 import { bankKey, folioKey, LEFT_OUT, NO_BANK } from "../../lib/choices";
+import type { AccountLabel } from "../../lib/account-labels";
 import { isProposed } from "../../lib/new-accounts";
 import { plural } from "../../lib/plural";
-import { AccountSelect, ChooseAgain, type Ignored, newLabel, type Proposed } from "../account-choices";
+import { AccountSelect, ChooseAgain, type Ignored, newLabel, NumberedNote, numbers, type Proposed } from "../account-choices";
 import { Disclosure } from "./parts";
 
 /** One investor's funds, by PAN, or a folio printed without a PAN, which goes by itself. */
@@ -41,6 +42,7 @@ export const folioName = (folio: CasFolio) => `${folio.amc} folio ${folio.folio}
 export function SaveToDetailed({
   boxes,
   targets,
+  labels,
   proposed,
   newLine,
   values,
@@ -56,6 +58,8 @@ export function SaveToDetailed({
   boxes: FundsBox[];
   /** Accounts transactions can go to today: active, unarchived, tracking transactions. */
   targets: Account[];
+  /** How the screen names each account: an account another one shares its name with is told apart. */
+  labels: ReadonlyMap<string, AccountLabel>;
   /** The new account each funds' select offers, by key, until it's created. */
   proposed: (key: string) => Proposed | undefined;
   /** What's under a select that shows its new account, by key, with what the account is for. */
@@ -79,7 +83,7 @@ export function SaveToDetailed({
     const id = values[key];
     const account = proposed(key);
     if (isProposed(id)) return account && newLabel(account);
-    return targets.find((a) => a.id === id)?.name;
+    return targets.some((a) => a.id === id) ? labels.get(id!)?.text : undefined;
   };
   const isNew = (key: string) => isProposed(values[key]) && values[key] === proposed(key)?.id;
   const heading = (
@@ -113,9 +117,13 @@ export function SaveToDetailed({
       </div>
     );
   };
+  // What numbers accounts in the lists, read with each select.
+  const noteId = numbers(targets, labels) ? `${partId}-numbered` : undefined;
+  const described = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       {heading}
+      {noteId && <NumberedNote id={noteId} accounts={targets} labels={labels} />}
       {boxes.map((box) => {
         const account = values[box.key] === LEFT_OUT ? "Don't import" : nameOf(box.key);
         const bank = values[bankKey(box.key)];
@@ -130,7 +138,9 @@ export function SaveToDetailed({
                 <AccountSelect
                   id={box.key}
                   accounts={targets}
+                  labels={labels}
                   proposed={proposed(box.key)}
+                  describedBy={noteId}
                   value={values[box.key]}
                   onChange={(id) => onChange(box.key, id)}
                   leaveOut={LEFT_OUT}
@@ -150,10 +160,11 @@ export function SaveToDetailed({
                 <AccountSelect
                   id={bankKey(box.key)}
                   accounts={targets}
+                  labels={labels}
                   value={values[bankKey(box.key)]}
                   onChange={(id) => onChange(bankKey(box.key), id)}
                   inherit={NO_TRANSFERS}
-                  describedBy={hint}
+                  describedBy={described(hint, noteId)}
                 />
               ),
             )}
@@ -180,7 +191,9 @@ export function SaveToDetailed({
                               <AccountSelect
                                 id={key}
                                 accounts={targets}
+                                labels={labels}
                                 proposed={proposed(key)}
+                                describedBy={noteId}
                                 value={values[key]}
                                 onChange={(id) => onChange(key, id)}
                                 inherit={`Same as above${account ? ` (${account})` : ""}`}
@@ -200,13 +213,14 @@ export function SaveToDetailed({
                               <AccountSelect
                                 id={bankKey(key)}
                                 accounts={targets}
+                                labels={labels}
                                 value={values[bankKey(key)]}
                                 onChange={(id) => onChange(bankKey(key), id)}
                                 inherit={`Same as above${bankName ? ` (${bankName})` : ""}`}
                                 leaveOut={NO_BANK}
                                 leaveOutLabel={NO_TRANSFERS}
                                 leaveOutFirst
-                                describedBy={hint}
+                                describedBy={described(hint, noteId)}
                               />
                             ),
                           )}
