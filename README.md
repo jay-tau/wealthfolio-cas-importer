@@ -303,7 +303,10 @@ they are now, and you choose Import again. The result names each entry whose spl
 category was removed or couldn't be, or that the sync no longer corrects, with its amount and day as
 the question gave them and its fund by the name the Review screen gives it ("The withdrawal of ₹25,000
 on 4 May 2023 in Savings (NEFT FICTIVA MF), for the purchase of Fictiva Liquid Fund on 5 May 2023"),
-so you can check it in Wealthfolio.
+so you can check it in Wealthfolio. These lines, the lines that say which entries changed before
+Import, and a link that didn't go through, with its **Try again**, tell a fund's equal transactions
+apart as their pairs do: "for the purchase (1 of 2) of Fictiva Liquid Fund, folio 7712045 on 3 Jul
+2026".
 
 ### Mergers
 
@@ -787,11 +790,12 @@ requests go to its log file. When Wealthfolio rejects rows, its reasons stay vis
   retry. Rows Wealthfolio rejected keep their reasons.
   A price or a fund's statement details that weren't saved have **Retry saving the price** and
   **Retry saving the details**; import history that wasn't saved, which the next import uses to know
-  which holdings a statement added, has **Try again**. A bank entry that wasn't linked says how far
-  it got ("The trade and the fund account's transfer are in Wealthfolio; the bank entry of 5 Jan 2026
-  wasn't linked."), and **Try again** goes on from there, never adding the transfer twice. "Saved, but
-  the units couldn't be checked in Wealthfolio" has **Check again**; units that differ list each fund
-  with both numbers and a way to open its account.
+  which holdings a statement added, has **Try again**. A bank entry that wasn't linked names its
+  transaction and says how far it got ("Purchase of Fictiva Liquid Fund on 5 Jan 2026: The trade and
+  the fund account's transfer are in Wealthfolio; the bank entry of 5 Jan 2026 wasn't linked."), and
+  **Try again**, named for the entry and its transaction, goes on from there, never adding the
+  transfer twice. "Saved, but the units couldn't be checked in Wealthfolio" has **Check again**; units
+  that differ list each fund with both numbers and a way to open its account.
 
 ## What the add-on keeps
 

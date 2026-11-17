@@ -50,16 +50,24 @@ const label = (row: { activityType: string; subtype?: string | null }) => {
   if (side) return CONVERSION_LABELS[side];
   return row.subtype === "DRIP" ? "reinvested dividend" : LABELS[row.activityType] ?? row.activityType;
 };
-/** The name a transaction's fund goes by on the Review screen: its chosen listing's, without its plan and option. */
+/**
+ * The name a transaction's fund goes by on the Review screen: its chosen listing's, without its plan
+ * and option, with its folio when that fund has an equal row in another folio, as its bank pair says.
+ */
 export type FundName = (t: PlannedTransaction) => string;
-/** "purchase of Fictiva Liquid Fund on 5 May 2023" */
-const transactionWords = (t: PlannedTransaction, fundName: FundName) =>
-  `${label(t.transaction.activity)} of ${fundName(t)} on ${longDate(String(t.transaction.activity.date).slice(0, 10))}`;
-/** "the purchase of Fictiva Liquid Fund on 5 May 2023" */
-const transactionName = (t: PlannedTransaction, fundName: FundName) => `the ${transactionWords(t, fundName)}`;
-/** "Purchase of Fictiva Liquid Fund on 5 May 2023" */
-const transactionTitle = (t: PlannedTransaction, fundName: FundName) => {
-  const what = transactionWords(t, fundName);
+/**
+ * A transaction's place among its fund and folio's rows with its movement, day and amount on the
+ * statement, as its bank pair says: " (1 of 2)", or "" when no other row is equal.
+ */
+export type Place = (t: PlannedTransaction) => string;
+/** "purchase (1 of 2) of Fictiva Liquid Fund on 5 May 2023" */
+const transactionWords = (t: PlannedTransaction, fundName: FundName, place: Place) =>
+  `${label(t.transaction.activity)}${place(t)} of ${fundName(t)} on ${longDate(String(t.transaction.activity.date).slice(0, 10))}`;
+/** "the purchase (1 of 2) of Fictiva Liquid Fund on 5 May 2023" */
+const transactionName = (t: PlannedTransaction, fundName: FundName, place: Place) => `the ${transactionWords(t, fundName, place)}`;
+/** "Purchase (1 of 2) of Fictiva Liquid Fund on 5 May 2023" */
+const transactionTitle = (t: PlannedTransaction, fundName: FundName, place: Place) => {
+  const what = transactionWords(t, fundName, place);
   return `${what[0].toUpperCase()}${what.slice(1)}`;
 };
 /** "withdrawal of ₹25,000 on 4 May 2023": a bank entry's amount and day as its review card gives them. */
@@ -98,8 +106,8 @@ export interface BankLink extends Reused {
 }
 
 /** What changed in an entry the user chose, between the review and Import. */
-export function staleText(s: StaleEntry, accountName: (id: string) => string, fundName: FundName) {
-  const then = `${entryName(s.before, accountName(s.before.accountId))}, chosen for ${transactionName(s.transaction, fundName)},`;
+export function staleText(s: StaleEntry, accountName: (id: string) => string, fundName: FundName, place: Place) {
+  const then = `${entryName(s.before, accountName(s.before.accountId))}, chosen for ${transactionName(s.transaction, fundName, place)},`;
   const now = s.after && `a ${movement(s.after)}`;
   const instead = `so the transaction now comes with a new ${label(s.transaction.transaction.bank!)}.`;
   const why = {
@@ -322,6 +330,13 @@ export function linkWords(l: BankLink) {
   }
 }
 
+/**
+ * A bank entry that wasn't linked, as its line in the result says it, its transaction told from equal
+ * ones: "Purchase (1 of 2) of Fictiva Liquid Fund on 3 Jul 2026: The trade is in Wealthfolio, …".
+ */
+export const linkLine = (l: BankLink, fundName: FundName, place: Place) =>
+  `${transactionTitle(l.transaction, fundName, place)}: ${linkWords(l)}`;
+
 /** ✓ or ✗ before a line: the words say it too, so it isn't read out. */
 const Mark = ({ ok }: { ok: boolean }) => (
   <span aria-hidden="true" className={ok ? "text-success" : "text-destructive"}>
@@ -344,6 +359,7 @@ export function ImportResult({
   closing,
   links,
   fundName,
+  place,
   accountName,
   base,
   onRetryAccount,
@@ -360,8 +376,10 @@ export function ImportResult({
   outcomes: ImportOutcome[];
   closing: ClosingCheck;
   links: BankLink[];
-  /** The name each link's fund goes by on the Review screen. */
+  /** The name each link's fund goes by on the Review screen, with its folio when needed. */
   fundName: FundName;
+  /** Each link's transaction's place among equal rows on the statement. */
+  place: Place;
   /** An account as the screen names it: told apart from another account of the same name. */
   accountName: (id: string) => string;
   /** Prefix of the ids of its lines (`importIds`). */
@@ -482,12 +500,13 @@ export function ImportResult({
             {failedLinks.map((l) => (
               <li key={l.bankRow.id} id={ids.link(l)} tabIndex={-1} className="flex flex-wrap items-center gap-2">
                 <Mark ok={false} />
-                <span>
-                  {transactionTitle(l.transaction, fundName)}: {linkWords(l)}
-                </span>
+                <span>{linkLine(l, fundName, place)}</span>
                 {l.stage !== "trade" && (
                   <WrapButton type="button" variant="outline" size="sm" onClick={() => onRetryLink(l)}>
-                    Try again<span className="sr-only">: link the bank entry of {longDate(day(l.bankRow.date))}</span>
+                    Try again
+                    <span className="sr-only">
+                      : link the bank entry of {longDate(day(l.bankRow.date))} with {transactionName(l.transaction, fundName, place)}
+                    </span>
                   </WrapButton>
                 )}
               </li>
@@ -502,7 +521,7 @@ export function ImportResult({
               <ul className="list-disc ps-4">
                 {changedLinks.map((l) => (
                   <li key={l.bankRow.id}>
-                    {entryName(l.bankRow, accountName(l.bankRow.accountId))}, for {transactionName(l.transaction, fundName)}:{" "}
+                    {entryName(l.bankRow, accountName(l.bankRow.accountId))}, for {transactionName(l.transaction, fundName, place)}:{" "}
                     {[...l.changes, ...l.warnings].join(" ")}
                   </li>
                 ))}

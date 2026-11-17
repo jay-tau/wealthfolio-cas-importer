@@ -1249,6 +1249,126 @@ test("equal possible duplicates' bank pairs and table rows keep their statement 
   ]);
 });
 
+/**
+ * `equalInTwoFolios`' purchases, each linked with one of the equal withdrawals from Savings, which
+ * isn't in Spending, with Wealthfolio's writes made up: adding a fund account's transfer fails while
+ * `failing.create` is set. With `skipFirst`, Wealthfolio's check calls every purchase a possible
+ * duplicate, and the first folio's first is skipped and the others imported anyway.
+ */
+async function equalLinks({ skipFirst = false } = {}) {
+  const context = setup({ entries: structuredClone(EQUAL_WITHDRAWALS), remembered: withSavings(), change: equalInTwoFolios });
+  const { run, api, keys, activities } = context;
+  const getAll = api.activities.getAll;
+  api.activities.getAll = async (id) => (await getAll(id)).map((row) => ({ ...row }));
+  const failing = { create: false };
+  api.activities.create = async (row) => {
+    if (failing.create) throw new Error("made-up transfer failure");
+    const transfer = { ...row, id: `fund-transfer-${activities.length}`, date: row.activityDate, status: "POSTED", assetId: "", assetSymbol: "" };
+    activities.push(transfer);
+    return transfer;
+  };
+  api.activities.update = async (row) => void Object.assign(activities.find((a) => a.id === row.id), row);
+  api.activities.linkTransfer = async () => {};
+  api.spending.unassignCategory = async () => {};
+  if (skipFirst) api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  if (skipFirst) {
+    const [skip, ...anyway] = askCards(run);
+    skip.main.onClick();
+    anyway.forEach((card) => card.other.onClick());
+    await run.flush();
+  }
+  const check = () => checksUnder(run, choices.bankKey(keys.pan))[0];
+  for (const { key } of check().check.pairs) {
+    check().onTick(key, true);
+    await run.flush();
+  }
+  assert.equal(check().ticked.size, skipFirst ? 2 : 3);
+  check().onLink();
+  await run.flush();
+  return { ...context, failing };
+}
+/** The import result as shown: its lines' text, and its buttons' accessible names. */
+function shownResult(run) {
+  const html = markup(nodes(run.tree).find((node) => node.type?.name === "ImportResult"));
+  const text = (part) => part.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  return {
+    lines: [...html.matchAll(/<li[^>]*>(.*?)<\/li>/g)].map(([, line]) => text(line)),
+    buttons: [...html.matchAll(/<button[^>]*>(.*?)<\/button>/g)].map(([, button]) => button.replace(/<[^>]+>/g, "")),
+  };
+}
+/** The live region's words, once its delay is over. */
+async function announced(run) {
+  await new Promise((resolve) => setTimeout(resolve, 85));
+  await run.flush();
+  return nodes(run.tree).find((n) => n.props?.role === "status").props.children;
+}
+
+test("equal linked purchases say which they are in the result's failed links, their Try again and the changed entries", async () => {
+  const { run, data, failing } = await equalLinks();
+  const [first, second] = data.folios.map((f) => f.folio);
+  const purchases = [
+    `purchase (1 of 2) of Fictiva Liquid Fund, folio ${first} on 5 May 2023`,
+    `purchase (2 of 2) of Fictiva Liquid Fund, folio ${first} on 5 May 2023`,
+    `purchase of Fictiva Liquid Fund, folio ${second} on 5 May 2023`,
+  ];
+  const title = (purchase) => `${purchase[0].toUpperCase()}${purchase.slice(1)}`;
+  failing.create = true;
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(find(run, "ImportResult").links.map((l) => l.stage), ["transfer", "transfer", "transfer"]);
+  const unlinked = "The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of 5 May 2023 wasn't linked.";
+  const failed = shownResult(run);
+  assert.deepEqual(failed.lines.filter((line) => line.startsWith("✗ Purchase")), purchases.map((p) =>
+    `✗ ${title(p)}: ${unlinked} Try again : link the bank entry of 5 May 2023 with the ${p}`));
+  // Each Try again's name says which transaction's entry it links.
+  const retries = failed.buttons.filter((name) => name.includes("link the bank entry"));
+  assert.deepEqual(retries, purchases.map((p) => `Try again: link the bank entry of 5 May 2023 with the ${p}`));
+  assert.equal(new Set(retries).size, 3);
+  // So does the announcement.
+  const notice = await announced(run);
+  for (const p of purchases) assert.ok(notice.includes(`${title(p)}: ${unlinked} Try again to link the bank entry.`), notice);
+  // Each linked once tried again, each changed entry names its transaction the same way.
+  failing.create = false;
+  for (const i of [0, 1, 2]) {
+    const result = find(run, "ImportResult");
+    result.onRetryLink(result.links[i]);
+    await run.flush();
+  }
+  assert.deepEqual(find(run, "ImportResult").links.map((l) => l.stage), [undefined, undefined, undefined]);
+  assert.deepEqual(shownResult(run).lines.filter((line) => line.startsWith("The withdrawal")), purchases.map((p) =>
+    `The withdrawal of ₹24,998.75 on 5 May 2023 in Savings (NEFT FICTIVA MF), for the ${p}: Any split it had across spending categories was deleted.`));
+});
+
+test("a linked purchase keeps its statement number in the result when an equal one is skipped", async () => {
+  const { run, data, imported } = await equalLinks({ skipFirst: true });
+  const [first, second] = data.folios.map((f) => f.folio);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.flat().filter((r) => r.activityType === "BUY").length, 2);
+  assert.deepEqual(shownResult(run).lines.filter((line) => line.startsWith("The withdrawal")), [
+    `The withdrawal of ₹24,998.75 on 5 May 2023 in Savings (NEFT FICTIVA MF), for the purchase (2 of 2) of Fictiva Liquid Fund, folio ${first} on 5 May 2023: Any split it had across spending categories was deleted.`,
+    `The withdrawal of ₹24,998.75 on 5 May 2023 in Savings (NEFT FICTIVA MF), for the purchase of Fictiva Liquid Fund, folio ${second} on 5 May 2023: Any split it had across spending categories was deleted.`,
+  ]);
+});
+
+test("equal linked purchases say which they are when their chosen bank entries are gone before Import", async () => {
+  const { run, data, activities, imported } = await equalLinks();
+  const [first, second] = data.folios.map((f) => f.folio);
+  // Deleted in Wealthfolio after the review.
+  activities.splice(0, activities.length, ...activities.filter((a) => a.accountId !== "bank"));
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 0);
+  const lines = nodes(run.tree).filter((node) => node.type === "li").map(textOf).filter((line) => line.includes(", chosen for "));
+  assert.deepEqual(lines, [
+    `purchase (1 of 2) of Fictiva Liquid Fund, folio ${first}`,
+    `purchase (2 of 2) of Fictiva Liquid Fund, folio ${first}`,
+    `purchase of Fictiva Liquid Fund, folio ${second}`,
+  ].map((p) => `The withdrawal of ₹24,998.75 on 5 May 2023 in Savings (NEFT FICTIVA MF), chosen for the ${p} on 5 May 2023, ` +
+    "is no longer in Wealthfolio, so the transaction now comes with a new transfer out."));
+});
+
 test("equal possible duplicates in two folios name their folio, not a number", async () => {
   const { run, api, data } = setup({ entries: [], change(data) {
     const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
