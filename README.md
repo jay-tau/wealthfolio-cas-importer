@@ -489,11 +489,16 @@ Review screen shows, in this order:
   or "Create the Wealthfolio account **CDSL Demat** and save 10 holdings on 31 Jul 2026." for a new
   account) with what your answers do ("Fictiva Liquid Fund kept at 512.300 units"), **See the
   holdings in Demat on 31 Jul 2026 after saving**, the missing costs with **Add costs**, and **Update
-  holdings** or **Save holdings**. With nothing to save, it's **Finish**. While a cost, Change or a
-  new account's Rename is open, saving waits until you save or cancel it. In a narrow window it keeps
-  to its first line, or one line for several accounts ("Save 21 holdings in 3 accounts on 31 Jul
-  2026."), and its buttons, with the rest behind **Details** beside them, which says how many warnings
-  are there.
+  holdings** or **Save holdings**. With nothing to save, it's **Finish**, and the bar says why
+  ("Nothing will be saved: every holding was skipped.", or "… every holding was skipped or is already
+  tracked in Mutual funds."). Nothing to save means no statement holding is saved and every holding
+  the accounts have stays as it is. When another account has something to save, the bar names each
+  account that gets nothing: "The new account Mutual funds 2 won't be created: nothing ready to save
+  goes into it." for a new one, "Nothing will be saved in Demat." for another. While a cost, Change or
+  a new account's Rename is open, saving waits until you save or cancel it. In a narrow window it
+  keeps to its first line, or one line for several accounts ("Save 21 holdings in 3 accounts on 31
+  Jul 2026."), and its buttons, with the rest behind **Details** beside them, which says how many
+  warnings are there.
 
 Each account's snapshot is worked out again as you answer, from reads of Wealthfolio that are
 repeated when you open the add-on's page again. A fund confirmed for a detailed statement is already
@@ -751,7 +756,10 @@ says "The new account Mutual funds won't be created: nothing ready to import goe
 in Wealthfolio, add the units there as a buy with their cost and date, then read the statement
 again and choose that account in **Save to**; when the statement has no transactions for the fund,
 there's nothing to read again. With nothing ready to import, the bar's button is
-**Finish**, which creates no account.
+**Finish**, which creates no account. A new account for holdings is created only when a statement
+holding is saved in it: when every holding that goes there is skipped, already tracked from
+transactions or left out, it isn't created, and with nothing to save in any account, the bar's
+button is **Finish** here too.
 
 When Wealthfolio has accounts that fit but none was chosen before, nothing is preselected and
 choosing where to save is a question; the new account stays in the list. A remembered account that's

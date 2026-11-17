@@ -6,6 +6,7 @@ import {
   assetDetails,
   assetName,
   assetNames,
+  changesNothing,
   checkUnits,
   existingCost,
   importedRefs,
@@ -579,7 +580,7 @@ test("manual-priced holdings get the statement's price, and kept ones the price 
     account: (s) => (s.id === holdings.sources[2].id ? lists : "keeps"),
     existing: (id) => (id === "keeps" ? { ...none, positions: [{ ...unpriced, ref: ref(gold.isin), symbol: gold.isin }] } : none),
   }).find((p) => p.accountId === "keeps");
-  assert.match(twoAccounts("lists").positions.find((p) => p.ref === ref(gold.isin)).notes[0], /If no included holding supplies the statement's price/);
+  assert.match(twoAccounts("lists").positions.find((p) => p.ref === ref(gold.isin)).notes[0], /If you save this account's snapshot and no included holding supplies the statement's price/);
   assert.match(twoAccounts(undefined).positions.find((p) => p.ref === ref(gold.isin)).notes[0], /no price on or before this date/);
   // Market-priced holdings get none.
   const [market] = plan(holdings, { existing: () => ({ ...none, positions: [{ ...kept, manual: false }] }) });
@@ -686,15 +687,18 @@ test("a fund confirmed to another asset keeps the one an earlier import of its f
   assert.equal(old.replacedBy, listed.key);
   assert.deepEqual([old.ask, old.notes], [undefined, []]);
   assert.deepEqual(savedOf(next), [["yahoo-asset", "100"]]);
+  assert.equal(changesNothing(next, noChoices), true);
   // Keeping the old asset answers it the same way.
   assert.equal(undecided(listed, replacing(listed.key, false)), false);
   assert.deepEqual(savedOf(next, replacing(listed.key, false)), [["yahoo-asset", "100"]]);
+  assert.equal(changesNothing(next, replacing(listed.key, false)), true);
   assert.deepEqual([...recordsOf(next).values()].map((refs) => [...refs.keys()]), [[old.ref]]);
   // One choice replaces it: the old asset goes, and the statement's units come in under the new one.
   const replace = replacing(listed.key);
   assert.equal(included(listed, replace), true);
   assert.equal(included(old, replace), false);
   assert.deepEqual(savedOf(next, replace), [["119551", "110"]]);
+  assert.equal(changesNothing(next, replace), false);
   const replaced = recordsOf(next, replace);
   assert.deepEqual([...replaced.values()].map((refs) => [...refs]), [[[fundRef("119551"), ["INFZ90K01FC8", "CAMS|FFCDG"]]]]);
   // The old row goes with the statement row's choice, not its own.
@@ -1150,10 +1154,12 @@ test("a fund left out for overlap that an earlier import of its folio added need
   assert.equal(undecided(row, keeping(row.key, true)), false);
   // Kept: the account's units stay, and so does the earlier import's record.
   assert.deepEqual(savedOf(account, keeping(row.key, true)), [["flexi-asset", "100"]]);
+  assert.equal(changesNothing(account, keeping(row.key, true)), true);
   assert.deepEqual([...recordsOf(account, keeping(row.key, true)).values()].map((refs) => [...refs.keys()]), [[fundRef("119551")]]);
   // Removed: so is the record, and the next import has nothing left to remove.
   const remove = keeping(row.key, false);
   assert.deepEqual(savedOf(account, remove), []);
+  assert.equal(changesNothing(account, remove), false);
   const removed = recordsOf(account, remove);
   assert.deepEqual([...removed.values()].map((refs) => [...refs]), [[]]);
   const [next] = plan(statementOf("2025-05-31", folioOf("91234567 / 12", flexi("120"))), {
@@ -1164,6 +1170,7 @@ test("a fund left out for overlap that an earlier import of its folio added need
   assert.equal(undecided(row, replacing(row.key)), false);
   assert.deepEqual(savedOf(account, replacing(row.key)), [["flexi-asset", "110"]]);
   assert.deepEqual(savedOf(account, keeping(row.key, false, [row.key])), [["flexi-asset", "110"]]);
+  assert.equal(changesNothing(account, keeping(row.key, true, [row.key])), false);
   // A removed asset priced by hand isn't in the snapshot, so it gets no price; a kept one keeps its own.
   const [manual] = plan(later, {
     asset: () => amfi, existing: () => flexiAsset("100", { manual: true, price: { close: "60", currency: "INR" } }),
@@ -1244,6 +1251,51 @@ const sharesHeld = (...held) => ({
 });
 const recorded = (...isins) => new Map(isins.map((isin) => [ref(isin), [isin]]));
 const withoutDemat2 = (s) => (s.id === "demat|2|2" ? undefined : "holdings-1");
+
+test("saving changes nothing only when no statement row is saved and no answer removes a holding", () => {
+  const next = statementOf("2025-04-30", demat(1, share(S, "100")));
+  // Every holding skipped, in an account without a snapshot: an empty snapshot would change nothing.
+  const [skipped] = plan(next, { asset: () => undefined });
+  assert.deepEqual([skipped.positions, changesNothing(skipped, noChoices)], [[], true]);
+  // In an account with holdings, they're kept as they are: the same.
+  const [kept] = plan(next, { asset: () => undefined, existing: () => sharesHeld([T, "10"]) });
+  assert.equal(changesNothing(kept, noChoices), true);
+  // A statement row saved changes something, in an empty account too.
+  const [saved] = plan(next);
+  assert.equal(changesNothing(saved, noChoices), false);
+
+  // A holding an earlier import added that the statement no longer lists: kept until set to zero.
+  const [missing] = plan(next, {
+    asset: () => undefined, existing: () => sharesHeld([T, "10"]), remembered: () => recorded(T),
+  });
+  const gone = missing.positions.find((p) => p.ref === ref(T));
+  assert.equal(gone.ask.kind, "missing");
+  assert.equal(changesNothing(missing, noChoices), true, "undecided");
+  assert.equal(changesNothing(missing, { ...noChoices, keep: new Map([[gone.key, true]]) }), true, "kept");
+  assert.equal(changesNothing(missing, { ...noChoices, keep: new Map([[gone.key, false]]) }), false, "set to zero");
+
+  // A row left out so that a left-out source's units aren't counted twice: the account's units stay,
+  // unless the row is imported.
+  const both = statementOf("2025-04-30", demat(1, share(S, "100")), demat(2, share(S, "50")));
+  const [leftOut] = plan(both, {
+    account: withoutDemat2, existing: () => sharesHeld([S, "150"]), remembered: (s) => (s.id === "demat|2|2" ? recorded(S) : new Map()),
+  });
+  assert.equal(leftOut.positions[0].include, false);
+  assert.equal(changesNothing(leftOut, noChoices), true);
+  assert.equal(changesNothing(leftOut, { ...noChoices, flipped: new Set([leftOut.positions[0].key]) }), false);
+});
+
+test("saving changes a holding dropped from the plan even when no statement row is included", () => {
+  const folio = { ...demat(1, share(S, "100")), kind: "folio" };
+  const [account] = plan(statementOf("2025-04-30", folio), {
+    asset: (h) => ({ ...asset(h), assetId: `asset-${T}` }),
+    existing: () => sharesHeld([S, "100"], [T, "10"]),
+    heldElsewhere: () => [{ name: "Transactions", tracksTransactions: true }],
+  });
+  assert.deepEqual(account.positions.map((p) => [p.existing.assetId, p.include]), [[`asset-${T}`, false]]);
+  assert.deepEqual(savedOf(account), [[`asset-${T}`, "10"]]);
+  assert.equal(changesNothing(account, noChoices), false);
+});
 
 test("a holding that a left-out source's earlier import added keeps its units, with a note", () => {
   const next = statementOf("2025-04-30", demat(1, share(S, "100")), demat(2, share(S, "50"), share(T, "10")));
@@ -1361,7 +1413,7 @@ test("a shared holding left out by default describes the kept manual price, not 
   assert.deepEqual(pricesToSave(account, replacing(row.key)).map((p) => [p.price, p.from]), [["10", "statement"]]);
   // With no earlier quote, saving the kept cost leaves its average as the price.
   const unpriced = preview();
-  assert.equal(unpriced.positions[0].notes.at(-1), "It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
+  assert.equal(unpriced.positions[0].notes.at(-1), "It's priced by hand and has no price on or before this date. If you save this account's snapshot and no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
   assert.deepEqual(pricesToSave(unpriced, noChoices), []);
   assert.equal(preview(undefined, "0").positions[0].notes[0], "Priced by hand, but the statement prints no price for it. If you keep or import it, enter its price for this date on its asset page after saving.");
 });
@@ -1785,6 +1837,13 @@ test("units that a moved demat account's earlier import added are never removed 
   assert.deepEqual(savedOf(account, keeping(row.key, false)), [[`asset-${S}`, "150"]]);
   // Only the user's answer removes them: turning the row around doesn't.
   assert.deepEqual(savedOf(account, replacing(row.key)), [[`asset-${T}`, "15"], [`asset-${S}`, "150"]]);
+  // With the statement's rows skipped, keeping the moved holding changes nothing; removing it does.
+  const skipped = sharesPlan(statementOf("2025-04-30", demat(1, share(S, "150")), demat(2, share(T, "10"))),
+    sharesHeld([S, "150"], [T, "15"]), new Map([["demat|1|1", recorded(S)], ["demat|2|2", recorded(T)]]), { asset: () => undefined });
+  const moved = skipped.positions.find((p) => p.ref === ref(T));
+  assert.equal(moved.ask.kind, "moved");
+  assert.equal(changesNothing(skipped, keeping(moved.key, true)), true);
+  assert.equal(changesNothing(skipped, keeping(moved.key, false)), false);
   // Its record in another account doesn't count, nor does one of a holding the account doesn't have.
   const elsewhere = plan(statementOf("2025-04-30", demat(1, share(S, "150")), demat(2, share(T, "10"))), {
     account: toOtherShares, accountName, existing: (id) => (id === "holdings-1" ? sharesHeld([S, "150"], [T, "15"]) : none),
