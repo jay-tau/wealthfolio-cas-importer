@@ -4,9 +4,10 @@ import { test } from "node:test";
 import { importedRefs, planSnapshots, readHoldings, reconcileRecord, security, snapshotOf, undecided, unlistedRefs } from "../src/cas/holdings.ts";
 import { fundRef } from "../src/cas/plan.ts";
 import {
-  forgetFund, fundKey, holdingKey, indexSources, investorKey, readFund, readImported, readRecordChoices, readUnlisted, saveFund, saveImported, saveImports,
-  saveUnlisted, securityKey,
+  bankKey, folioKey, forgetFund, formerFolioKeys, fundKey, holdingKey, indexSources, investorKey, LEFT_OUT, NO_BANK, readFund, readImported, readRecordChoices,
+  readUnlisted, RENAMED_HOUSES, saveFund, saveImported, saveImports, saveUnlisted, securityKey, settleRenamed,
 } from "../src/lib/choices.ts";
+import { sha256 } from "../src/lib/sha256.ts";
 
 const summary = { id: "folio|90123456789/45|amc:Made-up Fund", aliases: ["folio|90123456789/45|INFTEST"] };
 const depository = { id: summary.aliases[0] };
@@ -1007,4 +1008,109 @@ test("a folio moved back takes its units in its old account from the statement, 
     assert.deepEqual(await readRefs(store, folio(2), "A", "2025-06-30"), entries(held("T")));
     assert.deepEqual(await readRefs(store, folio(2), "B", "2025-06-30"), new Map());
   }
+});
+
+// #280: a renamed fund house's folio keeps its choices.
+/** The key versions before #280 gave a folio's choices: by the fund house's name as printed. */
+const printedKey = (amc, folio) => `folio:${sha256(`cas-importer folio ${amc}|${folio}`)}`;
+const bandhan = { amc: "Bandhan Mutual Fund", folio: "7712045" };
+const idfc = { ...bandhan, amc: "IDFC Mutual Fund" };
+
+test("a renamed fund house's folio has one key under each of its names, and other folios keep theirs", () => {
+  const key = folioKey(bandhan);
+  // The current name's key is the one versions before #280 gave it.
+  assert.equal(key, printedKey("Bandhan Mutual Fund", "7712045"));
+  for (const amc of ["IDFC Mutual Fund", "BANDHAN MUTUAL FUND", " Idfc  Mutual Fund "]) assert.equal(folioKey({ ...bandhan, amc }), key, amc);
+  // A fund house with no known rename keeps the key of its printed name.
+  const fictiva = { amc: "Fictiva Mutual Fund", folio: "7712045" };
+  assert.equal(folioKey(fictiva), printedKey("Fictiva Mutual Fund", "7712045"));
+  // Unrelated fund houses with one folio number stay apart, and so do two renamed ones.
+  const nippon = { amc: "Reliance Mutual Fund", folio: "7712045" };
+  assert.equal(new Set([key, folioKey(fictiva), folioKey(nippon), folioKey({ ...bandhan, folio: "7712046" })]).size, 4);
+  // Every name is in one fund house only.
+  const names = RENAMED_HOUSES.flat().map((n) => n.toLowerCase());
+  assert.equal(new Set(names).size, names.length);
+});
+
+test("a folio's former keys are its fund house's former names' and its printed name's, never its current key", () => {
+  const keys = (folio) => formerFolioKeys(folio).map(({ key, ...rest }) => ({ ...rest, ok: key === printedKey(rest.name, folio.folio) }));
+  assert.deepEqual(keys(bandhan), [{ name: "IDFC Mutual Fund", printed: false, ok: true }]);
+  assert.deepEqual(keys(idfc), [{ name: "IDFC Mutual Fund", printed: true, ok: true }]);
+  assert.deepEqual(keys({ ...bandhan, amc: "BANDHAN MUTUAL FUND" }), [
+    { name: "BANDHAN MUTUAL FUND", printed: true, ok: true }, { name: "IDFC Mutual Fund", printed: false, ok: true },
+  ]);
+  assert.deepEqual(keys({ amc: "Fictiva Mutual Fund", folio: "1" }), []);
+});
+
+test("a choice under a fund house's former name only goes under the folio's key: account, bank account, no bank and Don't import", () => {
+  const [own, old] = [folioKey(bandhan), printedKey("IDFC Mutual Fund", "7712045")];
+  for (const [account, bank] of [["kids", "savings"], [LEFT_OUT, NO_BANK]]) {
+    const { choices, renamed } = settleRenamed([bandhan], { pan: "mf", [old]: account, [bankKey(old)]: bank });
+    assert.deepEqual(choices, { pan: "mf", [own]: account, [bankKey(own)]: bank });
+    assert.deepEqual(renamed, {
+      [own]: { keys: [old], from: "IDFC Mutual Fund" },
+      [bankKey(own)]: { keys: [bankKey(old)], from: "IDFC Mutual Fund" },
+    });
+  }
+  // The bank account alone.
+  const { choices, renamed } = settleRenamed([bandhan], { [bankKey(old)]: NO_BANK });
+  assert.deepEqual([choices, renamed], [{ [bankKey(own)]: NO_BANK }, { [bankKey(own)]: { keys: [bankKey(old)], from: "IDFC Mutual Fund" } }]);
+  // With nothing under a former name, nothing changes.
+  assert.deepEqual(settleRenamed([bandhan], { [own]: "kids" }), { choices: { [own]: "kids" }, renamed: {} });
+});
+
+test("the same choice under both names, or under the printed name, is used without saying where it was found", () => {
+  const [own, old] = [folioKey(bandhan), printedKey("IDFC Mutual Fund", "7712045")];
+  assert.deepEqual(settleRenamed([bandhan], { [own]: "kids", [old]: "kids" }), { choices: { [own]: "kids" }, renamed: { [own]: { keys: [old] } } });
+  // A statement from before the rename finds its own name's choice.
+  assert.deepEqual(settleRenamed([idfc], { [old]: LEFT_OUT }), { choices: { [own]: LEFT_OUT }, renamed: { [own]: { keys: [old] } } });
+});
+
+test("different choices under a fund house's names are kept for the user to choose from", () => {
+  const [own, old] = [folioKey(bandhan), printedKey("IDFC Mutual Fund", "7712045")];
+  const read = { [own]: "mf", [old]: "kids", [bankKey(own)]: NO_BANK, [bankKey(old)]: "savings" };
+  // The same whichever name the statement prints.
+  for (const folio of [bandhan, idfc]) {
+    const { choices, renamed } = settleRenamed([folio], read);
+    assert.deepEqual(choices, {});
+    assert.deepEqual(renamed, {
+      [own]: { keys: [old], found: [{ name: "Bandhan Mutual Fund", value: "mf" }, { name: "IDFC Mutual Fund", value: "kids" }] },
+      [bankKey(own)]: { keys: [bankKey(old)], found: [{ name: "Bandhan Mutual Fund", value: NO_BANK }, { name: "IDFC Mutual Fund", value: "savings" }] },
+    });
+  }
+  // Don't import differs from an account too.
+  assert.deepEqual(settleRenamed([bandhan], { [own]: LEFT_OUT, [old]: "kids" }).renamed[own].found.map((f) => f.value), [LEFT_OUT, "kids"]);
+});
+
+test("folios sharing one key settle every printed name, whichever folio comes first", () => {
+  const upper = { ...bandhan, amc: " BANDHAN  MUTUAL FUND " };
+  const own = folioKey(bandhan);
+  const old = printedKey(idfc.amc, idfc.folio);
+  const printed = printedKey(upper.amc, upper.folio);
+  for (const folios of [[bandhan, upper, idfc], [upper, idfc, bandhan], [idfc, bandhan, upper]]) {
+    for (const keyOf of [(key) => key, bankKey]) {
+      const read = { [keyOf(old)]: "kids", [keyOf(printed)]: "mf" };
+      const settled = settleRenamed(folios, read);
+      assert.deepEqual(settled.choices, {});
+      assert.deepEqual(new Set(settled.renamed[keyOf(own)].keys), new Set(Object.keys(read)));
+      assert.deepEqual(new Set(settled.renamed[keyOf(own)].found.map(({ value }) => value)), new Set(["kids", "mf"]));
+      // When all names agree, keep every cleanup key and recognize either printed name.
+      read[keyOf(printed)] = "kids";
+      const agreed = settleRenamed(folios, read);
+      assert.deepEqual(agreed.choices, { [keyOf(own)]: "kids" });
+      assert.deepEqual(new Set(agreed.renamed[keyOf(own)].keys), new Set(Object.keys(read)));
+      assert.equal(agreed.renamed[keyOf(own)].from, undefined);
+    }
+  }
+});
+
+test("an unrelated fund house's folio with the same number keeps its own choices", () => {
+  const fictiva = { amc: "Fictiva Mutual Fund", folio: "7712045" };
+  const [own, old, other] = [folioKey(bandhan), printedKey("IDFC Mutual Fund", "7712045"), folioKey(fictiva)];
+  const { choices, renamed } = settleRenamed([bandhan, fictiva], { [other]: "kids", [bankKey(other)]: "savings" });
+  assert.deepEqual(choices, { [other]: "kids", [bankKey(other)]: "savings" });
+  assert.deepEqual(renamed, {});
+  // Nor does the renamed one's former choice go to it.
+  const moved = settleRenamed([fictiva, bandhan], { [old]: "kids" });
+  assert.deepEqual([moved.choices, Object.keys(moved.renamed)], [{ [own]: "kids" }, [own]]);
 });

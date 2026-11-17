@@ -266,6 +266,7 @@ export function DetailedImport({
   allAccounts,
   accountChoices,
   unavailable,
+  formerNames = {},
   fundChoices,
   amfi,
   visit,
@@ -288,6 +289,8 @@ export function DetailedImport({
   accountChoices: Record<string, string>;
   /** Remembered choices of hidden, archived or missing accounts, ignored: key → the account. */
   unavailable: Record<string, Ignored>;
+  /** Folio choices found under a former name of their fund house: key → that name. */
+  formerNames?: Record<string, string>;
   /** Remembered fund choices. */
   fundChoices: Record<string, FundChoice | undefined>;
   amfi: AmfiCheck;
@@ -419,7 +422,9 @@ export function DetailedImport({
   const [checkAnswers, setCheckAnswers] = useState<Record<string, BankAnswer>>({});
   const [ticks, setTicks] = useState<Record<string, { signature: string; keys: string[]; changed: boolean }>>({});
   const [showAll, setShowAll] = useState(false);
-  const [open, setOpenState] = useState<Record<string, boolean>>({});
+  // A folio's choice found under its fund house's other names opens its box's folios, to say so.
+  const [open, setOpenState] = useState<Record<string, boolean>>(() => Object.fromEntries(boxes.filter((box) => box.pan && box.folios.some((f) =>
+    [folioKey(f), bankKey(folioKey(f))].some((key) => key in formerNames || unavailable[key]?.under))).map((box) => [`part:${box.key}`, true])));
   const setOpen = (key: string, yes: boolean) => setOpenState((all) => ({ ...all, [key]: yes }));
   const [editor, setEditor] = useState<Editor | null>(null);
   const [nag, setNag] = useState(false);
@@ -2406,6 +2411,7 @@ export function DetailedImport({
         newLine={newLine}
         values={values}
         ignored={Object.fromEntries(Object.entries(ignored).filter(([key]) => !(key in picks)))}
+        formerNames={Object.fromEntries(Object.entries(formerNames).filter(([key]) => !(key in picks)))}
         conflicts={conflicts}
         remembered={rememberedBoxes === boxes.length ? "all" : rememberedBoxes ? "some" : "none"}
         open={Object.fromEntries(boxes.map((b) => [b.key, partOpen[b.key]]))}

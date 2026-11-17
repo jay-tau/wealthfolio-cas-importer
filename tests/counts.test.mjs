@@ -9,6 +9,7 @@ import { createServer } from "vite";
 import { withoutClosed, withReadableNames } from "../src/cas/mapping.ts";
 import { dec } from "../src/cas/decimal.ts";
 import { plural } from "../src/lib/plural.ts";
+import { bankKey, folioKey } from "../src/lib/choices.ts";
 
 let server;
 let components;
@@ -472,6 +473,26 @@ test("bank choices and folio disclosures distinguish PAN boxes whose investors h
     assert.ok(shown.includes(`Bank account for purchases and payouts (optional) : ${box.title}`));
     assert.ok(markup.includes(`aria-label="Save part of it to another account: ${box.title}"`));
   }
+});
+
+test("Save to says when a folio's choice was found under its fund house's former name, and when its names' choices differ", () => {
+  const folio = { amc: "Bandhan Mutual Fund", folio: "7712045", PAN: "ABCDE1234F", schemes: [{}] };
+  const [own, bank] = [folioKey(folio), bankKey(folioKey(folio))];
+  const box = { key: "pan", name: "A. Investor", title: "A. Investor's funds", pan: true, folios: [folio] };
+  const props = {
+    boxes: [box], targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }], labels: new Map([["mf", { text: "Mutual funds", option: "Mutual funds (INR)" }]]),
+    proposed: () => undefined, newLine: () => null,
+    values: { pan: "mf", "bank-pan": "", [own]: null, [bank]: "mf" },
+    ignored: { [own]: { under: [{ name: "Bandhan Mutual Fund", choice: "Mutual funds" }, { name: "IDFC Mutual Fund", choice: "Don't import" }] } },
+    formerNames: { [bank]: "IDFC Mutual Fund" },
+    conflicts: new Set(), remembered: "all", open: { pan: true }, onOpen() {}, onChange() {}, checks: () => null, partId: "save-to",
+  };
+  const shown = text("SaveToDetailed", props);
+  assert.ok(shown.includes("Chosen before under this fund house's names: Mutual funds for Bandhan Mutual Fund and Don't import for IDFC Mutual Fund, so choose again."), shown);
+  assert.ok(shown.includes("Chosen before, when this fund house was IDFC Mutual Fund."), shown);
+  // Only where there's something to say.
+  const plain = text("SaveToDetailed", { ...props, ignored: {}, formerNames: undefined });
+  assert.ok(!plain.includes("Chosen before"), plain);
 });
 
 test("Save to says where an account's number comes from when nothing else tells two of one name apart, read with each select", async () => {

@@ -49,6 +49,7 @@ export function SaveToDetailed({
   newLine,
   values,
   ignored,
+  formerNames = {},
   conflicts,
   remembered,
   open,
@@ -70,6 +71,8 @@ export function SaveToDetailed({
   values: Record<string, string | null>;
   /** Remembered choices that are ignored, by key. */
   ignored: Record<string, Ignored>;
+  /** Remembered choices found under a former name of their fund house: key → that name. */
+  formerNames?: Record<string, string>;
   /** Bank choices that are also the funds' account, by key. */
   conflicts: ReadonlySet<string>;
   /** How many boxes' accounts are the ones chosen last time. */
@@ -93,7 +96,12 @@ export function SaveToDetailed({
       Save to
     </h3>
   );
-  const why = (key: string, mode: string) => <ChooseAgain ignored={ignored[key]} mode={mode} />;
+  const why = (key: string, mode: string) => (
+    <>
+      <ChooseAgain ignored={ignored[key]} mode={mode} />
+      {formerNames[key] && <p className="text-muted-foreground w-full text-sm">Chosen before, when this fund house was {formerNames[key]}.</p>}
+    </>
+  );
   const conflict = (key: string) =>
     conflicts.has(key) && (
       <p className="text-destructive w-full text-sm">

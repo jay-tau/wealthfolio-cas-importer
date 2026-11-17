@@ -836,12 +836,28 @@ requests go to its log file. When Wealthfolio rejects rows, its reasons stay vis
 ## What the add-on keeps
 
 - In Wealthfolio's add-on storage, which device sync copies to your other devices: the account and
-  bank account chosen for each PAN or folio, keyed by a SHA-256 hash of the PAN or folio number, and the fund
-  confirmed for each ISIN, or for the registrar and scheme code of a scheme with no ISIN, including
-  one confirmed without a click from AMFI. Leaving
-  a fund out forgets the fund confirmed for it, in every folio that holds it; if Wealthfolio can't
+  bank account chosen for each PAN or folio, keyed by a SHA-256 hash of the PAN, or of the folio
+  number and its fund house's name, and the fund confirmed for each ISIN, or for the registrar and
+  scheme code of a scheme with no ISIN, including one confirmed without a click from AMFI. Leaving a
+  fund out forgets the fund confirmed for it, in every folio that holds it; if Wealthfolio can't
   delete it, the add-on says so and it can come back. "Left out" itself isn't kept: the next read
   searches for the fund again, and can confirm it from AMFI again.
+- A fund house renamed with its folios goes by its current name in that hash, whichever name the
+  statement prints, case and spacing aside. Earlier versions hashed the name as printed, so the
+  add-on also reads the hashes of the fund house's former names and the name as this statement
+  prints it. A choice found only under a former name is used, with "Chosen before, when this fund
+  house was IDFC Mutual Fund." under its select, and is kept under the current name once you import
+  or finish the Review screen, which removes the former names' copies. If the names have different
+  choices, **Save to** asks again before importing, saying what each was. The renames the add-on
+  knows, each "… Mutual Fund", former name first: IIFL → 360 ONE, Birla Sun Life → Aditya Birla Sun
+  Life, IDFC → Bandhan, BOI AXA → Bank of India, DSP BlackRock → DSP, Indiabulls → Groww, Religare
+  Invesco → Invesco, LIC Nomura → LIC, Mahindra → Mahindra Manulife, Essel → Navi, Reliance → Nippon
+  India, DHFL Pramerica → PGIM India, Escorts → quant, Union KBC → Union and YES → WhiteOak Capital.
+  Mergers aren't renames, as their folios come from another fund house: Baroda and BNP Paribas into
+  Baroda BNP Paribas, L&T into HSBC, Principal into Sundaram and IDBI into LIC. Hashes don't keep
+  the name, so a choice can't be found under a former name the add-on doesn't know, or a spelling
+  neither this list nor the current statement gives: choose that folio's account and bank account
+  again. A folio number alone never joins two fund houses.
 - Also in add-on storage, for summary and depository statements, once you save or finish the Review
   screen (with its answers, including funds AMFI confirmed): the account chosen for the
   statement and for each folio, demat account or NPS account, or "Don't save", keyed by a hash of the PAN, email address or investor
