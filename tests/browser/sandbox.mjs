@@ -2,7 +2,9 @@
 // Wealthfolio's add-on CSP, starting its classic Worker from a blob URL. Then parses again
 // without the CSP.
 // Usage: pnpm runtime && node tests/browser/sandbox.mjs [chromium] [firefox] [webkit]
-// Needs Playwright's browsers (`pnpm exec playwright-core install chromium firefox`).
+// Name the browsers to run (default `chromium firefox`; CI runs `chromium firefox webkit`).
+// Needs Playwright's browsers (`pnpm exec playwright-core install chromium firefox`, and `webkit`
+// to run WebKit).
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";

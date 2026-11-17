@@ -7,7 +7,8 @@ links here. Any later change to Undo updates this document first.
 Undo is bounded. It's offered only while what the import saved is unchanged. When something has
 changed, it refuses and says why, changing nothing. It also says what it can't take back. It's
 built only on what Wealthfolio's add-on SDK 3.13.0 allows. Links to Wealthfolio's code point at the
-`v3.13.0` tag; links to the add-on's code point at the commit this document was written on.
+`v3.13.0` tag; links to the add-on's code point at the commit this document was first written on,
+46749bf, or, for what was added after v3.2.0 shipped, at v3.2.0's commit, ed6797d.
 
 ## What an import changes
 
@@ -24,6 +25,12 @@ A detailed import:
   A reused entry is a withdrawal, a deposit or a transfer that isn't linked yet
   ([`plan.ts` L521-L522](https://github.com/jay-tau/wealthfolio-cas-importer/blob/46749bf/src/cas/plan.ts#L521-L522),
   [L542-L546](https://github.com/jay-tau/wealthfolio-cas-importer/blob/46749bf/src/cas/plan.ts#L542-L546)).
+  Once a withdrawal or deposit it changed into a transfer is linked, it removes the entry's spending
+  or income category with `spending.unassignCategory`, as Wealthfolio's own conversion does, unless
+  the entry's account is outside Spending
+  ([`reuseBankEntry`, `bank-entries.ts` L319-L330](https://github.com/jay-tau/wealthfolio-cas-importer/blob/ed6797d/src/cas/bank-entries.ts#L319-L330)).
+  When linking fails, the category stays. A savings category stays too, and an entry that was
+  already a transfer keeps its categories.
 - for a fund priced by hand, saves each trade's NAV as that day's price
   ([`activities_service.rs` L9659-L9688](https://github.com/wealthfolio/wealthfolio/blob/v3.13.0/crates/core/src/activities/activities_service.rs#L9659-L9688)).
   A manual quote is keyed by its asset and day, so this replaces a price the user set by hand on that
@@ -453,25 +460,27 @@ back: …" and "Fix by hand: Unlink the transfer of 5 Jan 2026 in Savings accoun
 
 ## Permissions
 
-Undo needs these functions, which `manifest.json` doesn't request yet
-([L35-L81](https://github.com/jay-tau/wealthfolio-cas-importer/blob/46749bf/manifest.json#L35-L81)).
-Each joins its category's `functions`, and a sentence is added to that category's `purpose`.
+Undo needs these functions. v3.2.0's `manifest.json` already requests two of them, for reusing bank
+entries (#220); the other five are new
+([L35-L86](https://github.com/jay-tau/wealthfolio-cas-importer/blob/ed6797d/manifest.json#L35-L86)).
+Each new one joins its category's `functions`, and each row's sentence is added to its category's
+`purpose`.
 
-| Category | Function | Purpose sentence |
-| --- | --- | --- |
-| `activities` | `saveMany` | "Undo an import you just made: delete the transactions it added." |
-| `activities` | `unlinkTransfer` | "Undo an import that used a bank account's deposit or withdrawal: unlink it from the fund's transfer and turn it back into what it was." |
-| `activities` | `searchCashActivities` | "Check cash entries for splits and Spending changes before Undo; changing a reused entry's type deletes splits the add-on can't put back." |
-| `activities` | `assignCategory` | "Undo an import you just made: put back the spending or income category of each bank entry it changed into a transfer." |
-| `spending` | `getContext` | "Check whether a bank account is in Spending." |
-| `spending` | `getCategories` | "Check which kind a category belongs to and that Undo can still put it back." |
-| `snapshots` | `delete` | "Undo a holdings import you just made: remove the holdings it saved on a date that had none." |
+| Category | Function | In v3.2.0 | Purpose sentence |
+| --- | --- | --- | --- |
+| `activities` | `saveMany` | New | "Undo an import you just made: delete the transactions it added." |
+| `activities` | `unlinkTransfer` | New | "Undo an import that used a bank account's deposit or withdrawal: unlink it from the fund's transfer and turn it back into what it was." |
+| `activities` | `searchCashActivities` | Requested | "Check cash entries for splits and Spending changes before Undo; changing a reused entry's type deletes splits the add-on can't put back." |
+| `activities` | `assignCategory` | New | "Undo an import you just made: put back the spending or income category of each bank entry it changed into a transfer." |
+| `spending` | `getContext` | Requested | "Check whether a bank account is in Spending." |
+| `spending` | `getCategories` | New | "Check which kind a category belongs to and that Undo can still put it back." |
+| `snapshots` | `delete` | New | "Undo a holdings import you just made: remove the holdings it saved on a date that had none." |
 
 `searchCashActivities` is the high-risk read that returns an entry's splits and categories
 ([`host-api.ts` L545-L554](https://github.com/wealthfolio/wealthfolio/blob/v3.13.0/packages/addon-sdk/src/host-api.ts#L545-L554)).
 It's needed for the splits and category checks above. `assignCategory` is high-risk too
 ([L521-L526](https://github.com/wealthfolio/wealthfolio/blob/v3.13.0/packages/addon-sdk/src/host-api.ts#L521-L526)).
-#220 adds `searchCashActivities` and `getContext`, with `unassignCategory`.
+v3.2.0 added `searchCashActivities` and `getContext`, with `unassignCategory`, for #220.
 
 Wealthfolio compares permissions by category and function
 ([`service.rs` L2756-L2776](https://github.com/wealthfolio/wealthfolio/blob/v3.13.0/crates/core/src/addons/service.rs#L2756-L2776)).
@@ -479,9 +488,10 @@ An update that adds any of these isn't installed automatically: it asks every us
 reinstall
 ([L2778-L2813](https://github.com/wealthfolio/wealthfolio/blob/v3.13.0/crates/core/src/addons/service.rs#L2778-L2813)).
 
-If Phase 3 is ready by then, ship these in the same release as Phase 2's `accounts.create`, so users
-approve once. Otherwise, announce the reinstall in that release's notes. If another change adds one
-of them first, Phase 3 adds only the rest.
+v3.2.0 shipped Phase 2's `accounts.create` without Phase 3, so the release that adds Undo asks every
+user to approve a reinstall again. Add all five new functions in that one release, so users approve
+once, and announce the reinstall in its notes. If another change adds one of them first, Phase 3
+adds only the rest.
 
 ## Tests Phase 3 needs
 
