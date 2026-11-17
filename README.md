@@ -281,7 +281,10 @@ Review screen asks about it right under the bank account it's for: "6 entries al
 account look like these purchases and payouts". It lists every purchase, SIP purchase, sale or cash
 dividend with the entry that may be its payment or payout: a withdrawal or deposit (or a transfer not
 yet linked) within 7 days, for the transaction's amount to the paisa, with or without its stamp duty,
-STT or TDS, each entry offered once, to the closest transaction. A pair starts ticked only when the
+STT or TDS, each entry offered once, to the closest transaction. An entry made in Wealthfolio's form,
+which saves the time of day too, is on its day in Wealthfolio's timezone setting (UTC if none is set),
+as the units check counts it. One imported from a bank statement is on the day its row gave; edited
+in the form since, it may be on either, whichever is closer. A pair starts ticked only when the
 evidence is strong: it's the only entry for that transaction and the only transaction for that entry,
 it's at most a day apart, and the entry's description names the fund house or says MF or mutual
 fund. A bank, place or other company named with a word of the fund house's name doesn't name it:

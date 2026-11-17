@@ -230,7 +230,7 @@ describe("linking a ticked entry", () => {
     spending.calls.length = 0;
     const activities = activitiesApi(fail);
     const logged = [];
-    const result = await reuseBankEntry({ activities, spending, logger: { warn: (message) => logged.push(message) } }, t, row, facts);
+    const result = await reuseBankEntry({ activities, spending, logger: { warn: (message) => logged.push(message) } }, t, row, facts, "UTC");
     return { result, steps: activities.calls.map(([name]) => name), unassigned: spending.calls.map(([, id, kind]) => [id, kind]), logged };
   };
 
@@ -308,7 +308,7 @@ describe("linking a ticked entry", () => {
     const facts = (await readEntryFacts(reads(spendingApi({ rows: [withdrawal], ...options }), synced), [withdrawal])).get(withdrawal.id);
     const spending = spendingApi({ rows: [withdrawal], ...options });
     const activities = activitiesApi("");
-    const retried = await reuseBankEntry({ activities, spending, logger: { warn() {} } }, purchase, withdrawal, facts, { fundId: unlinked.result.fundId, converted: true });
+    const retried = await reuseBankEntry({ activities, spending, logger: { warn() {} } }, purchase, withdrawal, facts, "UTC", { fundId: unlinked.result.fundId, converted: true });
     assert.deepEqual(activities.calls.map(([name]) => name), ["linkTransfer"]);
     assert.deepEqual(activities.calls[0].slice(1), [withdrawal.id, "fund-leg"]);
     assert.deepEqual(spending.calls.map(([, id, kind]) => [id, kind]), [[withdrawal.id, "expense"]]);
@@ -340,7 +340,7 @@ describe("linking a ticked entry", () => {
 });
 
 describe("right before importing", () => {
-  const recheck = async ({ shownRows, nowRows, spendingThen = {}, spendingNow = spendingThen, linked = [], list = accounts, listThen = list }) => {
+  const recheck = async ({ shownRows, nowRows, spendingThen = {}, spendingNow = spendingThen, linked = [], list = accounts, listThen = list, timeZone = "UTC" }) => {
     const shown = await readEntryFacts(reads(spendingApi({ rows: shownRows, ...spendingThen }), listThen), shownRows);
     const fetched = [];
     const activities = {
@@ -352,6 +352,7 @@ describe("right before importing", () => {
       shownRows.map((row, i) => [[purchase, sale][i], row]),
       shown,
       (id) => list.find((a) => a.id === id).name,
+      timeZone,
     );
     return { ...result, fetched };
   };
@@ -388,6 +389,41 @@ describe("right before importing", () => {
     assert.deepEqual(await reason(withdrawal, redated), ["changed", redated]);
   });
 
+  test("an entry's day is its day in Wealthfolio's timezone, and a change to it stops the import", async () => {
+    // Made at 02:00 on 9 Apr in India, for the SIP of 10 Apr.
+    const made = entry("WITHDRAWAL", "5000.00", "2023-04-08", { date: "2023-04-08T20:30:00+00:00", sourceSystem: "MANUAL" });
+    const stale = async (now, shown = made) => (await recheck({ shownRows: [shown], nowRows: [now], timeZone: "Asia/Kolkata" })).stale
+      .map((s) => [s.reason, s.beforeDay, s.afterDay]);
+    // Moved to 06:00 the same day: another day in UTC, the same in India.
+    assert.deepEqual(await stale({ ...made, date: "2023-04-09T00:30:00+00:00" }), []);
+    // Moved to 23:00 on 8 Apr: the same day in UTC, another in India.
+    assert.deepEqual(await stale({ ...made, date: "2023-04-08T17:30:00+00:00" }), [["changed", "2023-04-09", "2023-04-08"]]);
+    // Moved to 02:00 on 2 Apr: 8 days before.
+    assert.deepEqual(await stale({ ...made, date: "2023-04-01T20:30:00+00:00" }), [["unmatched", "2023-04-09", "2023-04-02"]]);
+    // An import at UTC midnight on 11 Apr whose comment was edited in Toronto, where it's 10 Apr:
+    // its date didn't change, so it's used as it is now.
+    const imported = entry("WITHDRAWAL", "5000.00", "2023-04-11", { sourceSystem: "CSV" });
+    const edited = { ...imported, comment: "Edited", isUserModified: true };
+    const { current, stale: none } = await recheck({ shownRows: [imported], nowRows: [edited], timeZone: "America/Toronto" });
+    assert.deepEqual(none, []);
+    assert.equal(current.get(purchase), edited);
+    assert.deepEqual((await recheck({ shownRows: [imported], nowRows: [{ ...edited, date: "2023-04-13T00:00:00Z" }], timeZone: "America/Toronto" })).stale
+      .map((s) => [s.reason, s.beforeDay, s.afterDay]), [["changed", "2023-04-11", "2023-04-12"]]);
+    // Reading the same instant in another format must not move it or push it out of the window.
+    for (const [beforeDate, date] of [
+      ["2023-04-03", "2023-04-03T00:00:00Z"],
+      ["2023-04-03", new Date("2023-04-03T00:00:00Z")],
+      ["2023-04-18T00:00:00Z", "2023-04-18"],
+      ["2023-04-11T01:00:00Z", "2023-04-11T01:00:00+00:00"],
+    ]) {
+      const before = { ...made, date: beforeDate };
+      assert.deepEqual((await recheck({ shownRows: [before], nowRows: [{ ...before, date }], timeZone: "America/Toronto" })).stale, []);
+    }
+    for (const date of ["2023-04-11", "2023-04-11T00:00:00Z", new Date(imported.date)]) {
+      assert.deepEqual((await recheck({ shownRows: [imported], nowRows: [{ ...edited, date }], timeZone: "America/Toronto" })).stale, []);
+    }
+  });
+
   test("a split or category that the notes didn't mention stops the import of an entry to be changed into a transfer, not of one already a transfer", async () => {
     const withdrawal = entry("WITHDRAWAL", "5000.00", "2023-04-08");
     const transfer = entry("TRANSFER_OUT", "5000.00", "2023-04-08");
@@ -420,7 +456,7 @@ describe("right before importing", () => {
 });
 
 describe("before retrying a bank link", () => {
-  const recheck = async ({ before, now = before, from = {}, fund, pair, fundPair, spendingThen = {}, spendingNow = spendingThen, fail = "" }) => {
+  const recheck = async ({ before, now = before, from = {}, fund, pair, fundPair, spendingThen = {}, spendingNow = spendingThen, fail = "", timeZone = "UTC" }) => {
     const shown = (await readEntryFacts(reads(spendingApi({ rows: [before], ...spendingThen }), accounts), [before])).get(before.id);
     const fetched = [];
     const paired = [];
@@ -439,7 +475,7 @@ describe("before retrying a bank link", () => {
         },
       },
     };
-    return { ...(await recheckLink(api, purchase, before, shown, from)), fetched, paired };
+    return { ...(await recheckLink(api, purchase, before, shown, timeZone, from)), fetched, paired };
   };
   const fundRow = () => entry("TRANSFER_IN", String(purchase.transaction.cash.amount), "2023-04-10", { id: "fund-leg", accountId: ACCOUNT });
 
@@ -470,6 +506,38 @@ describe("before retrying a bank link", () => {
       await assert.rejects(recheck({ before, now: changed && { ...before, ...changed } }), /The bank entry changed since the import/);
     }
     await assert.rejects(recheck({ before, from: { fundId: "fund-leg", converted: true }, fund: fundRow() }), /The bank entry changed since the import/);
+  });
+
+  test("a retry checks an entry's day in Wealthfolio's timezone; this import's change into a transfer doesn't move it", async () => {
+    const timeZone = "America/Toronto";
+    // Made at 21:00 on 10 Apr in Toronto, stored on 11 Apr in UTC.
+    const made = entry("WITHDRAWAL", "5000.00", "2023-04-11", { date: "2023-04-11T01:00:00+00:00", sourceSystem: "MANUAL" });
+    // Moved to 19:00 the same day, 10 Apr in UTC: the same day in Toronto.
+    assert.equal((await recheck({ before: made, now: { ...made, date: "2023-04-10T23:00:00+00:00", isUserModified: true }, timeZone })).linked, false);
+    // Moved to 19:00 on 11 Apr, still 11 Apr in UTC: another day in Toronto.
+    await assert.rejects(recheck({ before: made, now: { ...made, date: "2023-04-11T23:00:00+00:00", isUserModified: true }, timeZone }),
+      /The bank entry changed since the import/);
+    // An import at UTC midnight on 11 Apr, 20:00 on 10 Apr in Toronto, changed into a transfer by this
+    // import, which marks it as edited: still the 11 Apr entry the preview showed.
+    const imported = entry("WITHDRAWAL", "5000.00", "2023-04-11", { sourceSystem: "CSV" });
+    const fund = fundRow();
+    const converted = { ...imported, activityType: "TRANSFER_OUT", isUserModified: true };
+    const resumed = await recheck({ before: imported, now: converted, fund, from: { fundId: fund.id, converted: true }, timeZone });
+    assert.deepEqual([resumed.row, resumed.linked], [converted, false]);
+    await assert.rejects(recheck({ before: imported, now: { ...imported, date: "2023-04-13T00:00:00Z", isUserModified: true }, timeZone }),
+      /The bank entry changed since the import/);
+    for (const [beforeDate, date] of [
+      ["2023-04-03", "2023-04-03T00:00:00Z"],
+      ["2023-04-03", new Date("2023-04-03T00:00:00Z")],
+      ["2023-04-18T00:00:00Z", "2023-04-18"],
+      ["2023-04-11T01:00:00Z", "2023-04-11T01:00:00+00:00"],
+    ]) {
+      const before = { ...made, date: beforeDate };
+      assert.equal((await recheck({ before, now: { ...before, date }, timeZone })).linked, false);
+    }
+    for (const date of ["2023-04-11", "2023-04-11T00:00:00Z", new Date(imported.date)]) {
+      assert.equal((await recheck({ before: imported, now: { ...converted, date }, fund, from: { fundId: fund.id, converted: true }, timeZone })).linked, false);
+    }
   });
 
   test("changed, missing or linked fund transfers stop a retry", async () => {

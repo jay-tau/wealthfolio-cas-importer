@@ -356,17 +356,17 @@ describe("bank entries", () => {
     ], { close: "242.088", close_calculated: "242.088" }),
     scheme("B", [tx("2023-12-28", "DIVIDEND_PAYOUT", "7276.48")]),
   ]));
-  const pairsFor = (entries, facts = new Map(), linked = new Set()) => {
+  const pairsFor = (entries, facts = new Map(), linked = new Set(), timeZone = "UTC") => {
     const { plan } = planFor(data, { existing: entries, bank: BANK });
     const sent = plan.filter((t) => sends(t, () => false) && t.transaction.bank);
-    return bankPairs({ transactions: sent, matches: bankMatches(sent, entries, linked), existing: entries, linked, facts, amcOf: () => "Fictiva Mutual Fund" });
+    return bankPairs({ transactions: sent, matches: bankMatches(sent, entries, linked, timeZone), existing: entries, linked, facts, amcOf: () => "Fictiva Mutual Fund", timeZone });
   };
   const view = (pairs) => pairs.map((p) => [p.entry.id, p.strong, p.reason]);
 
   test("a unique exact same-day entry naming only a bank starts unticked", () => {
     const entries = [entry("bank-only", "WITHDRAWAL", "5000.00", "2023-04-10", "NEFT HDFCBANK SALARY")];
     const { plan } = planFor(data, { existing: entries, bank: BANK });
-    const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts: new Map(), amcOf: () => "HDFC Mutual Fund" });
+    const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set(), "UTC"), existing: entries, linked: new Set(), facts: new Map(), amcOf: () => "HDFC Mutual Fund", timeZone: "UTC" });
     assert.deepEqual(pairs.map((p) => [p.exact, p.days, p.otherEntries, p.otherTransactions, p.strong, p.reason]),
       [[true, 0, 0, 0, false, "Same day, but it doesn't name a fund house: check it"]]);
   });
@@ -380,7 +380,7 @@ describe("bank entries", () => {
       const entries = [entry("other-company", "WITHDRAWAL", "5000.00", "2023-04-10", description)];
       const { plan } = planFor(data, { existing: entries, bank: BANK });
       const facts = new Map([["other-company", { converts: true, inSpending: true, spending: { splitCategories: 0, kinds: [] }, synced: false }]]);
-      const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts, amcOf: () => `${house} Mutual Fund` });
+      const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set(), "UTC"), existing: entries, linked: new Set(), facts, amcOf: () => `${house} Mutual Fund`, timeZone: "UTC" });
       assert.deepEqual(pairs.map((p) => [p.exact, p.days, p.otherEntries, p.otherTransactions, p.splits, p.strong, p.reason]),
         [[true, 0, 0, 0, false, false, "Same day, but it doesn't name a fund house: check it"]], description);
     }
@@ -391,7 +391,7 @@ describe("bank entries", () => {
       const entries = [entry("named-alike", "WITHDRAWAL", "5000.00", "2023-04-10", description)];
       const { plan } = planFor(data, { existing: entries, bank: BANK });
       const facts = new Map([["named-alike", { converts: true, inSpending: true, spending: { splitCategories: 0, kinds: [] }, synced: false }]]);
-      const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts, amcOf: () => amc });
+      const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set(), "UTC"), existing: entries, linked: new Set(), facts, amcOf: () => amc, timeZone: "UTC" });
       return pairs.map((p) => [p.entry.id, p.exact, p.days, p.otherEntries, p.otherTransactions, p.splits, p.said, p.strong, p.reason]);
     };
     for (const [description, amc] of notTheHouse) {
@@ -414,7 +414,7 @@ describe("bank entries", () => {
     const entries = [entry("unrelated-bank", "WITHDRAWAL", "5000.00", "2023-04-10", "NEFT OTHER BANK SALARY")];
     const { plan } = planFor(data, { existing: entries, bank: BANK });
     const facts = new Map([["unrelated-bank", { converts: true, inSpending: true, spending: { splitCategories: 0, kinds: [] }, synced: false }]]);
-    const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts, amcOf: () => "Fictiva Bank Mutual Fund" });
+    const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set(), "UTC"), existing: entries, linked: new Set(), facts, amcOf: () => "Fictiva Bank Mutual Fund", timeZone: "UTC" });
     assert.deepEqual(pairs.map((p) => [p.exact, p.days, p.otherEntries, p.otherTransactions, p.splits, p.strong, p.reason]),
       [[true, 0, 0, 0, false, false, "Same day, but it doesn't name a fund house: check it"]]);
   });
@@ -447,7 +447,7 @@ describe("bank entries", () => {
     const close = statement(folio("F1", [scheme("A", [...sip("2023-04-10"), ...sip("2023-04-13")], { close: "206.176", close_calculated: "206.176" })]));
     const entries = [entry("one", "WITHDRAWAL", "5000.00", "2023-04-11", "FICTIVA MF")];
     const { plan } = planFor(close, { existing: entries, bank: BANK });
-    const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts: new Map(), amcOf: () => "Fictiva Mutual Fund" });
+    const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set(), "UTC"), existing: entries, linked: new Set(), facts: new Map(), amcOf: () => "Fictiva Mutual Fund", timeZone: "UTC" });
     assert.deepEqual(view(pairs), [["one", false, "2 payments match this entry: check it"]]);
     assert.equal(pairs[0].t, plan[0]);
   });
@@ -465,6 +465,36 @@ describe("bank entries", () => {
     assert.deepEqual(one({ inSpending: undefined }), [false, "Same day · names the fund house, but its spending split couldn't be checked: check it"]);
     // A transfer keeps its type, so its split stays.
     assert.deepEqual(one({ converts: false, inSpending: true }), [true, "Same day · names the fund house"]);
+  });
+
+  test("an entry from Wealthfolio's form is dated, ticked and offered by its day in Wealthfolio's timezone", () => {
+    const made = (entryId, date) => entry(entryId, "WITHDRAWAL", "5000.00", "2023-04-10", "ACH D- FICTIVA MF", { date, sourceSystem: "MANUAL" });
+    const shown = (entries, timeZone) => pairsFor(entries, new Map(), new Set(), timeZone).map((p) => [p.day, p.days, p.strong, p.reason]);
+    // Made at 02:00 on 9 Apr in India, stored on 8 Apr in UTC, for the SIP of 10 Apr.
+    const india = made("india", "2023-04-08T20:30:00+00:00");
+    assert.deepEqual(shown([india], "Asia/Kolkata"), [["2023-04-09", 1, true, "1 day apart · names the fund house"]]);
+    // Made at 21:00 on 10 Apr in Toronto, stored on 11 Apr in UTC.
+    const toronto = made("toronto", "2023-04-11T01:00:00+00:00");
+    assert.deepEqual(shown([toronto], "America/Toronto"), [["2023-04-10", 0, true, "Same day · names the fund house"]]);
+    // Made at 03:00 on 18 Apr in India, 8 days after: not offered.
+    assert.deepEqual(shown([made("late", "2023-04-17T21:30:00+00:00")], "Asia/Kolkata"), []);
+    // With no timezone set, Wealthfolio counts them in UTC.
+    assert.deepEqual(shown([india], "UTC"), [["2023-04-08", 2, false, "2 days apart: check it"]]);
+  });
+
+  test("an entry imported from a bank statement keeps its UTC day; edited in the form, it may be on its day in the timezone too", () => {
+    const imported = (entryId, date, extra = {}) =>
+      entry(entryId, "WITHDRAWAL", "5000.00", date, "ACH D- FICTIVA MF", { sourceSystem: "CSV", isUserModified: false, ...extra });
+    const shown = (entries) => pairsFor(entries, new Map(), new Set(), "America/Toronto").map((p) => [p.day, p.days, p.strong, p.reason]);
+    // At UTC midnight on 12 Apr, 20:00 on 11 Apr in Toronto: 2 days after the SIP of 10 Apr, as its row gave it.
+    assert.deepEqual(shown([imported("csv", "2023-04-12")]), [["2023-04-12", 2, false, "2 days apart: check it"]]);
+    assert.deepEqual(shown([imported("edited", "2023-04-12", { isUserModified: true })]), [["2023-04-11", 1, true, "1 day apart · names the fund house"]]);
+    // On 3 Apr, 7 days before, and not 2 Apr: still offered, also once edited without changing its date.
+    assert.deepEqual(shown([imported("csv", "2023-04-03")]), [["2023-04-03", 7, false, "7 days apart: check it"]]);
+    assert.deepEqual(shown([imported("kept", "2023-04-03", { isUserModified: true })]), [["2023-04-03", 7, false, "7 days apart: check it"]]);
+    // Moved in the form to 17 Apr at 20:00 in Toronto, stored on 18 Apr in UTC: 7 days after, not 8.
+    assert.deepEqual(shown([imported("moved", "2023-04-18", { isUserModified: true })]), [["2023-04-17", 7, false, "7 days apart: check it"]]);
+    assert.deepEqual(shown([imported("csv", "2023-04-18")]), []);
   });
 
   test("a payment matched by its printed amount with stamp duty counts as exact", () => {

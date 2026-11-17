@@ -7,9 +7,11 @@ import { format } from "../src/cas/decimal.ts";
 import { mapStatement } from "../src/cas/mapping.ts";
 import {
   bankCandidates,
+  bankDay,
   bankMatches,
   closingUnits,
   engineTimeZone,
+  entryDays,
   fundRef,
   fundRefs,
   giftEntries,
@@ -1188,7 +1190,7 @@ describe("bank account", () => {
     // The statement prints ₹4,999.75 after ₹0.25 stamp duty; the bank paid ₹5,000.
     const purchase = statement(scheme("A", sip("2023-04-10")));
     const [t] = banked(purchase);
-    const ids = (rows) => bankCandidates(t, rows).map((r) => r.amount);
+    const ids = (rows) => bankCandidates(t, rows, "UTC").map((r) => r.amount);
     assert.equal(t.transaction.cash.amount, "5000.018");
     assert.deepEqual(ids([bankRow("WITHDRAWAL", "5000.00", "2023-04-08"), bankRow("TRANSFER_OUT", "5000.02", "2023-04-17"), bankRow("WITHDRAWAL", "4999.75", "2023-04-03")]), ["5000.00", "5000.02", "4999.75"]);
     assert.deepEqual(ids([
@@ -1202,11 +1204,11 @@ describe("bank account", () => {
     ]), [], "other directions, amounts, days, accounts, statuses, currencies and assets");
     // A redemption printed before STT is paid in without it.
     const [sale] = banked(statement(scheme("A", [redemption("2023-06-01"), tx("2023-06-01", "STT_TAX", "0.03")])));
-    assert.deepEqual(bankCandidates(sale, [bankRow("DEPOSIT", "2999.97", "2023-06-03"), bankRow("WITHDRAWAL", "2999.97", "2023-06-03")]).map((r) => r.activityType), ["DEPOSIT"]);
+    assert.deepEqual(bankCandidates(sale, [bankRow("DEPOSIT", "2999.97", "2023-06-03"), bankRow("WITHDRAWAL", "2999.97", "2023-06-03")], "UTC").map((r) => r.activityType), ["DEPOSIT"]);
     // Existing transactions and those without a bank account have nothing to match.
     const existing = importRows(banked(purchase), () => false).map(stored);
-    assert.deepEqual(bankCandidates(banked(purchase, existing)[0], [bankRow("WITHDRAWAL", "5000.00", "2023-04-10")]), []);
-    assert.deepEqual(bankCandidates(plan(purchase)[0], [bankRow("WITHDRAWAL", "5000.00", "2023-04-10")]), []);
+    assert.deepEqual(bankCandidates(banked(purchase, existing)[0], [bankRow("WITHDRAWAL", "5000.00", "2023-04-10")], "UTC"), []);
+    assert.deepEqual(bankCandidates(plan(purchase)[0], [bankRow("WITHDRAWAL", "5000.00", "2023-04-10")], "UTC"), []);
   });
 
   test("each bank row is offered for one transaction, closest days first, and linked transfers never", () => {
@@ -1214,10 +1216,80 @@ describe("bank account", () => {
     const early = bankRow("WITHDRAWAL", "5000.00", "2023-04-04");
     const same = bankRow("WITHDRAWAL", "5000.00", "2023-04-06");
     const linked = bankRow("TRANSFER_OUT", "5000.00", "2023-04-05");
-    const matches = bankMatches(planned, [early, same, linked], new Set([linked.id]));
+    const matches = bankMatches(planned, [early, same, linked], new Set([linked.id]), "UTC");
     assert.equal(matches.get(planned[1]), same);
     assert.equal(matches.get(planned[0]), early);
-    assert.equal(bankMatches(planned, [same], new Set()).size, 1);
+    assert.equal(bankMatches(planned, [same], new Set(), "UTC").size, 1);
+  });
+
+  test("an entry's days: an untouched import's UTC day, a form entry's day in the timezone, and either for an edited import", () => {
+    // 02:00 on 9 Apr in India; the second instant is 20:00 on 8 Apr in Toronto.
+    const date = "2023-04-08T20:30:00+00:00";
+    const toronto = "2023-04-09T00:00:00+00:00";
+    inLocalTimeZones(() => {
+      assert.deepEqual(entryDays({ date, sourceSystem: "MANUAL" }, "Asia/Kolkata"), ["2023-04-09"]);
+      assert.deepEqual(entryDays({ date }, "Asia/Kolkata"), ["2023-04-09"]);
+      assert.deepEqual(entryDays({ date, sourceSystem: "YAHOO", isUserModified: false }, "Asia/Kolkata"), ["2023-04-09"]);
+      assert.deepEqual(entryDays({ date, sourceSystem: "CSV", isUserModified: false }, "Asia/Kolkata"), ["2023-04-08"]);
+      assert.deepEqual(entryDays({ date, sourceSystem: "CSV", isUserModified: true }, "Asia/Kolkata"), ["2023-04-09", "2023-04-08"]);
+      assert.deepEqual(entryDays({ date: toronto, sourceSystem: "CSV", isUserModified: false }, "America/Toronto"), ["2023-04-09"]);
+      assert.deepEqual(entryDays({ date: toronto, sourceSystem: "CSV", isUserModified: true }, "America/Toronto"), ["2023-04-08", "2023-04-09"]);
+      assert.deepEqual(entryDays({ date: toronto, sourceSystem: "MANUAL" }, "America/Toronto"), ["2023-04-08"]);
+      // An edited import on the same day both ways has one.
+      assert.deepEqual(entryDays({ date: "2023-04-09T04:00:00+00:00", sourceSystem: "CSV", isUserModified: true }, "America/Toronto"), ["2023-04-09"]);
+    });
+  });
+
+  test("a bank entry from Wealthfolio's form is within 7 days by its day in Wealthfolio's timezone", () => {
+    // The SIP's bank row is on 10 Apr.
+    const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
+    const form = (date) => bankRow("WITHDRAWAL", "5000.00", "2023-04-10", { date, sourceSystem: "MANUAL" });
+    const offered = (rows, timeZone) => bankCandidates(t, rows, timeZone).map((r) => bankDay(r, t, timeZone));
+    inLocalTimeZones(() => {
+      // Made at 03:00 on 3 and 17 Apr in India, 7 days before and after, and at 03:00 on 18 Apr, 8 days after.
+      const india = [form("2023-04-02T21:30:00+00:00"), form("2023-04-16T21:30:00+00:00"), form("2023-04-17T21:30:00+00:00")];
+      assert.deepEqual(offered(india, "Asia/Kolkata"), ["2023-04-03", "2023-04-17"]);
+      // Made at 21:00 on 2 Apr in Toronto, 8 days before, and on 17 Apr, 7 days after.
+      const toronto = [form("2023-04-03T01:00:00+00:00"), form("2023-04-18T01:00:00+00:00")];
+      assert.deepEqual(offered(toronto, "America/Toronto"), ["2023-04-17"]);
+      // A bank statement's import keeps the day its row gave, its UTC day, at UTC midnight: 3 Apr,
+      // not 2 Apr in Toronto, and 18 Apr is 8 days after.
+      const imported = (date, extra = {}) => bankRow("WITHDRAWAL", "5000.00", "2023-04-10", { date, sourceSystem: "CSV", isUserModified: false, ...extra });
+      assert.deepEqual(offered([imported("2023-04-03T00:00:00+00:00"), imported("2023-04-18T00:00:00+00:00")], "America/Toronto"), ["2023-04-03"]);
+      // Edited in the form, it may be on either: one whose date wasn't changed keeps 3 Apr, and one
+      // moved to 17 Apr at 20:00 in Toronto, stored on 18 Apr in UTC, is on 17 Apr.
+      const edited = { isUserModified: true };
+      assert.deepEqual(offered([imported("2023-04-03T00:00:00+00:00", edited), imported("2023-04-18T00:00:00+00:00", edited)], "America/Toronto"),
+        ["2023-04-03", "2023-04-17"]);
+    });
+  });
+
+  test("the closest bank entry for each transaction goes by each entry's day in Wealthfolio's timezone", () => {
+    const planned = banked(statement(scheme("A", [...sip("2023-04-05", "5000.00", "100.000", "49.9975"), ...sip("2023-04-06", "5000.00", "100.000", "49.9975")])));
+    for (const [timeZone, made] of [
+      // Made at 02:00 on 6 Apr in India, and at 21:00 on 5 Apr in Toronto.
+      ["Asia/Kolkata", "2023-04-05T20:30:00+00:00"],
+      ["America/Toronto", "2023-04-06T01:00:00+00:00"],
+    ]) {
+      const form = bankRow("WITHDRAWAL", "5000.00", "2023-04-05", { date: made, sourceSystem: "MANUAL" });
+      // Imported from a bank statement for the other day, at UTC midnight.
+      const other = timeZone === "Asia/Kolkata" ? "2023-04-05" : "2023-04-06";
+      const imported = bankRow("WITHDRAWAL", "5000.00", other, { sourceSystem: "CSV", isUserModified: false });
+      const matches = bankMatches(planned, [form, imported], new Set(), timeZone);
+      const [first, second] = timeZone === "Asia/Kolkata" ? [imported, form] : [form, imported];
+      assert.equal(matches.get(planned[0]), first, timeZone);
+      assert.equal(matches.get(planned[1]), second, timeZone);
+    }
+  });
+
+  test("equally close bank entries are ordered by their bank day, keeping input order on the same day", () => {
+    const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
+    const form = bankRow("WITHDRAWAL", "5000.00", "2023-04-10", { date: "2023-04-11T01:00:00Z", sourceSystem: "MANUAL" });
+    const imported = bankRow("WITHDRAWAL", "5000.00", "2023-04-10", { sourceSystem: "CSV" });
+    assert.equal(bankMatches([t], [form, imported], new Set(), "America/Toronto").get(t), form);
+    const earlier = { ...form, date: "2023-04-10T01:00:00Z" }; // 21:00 on 9 Apr in Toronto.
+    const later = { ...imported, date: "2023-04-11T00:00:00Z" };
+    assert.equal(bankMatches([t], [later, earlier], new Set(), "America/Toronto").get(t), earlier);
   });
 
   test("using a bank row adds the fund's transfer, changes a withdrawal into a transfer and links them", async () => {
@@ -1230,7 +1302,7 @@ describe("bank account", () => {
       linkTransfer: async (a, b) => void calls.push(["link", a, b]),
     };
     const withdrawal = bankRow("WITHDRAWAL", "5000.00", "2023-04-08");
-    assert.deepEqual(await linkBankRow(api, t, withdrawal), { fundId: "fund-leg", converted: true, linked: true });
+    assert.deepEqual(await linkBankRow(api, t, withdrawal, "UTC"), { fundId: "fund-leg", converted: true, linked: true });
     const sourceRecordId = `${RECORD_PREFIX}${t.transaction.cash.sourceRecordId}`;
     assert.deepEqual(calls, [
       ["create", {
@@ -1252,17 +1324,17 @@ describe("bank account", () => {
     assert.deepEqual(importRows(again, () => false), []);
     // A transfer keeps its type.
     calls.length = 0;
-    assert.deepEqual(await linkBankRow(api, t, bankRow("TRANSFER_OUT", "5000.00", "2023-04-08")), { fundId: "fund-leg", converted: false, linked: true });
+    assert.deepEqual(await linkBankRow(api, t, bankRow("TRANSFER_OUT", "5000.00", "2023-04-08"), "UTC"), { fundId: "fund-leg", converted: false, linked: true });
     assert.deepEqual(calls.map(([step]) => step), ["create", "link"]);
     // Each step's failure says what's left to do, and which steps changed the bank's row.
     const failing = (step) => ({ ...api, [step]: async () => { throw new Error("nope"); } });
-    const notCreated = await linkBankRow(failing("create"), t, withdrawal);
+    const notCreated = await linkBankRow(failing("create"), t, withdrawal, "UTC");
     assert.match(notCreated.error, /^Couldn't add the fund account's transfer: Error: nope\. The trade is in Wealthfolio without its cash\.$/);
     assert.deepEqual([notCreated.converted, notCreated.linked], [false, false]);
-    const updated = await linkBankRow(failing("update"), t, withdrawal);
+    const updated = await linkBankRow(failing("update"), t, withdrawal, "UTC");
     assert.match(updated.error, /couldn't change the bank's row on 2023-04-08 into a transfer: Error: nope\. Change it and link the two in Wealthfolio\.$/);
     assert.deepEqual([updated.converted, updated.linked], [false, false]);
-    const linked = await linkBankRow(failing("linkTransfer"), t, withdrawal);
+    const linked = await linkBankRow(failing("linkTransfer"), t, withdrawal, "UTC");
     assert.match(linked.error, /couldn't link it with the bank's row on 2023-04-08: Error: nope\. Link the two in Wealthfolio\.$/);
     assert.deepEqual([linked.converted, linked.linked], [true, false]);
     // Each failure says its step, and what was done before it, for a retry to go on from.
@@ -1272,11 +1344,15 @@ describe("bank account", () => {
     // A retry doesn't add the transfer again: after a failed change, it changes the entry and links;
     // after a failed link, it only links.
     calls.length = 0;
-    assert.deepEqual(await linkBankRow(api, t, withdrawal, { fundId: updated.fundId, converted: updated.converted }), { fundId: "fund-leg", converted: true, linked: true });
+    assert.deepEqual(await linkBankRow(api, t, withdrawal, "UTC", { fundId: updated.fundId, converted: updated.converted }), { fundId: "fund-leg", converted: true, linked: true });
     assert.deepEqual(calls.map(([step]) => step), ["update", "link"]);
     calls.length = 0;
-    assert.deepEqual(await linkBankRow(api, t, withdrawal, { fundId: linked.fundId, converted: linked.converted }), { fundId: "fund-leg", converted: true, linked: true });
+    assert.deepEqual(await linkBankRow(api, t, withdrawal, "UTC", { fundId: linked.fundId, converted: linked.converted }), { fundId: "fund-leg", converted: true, linked: true });
     assert.deepEqual(calls, [["link", withdrawal.id, "fund-leg"]]);
+    // A failure names the entry's day in Wealthfolio's timezone: made at 02:00 on 9 Apr in India.
+    const made = { ...withdrawal, date: "2023-04-08T20:30:00+00:00", sourceSystem: "MANUAL" };
+    assert.match((await linkBankRow(failing("update"), t, made, "Asia/Kolkata")).error, /couldn't change the bank's row on 2023-04-09 into a transfer/);
+    assert.match((await linkBankRow(failing("linkTransfer"), t, made, "Asia/Kolkata")).error, /couldn't link it with the bank's row on 2023-04-09:/);
   });
 
   test("a transfer Wealthfolio refuses as a duplicate by its code says it may be there, and nothing more is changed", async () => {
@@ -1292,7 +1368,7 @@ describe("bank account", () => {
     // Wealthfolio's message is localized, or may be anything: only the code says it's a duplicate.
     for (const message of ["Duplicate activity", "Doppelte Aktivität", ""]) {
       calls.length = 0;
-      const refused = await linkBankRow(refusing(coded(message, "DUPLICATE_ACTIVITY")), t, withdrawal);
+      const refused = await linkBankRow(refusing(coded(message, "DUPLICATE_ACTIVITY")), t, withdrawal, "UTC");
       assert.deepEqual([refused.stage, refused.fundId, refused.converted, refused.linked], ["exists", undefined, false, false]);
       assert.match(refused.error, /^Wealthfolio refused the fund account's transfer as a duplicate: .*\. It may already have one for the bank's row on 2023-04-08: check the transfers and link the two in Wealthfolio\.$/);
       assert.doesNotMatch(refused.error, /without its cash/);
@@ -1301,12 +1377,12 @@ describe("bank account", () => {
     }
     // A retry that finds the key taken stops there too.
     calls.length = 0;
-    assert.equal((await linkBankRow(refusing(coded("taken", "DUPLICATE_ACTIVITY")), t, withdrawal, {})).stage, "exists");
+    assert.equal((await linkBankRow(refusing(coded("taken", "DUPLICATE_ACTIVITY")), t, withdrawal, "UTC", {})).stage, "exists");
     assert.deepEqual(calls.map(([step]) => step), ["create"]);
     // Without the code, or with another one, the transfer wasn't added, as before, whatever the message says.
     for (const error of [coded("DUPLICATE_ACTIVITY: Duplicate activity"), coded("Duplicate activity", "INVALID_ACTIVITY"), coded("Duplicate activity", null), { message: "Duplicate activity" }]) {
       calls.length = 0;
-      const failed = await linkBankRow(refusing(error), t, withdrawal);
+      const failed = await linkBankRow(refusing(error), t, withdrawal, "UTC");
       assert.equal(failed.stage, "transfer");
       assert.match(failed.error, /^Couldn't add the fund account's transfer: .*\. The trade is in Wealthfolio without its cash\.$/);
       assert.deepEqual(calls.map(([step]) => step), ["create"]);
@@ -1352,12 +1428,12 @@ describe("bank account", () => {
     };
     const first = bankRow("WITHDRAWAL", "5000.00", "2023-04-10");
     const second = bankRow("WITHDRAWAL", "5000.00", "2023-04-10");
-    assert.equal((await linkBankRow(api, t, first)).error, undefined);
+    assert.equal((await linkBankRow(api, t, first, "UTC")).error, undefined);
     const duplicate = { ...t, status: "duplicate" };
     assert.deepEqual(importRows([duplicate], () => true, () => true), [{ ...t.transaction.activity, forceImport: true }]);
-    assert.equal((await linkBankRow(api, duplicate, second)).error, undefined);
+    assert.equal((await linkBankRow(api, duplicate, second, "UTC")).error, undefined);
     assert.equal(keys.size, 2);
-    assert.match((await linkBankRow(api, t, first)).error, /Duplicate activity/);
+    assert.match((await linkBankRow(api, t, first, "UTC")).error, /Duplicate activity/);
     assert.equal(keys.size, 2);
   });
 });

@@ -113,6 +113,19 @@ export function localDay(date: Date | string | undefined, timeZone: string) {
   return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
+/**
+ * The days an activity may be on. An untouched import keeps its UTC day, the day its row gave, even
+ * if the timezone setting changed since. An entry from Wealthfolio's form is on its `localDay` in
+ * `timeZone`, as the form saves the time of day too. An import edited in the form may be on either,
+ * as the edit needn't have changed its date. Exact import keys stay UTC.
+ */
+export function entryDays(a: Pick<ActivityDetails, "date" | "sourceSystem" | "isUserModified">, timeZone: string) {
+  const utc = day(a.date);
+  if (a.sourceSystem === "CSV" && !a.isUserModified) return [utc];
+  const local = localDay(a.date, timeZone);
+  return a.sourceSystem === "CSV" && local !== utc ? [local, utc] : [local];
+}
+
 /** Wealthfolio leaves a zero fee out of the key; a zero quantity or price is treated the same. */
 function amount(value: string | number | null | undefined, zeroIsNone = false) {
   if (value === null || value === undefined || value === "") return "";
@@ -470,9 +483,8 @@ const giftDay = (a: ActivityDetails, timeZone: string) =>
 /**
  * Activities that may be a gift's row entered another way: in its account and fund, on its day,
  * with its units (any units with `anyUnits`, for a segregated portfolio's credits, which may have
- * been entered as one), as a transfer or a trade in the same direction. CSV imports use their UTC day;
- * edited ones may also use their engine day, since the edit needn't have changed the date. Other
- * entries use their day in `timeZone`, from `engineTimeZone`. Exact import keys stay UTC.
+ * been entered as one), as a transfer or a trade in the same direction. Each is on its `entryDays`
+ * in `timeZone`, from `engineTimeZone`.
  */
 export function giftEntries(existing: ActivityDetails[], funds: FundRefs, timeZone: string) {
   return (row: ActivityImport, anyUnits = false) => {
@@ -481,7 +493,7 @@ export function giftEntries(existing: ActivityDetails[], funds: FundRefs, timeZo
     const on = day(row.date);
     return existing.filter((a) =>
       a.accountId === row.accountId && types.includes(a.activityType) && !!a.assetId && funds.get(a.assetId) === fund &&
-      (giftDay(a, timeZone) === on || (a.sourceSystem === "CSV" && day(a.date) === on)) &&
+      entryDays(a, timeZone).includes(on) &&
       (anyUnits || amount(a.quantity) === amount(row.quantity)));
   };
 }
@@ -525,6 +537,22 @@ export const BANK_DAYS = 7;
 const days = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / 86_400_000;
 
 /**
+ * A bank entry's day, for a transaction: of its `entryDays` in `timeZone`, from `engineTimeZone`, the
+ * one closer to the transaction's bank row.
+ */
+export function bankDay(entry: Pick<ActivityDetails, "date" | "sourceSystem" | "isUserModified">, t: PlannedTransaction, timeZone: string) {
+  const on = String(t.transaction.bank!.date);
+  return entryDays(entry, timeZone).reduce((best, d) => (days(d, on) < days(best, on) ? d : best));
+}
+
+/**
+ * Whether a bank entry read again is on another day than before: its date was changed, not only
+ * what else changed in it, such as being marked as edited when it was changed into a transfer.
+ */
+export const movedDay = (before: ActivityDetails, after: ActivityDetails, t: PlannedTransaction, timeZone: string) =>
+  new Date(after.date).getTime() !== new Date(before.date).getTime() && bankDay(after, t, timeZone) !== bankDay(before, t, timeZone);
+
+/**
  * The amounts, to the paisa, a transaction's bank side can have in the bank's own record: the
  * transfer's, or the statement's printed amount with or without its charges, whichever way the
  * statement prints it.
@@ -542,11 +570,11 @@ export const PAISA = (value: string) => format(div(abs(dec(value)), dec("1"), 2)
 /**
  * Rows in the bank account that may be a new transaction's bank side, already in Wealthfolio: cash
  * moving the same way, within `BANK_DAYS`, to the paisa of the transaction's cash, or of its printed
- * amount with or without its charges, whichever way the statement prints it. A bank import usually
- * records them as deposits and withdrawals. Transfers already linked can't be reused; the caller
- * finds which those are.
+ * amount with or without its charges, whichever way the statement prints it. Each entry is on its
+ * `bankDay` in `timeZone`. A bank import usually records them as deposits and withdrawals. Transfers
+ * already linked can't be reused; the caller finds which those are.
  */
-export function bankCandidates(t: PlannedTransaction, existing: ActivityDetails[]) {
+export function bankCandidates(t: PlannedTransaction, existing: ActivityDetails[], timeZone: string) {
   const { bank } = t.transaction;
   if (!bank || t.status === "existing" || t.status === "invalid") return [];
   const paid = bank.activityType === "TRANSFER_OUT";
@@ -561,18 +589,24 @@ export function bankCandidates(t: PlannedTransaction, existing: ActivityDetails[
       a.currency === bank.currency &&
       a.amount !== null &&
       amounts.has(PAISA(a.amount)) &&
-      days(day(a.date), String(bank.date)) <= BANK_DAYS,
+      days(bankDay(a, t, timeZone), String(bank.date)) <= BANK_DAYS,
   );
 }
 
-/** For each new transaction, the bank row to offer reusing: closest days first, each row offered once. */
-export function bankMatches(plan: PlannedTransaction[], existing: ActivityDetails[], linked: ReadonlySet<string>) {
+/**
+ * For each new transaction, the bank row to offer reusing: closest days first, each on its `bankDay`
+ * in `timeZone`, and each row offered once.
+ */
+export function bankMatches(plan: PlannedTransaction[], existing: ActivityDetails[], linked: ReadonlySet<string>, timeZone: string) {
   const options = plan.flatMap((t, index) =>
-    bankCandidates(t, existing)
+    bankCandidates(t, existing, timeZone)
       .filter((a) => !linked.has(a.id))
-      .map((activity) => ({ t, index, activity, apart: days(day(activity.date), String(t.transaction.bank!.date)) })),
+      .map((activity) => {
+        const on = bankDay(activity, t, timeZone);
+        return { t, index, activity, on, apart: days(on, String(t.transaction.bank!.date)) };
+      }),
   );
-  options.sort((a, b) => a.apart - b.apart || a.index - b.index || day(a.activity.date).localeCompare(day(b.activity.date)));
+  options.sort((a, b) => a.apart - b.apart || a.index - b.index || a.on.localeCompare(b.on));
   const matches = new Map<PlannedTransaction, ActivityDetails>();
   const used = new Set<string>();
   for (const { t, activity } of options) {
@@ -607,18 +641,20 @@ export interface LinkProgress {
  * to reuse: adds the fund account's transfer, changes a bank deposit or withdrawal into the
  * matching transfer, and links the two. Returns what went wrong, if anything, at which step, and
  * what it did: the transfer added, and whether the bank row was changed into a transfer and linked.
- * `from` is what an earlier try did, so a retry only does what's left.
+ * `from` is what an earlier try did, so a retry only does what's left. A failure names the row's
+ * `bankDay` in `timeZone`.
  */
 export async function linkBankRow(
   activities: LinkApi,
   t: PlannedTransaction,
   bankRow: ActivityDetails,
+  timeZone: string,
   from: LinkProgress = {},
 ): Promise<{ error?: string; stage?: LinkStage } & LinkProgress & { converted: boolean; linked: boolean }> {
   if (from.linked) return { fundId: from.fundId, converted: !!from.converted, linked: true };
   const cash = t.transaction.cash!;
   const type = t.transaction.bank!.activityType;
-  const when = `on ${day(bankRow.date)}`;
+  const when = `on ${bankDay(bankRow, t, timeZone)}`;
   let fundId = from.fundId;
   if (!fundId) {
     try {

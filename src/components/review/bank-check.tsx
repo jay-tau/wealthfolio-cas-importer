@@ -1,7 +1,5 @@
-import type { ActivityDetails } from "@wealthfolio/addon-sdk";
 import { Checkbox } from "@wealthfolio/ui";
 import { converts, type EntryFacts, entryNotes, OUTSIDE_SPENDING, outsideSpending } from "../../cas/bank-entries";
-import { day } from "../../cas/plan";
 import { type BankPair, MOVEMENT } from "../../cas/review";
 import { longDate, rupees } from "../../lib/review-format";
 import { LinkButton, WrapButton } from "./parts";
@@ -87,9 +85,9 @@ export function movementWords(pair: BankPair, bankName: string, place = "") {
   return `${MOVEMENT[rows[0].type] ?? "Payment"}${place} · ${longDate(String(bank!.date))} · ${rupees(amount)}, ${paid(pair) ? "from" : "to"} ${bankName}`;
 }
 
-/** The bank entry: its description, day and amount, with a sign for money out. */
-const entryWords = (entry: ActivityDetails, out: boolean) =>
-  `${longDate(day(entry.date))} · ${out ? "−" : "+"}${rupees(String(entry.amount ?? ""))}`;
+/** The bank entry's day, as the pair has it, and its amount, with a sign for money out. */
+const entryWords = ({ entry, day }: Pick<BankPair, "entry" | "day">, out: boolean) =>
+  `${longDate(day)} · ${out ? "−" : "+"}${rupees(String(entry.amount ?? ""))}`;
 
 /**
  * The bank matches for one bank account, as a question: every pair at once, the strong ones ticked,
@@ -186,7 +184,7 @@ export function BankCheck({
                   </span>
                   <span id={`${pairId(pair)}-entry`} style={{ overflowWrap: "anywhere" }}>
                     {check.bankName}: <span className="font-medium">{pair.entry.comment?.trim() || "No description"}</span> ·{" "}
-                    <span className="text-muted-foreground">{entryWords(pair.entry, out)}</span>
+                    <span className="text-muted-foreground">{entryWords(pair, out)}</span>
                   </span>
                   <span id={`${pairId(pair)}-reason`} className={pair.strong ? "text-muted-foreground" : "text-warning"}>
                     {pair.reason}
