@@ -259,7 +259,7 @@ describe("amounts and charges", () => {
       far.warnings.map((w) => [w.message, w.leftOut, w.rows.length]),
       [
         [
-          "The statement's ₹1200 differs from 100.000 units × NAV 10.0000, with or without the ₹1 stamp duty, by more than the units' rounding. It's imported at ₹1001 using the printed units and NAV.",
+          "The statement's ₹1,200 differs from 100.000 units × NAV 10.0000, with or without the ₹1 stamp duty, by more than the units' rounding. It's imported at ₹1,001 using the printed units and NAV.",
           false,
           2,
         ],
@@ -270,6 +270,26 @@ describe("amounts and charges", () => {
     const coarse = (units) => map(statement(scheme("A", [tx("2024-01-10", "PURCHASE", "1000.40", units, "10.0000")]))).warnings.length;
     assert.equal(coarse("100.0"), 0);
     assert.equal(coarse("100.000"), 1);
+  });
+
+  test("a caveat writes rupees as the Review screen does, and the NAV and what's imported keep every place", () => {
+    for (const [printed, units, stamp, imported, message] of [
+      // Sub-paisa: 2.425 × 4123.4567 + 0.50 = 9999.8824975.
+      [
+        "15000.00", "2.425", "0.50", "9999.8824975",
+        "The statement's ₹15,000 differs from 2.425 units × NAV 4123.4567, with or without the ₹0.50 stamp duty, by more than the units' rounding. It's imported at ₹9,999.88 using the printed units and NAV.",
+      ],
+      // Lakhs: 242.500 × 4123.4567 + 75 = 1000013.24975.
+      [
+        "1500000.00", "242.500", "75.00", "1000013.24975",
+        "The statement's ₹15,00,000 differs from 242.500 units × NAV 4123.4567, with or without the ₹75 stamp duty, by more than the units' rounding. It's imported at ₹10,00,013.25 using the printed units and NAV.",
+      ],
+    ]) {
+      const mapping = map(statement(scheme("A", [tx("2024-01-10", "PURCHASE", printed, units, "4123.4567"), charge("2024-01-10", "STAMP_DUTY_TAX", stamp)])));
+      const [{ activity, cash }] = mapping.transactions;
+      assert.deepEqual([activity.quantity, activity.unitPrice, activity.amount, activity.tax, cash.amount], [units, "4123.4567", imported, format(dec(stamp)), imported]);
+      assert.deepEqual(summary(mapping).warnings, [message]);
+    }
   });
 
   test("the cross-check includes a paisa and accepts the exact tolerance", () => {
@@ -311,8 +331,30 @@ describe("amounts and charges", () => {
     );
     assert.equal(mapping.transactions.length, 1);
     assert.deepEqual(summary(mapping).warnings, [
-      "₹1500 doesn't match the dividend rate and the units held, with or without the ₹200 TDS.",
+      "₹1,500 doesn't match the dividend rate and the units held, with or without the ₹200 TDS.",
     ]);
+  });
+
+  test("a payout left out over its TDS writes rupees as the Review screen does", () => {
+    for (const [printed, rate, tds, message] of [
+      ["1125.00", "2.00", "112.50", "₹1,125 doesn't match the dividend rate and the units held, with or without the ₹112.50 TDS."],
+      ["125000.00", "200.00", "12500.00", "₹1,25,000 doesn't match the dividend rate and the units held, with or without the ₹12,500 TDS."],
+      ["1250.00", null, "125.00", "Can't tell whether ₹1,250 is before or after the ₹125 TDS: the dividend rate is missing."],
+      // 1000 units × 0.100005 = ₹100.005, within a paisa of ₹100 and of ₹100.01.
+      ["100.00", "0.100005", "0.01", "Can't tell whether ₹100 is before or after the ₹0.01 TDS: both fit the dividend rate and the units held."],
+    ]) {
+      const mapping = map(
+        statement(
+          scheme("A", [
+            tx("2023-06-01", "PURCHASE", "10000.00", "1000.000", "10.0000", { balance: "1000.000" }),
+            tx("2023-12-28", "DIVIDEND_PAYOUT", printed, null, null, { dividend_rate: rate }),
+            charge("2023-12-28", "TDS_TAX", tds),
+          ]),
+        ),
+      );
+      assert.equal(mapping.transactions.length, 1, printed);
+      assert.deepEqual(summary(mapping).warnings, [message]);
+    }
   });
 
   test("payout holdings include movements after the last known balance", () => {
@@ -458,15 +500,16 @@ describe("amounts and charges", () => {
   test("same-day transactions that differ, or whose charges differ or don't come one each, are still left out", () => {
     const purchase = (type = "PURCHASE", amount = "5000.00", units = "499.975") => tx("2023-05-05", type, amount, units, "10.0000");
     const stamp = (amount = "0.25") => charge("2023-05-05", "STAMP_DUTY_TAX", amount);
-    const unclear = (amount, name = "stamp duty") => `Can't tell which of the 2 transactions on this day the ₹${amount} ${name} belongs to.`;
+    const unclear = (amount, name = "stamp duty") => `Can't tell which of the 2 transactions on this day the ${amount} ${name} belongs to.`;
     const cases = [
-      ["another type", [purchase(), stamp(), purchase("PURCHASE_SIP"), stamp()], unclear("0.25")],
-      ["other units", [purchase(), stamp(), purchase("PURCHASE", "5000.00", "499.976"), stamp()], unclear("0.25")],
-      ["another amount", [purchase(), stamp(), purchase("PURCHASE", "5000.01"), stamp()], unclear("0.25")],
-      ["unequal charges", [purchase(), stamp(), purchase(), stamp("0.30")], unclear("0.25")],
-      ["a missing charge", [purchase(), stamp(), purchase()], unclear("0.25")],
-      ["an extra charge", [purchase(), stamp(), purchase(), stamp(), stamp()], unclear("0.25")],
-      ["no positive charge", [purchase(), stamp("0.00"), purchase(), stamp("0.00")], unclear("0.00")],
+      ["another type", [purchase(), stamp(), purchase("PURCHASE_SIP"), stamp()], unclear("₹0.25")],
+      ["other units", [purchase(), stamp(), purchase("PURCHASE", "5000.00", "499.976"), stamp()], unclear("₹0.25")],
+      ["another amount", [purchase(), stamp(), purchase("PURCHASE", "5000.01"), stamp()], unclear("₹0.25")],
+      ["unequal charges", [purchase(), stamp(), purchase(), stamp("0.30")], unclear("₹0.25")],
+      ["a missing charge", [purchase(), stamp(), purchase()], unclear("₹0.25")],
+      ["an extra charge", [purchase(), stamp(), purchase(), stamp(), stamp()], unclear("₹0.25")],
+      ["no positive charge", [purchase(), stamp("0.00"), purchase(), stamp("0.00")], unclear("₹0")],
+      ["no charge amount", [purchase(), stamp(null), purchase(), stamp(null)], "Can't tell which of the 2 transactions on this day the stamp duty belongs to."],
       [
         "a kind with a charge for only one",
         [
@@ -476,7 +519,7 @@ describe("amounts and charges", () => {
           tx("2023-09-25", "DIVIDEND_REINVEST", "1312.46", "84.054", "15.6145", { dividend_rate: "0.40" }),
           charge("2023-09-25", "STAMP_DUTY_TAX", "0.07"),
         ],
-        unclear("131.25", "TDS"),
+        unclear("₹131.25", "TDS"),
       ],
     ];
     for (const [name, rows, message] of cases) {
@@ -1057,10 +1100,10 @@ describe("gifts", () => {
   });
 
   test("a printed amount further from units × NAV than the units' rounding is a caveat", () => {
-    for (const amount of ["50001", "0"]) {
+    for (const [amount, shown] of [["50001", "₹50,001"], ["0", "₹0"]]) {
       const off = map(statement(scheme("A", [giftIn({ amount })])));
       assert.deepEqual(messages(off), [
-        ["F1", false, `${RECEIVED} The statement's ₹${amount} differs from 1000.000 units × NAV 50.0000 by more than the units' rounding. It's imported at NAV 50.0000.`],
+        ["F1", false, `${RECEIVED} The statement's ${shown} differs from 1000.000 units × NAV 50.0000 by more than the units' rounding. It's imported at NAV 50.0000.`],
       ]);
     }
     for (const amount of ["50000.03", null]) {
@@ -1095,7 +1138,7 @@ describe("gifts", () => {
     assert.deepEqual(sameDay.transactions, []);
     assert.deepEqual(
       sameDay.warnings.map((w) => w.message),
-      Array(2).fill("Can't tell which of the 2 transactions on this day the ₹2.00 stamp duty belongs to."),
+      Array(2).fill("Can't tell which of the 2 transactions on this day the ₹2 stamp duty belongs to."),
     );
   });
 

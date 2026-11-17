@@ -740,18 +740,20 @@ describe("gifts", () => {
     for (const [data, direction, trade, name] of [[received, "in", "BUY", "purchase"], [given, "out", "SELL", "sale"]]) {
       const [row] = importRows(planGifts(data), () => false);
       for (const [change, found] of [
-        [{ unitPrice: "40" }, `a transfer ${direction} at 40`],
-        [{ comment: "Earlier gift" }, `a transfer ${direction} at 50 ("Earlier gift")`],
-        [{ amount: "500.00" }, `a transfer ${direction} at 50`],
-        [{ fee: "1.00" }, `a transfer ${direction} at 50`],
-        [{ activityType: trade, amount: "500.0000" }, `a ${name} at 50`],
+        [{ unitPrice: "40" }, `a transfer ${direction} of these units at ₹40 a unit`],
+        // A price keeps every decimal, as a NAV does, grouped as rupees are.
+        [{ unitPrice: "104123.45678" }, `a transfer ${direction} of these units at ₹1,04,123.45678 a unit`],
+        [{ comment: "Earlier gift" }, `a transfer ${direction} of these units at ₹50 a unit ("Earlier gift")`],
+        [{ amount: "500.00" }, `a transfer ${direction} of these units at ₹50 a unit`],
+        [{ fee: "1.00" }, `a transfer ${direction} of these units at ₹50 a unit`],
+        [{ activityType: trade, amount: "500.0000" }, `a ${name} of these units at ₹50 a unit`],
       ]) {
         const existing = [{ ...stored(row), ...change }];
         const planned = planGifts(data, existing);
         assert.deepEqual(statuses(planned), ["invalid"], JSON.stringify(change));
         assert.equal(
           planned[0].problem,
-          `Wealthfolio has ${found} of these units on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`,
+          `Wealthfolio has ${found} on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`,
         );
         const again = planGifts(data, existing);
         assert.deepEqual(statuses(again), ["invalid"]);
@@ -819,7 +821,7 @@ describe("gifts", () => {
         const withTrade = planGifts(data, [trade], {}, timeZone);
         assert.equal(withTrade[0].status, "invalid");
         assert.equal(withTrade[1].rows[0].existingId, trade.id);
-        assert.match(withTrade[0].problem, /^Wealthfolio has a (purchase|sale) at 50/);
+        assert.match(withTrade[0].problem, /^Wealthfolio has a (purchase|sale) of these units at ₹50 a unit on this day/);
       }
     }
   });
@@ -871,7 +873,7 @@ describe("gifts", () => {
         const withTrade = planGifts(data, [trade], {}, timeZone);
         assert.equal(withTrade[0].status, "invalid");
         assert.equal(withTrade[1].rows[0].existingId, trade.id);
-        assert.match(withTrade[0].problem, /^Wealthfolio has a (purchase|sale) at 50/);
+        assert.match(withTrade[0].problem, /^Wealthfolio has a (purchase|sale) of these units at ₹50 a unit on this day/);
       }
     }
   });
@@ -919,7 +921,7 @@ describe("gifts", () => {
       for (const side of rows) {
         const planned = planGifts(data, [...exact, { ...stored(side), unitPrice: "40" }]);
         assert.deepEqual(statuses(planned), ["invalid"]);
-        assert.match(planned[0].problem, /^Wealthfolio has a transfer (in|out) at 40/);
+        assert.match(planned[0].problem, /^Wealthfolio has a transfer (in|out) of these units at ₹40 a unit on this day/);
         assert.deepEqual(importRows(planned, () => true), []);
       }
     }
@@ -936,7 +938,7 @@ describe("gifts", () => {
       data.folios[1].schemes[1].transactions[0].nav = nav;
       const planned = planGifts(data, purchase);
       assert.deepEqual(statuses(planned), ["invalid", "invalid"], `merger NAV ${nav}`);
-      assert.match(planned[0].problem, /^Wealthfolio has a purchase at 50/);
+      assert.match(planned[0].problem, /^Wealthfolio has a purchase of these units at ₹50 a unit on this day/);
       assert.ok(planned[1].problem);
       assert.deepEqual(importRows(planned, () => true), []);
     }
@@ -987,7 +989,7 @@ describe("segregated portfolios", () => {
   );
   const segregation = (rows) => rows.filter((r) => r.symbol === "s");
   const handEntered = (found) =>
-    `Wealthfolio has ${found} of this fund on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's this credit, or the day's credits entered as one, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`;
+    `Wealthfolio has ${found} on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's this credit, or the day's credits entered as one, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`;
 
   test("each credit goes in alone, and a second read finds them, all or some", () => {
     const data = credited("99.987", "0.013");
@@ -1062,11 +1064,11 @@ describe("segregated portfolios", () => {
     const [row] = segregation(importRows(plan(data), () => false));
     for (const [change, found] of [
       // Entered one by one, at another price or with a comment.
-      [{ unitPrice: "10", amount: "999.8700" }, "a purchase of 99.987 units at 10"],
-      [{ comment: "Segregated" }, 'a purchase of 99.987 units ("Segregated")'],
-      [{ activityType: "TRANSFER_IN", unitPrice: "10", amount: null }, "a transfer in of 99.987 units at 10"],
+      [{ unitPrice: "10", amount: "999.8700" }, "a purchase of 99.987 units of this fund at ₹10 a unit"],
+      [{ comment: "Segregated" }, 'a purchase of 99.987 units of this fund ("Segregated")'],
+      [{ activityType: "TRANSFER_IN", unitPrice: "10", amount: null }, "a transfer in of 99.987 units of this fund at ₹10 a unit"],
       // Both credits entered as one.
-      [{ quantity: "100.000" }, "a purchase of 100 units"],
+      [{ quantity: "100.000" }, "a purchase of 100 units of this fund"],
     ]) {
       const planned = plan(data, [{ ...stored(row), ...change }]);
       assert.deepEqual(statuses(planned), ["new", "invalid", "invalid"], JSON.stringify(change));
@@ -1078,7 +1080,7 @@ describe("segregated portfolios", () => {
     const sent = segregation(importRows(plan(credits), () => false));
     const partly = plan(credits, [stored(sent[0]), { ...stored(sent[1]), quantity: "1.000" }]);
     assert.deepEqual(statuses(partly), ["new", "existing", "invalid", "invalid"]);
-    assert.equal(partly[2].problem, handEntered("a purchase of 1 units"));
+    assert.equal(partly[2].problem, handEntered("a purchase of 1 units of this fund"));
     // Another day, account, fund or direction isn't a credit of this day.
     for (const change of [
       { date: "2024-02-17T00:00:00+00:00" },
