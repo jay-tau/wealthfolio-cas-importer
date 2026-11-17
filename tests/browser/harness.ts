@@ -83,6 +83,8 @@ const host = {
   resume: undefined as (() => void) | undefined,
   failHistory: false,
   failDelete: false,
+  // Forgetting the saved password fails, as an unavailable secret store would.
+  failForget: false,
   failImport: false,
   rejectLine: undefined as number | undefined,
   skipLine: undefined as number | undefined,
@@ -152,6 +154,8 @@ const host = {
   // What accounts that track transactions hold, by symbol on XBOM.
   held: {} as Record<string, string[]>,
   parsed: 0,
+  // The password each read was given, in order.
+  passwords: [] as string[],
   // Workers started, one per parser. While a fault is set, each Worker never gets Python's files,
   // never gets a PDF, stops when given one, or answers it with a fatal Python error.
   workers: 0,
@@ -302,6 +306,7 @@ host.make = { listing: fund, scheme: (isin) => amfiScheme(amfiCode(isin)) };
 // Adds the invented folio to every read while the test sets host.sharedIsin.
 const parse = CasParser.prototype.parse;
 CasParser.prototype.parse = async function (this: CasParser, pdf: ArrayBuffer, password: string) {
+  host.passwords.push(password);
   const data = await parse.call(this, pdf, password);
   data.parse_warnings.push(...host.parseWarnings);
   host.parsed++;
@@ -844,7 +849,11 @@ const api = {
       return host.secrets.get(key) ?? null;
     },
     set: async (key: string, value: string) => void host.secrets.set(key, value),
-    delete: async (key: string) => void host.secrets.delete(key),
+    delete: async (key: string) => {
+      await wait("forget");
+      if (host.failForget) throw new Error("Secrets unavailable");
+      host.secrets.delete(key);
+    },
   },
   toast: { success() {}, error: (message: string) => void host.toasts.push(message), warning() {}, info() {} },
   navigation: { navigate: async (route: string) => void host.navigations.push(route) },

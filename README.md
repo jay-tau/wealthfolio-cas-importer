@@ -14,7 +14,8 @@ Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0
 macOS.
 
 To import, choose or drop the PDF under **Add your statement** and enter its password, if it has
-one; with a password saved, the add-on uses it unless you choose **Use a different password**. Once
+one; with a password saved, the add-on uses it until you choose **Use a different password** or it
+doesn't open a PDF, and **Use your saved password**, under the password field, goes back to it. Once
 the statement is read, one Review screen shows, in this order:
 
 - **Transactions, 1 Apr 2019 to 30 Jun 2026**, the statement's period, then the registrar, the
@@ -768,9 +769,10 @@ every answer, cost and **Change** made on the Review screen. Errors from failed 
 requests go to its log file. When Wealthfolio rejects rows, its reasons stay visible.
 
 - **That password didn't open the PDF.** Check it and read the statement again; the file stays
-  chosen. "Your saved password didn't open this PDF. Type its password." means the password you saved
-  is for other statements: it stays saved, unless you tick **Remember this password (replaces the
-  saved one)**.
+  chosen. "This PDF has a password. Type it and try again." means the password field was empty.
+  "Your saved password didn't open this PDF. Type its password." means the password you saved is for
+  other statements: it stays saved, unless you tick **Remember this password (replaces the saved
+  one)**, and **Use your saved password** uses it again for the next one.
 - **We couldn't read this as a CAS from CAMS, KFintech, NSDL or CDSL.** The PDF isn't a statement
   casparser reads, such as a bank statement or a contract note. A line under it says why when the
   add-on knows: the statement's date or period, or whether it's detailed or a summary, couldn't be

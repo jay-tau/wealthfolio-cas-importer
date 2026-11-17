@@ -4,20 +4,22 @@ import { type RefCallback, useEffect, useId, useLayoutEffect, useRef, useState }
 import { CasError, CasParser } from "../cas/parser";
 import type { Statement } from "../cas/types";
 import { PASSWORD_SECRET } from "../lib/choices";
-import { focusDropped, useFocusReturn } from "../lib/focus";
+import { focusDropped, useFocusMove, useFocusReturn } from "../lib/focus";
 import { LinkButton, WrapButton } from "./review/parts";
+
+/** A password that didn't open the PDF, as its field says it: one typed, none, or the saved one. */
+const PASSWORD_WORDS = {
+  password: "That password didn't open the PDF. Check it and try again.",
+  "no-password": "This PDF has a password. Type it and try again.",
+  "saved-password": "Your saved password didn't open this PDF. Type its password.",
+};
 
 /** What went wrong with the last read, as the form says it. */
 type Failure =
-  | { kind: "password" | "saved-password" }
+  | { kind: keyof typeof PASSWORD_WORDS }
   | { kind: "not-cas"; reason?: string }
   | { kind: "runtime" }
   | { kind: "accounts" };
-
-const PASSWORD_WORDS = {
-  password: "That password didn't open the PDF. Check it and try again.",
-  "saved-password": "Your saved password didn't open this PDF. Type its password.",
-};
 
 /**
  * Adding a statement: the PDF, chosen or dropped, its password, and Read statement. Every failure
@@ -45,8 +47,11 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
   const [useSaved, setUseSaved] = useState(false);
   const [loadingPassword, setLoadingPassword] = useState(true);
   const [reading, setReading] = useState(false);
+  const [forgetting, setForgetting] = useState(false);
   const [failure, setFailure] = useState<Failure | null>(null);
   const [sayPassword, setSayPassword] = useState(false);
+  // What the status line says once nothing is read, such as a forgotten password.
+  const [notice, setNotice] = useState("");
   // The statement read when the accounts couldn't be, so Try again doesn't read the PDF again.
   const kept = useRef<{ data: Statement; fileName: string } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -56,6 +61,8 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
   const fileInput = useRef<HTMLInputElement | null>(null);
   // The control that takes the focus once the form is enabled again, if the user didn't move it.
   const focusNext = useRef<string | null>(null);
+  // The control that takes the place of the saved password's control the user pressed.
+  const moveFocus = useFocusMove();
   const ids = {
     hint: `${uid}-hint`,
     error: `${uid}-password-error`,
@@ -135,6 +142,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
     onClear();
     setFile(chosen);
     setFailure(null);
+    setNotice("");
     kept.current = null;
     startParser();
   };
@@ -148,19 +156,45 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
       setSaved(password);
       setRemember(false);
       setUseSaved(true);
+      // It's the saved password now, so the field, for a different one, starts empty.
+      setPassword("");
     } catch {
       ctx.api.toast.error("Couldn't remember the password.");
     }
   };
 
+  /**
+   * Forget saved password goes once the password is forgotten: the focus left on it goes to the
+   * password field. One that fails keeps the saved password and its controls.
+   */
   const forget = async () => {
+    if (forgetting) return;
+    setForgetting(true);
     try {
       await ctx.api.secrets.delete(PASSWORD_SECRET);
-      setSaved(null);
-      setRemember(false);
     } catch {
       ctx.api.toast.error("Couldn't forget the saved password.");
+      return;
+    } finally {
+      setForgetting(false);
     }
+    moveFocus.expect("password");
+    setSaved(null);
+    setUseSaved(false);
+    setRemember(false);
+    setSayPassword(false);
+    setNotice("Saved password forgotten.");
+  };
+
+  /** Back to the saved password, after Use a different password or a PDF it didn't open. */
+  const useSavedPassword = () => {
+    setUseSaved(true);
+    // A password error is about the field, which goes; another failure is about the file.
+    if (passwordError) {
+      setFailure(null);
+      setSayPassword(false);
+    }
+    moveFocus.expect("different");
   };
 
   const fail = (next: Failure, focus: string) => {
@@ -189,6 +223,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
     setReading(true);
     onClear();
     setFailure(null);
+    setNotice("");
     kept.current = null;
     const usedSaved = useSaved && saved !== null;
     try {
@@ -200,11 +235,11 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
       const error = e instanceof CasError ? e : new CasError("runtime", String(e));
       if (error.kind === "password") {
         if (usedSaved) {
-          // The saved password stays for other statements; this one needs its own.
+          // The saved password stays for other statements, and Use your saved password goes back to
+          // it; this one needs its own, in the field, which keeps any password typed there before.
           setUseSaved(false);
-          setPassword("");
           fail({ kind: "saved-password" }, "cas-password");
-        } else fail({ kind: "password" }, "cas-password");
+        } else fail({ kind: password ? "password" : "no-password" }, "cas-password");
       } else if (error.kind === "runtime") {
         ctx.api.logger.error(error.message);
         fail({ kind: "runtime" }, ids.retry);
@@ -224,6 +259,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
     focusReturn.hold();
     setReading(true);
     setFailure(null);
+    setNotice("");
     try {
       await deliver(statement.data, statement.fileName);
     } catch (e) {
@@ -242,8 +278,9 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
   };
 
   // A statement without a password reads with any password, an empty one included.
-  const canRead = Boolean(file) && !locked;
-  const passwordError = failure?.kind === "password" || failure?.kind === "saved-password" ? PASSWORD_WORDS[failure.kind] : "";
+  // A read could hide the form before the completed deletion is announced.
+  const canRead = Boolean(file) && !locked && !forgetting;
+  const passwordError = failure && failure.kind in PASSWORD_WORDS ? PASSWORD_WORDS[failure.kind as keyof typeof PASSWORD_WORDS] : "";
   const notCas = failure?.kind === "not-cas";
 
   return (
@@ -295,10 +332,11 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
             <span>Using your saved password</span>
             <span aria-hidden="true">·</span>
             <LinkButton
+              ref={moveFocus.target("different")}
               type="button"
               onClick={() => {
+                // The field keeps a password typed there before Use your saved password.
                 setUseSaved(false);
-                setPassword("");
                 setRemember(false);
                 focusNext.current = "cas-password";
               }}
@@ -310,6 +348,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
           <div className="grid gap-2">
             <Label htmlFor="cas-password">PDF password</Label>
             <Input
+              ref={moveFocus.target("password")}
               id="cas-password"
               type="password"
               autoComplete="off"
@@ -338,9 +377,14 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
                 {saved !== null ? "Remember this password (replaces the saved one)" : "Remember this password"}
               </Label>
               {saved !== null && (
-                <Button type="button" variant="link" size="sm" onClick={() => void forget()}>
-                  Forget saved password
-                </Button>
+                <>
+                  <Button type="button" variant="link" size="sm" onClick={useSavedPassword}>
+                    Use your saved password
+                  </Button>
+                  <Button type="button" variant="link" size="sm" onClick={() => void forget()}>
+                    Forget saved password
+                  </Button>
+                </>
               )}
             </div>
             <p className="text-muted-foreground text-xs">
@@ -374,7 +418,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
               {failure.kind === "runtime" ? "We couldn't finish reading this PDF. Nothing was saved." : "Couldn't read your Wealthfolio accounts."}
             </AlertTitle>
             <AlertDescription>
-              <WrapButton id={ids.retry} type="button" variant="outline" onClick={() => void retry()}>
+              <WrapButton id={ids.retry} type="button" variant="outline" disabled={forgetting} onClick={() => void retry()}>
                 Try again
               </WrapButton>
             </AlertDescription>
@@ -382,7 +426,7 @@ export function StatementForm({ ctx, onClear, onRead, disabled = false, fileRef,
         )}
       </fieldset>
       <p id={ids.status} role="status" className={reading ? "text-muted-foreground text-sm" : "sr-only"}>
-        {reading ? (failure === null && kept.current ? "Reading your Wealthfolio accounts…" : "Reading the statement…") : sayPassword ? passwordError : ""}
+        {reading ? (failure === null && kept.current ? "Reading your Wealthfolio accounts…" : "Reading the statement…") : sayPassword ? passwordError : notice}
       </p>
     </div>
   );

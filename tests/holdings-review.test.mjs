@@ -45,8 +45,9 @@ before(async () => {
   ({ investorKey, sourceKey, holdingKey, LEFT_OUT } = await server.ssrLoadModule("/src/lib/choices.ts"));
 });
 
-for (const saved of [null, "old-password"]) for (const moved of ["control", "host"]) {
-  test(`password failures are announced when focus moved away, without repeating the field's description (${saved ? "saved" : "typed"}, ${moved})`, async (t) => {
+// The saved password, a password typed, or the field left empty.
+for (const [saved, typed] of [["old-password", ""], [null, "not-the-password"], [null, ""]]) for (const moved of ["control", "host"]) {
+  test(`password failures are announced when focus moved away, without repeating the field's description (${saved ? "saved" : typed ? "typed" : "empty"}, ${moved})`, async (t) => {
     const globals = ["window", "Worker", "HTMLElement", "HTMLInputElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
     const parse = CasParser.prototype.parse;
     t.after(() => {
@@ -85,6 +86,10 @@ for (const saved of [null, "old-password"]) for (const moved of ["control", "hos
     await run.flush();
     nodes(run.tree).find((node) => node.props?.id === "cas-file").props.onChange({ target: { files: [{ name: "made-up.pdf", arrayBuffer: async () => new ArrayBuffer(1) }] } });
     await run.flush();
+    if (typed) {
+      nodes(run.tree).find((node) => node.props?.id === "cas-password").props.onChange({ target: { value: typed } });
+      await run.flush();
+    }
     const read = () => nodes(run.tree).find((node) => textOf(node) === "Read statement" && node.props?.onClick).props.onClick();
     const status = () => nodes(run.tree).filter((node) => node.props?.role === "status").map(textOf);
     read();
@@ -93,7 +98,9 @@ for (const saved of [null, "old-password"]) for (const moved of ["control", "hos
     else document.activeElement = outside;
     reject(new CasError("password", "wrong password"));
     await run.flush();
-    const words = saved ? "Your saved password didn't open this PDF. Type its password." : "That password didn't open the PDF. Check it and try again.";
+    const words = saved
+      ? "Your saved password didn't open this PDF. Type its password."
+      : typed ? "That password didn't open the PDF. Check it and try again." : "This PDF has a password. Type it and try again.";
     assert.equal(document.activeElement, moved === "host" ? button : outside, "the failure keeps focus where the user moved it");
     assert.deepEqual(status(), [words], "the password error is announced once without focusing its field");
     document.hasFocus = () => true;
@@ -106,6 +113,148 @@ for (const saved of [null, "old-password"]) for (const moved of ["control", "hos
     assert.deepEqual(status(), [""], "the focused field already reads its error through aria-describedby");
   });
 }
+test("the saved password is used again after it didn't open a PDF and after Use a different password, and forgetting it is said", async (t) => {
+  const globals = ["window", "Worker", "HTMLElement", "HTMLInputElement"].map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]);
+  const parse = CasParser.prototype.parse;
+  t.after(() => {
+    CasParser.prototype.parse = parse;
+    for (const [name, descriptor] of globals) {
+      if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+      else delete globalThis[name];
+    }
+  });
+  globalThis.HTMLElement = globalThis.HTMLInputElement = class {};
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  globalThis.Worker = class {
+    constructor() { queueMicrotask(() => this.onmessage({ data: { type: "ready" } })); }
+    postMessage() {}
+    terminate() {}
+  };
+  globalThis.document = { activeElement: {}, body: {}, hasFocus: () => true, getElementById: () => null };
+  // The PDF read next opens only with `opens`; each read's password is kept.
+  let opens = "cdsl-password";
+  const passwords = [];
+  CasParser.prototype.parse = async (_pdf, password) => {
+    passwords.push(password);
+    if (opens instanceof CasError) throw opens;
+    if (password !== opens) throw new CasError("password", "wrong password");
+    return {};
+  };
+  let stored = "cams-password";
+  let forgetFails = true;
+  let finishForget;
+  const toasts = [];
+  const secrets = {
+    get: async () => stored,
+    set: async (_key, value) => { stored = value; },
+    delete: async () => {
+      await new Promise((resolve) => { finishForget = resolve; });
+      if (forgetFails) throw new Error("Secrets unavailable");
+      stored = null;
+    },
+  };
+  const run = active = controller({
+    ctx: { api: { secrets, logger: { error() {}, warn() {} }, toast: { error: (m) => toasts.push(m) } }, assets: {
+      getBlob: async () => new Blob([JSON.stringify({ files: [], wasmParts: [], wheels: [] })]),
+    } },
+    onClear() {}, onRead: async () => {},
+  }, StatementForm);
+  await run.flush();
+  const tree = () => nodes(run.tree);
+  const button = (text) => tree().find((node) => textOf(node) === text && node.props?.onClick);
+  const field = () => tree().find((node) => node.props?.id === "cas-password");
+  const errors = () => tree().filter((node) => node.props?.id === "review-password-error").map(textOf);
+  const status = () => tree().filter((node) => node.props?.role === "status").map(textOf);
+  const press = async (text) => {
+    button(text).props.onClick();
+    await run.flush();
+  };
+  tree().find((node) => node.props?.id === "cas-file").props.onChange({ target: { files: [{ name: "made-up.pdf", arrayBuffer: async () => new ArrayBuffer(1) }] } });
+  await run.flush();
+  assert.ok(tree().some((node) => textOf(node) === "Using your saved password"));
+  assert.equal(field(), undefined);
+
+  // The saved password doesn't open this PDF; its own password, typed, does.
+  await press("Read statement");
+  assert.deepEqual(errors(), ["Your saved password didn't open this PDF. Type its password."]);
+  assert.equal(field().props.value, "");
+  field().props.onChange({ target: { value: "cdsl-password" } });
+  await run.flush();
+  await press("Read statement");
+  assert.deepEqual(passwords, ["cams-password", "cdsl-password"]);
+  // The next PDF opens with the saved password, which the field offers.
+  opens = "cams-password";
+  await press("Use your saved password");
+  assert.ok(tree().some((node) => textOf(node) === "Using your saved password"));
+  await press("Read statement");
+  assert.equal(passwords.at(-1), "cams-password");
+  // Use a different password shows the password typed before, and Use your saved password goes back.
+  await press("Use a different password");
+  assert.equal(field().props.value, "cdsl-password");
+  await press("Use your saved password");
+  await press("Read statement");
+  assert.equal(passwords.at(-1), "cams-password");
+  // When the saved password doesn't open the next one either, the field keeps what was typed in it.
+  opens = "another-password";
+  await press("Read statement");
+  assert.deepEqual(errors(), ["Your saved password didn't open this PDF. Type its password."]);
+  assert.equal(field().props.value, "cdsl-password");
+  // Use your saved password clears the field's error with the field.
+  await press("Use your saved password");
+  assert.deepEqual(errors(), []);
+  await press("Use a different password");
+  assert.deepEqual(errors(), []);
+
+  // Forgetting can fail: the saved password and its controls stay, and nothing is said.
+  await press("Forget saved password");
+  assert.equal(button("Read statement").props.disabled, true);
+  // Neither password mode can start a read before the deletion's outcome can be announced.
+  await press("Use your saved password");
+  assert.equal(button("Read statement").props.disabled, true);
+  await press("Use a different password");
+  const reads = passwords.length;
+  field().props.onKeyDown({ key: "Enter" });
+  await run.flush();
+  assert.equal(passwords.length, reads);
+  finishForget();
+  await run.flush();
+  assert.deepEqual(toasts, ["Couldn't forget the saved password."]);
+  assert.equal(button("Read statement").props.disabled, false);
+  assert.ok(button("Use your saved password"));
+  assert.ok(button("Forget saved password"));
+  assert.deepEqual(status(), [""]);
+  opens = new CasError("runtime", "reader stopped");
+  await press("Read statement");
+  assert.equal(button("Try again").props.disabled, false);
+  forgetFails = false;
+  await press("Forget saved password");
+  assert.equal(button("Read statement").props.disabled, true);
+  assert.equal(button("Try again").props.disabled, true);
+  await press("Use your saved password");
+  finishForget();
+  await run.flush();
+  assert.equal(stored, null);
+  assert.equal(button("Use your saved password"), undefined);
+  assert.equal(button("Forget saved password"), undefined);
+  assert.deepEqual(status(), ["Saved password forgotten."]);
+  assert.equal(button("Read statement").props.disabled, false);
+  assert.equal(button("Try again").props.disabled, false);
+  // What's said goes with the next read, so it isn't said again after it. (With no field to focus
+  // here, the status line says the read's error instead.)
+  opens = "another-password";
+  await press("Read statement");
+  assert.deepEqual(errors(), ["That password didn't open the PDF. Check it and try again."]);
+  assert.deepEqual(status(), errors());
+  // Finishing deletion in saved-password mode must still allow remembering a new typed password.
+  field().props.onChange({ target: { value: "another-password" } });
+  tree().find((node) => node.props?.onCheckedChange).props.onCheckedChange(true);
+  await run.flush();
+  await press("Read statement");
+  assert.equal(stored, "another-password");
+  await press("Use a different password");
+  assert.equal(field().props.value, "", "a password clears from the field once it's saved");
+});
+
 afterEach(() => {
   active?.dispose();
   active = undefined;
