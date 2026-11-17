@@ -363,6 +363,110 @@ test("a fund's question counts only the folios its units come from", async () =>
   assert.equal(onStatement(one.run), "8.053 units");
 });
 
+/** The rows each plan sent to Wealthfolio's check, by symbol. */
+function checkedSymbols(api) {
+  const checked = [];
+  const check = api.activities.checkImport;
+  api.activities.checkImport = async (rows) => { checked.push(new Set(rows.map((r) => r.symbol))); return check(rows); };
+  return checked;
+}
+
+test("a fund whose rows don't add up, in a folio whose number another fund house's folio also has, is named, skipped and changed as its own", async () => {
+  const { run, api, data } = setup({ entries: [], change(d) {
+    // Testbridge's folio has Fictiva's number, and its Corporate Bond Fund misses its closing units.
+    d.folios[1].folio = d.folios[0].folio;
+    const bond = d.folios[1].schemes.find((s) => s.scheme.includes("Corporate Bond"));
+    bond.close = String(Number(bond.close_calculated) + 1);
+    return d;
+  } });
+  const checked = checkedSymbols(api);
+  await run.flush();
+  assert.equal(data.folios[0].folio, data.folios[1].folio);
+  const bond = data.folios[1].schemes.find((s) => s.scheme.includes("Corporate Bond"));
+  const cards = askCards(run);
+  // Named as the rest of the screen names it, not as printed.
+  assert.deepEqual(cards.map((c) => c.title), ["Testbridge Corporate Bond Fund's transactions don't add up"]);
+  cards[0].main.onClick();
+  await run.flush();
+  assert.deepEqual(askAnswers(run).map((a) => a.text), ["Testbridge Corporate Bond Fund: skipped"]);
+  const part = nodes(run.tree).find((node) => node.type?.name === "NotIncludedDetailed");
+  assert.deepEqual(part.props.unbalanced.map((f) => f.name), ["Testbridge Corporate Bond Fund"]);
+  assert.ok(!checked.at(-1).has(bond.isin));
+  // Change answer imports it with the difference.
+  askAnswers(run)[0].onChange();
+  await run.flush();
+  assert.deepEqual(askCards(run).map((c) => c.title), ["Testbridge Corporate Bond Fund's transactions don't add up"]);
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.deepEqual(askAnswers(run).map((a) => a.text), ["Testbridge Corporate Bond Fund: imported with the difference"]);
+  assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced, []);
+  assert.ok(checked.at(-1).has(bond.isin));
+  assert.equal(find(run, "TransactionsSummary").breakdown.unbalanced, 0);
+  // Skipped again, its Not included line's Change opens its question again.
+  askAnswers(run)[0].onChange();
+  await run.flush();
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  const again = nodes(run.tree).find((node) => node.type?.name === "NotIncludedDetailed");
+  const change = nodes(again.type(again.props)).find((node) => node.props?.["aria-label"]?.endsWith("transactions don't add up") && node.props.onClick);
+  assert.ok(change);
+  change.props.onClick();
+  await run.flush();
+  assert.deepEqual(askCards(run).map((c) => c.title), ["Testbridge Corporate Bond Fund's transactions don't add up"]);
+  assert.deepEqual(askAnswers(run), []);
+});
+
+test("two fund houses' folios with one number and one printed fund name each keep their own answer on rows that don't add up", async () => {
+  const { run, api, data } = setup({ entries: [], change(d) {
+    const [fictiva, testbridge] = d.folios;
+    const liquid = fictiva.schemes.find((s) => s.scheme.includes("Liquid"));
+    liquid.close = String(Number(liquid.close_calculated) + 1);
+    // Testbridge's fund is printed with Fictiva's fund's name, but it's another fund.
+    const twin = { ...structuredClone(liquid), isin: "INFZ91T01LQ2", rta_code: "TLQDG" };
+    d.folios = [{ ...fictiva, schemes: [liquid] }, { ...testbridge, folio: fictiva.folio, schemes: [twin] }];
+    return d;
+  } });
+  const checked = checkedSymbols(api);
+  await run.flush();
+  const [liquid, twin] = data.folios.map((f) => f.schemes[0]);
+  assert.equal(liquid.scheme, twin.scheme);
+  assert.notEqual(choices.fundKey(liquid), choices.fundKey(twin));
+  let cards = askCards(run);
+  assert.equal(cards.length, 2);
+  assert.equal(new Set(cards.map((c) => c.headingId)).size, 2);
+  // The screen names both funds and folios alike, so their buttons are numbered.
+  assert.deepEqual(cards.map((c) => c.main.name), ["Skip this fund: Fictiva Liquid Fund, fund 1", "Skip this fund: Fictiva Liquid Fund, fund 2"]);
+  // Skipping Fictiva's leaves Testbridge's open.
+  cards[0].main.onClick();
+  await run.flush();
+  cards = askCards(run);
+  assert.equal(cards.length, 1);
+  assert.equal(askAnswers(run).length, 1);
+  // Not included lists the one skipped, numbered as its fund is elsewhere.
+  const skippedLine = () => find(run, "NotIncludedDetailed").unbalanced.map((f) => f.label);
+  assert.deepEqual(skippedLine(), [`${liquid.scheme}, fund 1`]);
+  // Importing Testbridge's with the difference imports its rows only.
+  cards[0].other.onClick();
+  await run.flush();
+  assert.deepEqual(askCards(run), []);
+  assert.ok(checked.at(-1).has(twin.isin));
+  assert.ok(!checked.at(-1).has(liquid.isin));
+  const b = find(run, "TransactionsSummary").breakdown;
+  // Its rows, their stamp duty with them.
+  assert.deepEqual([b.unbalanced, b.skippedUnbalanced], [0, liquid.transactions.filter((t) => t.type !== "STAMP_DUTY_TAX").length]);
+  assert.deepEqual(skippedLine(), [`${liquid.scheme}, fund 1`]);
+  // And the other way round.
+  for (const answer of askAnswers(run)) answer.onChange();
+  await run.flush();
+  cards = askCards(run);
+  cards[0].other.onClick();
+  cards[1].main.onClick();
+  await run.flush();
+  assert.ok(checked.at(-1).has(liquid.isin));
+  assert.ok(!checked.at(-1).has(twin.isin));
+  assert.deepEqual(skippedLine(), [`${twin.scheme}, fund 2`]);
+});
+
 test("a failed plan recovers with its accepted units difference", async () => {
   const { run, api } = setup({ entries: [], change(data) {
     const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));

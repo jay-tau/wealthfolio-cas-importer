@@ -187,8 +187,8 @@ export interface DetailedRemembered {
   funds: [string, FundChoice][];
 }
 
-/** A folio's scheme, as a mapping warning names it. */
-const schemeKey = (folio: string, scheme: string) => JSON.stringify([folio, scheme]);
+/** A folio's scheme, as a mapping warning names it: by its fund house too, as two fund houses' folios can share a number. */
+const schemeKey = ({ amc, folio }: { amc: string; folio: string }, scheme: string) => JSON.stringify([amc, folio, scheme]);
 const REGISTRARS: Record<string, string> = { CAMS: "CAMS", KFINTECH: "KFintech" };
 const CANT_PLAN = "We couldn't work out what will be saved. Nothing was saved.";
 const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
@@ -634,7 +634,7 @@ export function DetailedImport({
     const mapping = mapStatement(data, {
       target: (folio, scheme) => {
         const t = target(folio, scheme);
-        return t && { ...t, openingCovered: covered.has(scheme), importUnbalanced: importsUnbalanced(schemeKey(folio.folio, scheme.scheme)) };
+        return t && { ...t, openingCovered: covered.has(scheme), importUnbalanced: importsUnbalanced(schemeKey(folio, scheme.scheme)) };
       },
       alreadyImported: indexActivities(existing, funds).has,
       entered: (row) => entered(row).length > 0,
@@ -803,7 +803,7 @@ export function DetailedImport({
     return !!pair && reusedKeys.has(pair.key);
   };
 
-  const blockedSchemes = new Set((current?.mapping.warnings ?? []).filter((w) => w.leftOut && w.rows.length === 0).map((w) => schemeKey(w.folio, w.scheme)));
+  const blockedSchemes = new Set((current?.mapping.warnings ?? []).filter((w) => w.leftOut && w.rows.length === 0).map((w) => schemeKey(w, w.scheme)));
   // Each fund in each account, with its transactions and units from the planned transactions.
   const groups = current
     ? fundGroups({ data, mapping: current.mapping, planned, sent: sentOf, target, existing: current.existing, funds: current.funds, timeZone: current.timeZone })
@@ -861,7 +861,7 @@ export function DetailedImport({
     row.label = `${row.name.trim()}${nameNumber(rows, i, "fund")}`;
   });
   const readyKeys = new Set(rows.flatMap((r) => r.items.map((i) => i.key)));
-  const nothingNew = groups.filter((g) => g.sent === 0 && g.other === 0 && !g.schemes.some(({ folio, scheme }) => blockedSchemes.has(schemeKey(folio.folio, scheme.scheme))));
+  const nothingNew = groups.filter((g) => g.sent === 0 && g.other === 0 && !g.schemes.some(({ folio, scheme }) => blockedSchemes.has(schemeKey(folio, scheme.scheme))));
   const nothingNewKeys = [...new Set(nothingNew.flatMap((g) => g.schemes.map((s) => fundKey(s.scheme))))].filter((key) => !readyKeys.has(key));
   const autoCount = new Set(rows.filter((r) => r.by === "auto").map((r) => r.item.key)).size;
 
@@ -874,7 +874,7 @@ export function DetailedImport({
   const counts = current
     ? breakdown({
         mapping: current.mapping, planned, sent: sentOf, why, duplicate: duplicateState,
-        unbalancedAnswer: (folio, scheme) => (unbalancedAnswers.get(schemeKey(folio.folio, scheme.scheme)) ? false : undefined),
+        unbalancedAnswer: (folio, scheme) => (unbalancedAnswers.get(schemeKey(folio, scheme.scheme)) ? false : undefined),
       })
     : undefined;
   const earlier: EarlierFund[] = (() => {
@@ -994,11 +994,12 @@ export function DetailedImport({
     return scheme ? fundNameOf(fundKey(scheme)) : name;
   };
   const unbalancedFunds = (shown?.mapping.warnings ?? []).filter((w) => w.unbalanced).map((w) => {
-    const scheme = data.folios.find((f) => f.folio === w.folio)?.schemes.find((s) => s.scheme === w.scheme);
+    // In its own fund house's folio: another fund house's folio can have its number.
+    const scheme = data.folios.flatMap((f) => (f.amc === w.amc && f.folio === w.folio ? f.schemes : [])).find((s) => s.scheme === w.scheme);
     return { warning: w, scheme, fund: scheme ? fundNameOf(fundKey(scheme)) : w.scheme };
   });
   const unbalancedAsks: Ask[] = unbalancedFunds.map(({ warning: w, scheme, fund }) => {
-    const key = schemeKey(w.folio, w.scheme);
+    const key = schemeKey(w, w.scheme);
     // Skipping it leaves out only this folio's rows, so while another imported folio lists a fund the
     // screen names the same, its heading, buttons, answered line, the bar and Not included name the folio.
     const twice = data.folios.some((f) => f.folio !== w.folio && included(f) && f.schemes.some((s) => fundNameOf(fundKey(s)) === fund));
@@ -1177,8 +1178,8 @@ export function DetailedImport({
     const outcomes = (current?.mapping.outcomes ?? []).filter((o) => box.folios.includes(o.folio) && fundKey(o.scheme) === key);
     if (outcomes.some((o) => o.transaction && sentOf(planned.get(o.transaction)!))) return "ready";
     if ((questionKeys.includes(key) && schemes.some(({ folio }) => included(folio))) || schemes.some(({ folio }) => undecidedFolios.includes(folio)) ||
-      schemes.some(({ folio, scheme }) => openAsks.some((a) => a.id === `unbalanced|${schemeKey(folio.folio, scheme.scheme)}`))) return "question";
-    if (schemes.every(({ folio, scheme }) => target(folio, scheme) && !blockedSchemes.has(schemeKey(folio.folio, scheme.scheme))) && outcomes.every((o) => o.transaction && planned.get(o.transaction)?.status === "existing")) return "nothing";
+      schemes.some(({ folio, scheme }) => openAsks.some((a) => a.id === `unbalanced|${schemeKey(folio, scheme.scheme)}`))) return "question";
+    if (schemes.every(({ folio, scheme }) => target(folio, scheme) && !blockedSchemes.has(schemeKey(folio, scheme.scheme))) && outcomes.every((o) => o.transaction && planned.get(o.transaction)?.status === "existing")) return "nothing";
     return "out";
   };
   const states = lines.map(lineState);
@@ -2497,9 +2498,11 @@ export function DetailedImport({
         earlier={earlier}
         skipped={skipped.map((item) => labelOf.get(item.key)!)}
         // One line for each question skipped, its folio named where the fund's in two, as its card does.
-        unbalanced={unbalancedAsks.filter((a) => a.answer === true).map((a) => {
-          const inFolio = a.folio ? `, folio ${a.folio}` : "";
-          return { id: a.id, name: `${fundNameOf(a.fundKey!)}${inFolio}`, label: `${labelOf.get(a.fundKey!)!}${inFolio}` };
+        // A line needs its fund, to name it.
+        unbalanced={unbalancedAsks.flatMap(({ answer, fundKey: key, folio, id }) => {
+          if (answer !== true || !key) return [];
+          const inFolio = folio ? `, folio ${folio}` : "";
+          return [{ id, name: `${fundNameOf(key)}${inFolio}`, label: `${labelOf.get(key)!}${inFolio}` }];
         })}
         notImported={notImported.map((f) => `${folioName(f)} (${plural(f.schemes.length, "fund")})`)}
         leftOut={leftOutFunds}

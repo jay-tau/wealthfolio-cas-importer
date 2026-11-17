@@ -169,6 +169,18 @@ describe("funds", () => {
     const [group] = fundGroups({ data, mapping, planned, sent: (t) => sends(t, () => false), target, existing: [], funds, timeZone: "UTC" });
     assert.deepEqual([group.unbalanced, format(group.after), format(group.statement), unitsDiffer(group)], [true, "10", "12", true]);
   });
+
+  test("a fund imported with its difference doesn't say so for another fund house's fund of its folio number and printed name", () => {
+    const purchase = () => [tx("2023-06-01", "PURCHASE", "1000", "10", "100")];
+    const data = statement(
+      folio("F1", [scheme("A", purchase(), { close: "10", close_calculated: "10" })]),
+      folio("F1", [scheme("A", purchase(), { isin: "INF-TB-A", rta_code: "TBA", close: "12", close_calculated: "10" })], { amc: "Testbridge Mutual Fund" }),
+    );
+    const { mapping, planned, target, funds } = planFor(data, { unbalanced: (f) => f.amc === "Testbridge Mutual Fund" });
+    assert.deepEqual(mapping.warnings.filter((w) => w.unbalanced).map((w) => [w.amc, w.folio, w.scheme]), [["Testbridge Mutual Fund", "F1", "A"]]);
+    const groups = fundGroups({ data, mapping, planned, sent: (t) => sends(t, () => false), target, existing: [], funds, timeZone: "UTC" });
+    assert.deepEqual(groups.map((g) => [g.asset.symbol, g.sent, g.unbalanced]), [["a", 1, false], ["tba", 1, true]]);
+  });
 });
 
 describe("the statement's transactions", () => {

@@ -74,6 +74,8 @@ export interface MappedTransaction {
 }
 
 export interface MappingWarning {
+  /** The folio's fund house, which tells it from another fund house's folio with its number. */
+  amc: string;
   folio: string;
   scheme: string;
   /** Empty when the warning is about the whole scheme. */
@@ -250,8 +252,9 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   for (const state of schemes) {
     const { folio, scheme, problem, unbalanced, units, entries } = state;
     const names = { folio: folio.folio, scheme: scheme.scheme };
+    const where = { amc: folio.amc, ...names };
     const warn = (rows: CasTransaction[], message: string, leftOut = true) =>
-      mapping.warnings.push({ ...names, rows, message, leftOut });
+      mapping.warnings.push({ ...where, rows, message, leftOut });
     if (problem) {
       warn([], problem);
       for (const entry of entries) if (!entry.attached) counted.push({ entry, leftOut: { kind: state.problemKind ?? "scheme", reason: problem } });
@@ -262,7 +265,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
       const message = held
         ? `${unbalanced} None of this fund's rows are imported unless you choose to import it with this difference: then check them against the PDF.`
         : `${unbalanced} Its rows are imported with this difference, as you chose: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`;
-      mapping.warnings.push({ ...names, rows: [], message, leftOut: held, unbalanced: true, units });
+      mapping.warnings.push({ ...where, rows: [], message, leftOut: held, unbalanced: true, units });
     }
     for (const entry of entries) {
       const rows = [entry.row, ...entry.charges];
