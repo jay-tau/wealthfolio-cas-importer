@@ -5,7 +5,7 @@ import { LinkButton, WrapButton } from "./parts";
 
 /**
  * The Review screen's heading: what the statement covers, where it's from, and Use another file,
- * which asks before discarding the review's changes.
+ * which asks before discarding the review's changes, or before leaving an unfinished result.
  */
 export function ReviewHeader({
   ids,
@@ -24,11 +24,11 @@ export function ReviewHeader({
   lines: ReactNode[];
   /** The review's changes, which Use another file asks before discarding; 0 once it's done. */
   changes: number;
-  /** Leaving would discard retries and the answers they need. */
+  /** The result has unfinished work or checks, including any available retries. */
   unfinished?: boolean;
   /** Whether the discard question is open. */
   discard: boolean;
-  /** Use another file, when there's nothing to discard, or Discard and choose another file. */
+  /** Use another file, when there's nothing to discard, or the question's Discard or Leave and choose another file. */
   onAnother: () => void;
   /** Use another file with changes to discard: opens the question. */
   onDiscard: () => void;
@@ -53,12 +53,13 @@ export function ReviewHeader({
         <Alert variant="warning" role="group" aria-labelledby={ids.discard}>
           <AlertTitle id={ids.discard}>{unfinished ? "Leave this unfinished import and choose another file?" : <>Discard your {plural(changes, "change")} and choose another file?</>}</AlertTitle>
           <AlertDescription>
+            {unfinished && <p>Leaving gives up any retries available here and the answers they need. What's already saved stays in Wealthfolio.</p>}
             <div className="flex flex-wrap gap-2">
               <Button id={ids.keep} type="button" onClick={onKeep}>
-                Keep reviewing
+                {unfinished ? "Stay" : "Keep reviewing"}
               </Button>
               <WrapButton type="button" variant="outline" onClick={onAnother}>
-                Discard and choose another file
+                {unfinished ? "Leave and choose another file" : "Discard and choose another file"}
               </WrapButton>
             </div>
           </AlertDescription>

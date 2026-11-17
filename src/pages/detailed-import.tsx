@@ -73,7 +73,7 @@ import { AnsweredLine, answerWords, Picker, pickerIds, QuestionCard } from "../c
 import { folioName, type FundsBox, SaveToDetailed } from "../components/review/save-to-detailed";
 import { useHoldingSearches } from "../components/review/search";
 import { bankKey, type ChosenFund, folioKey, fundKey, LEFT_OUT, NO_BANK, panKey } from "../lib/choices";
-import { readableName } from "../lib/fund-name";
+import { fundName, readableName } from "../lib/fund-name";
 import { explanation, Explained } from "../lib/explained";
 import { isDuplicateActivity } from "../lib/host-errors";
 import { nextOpen, type QuestionStop } from "../lib/focus";
@@ -1132,6 +1132,16 @@ export function DetailedImport({
   /** A transaction's fund as the screen names it, with its folio when that fund has an equal row in another. */
   const fundInFolio = (t: PlannedTransaction) =>
     inTwoFolios(t.transaction.rows[0]) ? `${transactionFund(t)}, folio ${t.transaction.folio}` : transactionFund(t);
+  /**
+   * A fund of the units check after an import as the Review screen names it, and its label there,
+   * which tells it from another fund the screen names the same.
+   */
+  const unitsFund = ({ schemes: [scheme] }: FundUnits) => {
+    const key = fundKey(scheme);
+    return itemOf.has(key)
+      ? { key, name: fundNameOf(key), label: labelOf.get(key)! }
+      : { key, name: fundName(readableName(scheme.scheme)) || readableName(scheme.scheme), label: readableName(scheme.scheme) };
+  };
   /** A transaction's place among equal rows of its fund and folio on the statement: " (1 of 2)", or "". */
   const transactionPlace = (t: PlannedTransaction) => marker(placeOf(t.transaction.rows[0]));
   // What a possible duplicate's line and buttons name it by: its fund, movement, amount and day.
@@ -2180,8 +2190,10 @@ export function DetailedImport({
           outcomes={outcomesOf(imported)}
           closing={imported.closing}
           links={imported.links}
+          transactions={imported.parts.map((p) => p.t)}
           fundName={fundInFolio}
           place={transactionPlace}
+          unitsFund={unitsFund}
           accountName={accountName}
           base={id("result")}
           onRetryAccount={(key) => void retryAccount(key)}

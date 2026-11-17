@@ -18,7 +18,7 @@ import {
 import { useEffect, useRef } from "react";
 import type { EntryFacts, Reused, StaleEntry } from "../cas/bank-entries";
 import { LinkButton, WrapButton } from "./review/parts";
-import { format } from "../cas/decimal";
+import { abs, dec, format } from "../cas/decimal";
 import type { Mapping } from "../cas/mapping";
 import type { CasTransaction } from "../cas/types";
 import {
@@ -65,11 +65,10 @@ const transactionWords = (t: PlannedTransaction, fundName: FundName, place: Plac
   `${label(t.transaction.activity)}${place(t)} of ${fundName(t)} on ${longDate(String(t.transaction.activity.date).slice(0, 10))}`;
 /** "the purchase (1 of 2) of Fictiva Liquid Fund on 5 May 2023" */
 const transactionName = (t: PlannedTransaction, fundName: FundName, place: Place) => `the ${transactionWords(t, fundName, place)}`;
+/** Words with their first letter in capitals. */
+const capital = (words: string) => `${words.slice(0, 1).toUpperCase()}${words.slice(1)}`;
 /** "Purchase (1 of 2) of Fictiva Liquid Fund on 5 May 2023" */
-const transactionTitle = (t: PlannedTransaction, fundName: FundName, place: Place) => {
-  const what = transactionWords(t, fundName, place);
-  return `${what[0].toUpperCase()}${what.slice(1)}`;
-};
+const transactionTitle = (t: PlannedTransaction, fundName: FundName, place: Place) => capital(transactionWords(t, fundName, place));
 /** "withdrawal of ₹25,000 on 4 May 2023": a bank entry's amount and day as its review card gives them. */
 const movement = (entry: ActivityDetails) =>
   `${label(entry)}${entry.amount ? ` of ${rupees(String(entry.amount))}` : ""} on ${longDate(day(entry.date))}`;
@@ -360,11 +359,111 @@ export const canRetryLink = (l: BankLink) => !!l.stage && l.stage !== "trade" &&
 export const linkLine = (l: BankLink, fundName: FundName, place: Place) =>
   `${transactionTitle(l.transaction, fundName, place)}: ${linkWords(l)}`;
 
+/** "₹24,998.75": a transaction's amount on the statement, as its question cards give it. */
+const statementAmount = ({ transaction: { rows } }: PlannedTransaction) =>
+  rows[0]?.amount ? rupees(format(abs(dec(rows[0].amount)))) : undefined;
+
+/** A transaction with its rows Wealthfolio rejected or skipped, as the result lists them. */
+export interface RowsLine {
+  key: string;
+  /**
+   * The transaction, its fund by the Review screen's name, and where its row was, when one row or
+   * one reason covers it: "Purchase (1 of 2) of Fictiva Liquid Fund on 5 May 2023, ₹24,998.75, in
+   * Mutual funds: The fund could not be created".
+   */
+  text: string;
+  /** Otherwise, each of its rows under it, those with the same reasons together, each with its reasons. */
+  rows: string[];
+}
+
+/**
+ * Rows Wealthfolio rejected or skipped, each transaction on a line of its own, named as a bank entry
+ * that wasn't linked names it, with its amount on the statement. Each row says its movement and its
+ * account: "the transfer out of Savings", "the transfer into Mutual funds", "the purchase in Mutual
+ * funds". `reasons` gives a rejected row's reasons; skipped rows have none.
+ */
+export function rowsLines(
+  answered: ActivityImport[],
+  transactions: PlannedTransaction[],
+  fundName: FundName,
+  place: Place,
+  accountName: (id: string) => string,
+  reasons?: (row: ActivityImport) => string,
+): RowsLine[] {
+  const ofLine = new Map<number, PlannedTransaction>();
+  for (const t of transactions) for (const { activity } of t.rows) if (activity.lineNumber !== undefined) ofLine.set(activity.lineNumber, t);
+  // Each transaction's answered rows by line, its last answer for each; a row the plan doesn't know stands alone.
+  const groups = new Map<PlannedTransaction | ActivityImport, Map<number | undefined, ActivityImport>>();
+  for (const a of answered) {
+    const owner = (a.lineNumber !== undefined && ofLine.get(a.lineNumber)) || a;
+    groups.set(owner, (groups.get(owner) ?? new Map<number | undefined, ActivityImport>()).set(a.lineNumber, a));
+  }
+  const why = (a: ActivityImport) => reasons?.(a) ?? "";
+  return [...groups].map(([t, byLine], i) => {
+    if (!("transaction" in t)) {
+      // Not expected: every row sent is one of a reviewed transaction's.
+      const amount = t.amount ? rupees(format(abs(dec(String(t.amount))))) : undefined;
+      const what = `${capital(label(t))}${t.symbol ? ` of ${t.symbol}` : ""} on ${longDate(day(t.date))}${amount ? `, ${amount}` : ""}, in ${accountName(t.accountId)}`;
+      return { key: `row-${i}`, text: reasons ? `${what}: ${why(t)}` : what, rows: [] };
+    }
+    const { activity, arriving } = t.transaction;
+    const head = [transactionTitle(t, fundName, place), statementAmount(t)].filter(Boolean).join(", ");
+    // A merger's new fund, as the Review screen names it.
+    const into = arriving && fundName({ ...t, transaction: { ...t.transaction, scheme: arriving.scheme, rows: arriving.rows } });
+    const words = (row: ActivityImport) => {
+      const account = accountName(row.accountId);
+      const side = row.activityType === "ADJUSTMENT" ? conversionSide(row.subtype) : undefined;
+      if (side === "CONVERSION_OUT") return `the fund conversion out of ${fundName(t)} in ${account}`;
+      if (side === "CONVERSION_IN") return `the fund conversion into ${into ?? fundName(t)} in ${account}`;
+      if (row.activityType === "TRANSFER_OUT") return `the transfer out of ${account}`;
+      if (row.activityType === "TRANSFER_IN") return `the transfer into ${account}`;
+      return `the ${label(row)} in ${account}`;
+    };
+    // The transaction's own rows, in its order, with the answers about them.
+    const rows = t.rows.flatMap(({ activity: row }) => {
+      const a = byLine.get(row.lineNumber);
+      return a ? [{ row, reason: why(a) }] : [];
+    });
+    const where = (some: ActivityImport[]) =>
+      some.length === 1 && some[0] === activity ? `in ${accountName(activity.accountId)}` : list(some.map(words));
+    const byReason = new Map<string, ActivityImport[]>();
+    for (const { row, reason } of rows) byReason.set(reason, [...(byReason.get(reason) ?? []), row]);
+    const key = `transaction-${activity.lineNumber}`;
+    if (!reasons) return { key, text: `${head}${rows.length === 1 && rows[0].row === activity ? ", " : ": "}${where(rows.map((r) => r.row))}`, rows: [] };
+    if (byReason.size === 1) {
+      const [[reason, some]] = byReason;
+      return { key, text: `${head}, ${where(some)}: ${reason}`, rows: [] };
+    }
+    return { key, text: `${head}:`, rows: [...byReason].map(([reason, some]) => `${capital(list(some.map(words)))}: ${reason}`) };
+  });
+}
+
+/** A rejected row's reasons, as Wealthfolio or the add-on gave them. */
+export const rejection = (a: ActivityImport) => Object.values(a.errors ?? {}).flat().join(" ");
+
 /** ✓ or ✗ before a line: the words say it too, so it isn't read out. */
 const Mark = ({ ok }: { ok: boolean }) => (
   <span aria-hidden="true" className={ok ? "text-success" : "text-destructive"}>
     {ok ? "✓" : "✗"}
   </span>
+);
+
+/** Rows Wealthfolio rejected or skipped, a transaction on each line, with its rows under it when needed. */
+const RowsList = ({ lines }: { lines: RowsLine[] }) => (
+  <ul className="list-disc ps-4">
+    {lines.map((line) => (
+      <li key={line.key}>
+        {line.text}
+        {line.rows.length > 0 && (
+          <ul className="list-disc ps-4">
+            {line.rows.map((row) => (
+              <li key={row}>{row}</li>
+            ))}
+          </ul>
+        )}
+      </li>
+    ))}
+  </ul>
 );
 
 /**
@@ -382,8 +481,10 @@ export function ImportResult({
   outcomes,
   closing,
   links,
+  transactions,
   fundName,
   place,
+  unitsFund,
   accountName,
   base,
   onRetryAccount,
@@ -402,10 +503,17 @@ export function ImportResult({
   outcomes: ImportOutcome[];
   closing: ClosingCheck;
   links: BankLink[];
-  /** The name each link's fund goes by on the Review screen, with its folio when needed. */
+  /** The transactions the review approved, to name those of the rows Wealthfolio rejected or skipped. */
+  transactions: PlannedTransaction[];
+  /** The name each transaction's fund goes by on the Review screen, with its folio when needed. */
   fundName: FundName;
-  /** Each link's transaction's place among equal rows on the statement. */
+  /** Each transaction's place among equal rows on the statement. */
   place: Place;
+  /**
+   * A fund of the units check as the Review screen names it, and its label there, which tells it from
+   * another fund the screen names the same; `key` is the same for one fund in two accounts.
+   */
+  unitsFund: (f: FundUnits) => { key: string; name: string; label: string };
   /** An account as the screen names it: told apart from another account of the same name. */
   accountName: (id: string) => string;
   /** Prefix of the ids of its lines (`importIds`). */
@@ -424,12 +532,13 @@ export function ImportResult({
   }, []);
   const failedLinks = links.filter((l) => l.stage);
   const changedLinks = links.filter((l) => l.changes.length || l.warnings.length);
-  const failed = result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0);
+  const failed = rowsLines(
+    result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0), transactions, fundName, place, accountName, rejection);
   // Rows Wealthfolio skipped that the preview didn't expect to be duplicates.
   const forced = new Set(sent.filter((r) => r.forceImport).map((r) => r.lineNumber));
-  const skipped = result.activities.filter(
-    (a) => (a.duplicateOfId || a.duplicateOfLineNumber) && !forced.has(a.lineNumber),
-  );
+  const skipped = rowsLines(
+    result.activities.filter((a) => (a.duplicateOfId || a.duplicateOfLineNumber) && !forced.has(a.lineNumber)),
+    transactions, fundName, place, accountName);
   const heading = imported === total
     ? `${plural(total, "transaction")} imported`
     : imported
@@ -437,6 +546,13 @@ export function ImportResult({
       : "No transactions were imported";
   const created = result.summary.assetsCreated ?? 0;
   const differ = Array.isArray(closing) ? closing.filter((f) => !sameUnits(f)) : [];
+  // Each fund that differs by the Review screen's name, or by its label there when another fund
+  // listed goes by the same name.
+  const differNames = differ.map(unitsFund);
+  const differName = (i: number) => {
+    const { key, name, label } = differNames[i];
+    return differNames.some((o) => o.key !== key && o.name.toUpperCase() === name.toUpperCase()) ? label : name;
+  };
   return (
     <Card>
       <CardHeader>
@@ -487,10 +603,10 @@ export function ImportResult({
                   {`Checked in Wealthfolio: units differ for ${differ.length} of ${plural(closing.length, "fund")}.`}
                 </p>
                 <ul className="grid gap-2 ps-4">
-                  {differ.map((f) => (
+                  {differ.map((f, i) => (
                     <li key={`${f.accountId} ${f.asset.symbol}`} className="flex flex-wrap items-center gap-x-2">
                       <span>
-                        {f.schemes[0].scheme}:{" "}
+                        {differName(i)}:{" "}
                         {f.held === undefined
                           ? "its units need a look in Wealthfolio, after a split or an option's expiry."
                           : `Wealthfolio has ${units(format(f.held))} units, the statement says ${units(format(f.statement))}.`}
@@ -515,13 +631,7 @@ export function ImportResult({
             <AlertTitle>Wealthfolio rejected rows</AlertTitle>
             <AlertDescription>
               These transactions weren't imported. The rows below say why:
-              <ul className="list-disc ps-4">
-                {failed.map((a) => (
-                  <li key={a.lineNumber}>
-                    {String(a.date)} {label(a)}: {Object.values(a.errors ?? {}).flat().join(" ")}
-                  </li>
-                ))}
-              </ul>
+              <RowsList lines={failed} />
             </AlertDescription>
           </Alert>
         )}
@@ -570,13 +680,7 @@ export function ImportResult({
             <AlertTitle>Wealthfolio skipped rows the preview didn't expect</AlertTitle>
             <AlertDescription>
               Their transactions may now lack their purchase, sale or cash. Check these in Wealthfolio:
-              <ul className="list-disc ps-4">
-                {skipped.map((a) => (
-                  <li key={a.lineNumber}>
-                    {String(a.date)} {label(a)} {a.symbol} {String(a.amount ?? "")}
-                  </li>
-                ))}
-              </ul>
+              <RowsList lines={skipped} />
             </AlertDescription>
           </Alert>
         )}

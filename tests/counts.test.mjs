@@ -715,7 +715,8 @@ test("separately compared funds keep their accounts' global labels in headings a
 const importResult = (props) => text("ImportResult", {
   imported: (props.outcomes ?? []).reduce((n, a) => n + a.imported, 0),
   result: { activities: [], summary: { success: true, total: 0, imported: 0, duplicates: 0, assetsCreated: 0 } },
-  sent: [], total: 1, outcomes: [], closing: undefined, links: [], fundName: (t) => t.transaction.scheme, place: () => "", accountName: () => "the bank account", base: "r",
+  sent: [], total: 1, outcomes: [], closing: undefined, links: [], transactions: [], fundName: (t) => t.transaction.scheme, place: () => "",
+  unitsFund: (f) => ({ key: f.asset.symbol, name: f.schemes[0].scheme, label: f.schemes[0].scheme }), accountName: () => "the bank account", base: "r",
   onRetryAccount() {}, onRetryLink() {}, onCheckAgain() {}, onOpenAccount() {}, ...props,
 });
 const outcome = (fields) => ({ key: "k", name: "Mutual funds", isNew: false, imported: 0, waiting: 0, state: "imported", ...fields });
@@ -757,13 +758,130 @@ test("the import result says per account what wasn't imported, each with Try aga
 test("rejected rows explain that their whole transactions stayed out", () => {
   const shown = importResult({ result: { activities: [{ lineNumber: 1, date: "2025-03-31", activityType: "BUY", errors: { general: ["Made-up refusal."] } }], summary: {} } });
   assert.match(shown, /Wealthfolio rejected rows These transactions weren't imported\. The rows below say why:/);
-  assert.doesNotMatch(shown, /may lack their purchase, sale or cash/);
+  assert.doesNotMatch(shown, /may now lack their purchase, sale or cash/);
+  // A row of no reviewed transaction, which isn't expected, still says what, when and where.
+  assert.match(shown, / Purchase on 31 Mar 2025, in the bank account: Made-up refusal\. /);
+});
+
+/**
+ * Made-up reviewed transactions of Fictiva Liquid Fund for the result's rejected and skipped rows:
+ * two equal purchases in folio 111, an equal one in folio 222, each with its transfer from Savings, a
+ * reinvested dividend, and a gift from folio 111 to B. Investor's folio 333 in another account.
+ */
+function rowsFixture() {
+  let line = 0;
+  const row = (activityType, accountId, fields = {}) => ({ lineNumber: ++line, activityType, accountId, date: "2023-05-05", ...fields });
+  const transaction = (folio, rows, statement, extra = {}) => ({
+    transaction: { folio, scheme: "Fictiva Liquid Fund - Direct Plan - Growth", rows: [statement], activity: rows[0], cash: rows[1], bank: rows[2], ...extra },
+    rows: [...rows, extra.receiving?.activity].filter(Boolean).map((activity) => ({ activity, errors: [], warnings: [], flagged: false })),
+    status: "new",
+  });
+  const purchase = (folio) => transaction(folio, [
+    row("BUY", "mf", { symbol: "INFZ90K01LQ6", amount: "24998.75" }), row("TRANSFER_IN", "mf", { amount: "25000" }), row("TRANSFER_OUT", "bank", { amount: "25000" }),
+  ], { date: "2023-05-05", type: "PURCHASE", amount: "24998.75" });
+  const [first, second, other] = [purchase("111"), purchase("111"), purchase("222")];
+  const dividend = transaction("111", [row("DIVIDEND", "mf", { subtype: "DRIP", amount: "1234.5", date: "2023-12-28" })],
+    { date: "2023-12-28", type: "DIVIDEND_REINVEST", amount: "1234.50" });
+  const giving = row("TRANSFER_OUT", "mf", { quantity: "10", date: "2024-06-03" });
+  const gift = transaction("111", [giving], { date: "2024-06-03", type: "GIFT_OUT", amount: "-500" },
+    { receiving: { folio: "333", scheme: "Fictiva Liquid Fund - Direct Plan - Growth", rows: [], activity: row("TRANSFER_IN", "mf-b", { quantity: "10", date: "2024-06-03" }) } });
+  // A merger: the old fund's conversion out, and the new fund's conversion in, its own scheme.
+  const merger = transaction("111", [row("ADJUSTMENT", "mf", { subtype: "CONVERSION_OUT", date: "2024-07-01" })],
+    { date: "2024-07-01", type: "SWITCH_OUT_MERGER", amount: "-10000" },
+    { scheme: "Fictiva Old Fund - Direct Plan - Growth", arriving: { scheme: "Fictiva New Fund - Direct Plan - Growth", rows: [{ date: "2024-07-01", type: "SWITCH_IN_MERGER", amount: "10000" }], activity: row("ADJUSTMENT", "mf", { subtype: "CONVERSION_IN", date: "2024-07-01" }) } });
+  merger.rows.push({ activity: merger.transaction.arriving.activity, errors: [], warnings: [], flagged: false });
+  const transactions = [first, second, other, dividend, gift, merger];
+  // As the Review screen names them: equal purchases by their place in their folio, and with their
+  // folio, as the fund has an equal one in another.
+  const places = new Map([[first, " (1 of 2)"], [second, " (2 of 2)"]]);
+  const props = {
+    transactions,
+    fundName: (t) => (t.transaction.rows[0].type === "PURCHASE" ? `Fictiva Liquid Fund, folio ${t.transaction.folio}` : t.transaction.scheme.split(" - ")[0]),
+    place: (t) => places.get(t) ?? "",
+    accountName: (id) => ({ mf: "Mutual funds", "mf-b": "Mutual funds (B. Investor)", bank: "Savings" })[id] ?? "?",
+  };
+  return { first, second, other, dividend, gift, merger, props };
+}
+/** What Wealthfolio answered for a row, with these errors. */
+const answer = (activity, errors) => ({ ...activity, isValid: !errors, ...(errors && { errors }) });
+const ANOTHER = "Another row of this transaction was rejected, so none of it was imported.";
+
+test("rejected rows name their transaction as a bank entry's line does, a line each, with each row's account and reasons", () => {
+  const { first, other, dividend, gift, props } = rowsFixture();
+  const rowsOf = (t) => t.rows.map((r) => r.activity);
+  const [buy, cash, bank] = rowsOf(first);
+  const [, , otherBank] = rowsOf(other);
+  const activities = [
+    answer(buy, { symbol: ["The fund could not be created"] }), answer(cash, { general: [ANOTHER] }), answer(bank, { general: [ANOTHER] }),
+    ...rowsOf(other).map((r) => answer(r, r === otherBank ? { general: ["Made-up bank refusal."], amount: ["Made-up amount refusal."] } : { general: [ANOTHER] })),
+    answer(rowsOf(dividend)[0], { symbol: ["The fund could not be created"] }),
+    answer(rowsOf(gift)[0], { general: [ANOTHER] }), answer(rowsOf(gift)[1], { symbol: ["Made-up recipient refusal."] }),
+  ];
+  const lines = components.rowsLines(activities, props.transactions, props.fundName, props.place, props.accountName, components.rejection);
+  assert.deepEqual(lines.map(({ text, rows }) => [text, rows]), [
+    ["Purchase (1 of 2) of Fictiva Liquid Fund, folio 111 on 5 May 2023, ₹24,998.75:", [
+      "The purchase in Mutual funds: The fund could not be created",
+      `The transfer into Mutual funds and the transfer out of Savings: ${ANOTHER}`,
+    ]],
+    ["Purchase of Fictiva Liquid Fund, folio 222 on 5 May 2023, ₹24,998.75:", [
+      `The purchase in Mutual funds and the transfer into Mutual funds: ${ANOTHER}`,
+      "The transfer out of Savings: Made-up bank refusal. Made-up amount refusal.",
+    ]],
+    // One row, or one reason for all of them: one line.
+    ["Reinvested dividend of Fictiva Liquid Fund on 28 Dec 2023, ₹1,234.50, in Mutual funds: The fund could not be created", []],
+    // A gift between two accounts: each side in its own account.
+    ["Transfer out of Fictiva Liquid Fund on 3 Jun 2024, ₹500:", [
+      `The transfer out of Mutual funds: ${ANOTHER}`,
+      "The transfer into Mutual funds (B. Investor): Made-up recipient refusal.",
+    ]],
+  ]);
+  // A merger's two rows name their funds, as the Review screen does.
+  const fixture = rowsFixture();
+  const [out, into] = rowsOf(fixture.merger);
+  const conversion = components.rowsLines([answer(out, { general: [ANOTHER] }), answer(into, { symbol: ["Made-up new fund refusal."] })],
+    fixture.props.transactions, fixture.props.fundName, fixture.props.place, fixture.props.accountName, components.rejection);
+  assert.deepEqual(conversion.map(({ text, rows }) => [text, rows]), [["Fund conversion out of Fictiva Old Fund on 1 Jul 2024, ₹10,000:", [
+    `The fund conversion out of Fictiva Old Fund in Mutual funds: ${ANOTHER}`,
+    "The fund conversion into Fictiva New Fund in Mutual funds: Made-up new fund refusal.",
+  ]]]);
+  // One reason for every row: one line, naming each row.
+  const same = components.rowsLines(rowsOf(first).map((r) => answer(r, { general: ["Made-up refusal."] })),
+    props.transactions, props.fundName, props.place, props.accountName, components.rejection);
+  assert.deepEqual(same.map(({ text, rows }) => [text, rows]), [[
+    "Purchase (1 of 2) of Fictiva Liquid Fund, folio 111 on 5 May 2023, ₹24,998.75, the purchase in Mutual funds, the transfer into Mutual funds and the transfer out of Savings: Made-up refusal.", [],
+  ]]);
+  // As shown: each transaction a list item, its rows a list under it.
+  const html = renderToStaticMarkup(createElement(components.ImportResult, {
+    ...props, result: { activities, summary: { success: false } }, sent: [], total: 5, imported: 0, outcomes: [], closing: undefined, links: [],
+    unitsFund: () => ({}), base: "r", onRetryAccount() {}, onRetryLink() {}, onCheckAgain() {}, onOpenAccount() {},
+  })).replaceAll("&#x27;", "'");
+  assert.ok(html.includes("<li>Purchase (1 of 2) of Fictiva Liquid Fund, folio 111 on 5 May 2023, ₹24,998.75:<ul class=\"list-disc ps-4\"><li>The purchase in Mutual funds: The fund could not be created</li>"), html);
+  assert.ok(!/2023-05-05|24998|INFZ90K01LQ6|Direct Plan/.test(html), html);
+});
+
+test("skipped rows name their transaction, its amount, and each row skipped with its account", () => {
+  const { first, second, other, props } = rowsFixture();
+  const [buy, cash] = first.rows.map((r) => r.activity);
+  const [, secondCash, secondBank] = second.rows.map((r) => r.activity);
+  const [otherBuy] = other.rows.map((r) => r.activity);
+  const skipped = (a) => ({ ...a, isValid: true, duplicateOfId: "existing" });
+  const shown = importResult({
+    ...props,
+    result: { activities: [skipped(buy), skipped(cash), skipped(secondCash), skipped(secondBank), skipped(otherBuy)], summary: { success: true } },
+  });
+  assert.ok(shown.includes(" Wealthfolio skipped rows the preview didn't expect Their transactions may now lack their purchase, sale or cash. Check these in Wealthfolio: " +
+    "Purchase (1 of 2) of Fictiva Liquid Fund, folio 111 on 5 May 2023, ₹24,998.75: the purchase in Mutual funds and the transfer into Mutual funds " +
+    "Purchase (2 of 2) of Fictiva Liquid Fund, folio 111 on 5 May 2023, ₹24,998.75: the transfer into Mutual funds and the transfer out of Savings " +
+    "Purchase of Fictiva Liquid Fund, folio 222 on 5 May 2023, ₹24,998.75, in Mutual funds "), shown);
+  // A row imported anyway, by the user's answer, isn't a surprise.
+  const forced = importResult({ ...props, sent: [{ ...otherBuy, forceImport: true }], result: { activities: [skipped(otherBuy)], summary: { success: true } } });
+  assert.doesNotMatch(forced, /Wealthfolio skipped rows/);
 });
 
 test("the import result's units check: couldn't run, every fund matching, or units that differ", () => {
   assert.match(importResult({ closing: "failed" }), / Saved, but the units couldn't be checked in Wealthfolio\. Check again : the units in Wealthfolio $/);
-  const fund = (scheme, statement, held) => ({
-    accountId: "account-1", asset: { symbol: scheme }, schemes: [{ scheme }], statement: dec(statement), held: held === undefined ? undefined : dec(held),
+  const fund = (scheme, statement, held, accountId = "account-1") => ({
+    accountId, asset: { symbol: scheme }, schemes: [{ scheme }], statement: dec(statement), held: held === undefined ? undefined : dec(held),
   });
   const accountName = (id) => (id === "account-1" ? "Mutual funds" : "?");
   assert.match(importResult({ closing: [fund("A", "10", "10")], accountName }), / ✓ Checked in Wealthfolio: units match the statement for the fund\. $/);
@@ -773,6 +891,34 @@ test("the import result's units check: couldn't run, every fund matching, or uni
   assert.ok(differ.includes(" Checked in Wealthfolio: units differ for 2 of 3 funds. " +
     "B: Wealthfolio has 1,224.500 units, the statement says 1,234.500. Open Mutual funds " +
     "C: its units need a look in Wealthfolio, after a split or an option's expiry. Open Mutual funds "), differ);
+});
+
+test("units that differ name each fund as the Review screen does, by its label there when another goes by the same name", () => {
+  const fund = (scheme, symbol, accountId = "account-1") => ({ accountId, asset: { symbol }, schemes: [{ scheme }], statement: dec("10"), held: dec("9") });
+  const accountName = (id) => ({ "account-1": "Mutual funds", "account-2": "Mutual funds (B. Investor)" })[id];
+  // The Review screen's names: its chosen listing's, without plan and option.
+  const named = {
+    "Fictiva Flexi Cap Fund - Direct Plan - Growth": { key: "isin:FLEXI-G", name: "Fictiva Flexi Cap Fund" },
+    "Fictiva Flexi Cap Fund - Direct Plan - IDCW": { key: "isin:FLEXI-I", name: "Fictiva Flexi Cap Fund" },
+    "Fictiva Liquid Fund - Direct Plan - Growth": { key: "isin:LIQUID", name: "Fictiva Liquid Fund" },
+  };
+  const unitsFund = (f) => ({ ...named[f.schemes[0].scheme], label: f.schemes[0].scheme });
+  const liquid = "Fictiva Liquid Fund - Direct Plan - Growth";
+  const one = importResult({ closing: [fund(liquid, "LIQUID")], unitsFund, accountName });
+  assert.ok(one.includes(" Fictiva Liquid Fund: Wealthfolio has 9.000 units, the statement says 10.000. Open Mutual funds "), one);
+  assert.ok(!one.includes("Direct Plan"), one);
+  // The same fund in two accounts: one name, each line opening its account.
+  const twice = importResult({ closing: [fund(liquid, "LIQUID"), fund(liquid, "LIQUID", "account-2")], unitsFund, accountName });
+  assert.ok(twice.includes(" Fictiva Liquid Fund: Wealthfolio has 9.000 units, the statement says 10.000. Open Mutual funds " +
+    "Fictiva Liquid Fund: Wealthfolio has 9.000 units, the statement says 10.000. Open Mutual funds (B. Investor) "), twice);
+  // Two funds the screen names the same: each by its label there.
+  const twins = importResult({
+    closing: [fund("Fictiva Flexi Cap Fund - Direct Plan - Growth", "FLEXI-G"), fund("Fictiva Flexi Cap Fund - Direct Plan - IDCW", "FLEXI-I"), fund(liquid, "LIQUID")],
+    unitsFund, accountName,
+  });
+  assert.ok(twins.includes(" Fictiva Flexi Cap Fund - Direct Plan - Growth: Wealthfolio has 9.000 units, the statement says 10.000. Open Mutual funds " +
+    "Fictiva Flexi Cap Fund - Direct Plan - IDCW: Wealthfolio has 9.000 units, the statement says 10.000. Open Mutual funds " +
+    "Fictiva Liquid Fund: Wealthfolio has 9.000 units"), twins);
 });
 
 test("the import result names each bank entry the add-on changed, and says how far a failed one got", () => {
@@ -1021,4 +1167,20 @@ test("leaving an unfinished result asks even when no review answers changed", ()
   assert.match(text("ReviewHeader", { ...props, discard: true }), /Leave this unfinished import and choose another file\?/);
   components.ReviewHeader({ ...props, unfinished: false }).props.children[0].props.children[1].props.onClick();
   assert.deepEqual(calls, ["ask", "leave"]);
+});
+
+test("leaving an unfinished result says what leaving gives up, and its buttons say what they do", () => {
+  const props = { ids: { keep: "keep" }, title: "Import", lines: [], discard: true, onDiscard() {}, onAnother() {}, onKeep() {} };
+  const unfinished = text("ReviewHeader", { ...props, changes: 0, unfinished: true });
+  assert.ok(unfinished.includes(" Leave this unfinished import and choose another file? " +
+    "Leaving gives up any retries available here and the answers they need. What's already saved stays in Wealthfolio. " +
+    "Stay Leave and choose another file "), unfinished);
+  assert.doesNotMatch(unfinished, /Keep reviewing|Discard/);
+  // Stay is the main choice, and has the focus when the question opens.
+  const html = renderToStaticMarkup(createElement(components.ReviewHeader, { ...props, changes: 0, unfinished: true }));
+  assert.match(html, /<button[^>]*id="keep"[^>]*>Stay<\/button>/);
+  // An ordinary review's question keeps its words.
+  const review = text("ReviewHeader", { ...props, changes: 3 });
+  assert.ok(review.includes(" Discard your 3 changes and choose another file? Keep reviewing Discard and choose another file "), review);
+  assert.doesNotMatch(review, /Leaving|Stay|already saved/);
 });
