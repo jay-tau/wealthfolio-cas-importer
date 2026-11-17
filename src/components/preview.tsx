@@ -105,6 +105,21 @@ export interface BankLink extends Reused {
   facts: EntryFacts;
 }
 
+/**
+ * A transaction Wealthfolio has all or part of now, saved elsewhere while an import ran, so it isn't
+ * sent again, with the bank entry chosen for it.
+ */
+export interface FoundTransaction {
+  transaction: PlannedTransaction;
+  bankRow?: ActivityDetails;
+}
+
+/** What a transaction found in Wealthfolio after a refused import needs, as its line in the result says it. */
+export const foundLine = (f: FoundTransaction, fundName: FundName, place: Place) =>
+  `${transactionTitle(f.transaction, fundName, place)}: Wealthfolio now has all or part of it, saved elsewhere while the import ran, so it wasn't imported again${
+    f.bankRow ? `, nor linked with the bank entry of ${longDate(day(f.bankRow.date))}` : ""
+  }. Check it in Wealthfolio, then read the statement again to import anything missing.`;
+
 /** What changed in an entry the user chose, between the review and Import. */
 export function staleText(s: StaleEntry, accountName: (id: string) => string, fundName: FundName, place: Place) {
   const then = `${entryName(s.before, accountName(s.before.accountId))}, chosen for ${transactionName(s.transaction, fundName, place)},`;
@@ -323,12 +338,20 @@ export function linkWords(l: BankLink) {
       return `The trade wasn't imported, so the bank entry of ${when} was left as it is.`;
     case "transfer":
       return `The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of ${when} wasn't linked.`;
+    case "exists":
+      return `The trade is in Wealthfolio, but Wealthfolio refused the fund account's transfer as a duplicate: it may already have one for the bank entry of ${when}, from an earlier try. Check the fund account's transfers, then link the bank entry in Wealthfolio.`;
     case "convert":
       return `The trade and the fund account's transfer are in Wealthfolio; the bank entry of ${when} wasn't changed into a transfer or linked.`;
     default:
       return `The trade and the fund account's transfer are in Wealthfolio; the bank entry of ${when} wasn't linked.`;
   }
 }
+
+/**
+ * Whether Try again can go on with a bank entry that wasn't linked: not when its trade wasn't
+ * imported, nor when Wealthfolio may already have its transfer, which only the user can check.
+ */
+export const canRetryLink = (l: BankLink) => !!l.stage && l.stage !== "trade" && l.stage !== "exists";
 
 /**
  * A bank entry that wasn't linked, as its line in the result says it, its transaction told from equal
@@ -353,6 +376,7 @@ const Mark = ({ ok }: { ok: boolean }) => (
 export function ImportResult({
   result,
   sent,
+  found = [],
   total,
   imported,
   outcomes,
@@ -370,6 +394,8 @@ export function ImportResult({
   result: ImportActivitiesResult;
   /** The rows sent, to tell Wealthfolio's surprises apart. */
   sent: ActivityImport[];
+  /** Transactions not imported again because Wealthfolio has all or part of them now. */
+  found?: FoundTransaction[];
   /** The transactions the review approved, and those that went in. */
   total: number;
   imported: number;
@@ -434,6 +460,16 @@ export function ImportResult({
             </li>
           ))}
         </ul>
+        {found.length > 0 && (
+          <ul className="grid gap-2">
+            {found.map((f) => (
+              <li key={f.transaction.transaction.activity.lineNumber} className="flex flex-wrap items-center gap-2">
+                <Mark ok={false} />
+                <span>{foundLine(f, fundName, place)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
         {created > 0 && <p className="text-muted-foreground">Wealthfolio added {plural(created, "fund")}.</p>}
         {closing === "failed" && (
           <p id={ids.units} tabIndex={-1} className="flex flex-wrap items-center gap-2">
@@ -501,7 +537,7 @@ export function ImportResult({
               <li key={l.bankRow.id} id={ids.link(l)} tabIndex={-1} className="flex flex-wrap items-center gap-2">
                 <Mark ok={false} />
                 <span>{linkLine(l, fundName, place)}</span>
-                {l.stage !== "trade" && (
+                {canRetryLink(l) && (
                   <WrapButton type="button" variant="outline" size="sm" onClick={() => onRetryLink(l)}>
                     Try again
                     <span className="sr-only">

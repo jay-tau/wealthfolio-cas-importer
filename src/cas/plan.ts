@@ -1,5 +1,6 @@
 import type { ActivityDetails, ActivityImport, ActivityType, AddonContext } from "@wealthfolio/addon-sdk";
 import { Explained } from "../lib/explained.ts";
+import { isDuplicateActivity } from "../lib/host-errors.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, neg } from "./decimal.ts";
 import type { FundAsset, MappedTransaction, Mapping } from "./mapping.ts";
 import type { CasData, CasFolio, CasScheme } from "./types.ts";
@@ -502,6 +503,21 @@ export function importRows(
   });
 }
 
+/**
+ * Whether Wealthfolio's check of `rows`, the rows of `t` an import sent, finds it has all or part of
+ * the transaction that it didn't have when `t` was planned: a row it calls a duplicate of an activity
+ * it has, or, for a row imported anyway, of another activity than the plan saw, since a copy saved
+ * meanwhile can't otherwise be told from the activity the user chose to import it beside.
+ */
+export function savedSincePlanned(t: PlannedTransaction, rows: ActivityImport[], answers: (ActivityImport | undefined)[]) {
+  return rows.some((row, i) => {
+    const id = answers[i]?.duplicateOfId;
+    if (!id) return false;
+    const seen = t.rows.find((r) => r.activity.lineNumber === row.lineNumber);
+    return !row.forceImport || (id !== seen?.existingId && id !== seen?.duplicateOfId);
+  });
+}
+
 /** How many days before or after a transaction the bank's side of it may be. */
 export const BANK_DAYS = 7;
 const days = (a: string, b: string) => Math.abs(Date.parse(a) - Date.parse(b)) / 86_400_000;
@@ -569,9 +585,10 @@ type LinkApi = Pick<AddonContext["api"]["activities"], "create" | "update" | "li
 
 /**
  * The step of using a bank entry that failed: the trade wasn't imported, the fund account's transfer
- * wasn't added, the bank's entry wasn't changed into a transfer, or the two weren't linked.
+ * wasn't added, Wealthfolio refused that transfer as one it already has, the bank's entry wasn't
+ * changed into a transfer, or the two weren't linked.
  */
-export type LinkStage = "trade" | "transfer" | "convert" | "link";
+export type LinkStage = "trade" | "transfer" | "exists" | "convert" | "link";
 
 /** What an earlier try at using a bank entry did, for a retry to go on from. */
 export interface LinkProgress {
@@ -619,6 +636,16 @@ export async function linkBankRow(
       };
       ({ id: fundId } = await activities.create(transfer));
     } catch (e) {
+      // Another transfer has this bank row's key, maybe from a try whose answer was lost. Whether it
+      // still matches this cash isn't known, so nothing more is added, changed or linked.
+      if (isDuplicateActivity(e)) {
+        return {
+          error: `Wealthfolio refused the fund account's transfer as a duplicate: ${String(e)}. It may already have one for the bank's row ${when}: check the transfers and link the two in Wealthfolio.`,
+          stage: "exists",
+          converted: false,
+          linked: false,
+        };
+      }
       return {
         error: `Couldn't add the fund account's transfer: ${String(e)}. The trade is in Wealthfolio without its cash.`,
         stage: "transfer",
