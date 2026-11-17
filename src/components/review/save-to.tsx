@@ -27,6 +27,7 @@ export function SaveTo({
   newLine,
   values,
   ignored,
+  named,
   remembered,
   open,
   onOpen,
@@ -48,6 +49,8 @@ export function SaveTo({
   values: Record<string, string | null>;
   /** Remembered choices that are ignored, by key. */
   ignored: Record<string, Ignored>;
+  /** Accounts the screen names outside Save to, by ID, whose numbers its note explains too. */
+  named: readonly string[];
   /** The statement's account is the one chosen last time, unchanged. */
   remembered: boolean;
   open: boolean;
@@ -62,14 +65,15 @@ export function SaveTo({
     : targets.some((a) => a.id === investorValue) ? labels.get(investorValue!)?.text : undefined;
   const why = (key: string) => <ChooseAgain ignored={ignored[key]} mode={NOT_HOLDINGS} />;
   const isNew = (key: string) => isProposed(values[key]) && values[key] === proposed(key)?.id;
-  // What numbers accounts in the lists, read with each select.
-  const noteId = numbers(targets, labels) ? `${partId}-numbered` : undefined;
+  // What numbers the accounts the screen names, read with each select when the lists number one.
+  const noteId = `${partId}-numbered`;
+  const describedBy = numbers(targets, labels) ? noteId : undefined;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       <h3 id={`${partId}-heading`} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
         Save to
       </h3>
-      {noteId && <NumberedNote id={noteId} accounts={targets} labels={labels} />}
+      <NumberedNote id={noteId} accounts={targets} named={[...Object.values(ignored).flatMap((i) => i.ids ?? []), ...named]} labels={labels} />
       <div className="grid gap-2 rounded-lg border p-4">
         <div className="flex flex-wrap items-center gap-3">
           <Label htmlFor={investorKey} className="font-semibold">
@@ -79,7 +83,7 @@ export function SaveTo({
             id={investorKey}
             accounts={targets}
             labels={labels}
-            describedBy={noteId}
+            describedBy={describedBy}
             proposed={proposed(investorKey)}
             value={values[investorKey]}
             onChange={(id) => onChange(investorKey, id)}
@@ -108,7 +112,7 @@ export function SaveTo({
                       id={key}
                       accounts={targets}
                       labels={labels}
-                      describedBy={noteId}
+                      describedBy={describedBy}
                       proposed={proposed(key)}
                       value={values[key]}
                       onChange={(id) => onChange(key, id)}

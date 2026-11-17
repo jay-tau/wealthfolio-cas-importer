@@ -127,13 +127,14 @@ export function SaveToDetailed({
       </div>
     );
   };
-  // What numbers accounts in the lists, read with each select.
-  const noteId = numbers(targets, labels) ? `${partId}-numbered` : undefined;
+  // What numbers the accounts the screen names, read with each select when the lists number one.
+  const noteId = `${partId}-numbered`;
+  const describedBy = numbers(targets, labels) ? noteId : undefined;
   const described = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       {heading}
-      {noteId && <NumberedNote id={noteId} accounts={targets} labels={labels} />}
+      <NumberedNote id={noteId} accounts={targets} named={Object.values(ignored).flatMap((i) => i.ids ?? [])} labels={labels} />
       {boxes.map((box) => {
         const account = values[box.key] === LEFT_OUT ? "Don't import" : nameOf(box.key);
         const bank = values[bankKey(box.key)];
@@ -150,7 +151,7 @@ export function SaveToDetailed({
                   accounts={targets}
                   labels={labels}
                   proposed={proposed(box.key)}
-                  describedBy={noteId}
+                  describedBy={describedBy}
                   value={values[box.key]}
                   onChange={(id) => onChange(box.key, id)}
                   leaveOut={LEFT_OUT}
@@ -174,7 +175,7 @@ export function SaveToDetailed({
                   value={values[bankKey(box.key)]}
                   onChange={(id) => onChange(bankKey(box.key), id)}
                   inherit={NO_TRANSFERS}
-                  describedBy={described(hint, noteId)}
+                  describedBy={described(hint, describedBy)}
                 />
               ),
             )}
@@ -204,7 +205,7 @@ export function SaveToDetailed({
                                 accounts={targets}
                                 labels={labels}
                                 proposed={proposed(key)}
-                                describedBy={noteId}
+                                describedBy={describedBy}
                                 value={values[key]}
                                 onChange={(id) => onChange(key, id)}
                                 inherit={`Same as above${account ? ` (${account})` : ""}`}
@@ -231,7 +232,7 @@ export function SaveToDetailed({
                                 leaveOut={NO_BANK}
                                 leaveOutLabel={NO_TRANSFERS}
                                 leaveOutFirst
-                                describedBy={described(hint, noteId)}
+                                describedBy={described(hint, describedBy)}
                               />
                             ),
                           )}

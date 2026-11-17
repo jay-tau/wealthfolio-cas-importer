@@ -171,8 +171,11 @@ test("a folio's different choices under its fund house's names are ignored until
     assert.equal(own in review.accountChoices, false);
     assert.equal(choices.bankKey(own) in review.accountChoices, false);
     assert.deepEqual(review.unavailable, {
-      [own]: { under: [{ name: "Bandhan Mutual Fund", choice: "Mutual funds" }, { name: "IDFC Mutual Fund", choice: "Kid's funds" }] },
-      [choices.bankKey(own)]: { under: [{ name: "Bandhan Mutual Fund", choice: "Old savings (archived in Wealthfolio)" }, { name: "IDFC Mutual Fund", choice: "None" }] },
+      [own]: { ids: ["mf", "kids"], under: [{ name: "Bandhan Mutual Fund", choice: "Mutual funds" }, { name: "IDFC Mutual Fund", choice: "Kid's funds" }] },
+      [choices.bankKey(own)]: {
+        ids: ["old-bank"],
+        under: [{ name: "Bandhan Mutual Fund", choice: "Old savings (archived in Wealthfolio)" }, { name: "IDFC Mutual Fund", choice: "None" }],
+      },
     });
     assert.deepEqual(review.formerNames, {});
     review.onRemember({ accounts: [[own, "kids"], [choices.bankKey(own), ""]], funds: [] });

@@ -18,7 +18,7 @@ let active;
 const originalDocument = globalThis.document;
 
 before(async () => {
-  const names = ["useState", "useRef", "useMemo", "useId", "useEffect", "useLayoutEffect", "useSyncExternalStore"];
+  const names = ["useState", "useRef", "useMemo", "useId", "useEffect", "useLayoutEffect", "useSyncExternalStore", "useCallback"];
   server = await createServer({
     configFile: false,
     logLevel: "error",
@@ -34,7 +34,7 @@ before(async () => {
           `export const ${name} = (...args) => globalThis.reviewHooks.${name}(...args);`).join("\n");
       },
       transform(code, id) {
-        if (/src\/(pages\/(holdings|detailed)-import\.tsx|components\/(statement-form\.tsx|review\/(search\.ts|parts\.tsx|focus\.ts|footer\.tsx))|lib\/focus\.ts)$/.test(id)) {
+        if (/src\/(pages\/(holdings-import|detailed-import|import-page)\.tsx|components\/(statement-form\.tsx|amfi-banner\.tsx|review\/(search\.ts|parts\.tsx|focus\.ts|footer\.tsx))|lib\/focus\.ts)$/.test(id)) {
           return code.replaceAll('from "react"', 'from "review-hooks"');
         }
       },
@@ -296,6 +296,7 @@ function controller(props, Component = HoldingsImport, { wide = true } = {}) {
     },
     useRef(value) { return memo(() => ({ current: value }), []); },
     useMemo: memo,
+    useCallback: (fn, deps) => memo(() => fn, deps),
     useId() { return memo(() => "review", []); },
     useEffect: effect,
     useLayoutEffect: effect,
@@ -3429,4 +3430,132 @@ test("Kept as they are lists the account's holdings that aren't on the statement
   cards()[0].main.onClick();
   await run.flush();
   assert.deepEqual(kept(), [keptINFKEPT, keptOLD]);
+});
+
+// #292: the note was said only when Save to's lists numbered an account.
+for (const holds of [true, false]) {
+  test(`Save to explains a numbered account that holds a statement's fund though it lists only others (${holds ? "held" : "not held"})`, async () => {
+    const { SaveTo } = await server.ssrLoadModule("/src/components/review/save-to.tsx");
+    const fund = { ...holding("INFZ90A01017"), kind: "fund", units: "20", value: "40" };
+    const { run, props, api } = setup([{ ...source("X", [fund]), kind: "folio" }]);
+    // Two accounts named Mutual funds that only their place tells apart, both tracking transactions;
+    // Save to lists only A and B, which track holdings.
+    const accounts = [{ id: "T1", name: "Mutual funds" }, { id: "T2", name: "Mutual funds" }];
+    props.allAccounts = [...props.allAccounts, ...accounts.map((a) => ({ ...a, currency: "INR", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false }))];
+    api.portfolio.getHoldings = async (id) => !holds || id !== "T1" ? [] : [{
+      holdingType: "security", quantity: "4", localCurrency: "INR", instrument: { id: "tracked", symbol: fund.isin, name: fund.name, quoteMode: "MARKET" },
+    }];
+    api.assets.getProfile = async () => ({ instrumentSymbol: fund.isin, instrumentExchangeMic: "XBOM" });
+    await run.flush();
+    const saveTo = find(run, "SaveTo");
+    const note = nodes(SaveTo(saveTo)).find((node) => node.type?.name === "NumberedNote");
+    const shown = note.type(note.props);
+    if (!holds) {
+      assert.equal(shown, null, "no line names a numbered account");
+      return;
+    }
+    assert.equal(find(run, "NotIncluded").tracked[0].accounts, "Mutual funds (account 1)");
+    assert.equal(textOf(shown).replace(/\s+/g, " "), "A number after a name, as in Mutual funds (account 1), is the account's place among the accounts of that name in " +
+      "Wealthfolio under Settings → Accounts, counting hidden and archived ones. Giving them different names in Wealthfolio tells them apart.");
+    assert.equal(nodes(SaveTo(saveTo)).some((node) => node.props?.describedBy), false, "the selects list no numbered account");
+  });
+}
+
+// #292: an NPS scheme is searched by name, so a search that finds nothing asked to check a code it hasn't got.
+test("an NPS scheme's typed search that finds nothing is announced as asking to check the name", async () => {
+  const scheme = { kind: "nps", name: "SBI Pension Fund Scheme E - Tier I", isin: null, rta: null, rtaCode: null, code: "NPS-SBI-E-I", units: "10", price: "2", value: "20", cost: null };
+  const { run } = setup([{ id: "nps|1", kind: "nps", label: "NPS", title: "NPS account", holdings: [scheme] }], false);
+  await run.flush();
+  let question = find(run, "QuestionCard");
+  assert.equal(question.item.noun, "NPS scheme");
+  question.searches.setText(question.item.key, "SBI Scheme E");
+  await run.flush();
+  question = find(run, "QuestionCard");
+  question.searches.search(question.item);
+  await settle(run);
+  assert.equal(said(run), "Nothing found for “SBI Scheme E”. Check the name.");
+});
+
+// #292: what "I've added AMFI: check" found came back after a review, as if it were news about it.
+test("what an AMFI check found is cleared when a statement is read and when its review is left, even when the answer comes after", async (t) => {
+  const { ImportPage } = await server.ssrLoadModule("/src/pages/import-page.tsx");
+  const { readFile } = await import("node:fs/promises");
+  const nsdl = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
+  const cams = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
+  const window = Object.getOwnPropertyDescriptor(globalThis, "window");
+  t.after(() => {
+    if (window) Object.defineProperty(globalThis, "window", window);
+    else delete globalThis.window;
+  });
+  globalThis.window = { addEventListener() {}, removeEventListener() {} };
+  globalThis.document = { activeElement: {}, body: {}, hasFocus: () => true, getElementById: () => null };
+  // Each check waits for its answer, given in the test's order.
+  const answers = [];
+  const answer = (enabled) => answers.shift()(enabled === undefined ? [] : [{ id: "AMFI", name: "AMFI", enabled }]);
+  const api = {
+    market: { getProviders: () => new Promise((resolve) => answers.push(resolve)) },
+    accounts: { getAll: async () => [] },
+    storage: { get: async () => null },
+    navigation: { navigate: async () => {} },
+    toast: { error() {} },
+  };
+  const run = active = controller({ ctx: { api }, location: {} }, ImportPage);
+  /** AMFI as the form shows it, or the review. */
+  const amfi = () => (find(run, "AmfiBanner") ?? find(run, "HoldingsImport") ?? find(run, "DetailedImport")).amfi;
+  const step = () => find(run, "HoldingsImport") ? "holdings" : find(run, "DetailedImport") ? "detailed" : "form";
+  const read = async (statement) => {
+    await find(run, "StatementForm").onRead(statement, "made-up.pdf");
+    await run.flush();
+  };
+  const leave = async () => {
+    (find(run, "HoldingsImport") ?? find(run, "DetailedImport")).onAnother("Finished: nothing was saved.");
+    // After the form's focus check, which runs on a timer.
+    await settle(run);
+  };
+  const check = async () => {
+    amfi().check();
+    await run.flush();
+    assert.equal(amfi().checking, true);
+  };
+  await run.flush();
+  answer(false);
+  await run.flush();
+  assert.deepEqual([step(), amfi().status, amfi().shown], ["form", "off", true]);
+  amfi().openSettings();
+  await run.flush();
+
+  // A check on the form, answered there, is said there and not on the Review screen.
+  await check();
+  answer(false);
+  await run.flush();
+  assert.equal(amfi().outcome, "AMFI isn't added yet.");
+  await read(nsdl);
+  assert.deepEqual([step(), amfi().status, amfi().outcome, amfi().checking], ["holdings", "off", "", false]);
+
+  // A check during the holdings review is said there, and not on the form it returns to.
+  await check();
+  answer(false);
+  await run.flush();
+  assert.equal(amfi().outcome, "AMFI isn't added yet.");
+  await leave();
+  assert.deepEqual([step(), amfi().outcome, amfi().checking], ["form", "", false]);
+  assert.ok(nodes(run.tree).some((node) => textOf(node) === "Finished: nothing was saved."));
+
+  // A check on the form answered after a statement is read says nothing on the Review screen, but its status counts.
+  await check();
+  await read(cams);
+  assert.deepEqual([step(), amfi().checking], ["detailed", false]);
+  answer(undefined);
+  await run.flush();
+  assert.deepEqual([step(), amfi().status, amfi().outcome, amfi().checking], ["detailed", "unknown", "", false]);
+
+  // A check during the detailed review answered after the return says nothing on the form, but AMFI
+  // found on still searches again for the funds without a choice.
+  await check();
+  await leave();
+  assert.deepEqual([step(), amfi().checking, amfi().searches], ["form", false, 0]);
+  answer(true);
+  await run.flush();
+  assert.deepEqual([step(), amfi().status, amfi().outcome, amfi().checking, amfi().searches], ["form", "on", "", false, 1]);
+  assert.equal(answers.length, 0);
 });

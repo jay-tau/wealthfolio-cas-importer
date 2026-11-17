@@ -65,7 +65,7 @@ import { type Comparison, NotIncluded, type TrackedFund, type TrackedGroup, unit
 import { Disclosure, LinkButton, PlanBadges, providerName, shownName, useWide, WrapButton } from "../components/review/parts";
 import { AskAnswered, AskCard } from "../components/review/asks";
 import { SnapshotTable } from "../components/review/plan-parts";
-import { AnsweredLine, answerWords, Picker, pickerIds, QuestionCard } from "../components/review/question";
+import { AnsweredLine, answerWords, nothingFound, Picker, pickerIds, QuestionCard } from "../components/review/question";
 import { OtherChanges, type ReadyHandlers, type ReadyRow, ReadyTable, planWarnings } from "../components/review/ready";
 import { SaveTo } from "../components/review/save-to";
 import { statementPlan, useHoldingSearches } from "../components/review/search";
@@ -479,7 +479,7 @@ export function HoldingsImport({
     ...Object.fromEntries(
       Object.entries(accountChoices).flatMap(([key, account]) => {
         const found = accounts.find((a) => a.id === account && a.trackingMode !== "HOLDINGS");
-        return found ? [[key, { name: labels.get(found.id)?.text ?? found.name }]] : [];
+        return found ? [[key, { ids: [found.id], name: labels.get(found.id)?.text ?? found.name }]] : [];
       }),
     ),
   };
@@ -612,7 +612,7 @@ export function HoldingsImport({
       const picker = pickerIds(changingRef.current === key ? id(`picker-change-${key}`) : id(`picker-${key}`));
       if ("error" in outcome || !outcome.found) {
         focusSoon(picker.field, false, outcome.origin);
-        return announce("error" in outcome ? "The search didn't work." : `Nothing found for “${outcome.text}”. Check the code.`);
+        return announce("error" in outcome ? "The search didn't work." : nothingFound(itemOf.get(key)!, outcome.text));
       }
       if (outcome.total === 1) {
         focusSoon(picker.single, false, outcome.origin);
@@ -1057,6 +1057,19 @@ export function HoldingsImport({
     funds: trackedFunds.filter((t) => t.accounts === accounts).map((t) => t.fund),
   }));
   const trackedKeys = new Set(trackedFunds.filter((t) => !t.fund.included).map((t) => t.fund.key));
+  // Accounts the screen names outside Save to: those that hold one of the statement's holdings, and
+  // those its units are compared with. Save to's note says what their numbers mean too.
+  const statementRefs = new Set([
+    ...(prepared?.plans ?? []).flatMap((plan) => plan.positions.filter((p) => p.lines.length).map((p) => p.ref)),
+    ...items.flatMap((item) => {
+      const fund = fundOf(item.key);
+      return fund ? [fundRef(fund.symbol, fund.exchangeMic)] : [];
+    }),
+  ]);
+  const namedElsewhere = [
+    ...[...statementRefs].flatMap((ref) => (prepared?.held.get(ref) ?? []).map((o) => o.id)),
+    ...(prepared?.checks ?? []).flatMap((check) => check.accounts.map((a) => a.id)),
+  ];
   const counted = trackedFunds.filter((t) => t.fund.included).map((t) => ({ key: t.fund.key, name: t.fund.name, label: t.fund.label }));
   const skipped = items.filter((item) => {
     const choice = choiceOf(item.key);
@@ -1602,6 +1615,7 @@ export function HoldingsImport({
     <NewAccountLine
       proposed={proposed(key)}
       label={label}
+      created="save"
       ids={renameIds(key)}
       editing={renaming?.key === key ? renaming : undefined}
       onRename={() => {
@@ -2101,6 +2115,7 @@ export function HoldingsImport({
         newLine={newLine}
         values={Object.fromEntries([investor, ...holdings.sources.map(sourceKey)].map((key) => [key, valueOf(key)]))}
         ignored={Object.fromEntries(Object.entries(ignored).filter(([key]) => !(key in picks)))}
+        named={namedElsewhere}
         remembered={!!usable[investor] && !(investor in picks)}
         open={!!open.part}
         onOpen={(yes) => setOpen("part", yes)}
