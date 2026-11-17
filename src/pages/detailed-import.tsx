@@ -861,6 +861,21 @@ export function DetailedImport({
     row.label = `${row.name.trim()}${nameNumber(rows, i, "fund")}`;
   });
   const readyKeys = new Set(rows.flatMap((r) => r.items.map((i) => i.key)));
+  /**
+   * A fund as the counts take it: one investor's, however many folios and accounts it's in. A row of
+   * Ready to import can be a fund in one of its accounts, or several investors' funds in one account.
+   */
+  const lineOf = (folio: CasFolio, scheme: CasScheme) => `${boxOf(folio).key}|${fundKey(scheme)}`;
+  // The statement rows the import sends: the funds they're for are the ready count, Ready to import's
+  // and the bar's.
+  const sentOutcomes = (current?.mapping.outcomes ?? []).filter((o) => {
+    const t = o.transaction && planned.get(o.transaction);
+    return !!t && sentOf(t);
+  });
+  const readyLines = new Set(sentOutcomes.map((o) => lineOf(o.folio, o.scheme)));
+  /** The funds a row's new transactions are for. */
+  const linesOfRow = (row: FundRow) =>
+    sentOutcomes.filter((o) => row.group.schemes.some((s) => s.scheme === o.scheme)).map((o) => lineOf(o.folio, o.scheme));
   const nothingNew = groups.filter((g) => g.sent === 0 && g.other === 0 && !g.schemes.some(({ folio, scheme }) => blockedSchemes.has(schemeKey(folio, scheme.scheme))));
   const nothingNewKeys = [...new Set(nothingNew.flatMap((g) => g.schemes.map((s) => fundKey(s.scheme))))].filter((key) => !readyKeys.has(key));
   const autoCount = new Set(rows.filter((r) => r.by === "auto").map((r) => r.item.key)).size;
@@ -970,6 +985,17 @@ export function DetailedImport({
       ...fund,
       lines: [...reasons].map(([reason, whens]) => ({ when: list(whens), reason })),
     }));
+  })();
+  // Each fund's possible duplicates skipped by an answer, counted as the bar counts them.
+  const skippedDuplicates = (() => {
+    const byFund = new Map<string, Set<PlannedTransaction>>();
+    for (const o of current?.mapping.outcomes ?? []) {
+      const t = o.transaction && planned.get(o.transaction);
+      if (!t || duplicateState(t) !== "skipped") continue;
+      const key = fundKey(o.scheme);
+      byFund.set(key, (byFund.get(key) ?? new Set()).add(t));
+    }
+    return [...byFund].map(([key, skipped]) => ({ key, name: fundNameOf(key), count: skipped.size }));
   })();
 
   // The questions only some imports ask, from the plan as last worked out, so a card stays while an
@@ -1176,9 +1202,13 @@ export function DetailedImport({
   const lineState = ({ box, key }: { box: FundsBox; key: string }) => {
     const schemes = box.folios.flatMap((f) => f.schemes.filter((s) => fundKey(s) === key).map((scheme) => ({ folio: f, scheme })));
     const outcomes = (current?.mapping.outcomes ?? []).filter((o) => box.folios.includes(o.folio) && fundKey(o.scheme) === key);
-    if (outcomes.some((o) => o.transaction && sentOf(planned.get(o.transaction)!))) return "ready";
+    if (readyLines.has(`${box.key}|${key}`)) return "ready";
     if ((questionKeys.includes(key) && schemes.some(({ folio }) => included(folio))) || schemes.some(({ folio }) => undecidedFolios.includes(folio)) ||
-      schemes.some(({ folio, scheme }) => openAsks.some((a) => a.id === `unbalanced|${schemeKey(folio, scheme.scheme)}`))) return "question";
+      schemes.some(({ folio, scheme }) => openAsks.some((a) => a.id === `unbalanced|${schemeKey(folio, scheme.scheme)}`)) ||
+      outcomes.some((o) => {
+        const t = o.transaction && planned.get(o.transaction);
+        return !!t && duplicateState(t) === "open";
+      })) return "question";
     if (schemes.every(({ folio, scheme }) => target(folio, scheme) && !blockedSchemes.has(schemeKey(folio, scheme.scheme))) && outcomes.every((o) => o.transaction && planned.get(o.transaction)?.status === "existing")) return "nothing";
     return "out";
   };
@@ -2236,7 +2266,7 @@ export function DetailedImport({
   const differ = rows.filter((r) => r.note);
   const perAccount = [...new Set(rows.map((r) => r.group.accountId))].map((accountId) => {
     const inAccount = rows.filter((r) => r.group.accountId === accountId);
-    return { accountId, transactions: inAccount.reduce((n, r) => n + r.group.sent, 0), funds: inAccount.length };
+    return { accountId, transactions: inAccount.reduce((n, r) => n + r.group.sent, 0), funds: new Set(inAccount.flatMap(linesOfRow)).size };
   });
   // The bank movements of what's sent, by box and bank account.
   const bankLines = boxes.flatMap((box) => {
@@ -2267,9 +2297,12 @@ export function DetailedImport({
   // Whether the review can be imported as it stands: the import button's checks, which Try again shares.
   const canImport = !questionCount && !lookingUp.length && !nothing && !!current && !!counts && toImport > 0 && !editor && !renaming &&
     busy === "" && !prepareError;
-  const importLabel = creating
-    ? `Create ${creating === 1 ? "account" : `${creating} accounts`} and import ${plural(toImport, "transaction")}`
-    : `Import ${plural(toImport, "transaction")}`;
+  // While the plan is worked out, or couldn't be, there's no count to give.
+  const importLabel = !current || !counts
+    ? "Import"
+    : creating
+      ? `Create ${creating === 1 ? "account" : `${creating} accounts`} and import ${plural(toImport, "transaction")}`
+      : `Import ${plural(toImport, "transaction")}`;
   // What the answers to the rare questions do.
   const answerParts = [
     ...(() => {
@@ -2468,7 +2501,7 @@ export function DetailedImport({
       {(rows.length > 0 || nothingNewKeys.length > 0) && (
         <section aria-labelledby={ids.ready} className="grid gap-3">
           <h3 id={ids.ready} tabIndex={-1} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
-            Ready to import ({rows.length})
+            Ready to import ({readyCount})
           </h3>
           {autoCount > 0 && (
             <p className="text-muted-foreground text-sm">{plural(autoCount, "fund")} found automatically on AMFI. Change any that look wrong.</p>
@@ -2505,6 +2538,7 @@ export function DetailedImport({
           return [{ id, name: `${fundNameOf(key)}${inFolio}`, label: `${labelOf.get(key)!}${inFolio}` }];
         })}
         notImported={notImported.map((f) => `${folioName(f)} (${plural(f.schemes.length, "fund")})`)}
+        duplicates={skippedDuplicates}
         leftOut={leftOutFunds}
         registrar={registrar}
         from={longDate(from)}
@@ -2664,7 +2698,8 @@ export function DetailedImport({
           if (mains.length === 1) return { lines, narrow: { brief: mains[0], more: rest, warnings } };
           // Several accounts: one line for all of them, each account's own line folded.
           const transactions = plural(perAccount.reduce((n, a) => n + a.transactions, 0), "transaction");
-          const funds = plural(perAccount.reduce((n, a) => n + a.funds, 0), "fund");
+          // A fund in two of them counts once, as in the ready count.
+          const funds = plural(readyLines.size, "fund");
           const brief = (
             <p key="brief">
               {creating

@@ -23,7 +23,10 @@ the statement is read, one Review screen shows, in this order:
   **Use another file** goes back to choosing a file, asking "Discard your 3 changes and choose
   another file?" first if anything was answered, changed, chosen or typed. Nothing about the review is
   remembered until you import or finish, so discarding drops it all.
-- The counts: funds, ready, not included, and questions. The question count goes to the first open
+- The counts: funds, ready, not included, and questions. Each investor's fund counts once, however
+  many folios and accounts it's in, as it does in **Ready to import**'s heading and the bar: a fund
+  two investors on a family statement hold counts twice. A fund isn't counted as not included while
+  its possible duplicates wait for your answers. The question count goes to the first open
   question. It includes the account choice and the bank matches under **Save to**, and says so ("6
   questions: the account choice and 5 fund questions"), as does the bar; **Questions for you** counts
   its own cards, and while any of those are open beside them it's titled **Fund questions**, or
@@ -97,10 +100,11 @@ the statement is read, one Review screen shows, in this order:
   from Savings", "purchase (1 of 2)"), and name the folio when a fund the screen names the same has an
   equal row in another folio ("Fictiva Liquid Fund, folio 7712045"), so each can be matched to its
   card and its row in the PDF.
-- **Ready to import**: each fund with new transactions, with its plan and option, where its prices
-  come from (and whether it was chosen before or by you) and **Change**, its **New transactions**
-  ("38 imported before" under them) and its **Units after import**: the units Wealthfolio has at the
-  statement's end, with what the import sends. A fund whose units then won't match the statement's
+- **Ready to import**: each fund with new transactions, a row for each account it goes to, with its
+  plan and option, where its prices come from (and whether it was chosen before or by you) and
+  **Change**, its **New transactions** ("38 imported before" under them) and its **Units after
+  import**: the units Wealthfolio has at the statement's end, with what the import sends. A fund
+  whose units then won't match the statement's
   says so ("After import: 1,204.500 units · Statement: 1,250.000. Imported with the difference you
   accepted.", or "Includes another purchase you chose."; another cash dividend you chose adds
   income instead: "Includes another cash dividend you chose: ₹500 more income.") and always
@@ -117,7 +121,8 @@ the statement is read, one Review screen shows, in this order:
   check instead, and that a new account they go to won't be created when nothing ready to import
   goes into it (see [New accounts](#new-accounts)); funds you skipped; folios set to "Don't
   import"; funds you skipped because their rows don't add up, with **Change**, which opens that
-  question again; and transactions left out, each with why.
+  question again; each fund's possible duplicates you skipped ("Fictiva Liquid Fund: 3 possible
+  duplicates skipped by your answer."); and transactions left out, each with why.
 - **Transactions in this statement**: how many there are, and what happens to each: to import,
   imported before, possible duplicates waiting for your answer or skipped or imported by it, waiting
   for your answers or for earlier purchases, in skipped funds or folios not imported, or left out,
@@ -128,7 +133,8 @@ the statement is read, one Review screen shows, in this order:
   won't match the statement afterwards, how each bank account's movements go, and what your answers
   did ("1 possible duplicate skipped by your answer."), with **See every transaction**, which shows
   each activity with its cash and status, and **Import 136 transactions** (**Create account and
-  import 136 transactions** with a new account). With nothing to import, it
+  import 136 transactions** with a new account), just **Import** while what will be imported is
+  worked out or when it couldn't be. With nothing to import, it
   says why ("Nothing new: every transaction on this statement is already in Wealthfolio.") and has
   **Finish**. In a narrow window it keeps to its first line, or one line for several accounts
   ("Import 13 transactions for 4 funds into 2 accounts."), and its buttons, with the rest behind

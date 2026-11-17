@@ -124,13 +124,15 @@ const sectionTitle = "text-muted-foreground text-sm font-semibold uppercase trac
 /**
  * What this import leaves out, each with why: funds waiting for earlier purchases, with How to fix;
  * funds skipped by an answer; folios set to Don't import; funds skipped because their rows don't add
- * up, with Change; and transactions left out for a reason of their own.
+ * up, with Change; possible duplicates skipped by an answer; and transactions left out for a reason
+ * of their own.
  */
 export function NotIncludedDetailed({
   earlier,
   skipped,
   notImported,
   unbalanced,
+  duplicates,
   leftOut,
   registrar,
   from,
@@ -152,6 +154,8 @@ export function NotIncludedDetailed({
    * Change opens that question again.
    */
   unbalanced: (Pick<LeftOutFund, "name" | "label"> & { id: string })[];
+  /** Funds with possible duplicates skipped by an answer, and how many. */
+  duplicates: { key: string; name: string; count: number }[];
   leftOut: LeftOutFund[];
   /** "CAMS", "KFintech": whose earlier statement to read. */
   registrar: string;
@@ -167,7 +171,7 @@ export function NotIncludedDetailed({
   onReopenAsk: (id: string) => void;
   changePanel: (key: string) => ReactNode;
 }) {
-  if (!earlier.length && !skipped.length && !notImported.length && !unbalanced.length && !leftOut.length) return null;
+  if (!earlier.length && !skipped.length && !notImported.length && !unbalanced.length && !duplicates.length && !leftOut.length) return null;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       <h3 id={`${partId}-heading`} tabIndex={-1} className={sectionTitle}>
@@ -226,6 +230,11 @@ export function NotIncludedDetailed({
           ))}
         </div>
       )}
+      {duplicates.map((fund) => (
+        <p key={fund.key} className="text-sm">
+          <span className="font-medium">{fund.name}</span>: {plural(fund.count, "possible duplicate")} skipped by your answer.
+        </p>
+      ))}
       {leftOut.map((fund) => (
         <div key={fund.key} className="grid gap-1 text-sm">
           <span>
