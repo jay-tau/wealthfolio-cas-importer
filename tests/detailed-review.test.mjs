@@ -2396,7 +2396,78 @@ test("funds held back with no counted rows are not called Nothing new", async ()
     assert.equal(find(run, "TransactionsSummary").breakdown.total, 0);
     const left = find(run, "NotIncludedDetailed");
     assert.equal((reason === "earlier" ? left.earlier : left.unbalanced).length, 1);
+    // No transactions to point at: what's under Not included instead.
+    assert.deepEqual(footer(run).slice(0, 1), ["This statement has no transactions. See what's not included above."]);
     assert.equal(find(run, "Footer").action.label, "Finish");
+    run.dispose();
+  }
+});
+
+test("a fund a detailed statement has no transactions for says so, under Not included and in the bar", async () => {
+  const liquid = (activities) => activities.push({
+    id: "hand", accountId: "mf", activityType: "BUY", subtype: null, status: "POSTED", date: "2023-03-01T00:00:00Z", quantity: "10", unitPrice: "50",
+    amount: "500", fee: null, tax: null, currency: "INR", needsReview: false, comment: null, assetId: "liquid", assetSymbol: "INFZ90K01LQ6", sourceRecordId: null,
+  });
+  // With no rows, and with only an event, which isn't a transaction.
+  for (const events of [[], [{ date: "2023-04-02", description: "Nominee registered", type: "MISC", units: null, amount: null, nav: null, balance: "10" }]]) {
+    for (const held of [false, true]) {
+      const { run, activities, profiles } = setup({ entries: [], change(data) {
+        const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+        Object.assign(scheme, { transactions: events, open: "10", close: "10", close_calculated: "10" });
+        data.folios = [{ ...data.folios[0], schemes: [scheme] }];
+        return data;
+      } });
+      profiles.liquid = { instrumentSymbol: "INFZ90K01LQ6", instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+      if (held) liquid(activities);
+      await run.flush();
+      const what = `${events.length} events, ${held ? "held" : "not held"}`;
+      assert.equal(find(run, "TransactionsSummary").breakdown.total, 0, what);
+      const { earlier } = find(run, "NotIncludedDetailed");
+      if (held) {
+        // Wealthfolio has its units: nothing new, and nothing under Not included.
+        assert.deepEqual(earlier, [], what);
+        assert.match(textOf(run.tree), /Nothing new for Fictiva Liquid Fund\./, what);
+        assert.deepEqual(footer(run).slice(0, 1), ["Nothing new: this statement has no transactions."], what);
+      } else {
+        // It still needs its units, with none of its transactions waiting.
+        assert.deepEqual(earlier.map(({ units, waiting, noTransactionsIn }) => ({ units, waiting, noTransactionsIn })), [{ units: "10.000 units", waiting: 0, noTransactionsIn: undefined }], what);
+        assert.doesNotMatch(textOf(run.tree), /Nothing new for/, what);
+        assert.deepEqual(footer(run).slice(0, 1), ["This statement has no transactions. See what's not included above."], what);
+      }
+      assert.equal(find(run, "Footer").action.label, "Finish", what);
+      // Excluding every folio still explains that the statement has no transactions.
+      saveTo(run).onChange(choices.panKey("ABCDE1234F"), choices.LEFT_OUT);
+      await run.flush();
+      assert.equal(find(run, "TransactionsSummary").breakdown.total, 0, what);
+      assert.equal(find(run, "NotIncludedDetailed").notImported.length, 1, what);
+      assert.deepEqual(footer(run).slice(0, 1), ["This statement has no transactions. See what's not included above."], what);
+      assert.equal(find(run, "Footer").action.label, "Finish", what);
+      run.dispose();
+    }
+  }
+});
+
+test("a fund with no waiting transactions names the folios or parts that have none", async () => {
+  for (const sameFolio of [false, true]) {
+    // Liquid's purchases in folio 91234567 / 12 go to Mutual funds, which needs none of its units;
+    // folio 3301 starts with 10 units, has no transactions and goes to Other funds, which has none.
+    // Or both sections share folio 3301 and go to Other funds.
+    const { run } = setup({ entries: [], remembered: {
+      [choices.panKey("ABCDE1234F")]: "mf",
+      [choices.folioKey({ amc: fixture.folios[0].amc, folio: "3301" })]: "other",
+    }, change(data) {
+      const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+      const held = { ...structuredClone(liquid), open: "10", close: "10", close_calculated: "10", transactions: [] };
+      data.folios = sameFolio
+        ? [{ ...data.folios[0], folio: "3301", schemes: [held, liquid] }]
+        : [{ ...data.folios[0], schemes: [liquid] }, { ...data.folios[0], folio: "3301", schemes: [held] }];
+      return data;
+    } });
+    await run.flush();
+    const [fund, ...others] = find(run, "NotIncludedDetailed").earlier;
+    assert.deepEqual(others, []);
+    assert.deepEqual([fund.units, fund.waiting, fund.noTransactionsIn, fund.accounts], ["10.000 units", 0, { folios: ["3301"], parts: sameFolio }, sameFolio ? undefined : [{ units: "10.000", account: "Other funds", folios: ["3301"] }]]);
+    assert.ok(find(run, "TransactionsSummary").breakdown.toImport > 0);
     run.dispose();
   }
 });

@@ -90,8 +90,13 @@ test("the transactions in a statement count each part only when it isn't zero, o
   assert.deepEqual(parts({ leftOut: [{ kind: "row", reason: "x", row: { row: { type: "MISC" } } }] }), ["1 left out, listed under “Not included”"]);
   const summary = (b) => text("TransactionsSummary", { breakdown: { ...none, ...b }, range: "Apr 2019 to Jun 2026", partId: "t" });
   assert.match(summary({ total: 1, toImport: 1 }), / 1 transaction , Apr 2019 to Jun 2026 1 to import $/);
-  assert.equal(components.nothingWords({ ...none, total: 21, before: 21 }), "Nothing new: every transaction on this statement is already in Wealthfolio.");
-  assert.equal(components.nothingWords({ ...none, total: 5, before: 3, earlier: 2 }), "Nothing is ready to import. See the transactions left out or waiting above.");
+  // What "Not included" lists matters only to a statement with no transactions.
+  for (const notIncluded of [false, true]) {
+    assert.equal(components.nothingWords({ ...none, total: 21, before: 21 }, notIncluded), "Nothing new: every transaction on this statement is already in Wealthfolio.");
+    assert.equal(components.nothingWords({ ...none, total: 5, before: 3, earlier: 2 }, notIncluded), "Nothing is ready to import. See the transactions left out or waiting above.");
+  }
+  assert.equal(components.nothingWords({ ...none, total: 0 }, false), "Nothing new: this statement has no transactions.");
+  assert.equal(components.nothingWords({ ...none, total: 0 }, true), "This statement has no transactions. See what's not included above.");
 });
 
 /** Made-up bank matches for checking the words and names rendered by a bank question. */
@@ -351,6 +356,71 @@ test("a fund waiting for earlier purchases says what each account already has of
       (held.kind === "short" ? "; 50.000 units in Family funds, from folio 3301 (200.000 in this account before 1 Apr 2023)" : "") +
       ". Then read this statement again and choose it in “Save to” for folio 7712045. Transactions already imported are skipped."), shows);
   }
+});
+
+test("a fund waiting for earlier purchases with no transactions on the statement says so, and nothing about reading it again", () => {
+  const props = (fund) => ({
+    earlier: [{ key: "1", name: "Fictiva Liquid Fund", units: "10.000 units", waiting: 0, ...fund }],
+    unbalanced: [], skipped: [], notImported: [], duplicates: [], leftOut: [], registrar: "CAMS", from: "1 Apr 2023", open: { "how:1": true }, setOpen() {},
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+  });
+  const shown = (fund) => text("NotIncludedDetailed", props(fund));
+  const line = "Earlier purchases needed : Fictiva Liquid Fund starts with 10.000 units bought before this statement, and the statement has no transactions for it.";
+  const never = (shows) => ["0 transactions", "wait", "read this statement again", "this one again", "already imported", "by hand", "“Save to”"]
+    .forEach((words) => assert.ok(!shows.includes(words), `${words}: ${shows}`));
+
+  // In one account.
+  let shows = shown();
+  assert.ok(shows.includes(`${line} Change How to fix Read an earlier CAMS statement that includes its first purchase, ` +
+    "or add the 10.000 units in Wealthfolio as a buy with their cost and date."), shows);
+  never(shows);
+  // Some of them already there.
+  const mf = (held) => [{ units: "10.000", account: "Mutual funds", folios: ["7712045"], held }];
+  shows = shown({ accounts: mf({ kind: "short", has: "4.000", add: "6.000" }) });
+  assert.ok(shows.includes(`${line} Units needed: 10.000 in Mutual funds, from folio 7712045 (4.000 in this account before 1 Apr 2023, so 6.000 to add). Change How to fix ` +
+    "Read an earlier CAMS statement that includes its first purchase, or add the units in Wealthfolio as a buy with their cost and date: " +
+    "6.000 units in Mutual funds, from folio 7712045 (4.000 in this account before 1 Apr 2023)."), shows);
+  never(shows);
+  // Too many: only the check.
+  shows = shown({ accounts: mf({ kind: "over", has: "15.000", extra: "5.000" }) });
+  assert.ok(shows.includes("Change How to fix In Mutual funds, this fund's transactions before 1 Apr 2023 come to 15.000 units, 5.000 more than the 10.000 that folio 7712045 starts with: " +
+    "check them in Wealthfolio, and correct or delete the ones that don't belong."), shows);
+  never(shows);
+  // None counted: the check, with no transactions to add by hand.
+  for (const [by, them] of [[[{ day: "5 Jan 2022", kind: "split" }], "it"], [[{ day: "5 Jan 2022", kind: "split" }, { day: "1 Jun 2022", kind: "option expiry" }], "them"]]) {
+    shows = shown({ accounts: mf({ kind: "uncounted", by }) });
+    assert.ok(shows.includes("so it can't check that they come to the 10.000 that folio 7712045 starts with. " +
+      `Check ${them} in Wealthfolio, and delete ${them} if ${them === "it" ? "it's" : "they're"} wrong.`), shows);
+    never(shows);
+  }
+  // The statement has transactions for the fund in another folio: the one with none is named.
+  shows = shown({ noTransactionsIn: { folios: ["3301"], parts: false }, accounts: [{ units: "10.000", account: "Other funds", folios: ["3301"] }] });
+  assert.ok(shows.includes("Fictiva Liquid Fund starts with 10.000 units bought before this statement, and the statement has no transactions for it in folio 3301. " +
+    "Units needed: 10.000 in Other funds, from folio 3301. Change How to fix Read an earlier CAMS statement that includes its first purchase, " +
+    "or add the units in Wealthfolio as a buy with their cost and date: 10.000 units in Other funds, from folio 3301."), shows);
+  never(shows);
+  shows = shown({ noTransactionsIn: { folios: ["3301", "3302"], parts: false } });
+  assert.ok(shows.includes("and the statement has no transactions for it in folios 3301 and 3302."), shows);
+  // Another section for this fund in the same folio has transactions.
+  shows = shown({ noTransactionsIn: { folios: ["3301"], parts: true } });
+  assert.ok(shows.includes("and the statement has no transactions for it in the parts of folio 3301 that start with these units."), shows);
+  never(shows);
+  // A new account this import won't create, in one account.
+  shows = shown({ uncreated: [{ account: "Mutual funds", folios: ["7712045"] }] });
+  assert.ok(shows.includes(`${line} The new account Mutual funds won't be created: nothing ready to import goes into it. Change How to fix ` +
+    "Read an earlier CAMS statement that includes its first purchase. Or, as Mutual funds doesn't exist yet, " +
+    "create an account that tracks transactions in Wealthfolio and add the 10.000 units there as a buy with their cost and date."), shows);
+  never(shows);
+  // And in two, one of them new and not created.
+  shows = shown({
+    units: "30.000 units",
+    accounts: [{ units: "10.000", account: "Mutual funds", folios: ["7712045"] }, { units: "20.000", account: "Family funds", folios: ["3301"] }],
+    uncreated: [{ account: "Family funds", folios: ["3301"] }],
+  });
+  assert.ok(shows.includes("Change How to fix Read an earlier CAMS statement that includes its first purchase. Or, as Family funds doesn't exist yet, " +
+    "first create an account that tracks transactions in Wealthfolio for its units, then add the units in Wealthfolio as buys with their cost and date: " +
+    "10.000 units in Mutual funds, from folio 7712045; 20.000 units in Family funds, from folio 3301."), shows);
+  never(shows);
 });
 
 test("one fund's Ready and Not included Change controls have distinct names", () => {

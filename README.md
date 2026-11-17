@@ -112,8 +112,12 @@ the statement is read, one Review screen shows, in this order:
   just changed show until **Show all**. A fund with nothing new is one line under the table. A family
   statement's funds are grouped by investor and account ("A. Investor → Mutual funds").
 - **Not included in this import**: a fund that starts with units bought before the statement, which
-  Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**), saying how many units
-  each account needs and from which folios when its folios go to more than one ("Units needed:
+  Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**), saying how many of its
+  transactions wait, or that the statement has none for it ("…, and the statement has no
+  transactions for it.", naming the folios that have none when others have some, or their empty
+  parts when another part of the same folio has transactions for the fund, and **How to fix**
+  doesn't say to read it again); how many units each account needs and from which folios when
+  its folios go to more than one ("Units needed:
   100.000 in Mutual funds, from folio 7712045; 200.000 in Family funds, from folio 91234567."),
   what an account already has of the fund before the statement: how many more to add ("50.000 in
   this account before 1 Apr 2023, so 50.000 to add"), how many too many, with its transactions to
@@ -135,10 +139,12 @@ the statement is read, one Review screen shows, in this order:
   each activity with its cash and status, and **Import 136 transactions** (**Create account and
   import 136 transactions** with a new account), just **Import** while what will be imported is
   worked out or when it couldn't be. With nothing to import, it
-  says why ("Nothing new: every transaction on this statement is already in Wealthfolio.") and has
-  **Finish**. In a narrow window it keeps to its first line, or one line for several accounts
-  ("Import 13 transactions for 4 funds into 2 accounts."), and its buttons, with the rest behind
-  **Details** beside them, which says how many warnings are there.
+  says why ("Nothing new: every transaction on this statement is already in Wealthfolio.", or
+  "Nothing new: this statement has no transactions." when it has none and nothing is under **Not
+  included in this import**; with something there, "This statement has no transactions. See what's
+  not included above.") and has **Finish**. In a narrow window it keeps to its first line, or
+  one line for several accounts ("Import 13 transactions for 4 funds into 2 accounts."), and its
+  buttons, with the rest behind **Details** beside them, which says how many warnings are there.
 
 The plan is worked out again as you answer, from reads of Wealthfolio that are repeated when you open
 the add-on's page again. After the import, the result compares each imported fund's units in
@@ -735,7 +741,8 @@ into its new account, its "Earlier purchases needed" line under **Not included i
 says "The new account Mutual funds won't be created: nothing ready to import goes into it.", and
 **How to fix** says to read an earlier statement, or to create an account that tracks transactions
 in Wealthfolio, add the units there as a buy with their cost and date, then read the statement
-again and choose that account in **Save to**. With nothing ready to import, the bar's button is
+again and choose that account in **Save to**; when the statement has no transactions for the fund,
+there's nothing to read again. With nothing ready to import, the bar's button is
 **Finish**, which creates no account.
 
 When Wealthfolio has accounts that fit but none was chosen before, nothing is preselected and
