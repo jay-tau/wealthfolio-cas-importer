@@ -56,6 +56,18 @@ export function units(value: string, decimals = 3) {
   return grouped(fraction ? `${match[1]}.${fraction}` : match[1]);
 }
 
+/** What a holding's quantity counts: a fund's or NPS scheme's units, or shares or bonds. */
+export type Counted = "unit" | "share" | "bond";
+
+/** A quantity's figure: units with `units`, shares and bonds grouped as given: "1,500.000", "1,500". */
+export const figure = (counted: Counted, value: string) => (counted === "unit" ? units(value) : grouped(value));
+
+/** What a quantity counts, in a word: "units", even for 1.000 units, and "share" for 1 share. */
+export const counts = (counted: Counted, value: string) => (counted === "unit" || !/^0*1(?:\.0+)?$/.test(value.trim()) ? `${counted}s` : counted);
+
+/** A quantity and what it counts: "1,500.000 units", "1 share", "150 bonds". */
+export const quantity = (counted: Counted, value: string) => `${figure(counted, value)} ${counts(counted, value)}`;
+
 /**
  * A rupee amount, grouped and rounded to paise, with its paise only when it has any: "102310.50" →
  * "₹1,02,310.50", "40000" → "₹40,000", an average cost's "39999.9999999999" → "₹40,000".

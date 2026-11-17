@@ -1,6 +1,7 @@
 import type { ActivityDetails, MonetaryValue, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { Explained } from "../lib/explained.ts";
 import { mayBeCut, readableName } from "../lib/fund-name.ts";
+import { type Counted, counts, figure, quantity } from "../lib/review-format.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
 import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
@@ -749,7 +750,7 @@ function holdBack(positions: PlannedPosition[], misread: Line[], remembered: Acc
 }
 
 const misreadIn = (lines: Line[]) =>
-  `Its ${lines.length > 1 ? "lines" : "line"} in ${[...new Set(lines.map((l) => l.source.label))].join(" and ")} may have been misread`;
+  `Its ${lines.length > 1 ? "lines" : "line"} in ${titles(lines.map((l) => l.source))} may have been misread`;
 const checkPdf = (lines: Line[]) => `Check ${lines.length > 1 ? "them" : "it"} against the PDF.`;
 
 /** A position a misread line may be: the account keeps it as it is, or doesn't get it. */
@@ -863,10 +864,10 @@ interface Elsewhere {
   reassigned: Reassigned[];
 }
 
-/** Whether `labels` names more than one. */
-const several = (sources: Iterable<Source>) => new Set([...sources].map((s) => s.label)).size > 1;
-const holds = (sources: Source[]) => `${labels(sources)} ${several(sources) ? "hold" : "holds"}`;
-const leavesOut = (sources: Source[]) => `An earlier import of ${labels(sources)}, which this import leaves out,`;
+/** Whether `titles` names more than one. */
+const several = (sources: Iterable<Source>) => new Set([...sources].map(titleOf)).size > 1;
+const holds = (sources: Source[]) => `${titles(sources)} ${several(sources) ? "hold" : "holds"}`;
+const leavesOut = (sources: Source[]) => `An earlier import of ${titles(sources)}, which this import leaves out,`;
 const UNLISTED = "a folio, demat account or PRAN that this statement doesn't list";
 /** `one` for a single folio, demat account or PRAN, else `many`. */
 const verb = (sources: Iterable<Source>, one: string, many: string) => (several(sources) ? many : one);
@@ -879,12 +880,12 @@ function reassignedNote(reassigned: Reassigned[], recorded: Source[] = [], from:
   const groups = new Map<string, Reassigned[]>();
   for (const r of reassigned) groups.set(`${r.lists}|${r.account}`, [...(groups.get(`${r.lists}|${r.account}`) ?? []), r]);
   return [
-    `An earlier import of ${labels([...recorded, ...reassigned.map((r) => r.source)])} recorded adding this holding here.`,
-    ...(from.length ? [`${labels(from)} no longer ${verb(from, "lists", "list")} it.`] : []),
+    `An earlier import of ${titles([...recorded, ...reassigned.map((r) => r.source)])} recorded adding this holding here.`,
+    ...(from.length ? [`${titles(from)} no longer ${verb(from, "lists", "list")} it.`] : []),
     ...[...groups.values()].map((group) => {
       const sources = group.map((r) => r.source);
       const { account, lists } = group[0];
-      const goes = `${labels(sources)} now ${verb(sources, "goes", "go")} to ${account}`;
+      const goes = `${titles(sources)} now ${verb(sources, "goes", "go")} to ${account}`;
       return lists === undefined
         ? `${goes}, but a holding ${verb(sources, "it lists", "they list")} lacks a comparable identifier, so ${verb(sources, "it", "they")} may still list this one.`
         : `${goes} and ${lists ? "still" : "no longer"} ${verb(sources, "lists", "list")} it.`;
@@ -899,8 +900,8 @@ const accountsOf = (reassigned: Reassigned[]) => [...new Set(reassigned.map((r) 
 const correctUnits = (reassigned: Reassigned[]) => {
   const listing = reassigned.filter((r) => r.lists !== false);
   return listing.length
-    ? `those that came from ${labels(listing.map((r) => r.source))} may be counted in ${accountsOf(listing)} too`
-    : `they may include some that came from ${labels(reassigned.map((r) => r.source))}`;
+    ? `those that came from ${titles(listing.map((r) => r.source))} may be counted in ${accountsOf(listing)} too`
+    : `they may include some that came from ${titles(reassigned.map((r) => r.source))}`;
 };
 
 /**
@@ -909,14 +910,25 @@ const correctUnits = (reassigned: Reassigned[]) => {
  */
 function settleUnread(position: PlannedPosition, unread: Source[]) {
   if (!unread.length) return;
-  const replaces = `Importing this row would replace the ${position.existing!.units} units this account holds with the statement's ${position.units}, which don't count any that ${holds(unread)}`;
+  const counted = countedIn(position);
+  const held = position.existing!.units;
+  const word = counts(counted, held);
+  const verb = counts(counted, position.units!) === counted ? "doesn't" : "don't";
+  const replaces = `Importing this row would replace the ${quantity(counted, held)} this account holds with the statement's ${figure(counted, position.units!)}, which ${verb} count any that ${holds(unread)}`;
   position.notes.push(`${leavesOut(unread)} recorded adding this holding. ${replaces}${position.include
-    ? `, so it's left out and the account keeps its units. To update them, save ${labels(unread)} too.`
+    ? `, so it's left out and the account keeps its ${word}. To update ${word === counted ? "it" : "them"}, save ${titles(unread)} too.`
     : "."}`);
   position.include = false;
   if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
     position.notes.push("It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
   }
+}
+
+/** What a statement row's quantity counts: shares or bonds when every line holds them, else units. */
+function countedIn(position: PlannedPosition): Counted {
+  const kinds = new Set(position.lines.map((l) => l.holding.kind));
+  const [kind] = kinds;
+  return kinds.size === 1 && (kind === "share" || kind === "bond") ? kind : "unit";
 }
 
 /** A source's listed holdings, possibly misread ones included. */
@@ -959,16 +971,15 @@ function settleOverlap(
     const ids = new Set(position.lines.filter((l) => l.source === s).flatMap((l) => security(l.holding)));
     if (!earlier.some((id) => ids.has(id)) || earlier.some((id) => listed.has(id) && !ids.has(id)) || incomparable(s, earlier)) mixed = true;
   }
-  const units = existing.units;
   if (from.length && !mixed) {
     position.removable = from;
     position.ask = { kind: "overlap", tracked: position.heldBy!, row: position.key };
     return;
   }
   const why = from.length
-    ? `An earlier import of ${labels(from)} recorded adding this holding, but its units may also include others.`
-    : `No earlier import of ${labels(own)} recorded adding this holding.`;
-  position.notes.push(`Leaving this row out keeps this account's ${units} units of it, so ${names(position.heldBy!)} may count them too. ${why} Check them in Wealthfolio.`);
+    ? `An earlier import of ${titles(from)} recorded adding this holding, but its units may also include others.`
+    : `No earlier import of ${titles(own)} recorded adding this holding.`;
+  position.notes.push(`Leaving this row out keeps this account's ${quantity(countedIn(position), existing.units)} of it, so ${names(position.heldBy!)} may count them too. ${why} Check them in Wealthfolio.`);
   if (reassigned.length) position.notes.push(reassignedNote(reassigned));
 }
 
@@ -981,7 +992,10 @@ export const assetName = (position: PlannedPosition) => {
   return identity && identity !== position.name ? `${position.name} (${identity})` : position.name;
 };
 
-export const labels = (sources: Iterable<Source>) => [...new Set([...sources].map((s) => s.label))].join(" and ");
+/** What the Review screen calls a folio, demat account or PRAN, as **Save to** does. */
+export const titleOf = (source: Source) => source.title ?? source.label;
+/** The folios, demat accounts and PRANs, each named once by `titleOf`: "A and B". */
+export const titles = (sources: Iterable<Source>) => [...new Set([...sources].map(titleOf))].join(" and ");
 export const assetNames = (positions: Iterable<PlannedPosition>) => [...new Set([...positions].map(assetName))].join(" and ");
 
 /** A position an earlier import added for lines the statement now puts under another asset. */
@@ -1029,7 +1043,7 @@ function settleOthers(
     }
     if (part.length) {
       const old = assetNames(part.map((m) => m.old));
-      const added = `An earlier import of ${labels(part.flatMap((m) => m.sources))} added this holding as ${old}`;
+      const added = `An earlier import of ${titles(part.flatMap((m) => m.sources))} added this holding as ${old}`;
       if (importable.has(target)) {
         target.include = false;
         target.notes.push(`${added}, which may also hold other units, so this row is left out and the account keeps ${old} as it is, so that its units aren't counted twice.`);
@@ -1093,7 +1107,7 @@ function settleOther(
     const whole = !shared && targets.length === 1 && importable.has(targets[0]);
     replaced = { old: position, sources: moved.map((m) => m.source), recorded, targets, whole };
     const them = moved.length > 1;
-    const added = `An earlier import of ${labels(replaced.sources)} added it for ${them ? "holdings" : "a holding"} that this import lists under ${assetNames(targets)}.`;
+    const added = `An earlier import of ${titles(replaced.sources)} added it for ${them ? "holdings" : "a holding"} that this import lists under ${assetNames(targets)}.`;
     if (whole) {
       // Asked on the statement row that would replace it.
       position.replacedBy = targets[0].key;
@@ -1133,21 +1147,21 @@ function settleOther(
   } else if (from.length && unread.length) {
     // Removing it would take the left-out source's units too.
     position.notes.push(
-      `An earlier import of ${labels(from)} added it, and ${labels(from)} no longer ${several(from) ? "list" : "lists"} it. ${leavesOut(unread)} added it too, so it's kept. ` +
-      `Correct its units in Wealthfolio after saving: they may include some that came from ${labels(from)}, and none are left if ${labels(unread)} no longer ${several(unread) ? "hold" : "holds"} any.`,
+      `An earlier import of ${titles(from)} added it, and ${titles(from)} no longer ${several(from) ? "list" : "lists"} it. ${leavesOut(unread)} added it too, so it's kept. ` +
+      `Correct its units in Wealthfolio after saving: they may include some that came from ${titles(from)}, and none are left if ${titles(unread)} no longer ${several(unread) ? "hold" : "holds"} any.`,
     );
     if (unlisted) position.notes.push(`An earlier import of ${UNLISTED} added it too.`);
   } else if (from.length && unlisted) {
     // The statement may leave that one out for another reason than its units having gone.
     position.notes.push(
-      `An earlier import of ${labels(from)} added it, and ${labels(from)} no longer ${several(from) ? "list" : "lists"} it. An earlier import of ${UNLISTED} added it too, so it's kept. ` +
-      `Check whether it was redeemed, sold or moved from there too, and correct its units in Wealthfolio after saving: they may include some that came from ${labels(from)}.`,
+      `An earlier import of ${titles(from)} added it, and ${titles(from)} no longer ${several(from) ? "list" : "lists"} it. An earlier import of ${UNLISTED} added it too, so it's kept. ` +
+      `Check whether it was redeemed, sold or moved from there too, and correct its units in Wealthfolio after saving: they may include some that came from ${titles(from)}.`,
     );
   } else if (from.length && mixed) {
     // The statement may still list it elsewhere, or its identifiers may not compare.
     position.notes.push(
-      `An earlier import of ${labels(from)} added it, and ${labels(from)} no longer ${several(from) ? "list" : "lists"} it, but its units may also include others, so it's kept. ` +
-      `Correct its units in Wealthfolio after saving: they may include some that came from ${labels(from)}.`,
+      `An earlier import of ${titles(from)} added it, and ${titles(from)} no longer ${several(from) ? "list" : "lists"} it, but its units may also include others, so it's kept. ` +
+      `Correct its units in Wealthfolio after saving: they may include some that came from ${titles(from)}.`,
     );
     if (uncertain) position.notes.push(UNCOMPARABLE);
   } else if (from.length) {
