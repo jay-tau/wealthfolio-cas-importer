@@ -76,6 +76,5 @@ export const fundItems = (data: CasData): FundItem[] =>
     isin: schemes[0].isin,
     name: schemes[0].scheme,
     noun: "fund",
-    where: schemes.length > 1 ? `in ${schemes.length} folios` : undefined,
     statementSymbol: statementSymbol(schemes[0]),
   }));;

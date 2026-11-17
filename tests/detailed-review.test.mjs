@@ -308,6 +308,61 @@ for (const differentNames of [false, true]) test(`the same unbalanced fund in tw
   assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced.map((f) => f.label.replace(/^Fictiva Liquid Fund\b.*?, folio /, "folio ")), [`folio ${data.folios[1].folio}`]);
 });
 
+/** The made-up Liquid Fund alone, in its own folio and in folio 7712045, of the same fund house and PAN. */
+const liquidInTwoFolios = (unbalanced = false) => (data) => {
+  const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+  const first = { ...data.folios[0], schemes: [liquid] };
+  data.folios = [first, { ...structuredClone(first), folio: "7712045" }];
+  if (unbalanced) liquid.close = String(Number(liquid.close_calculated) + 1);
+  return data;
+};
+
+for (const other of ["imported", "not imported"]) test(`a fund whose rows don't add up in one of its two folios names that folio while the other is imported (${other})`, async () => {
+  const { run, data } = setup({ entries: [], change: liquidInTwoFolios(true) });
+  await run.flush();
+  const [unbalanced, balanced] = data.folios;
+  if (other === "not imported") {
+    saveTo(run).onChange(choices.folioKey(balanced), choices.LEFT_OUT);
+    await run.flush();
+  }
+  const named = other === "imported";
+  const which = named ? `Fictiva Liquid Fund, folio ${unbalanced.folio}` : "Fictiva Liquid Fund";
+  const cards = askCards(run);
+  assert.deepEqual(cards.map((card) => card.title), [`Fictiva Liquid Fund's transactions${named ? ` in folio ${unbalanced.folio}` : ""} don't add up`]);
+  assert.deepEqual([cards[0].main.name, cards[0].other.name], [`Skip this fund: ${which}`, `Import with this difference: ${which}`]);
+  cards[0].main.onClick();
+  await run.flush();
+  assert.deepEqual(askAnswers(run).map((a) => a.text), [`${which}: skipped`]);
+  assert.ok(footer(run).some((line) => line.includes(`${which} skipped, by your answer`)), footer(run).join(" | "));
+  const [line, ...more] = find(run, "NotIncludedDetailed").unbalanced;
+  assert.deepEqual(more, []);
+  assert.equal(line.name, which);
+  assert.equal(line.label.endsWith(`, folio ${unbalanced.folio}`), named);
+  // Skipping it leaves out only that folio's rows: the other folio's, when imported, are still ready.
+  assert.equal(find(run, "FundsReadyTable")?.rows.some((row) => row.name === "Fictiva Liquid Fund") ?? false, named);
+});
+
+test("a fund's question counts only the folios its units come from", async () => {
+  /** Its card's "On your statement:" line, after the fund's name, plan and option. */
+  const onStatement = (run) => {
+    const card = nodes(run.tree).find((node) => node.type?.name === "QuestionCard");
+    const line = nodes(card.type(card.props)).find((node) => node.type === "p" && textOf(node).startsWith("On your statement:"));
+    return textOf(line).split(" · ").slice(3).join(" · ");
+  };
+  const { run, props, data } = setup({ entries: [], change: liquidInTwoFolios() });
+  props.fundChoices = {};
+  await run.flush();
+  assert.equal(onStatement(run), "16.106 units · in 2 folios");
+  saveTo(run).onChange(choices.folioKey(data.folios[1]), choices.LEFT_OUT);
+  await run.flush();
+  assert.equal(onStatement(run), "8.053 units · in 1 of its 2 folios");
+  // In one folio, it isn't counted.
+  const one = setup({ entries: [], change: (d) => liquidInTwoFolios()(d) && ((d.folios = [d.folios[0]]), d) });
+  one.props.fundChoices = {};
+  await one.run.flush();
+  assert.equal(onStatement(one.run), "8.053 units");
+});
+
 test("a failed plan recovers with its accepted units difference", async () => {
   const { run, api } = setup({ entries: [], change(data) {
     const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));

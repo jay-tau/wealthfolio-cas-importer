@@ -53,7 +53,9 @@ the statement is read, one Review screen shows, in this order:
   [Bank account](#bank-account).
 - **Questions for you**: each fund with no confirmed Wealthfolio fund, as one card with what the
   statement prints, why it's asked, its results and **Search by fund code**, as on the
-  [holdings Review screen](#summary-and-depository-statements). The add-on searches by the ISIN
+  [holdings Review screen](#summary-and-depository-statements). Its units are those of the folios
+  being imported, and a fund in more than one folio says how many of its folios they're in ("8.053
+  units · in 1 of its 2 folios" when the other is set to "Don't import"). The add-on searches by the ISIN
   printed on the statement, and by the fund's name if the ISIN finds nothing or none is printed;
   name-search results can be other funds. Each result says whether its plan and option (Direct or
   Regular; Growth, which some names call Cumulative, or IDCW, which older names call Dividend) match
@@ -75,11 +77,13 @@ the statement is read, one Review screen shows, in this order:
   Credit Risk Fund's transactions don't add up. They add up to 1,204.500 units; the statement says
   1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**. When
   an equal question is about another folio, each card names its folio in its heading, its buttons
-  and its answered line ("This purchase in folio 7712045 may already be in Mutual funds",
-  "Fictiva Credit Risk Fund's transactions in folio 7712045 don't add up"). An unbalanced fund's
-  summary in the bar and, once skipped, its line under **Not included** name its folio too, and a possible
-  duplicate's "On this statement:" line names its folio ("3 Jul 2026 · Purchase · Fictiva Liquid Fund,
-  folio 7712045 · …"). When the statement lists more than one row of a fund in one folio with the
+  and its answered line ("This purchase in folio 7712045 may already be in Mutual funds"), and a
+  possible duplicate's "On this statement:" line names its folio ("3 Jul 2026 · Purchase · Fictiva
+  Liquid Fund, folio 7712045 · …"). A fund whose rows don't add up is asked about for each folio, and
+  skipping it leaves out only that folio's rows, so whenever another folio that's imported lists a
+  fund named the same, its card names its folio in the same places ("Fictiva Credit Risk Fund's
+  transactions in folio 7712045 don't add up"), as do its summary in the bar and, once skipped, its
+  line under **Not included**. When the statement lists more than one row of a fund in one folio with the
   same movement, day and amount, such as two SIPs of ₹5,000 on one day, each one is numbered by its
   place among them in the statement's order, which no answer changes, after its movement in its
   card's heading, its "On this statement:" line, its buttons and its answered line: "This purchase
