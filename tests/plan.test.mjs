@@ -1070,19 +1070,24 @@ describe("segregated portfolios", () => {
       [{ comment: "Segregated" }, 'a purchase of 99.987 units of this fund ("Segregated")'],
       [{ activityType: "TRANSFER_IN", unitPrice: "10", amount: null }, "a transfer in of 99.987 units of this fund at ₹10 a unit"],
       // Both credits entered as one.
-      [{ quantity: "100.000" }, "a purchase of 100 units of this fund"],
+      [{ quantity: "100.000" }, "a purchase of 100.000 units of this fund"],
+      // Units grouped, with at least three decimals and every one entered.
+      [{ quantity: "1234.5" }, "a purchase of 1,234.500 units of this fund"],
+      [{ quantity: "1000.0001", unitPrice: "10" }, "a purchase of 1,000.0001 units of this fund at ₹10 a unit"],
     ]) {
       const planned = plan(data, [{ ...stored(row), ...change }]);
       assert.deepEqual(statuses(planned), ["new", "invalid", "invalid"], JSON.stringify(change));
       assert.deepEqual(planned.slice(1).map((t) => t.problem), [handEntered(found), handEntered(found)]);
       assert.deepEqual(segregation(importRows(planned, () => true)), []);
+      // The fund's other rows go in as they would without it.
+      assert.deepEqual(importRows(planned, () => true), importRows(plan(data), () => true).filter((r) => r.symbol !== "s"));
     }
     // One credit imported before, and the rest entered by hand: the imported one stays found.
     const credits = credited("99.000", "0.987", "0.013");
     const sent = segregation(importRows(plan(credits), () => false));
     const partly = plan(credits, [stored(sent[0]), { ...stored(sent[1]), quantity: "1.000" }]);
     assert.deepEqual(statuses(partly), ["new", "existing", "invalid", "invalid"]);
-    assert.equal(partly[2].problem, handEntered("a purchase of 1 units of this fund"));
+    assert.equal(partly[2].problem, handEntered("a purchase of 1.000 units of this fund"));
     // Another day, account, fund or direction isn't a credit of this day.
     for (const change of [
       { date: "2024-02-17T00:00:00+00:00" },

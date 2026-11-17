@@ -1,7 +1,7 @@
 import type { ActivityDetails, MonetaryValue, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { Explained } from "../lib/explained.ts";
 import { mayBeCut, readableName } from "../lib/fund-name.ts";
-import { type Counted, counts, exchangeOf, figure, longDate, quantity } from "../lib/review-format.ts";
+import { type Counted, counts, exchangeOf, figure, longDate, quantity, rupees } from "../lib/review-format.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
 import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
@@ -108,15 +108,15 @@ const HALF = dec("0.5");
  * digits, without a warning.
  */
 function misread(h: StatementHolding) {
-  if (!positive(h.units)) return positive(h.value) ? `It has no units but a value of ₹${h.value}` : undefined;
-  if (!positive(h.price)) return `It has ${h.units} units but no NAV`;
+  if (!positive(h.units)) return positive(h.value) ? `It has no units but a value of ${rupees(h.value)}` : undefined;
+  if (!positive(h.price)) return `It has ${quantity("unit", h.units)} but no NAV`;
   const units = dec(h.units);
   const nav = dec(h.price);
   const halfUnit = mul(HALF, step(units.scale));
   const halfNav = mul(HALF, step(nav.scale));
   const tolerance = add(add(mul(nav, halfUnit), mul(add(units, halfUnit), halfNav)), PAISA);
   if (cmp(abs(sub(mul(units, nav), dec(h.value || "0"))), tolerance) <= 0) return undefined;
-  return `Its value of ₹${h.value || "0"} differs from ${h.units} units × NAV ${h.price} by more than the units' and NAV's rounding`;
+  return `Its value of ${rupees(h.value || "0")} differs from ${quantity("unit", h.units)} × NAV ${h.price} by more than the units' and NAV's rounding`;
 }
 
 /** Keep both identities: a later summary can omit an ISIN that was printed before. */

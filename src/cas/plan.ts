@@ -1,7 +1,7 @@
 import type { ActivityDetails, ActivityImport, ActivityType, AddonContext } from "@wealthfolio/addon-sdk";
 import { Explained } from "../lib/explained.ts";
 import { isDuplicateActivity } from "../lib/host-errors.ts";
-import { grouped } from "../lib/review-format.ts";
+import { grouped, quantity } from "../lib/review-format.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, neg } from "./decimal.ts";
 import type { FundAsset, MappedTransaction, Mapping } from "./mapping.ts";
 import type { CasData, CasFolio, CasScheme } from "./types.ts";
@@ -465,7 +465,7 @@ const UNLINKED_GIFT =
 const handEntered = (found: ActivityDetails[], segregation: boolean) => {
   const names = found.map((a) => {
     const type = { BUY: "purchase", SELL: "sale", TRANSFER_IN: "transfer in", TRANSFER_OUT: "transfer out" }[a.activityType as string];
-    const what = segregation ? `${a.quantity ? `${amount(a.quantity)} units of ` : ""}this fund` : "these units";
+    const what = segregation ? `${a.quantity ? `${quantity("unit", amount(a.quantity))} of ` : ""}this fund` : "these units";
     // A price per unit, with all its decimals, as the statement's NAVs are written.
     const price = a.unitPrice ? ` at ₹${grouped(amount(a.unitPrice))} a unit` : "";
     return `a ${type} of ${what}${price}${a.comment?.trim() ? ` ("${a.comment.trim()}")` : ""}`;

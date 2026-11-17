@@ -2912,14 +2912,34 @@ test("a summary line whose units × NAV don't give its value is left out as poss
   assert.deepEqual(holdings.leftOut, [
     {
       source: "Fictiva Mutual Fund, folio 91234567 / 12", name: "Fictiva Liquid Fund - Direct Plan - Growth 1",
-      reason: `Its value of ₹1645808.40 differs from 4000.000 units × NAV 2911.4521 by more than the units' and NAV's rounding${tail}`,
+      reason: `Its value of ₹16,45,808.40 differs from 4,000.000 units × NAV 2911.4521 by more than the units' and NAV's rounding${tail}`,
     },
-    { source: "Fictiva Mutual Fund, folio 91234570/0", name: holdings.sources[1].misread[0].name, reason: `It has 3443.910 units but no NAV${tail}` },
-    { source: "Testbridge Mutual Fund, folio 1040012345", name: holdings.sources[2].misread[0].name, reason: `It has no units but a value of ₹102183.67${tail}` },
+    { source: "Fictiva Mutual Fund, folio 91234570/0", name: holdings.sources[1].misread[0].name, reason: `It has 3,443.910 units but no NAV${tail}` },
+    { source: "Testbridge Mutual Fund, folio 1040012345", name: holdings.sources[2].misread[0].name, reason: `It has no units but a value of ₹1,02,183.67${tail}` },
   ]);
   // Kept to reconcile, but never a holding or a printed zero, so neither their cost nor their price is used.
   assert.deepEqual(holdings.sources.map((s) => s.misread.map((h) => h.isin)), [[MISREAD[0]], [MISREAD[1]], [MISREAD[2]]]);
   assert.ok(holdings.sources.every((s) => s.zero === undefined && s.holdings.every((h) => !MISREAD.includes(h.isin))));
+
+  // The reasons round rupees to the paisa and give units at least three decimals; NAVs and units
+  // keep every printed decimal. The lines are left out and kept as printed all the same.
+  const precise = await misreadSummary();
+  const [wide, unpriced, unitless] = [precise.folios[0].schemes[1], precise.folios[1].schemes[0], precise.folios[2].schemes[0]];
+  precise.folios[0].schemes[1] = { ...wide, close: "4000.0005", valuation: { ...wide.valuation, nav: "2911.45215", value: "1645808.405" } };
+  precise.folios[1].schemes[0] = { ...unpriced, close: "3443.9" };
+  precise.folios[2].schemes[0] = { ...unitless, valuation: { ...unitless.valuation, value: "102183.674" } };
+  const shown = readHoldings(precise);
+  assert.deepEqual(shown.leftOut.map((l) => l.reason), [
+    `Its value of ₹16,45,808.41 differs from 4,000.0005 units × NAV 2911.45215 by more than the units' and NAV's rounding${tail}`,
+    `It has 3,443.900 units but no NAV${tail}`,
+    `It has no units but a value of ₹1,02,183.67${tail}`,
+  ]);
+  assert.deepEqual(shown.sources.map((s) => s.misread.map((h) => [h.isin, h.units, h.price, h.value])), [
+    [[MISREAD[0], "4000.0005", "2911.45215", "1645808.405"]],
+    [[MISREAD[1], "3443.9", "0", "0"]],
+    [[MISREAD[2], "0", "10.7432", "102183.674"]],
+  ]);
+  assert.ok(shown.sources.every((s) => s.zero === undefined && s.holdings.every((h) => !MISREAD.includes(h.isin))));
 
   // Units printed to three decimals: a value off by less than their rounding still matches.
   const data = await fixture("made-up-summary-cams");
