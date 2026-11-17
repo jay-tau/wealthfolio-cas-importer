@@ -645,7 +645,7 @@ test("separately compared funds keep their accounts' global labels in headings a
 const importResult = (props) => text("ImportResult", {
   imported: (props.outcomes ?? []).reduce((n, a) => n + a.imported, 0),
   result: { activities: [], summary: { success: true, total: 0, imported: 0, duplicates: 0, assetsCreated: 0 } },
-  sent: [], total: 1, outcomes: [], closing: undefined, links: [], fundName: (t) => t.transaction.scheme, accountName: () => "the bank account", base: "r",
+  sent: [], total: 1, outcomes: [], closing: undefined, links: [], fundName: (t) => t.transaction.scheme, place: () => "", accountName: () => "the bank account", base: "r",
   onRetryAccount() {}, onRetryLink() {}, onCheckAgain() {}, onOpenAccount() {}, ...props,
 });
 const outcome = (fields) => ({ key: "k", name: "Mutual funds", isNew: false, imported: 0, waiting: 0, state: "imported", ...fields });
@@ -719,7 +719,7 @@ test("the import result names each bank entry the add-on changed, and says how f
   const shown = importResult({ total: 3, outcomes: [outcome({ imported: 3 })], links, fundName, accountName: (id) => (id === "bank-1" ? "Savings" : "?") });
   assert.match(shown, / ✓ Linked 2 of 3 bank entries you chose with their transactions\. /);
   assert.ok(shown.includes(
-    " ✗ Purchase of Fictiva Liquid Fund on 5 May 2023: The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't linked. Try again : link the bank entry of 4 May 2023 ",
+    " ✗ Purchase of Fictiva Liquid Fund on 5 May 2023: The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't linked. Try again : link the bank entry of 4 May 2023 with the purchase of Fictiva Liquid Fund on 5 May 2023 ",
   ), shown);
   assert.ok(shown.includes(
     "What changed in the bank entries you chose Check these in Wealthfolio: " +

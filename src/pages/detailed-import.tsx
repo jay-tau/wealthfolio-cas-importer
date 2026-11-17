@@ -52,6 +52,7 @@ import {
   importIds,
   type ImportOutcome,
   ImportResult,
+  linkLine,
   linkWords,
   outcomeWords,
   staleText,
@@ -1056,6 +1057,8 @@ export function DetailedImport({
   /** A transaction's fund as the screen names it, with its folio when that fund has an equal row in another. */
   const fundInFolio = (t: PlannedTransaction) =>
     inTwoFolios(t.transaction.rows[0]) ? `${transactionFund(t)}, folio ${t.transaction.folio}` : transactionFund(t);
+  /** A transaction's place among equal rows of its fund and folio on the statement: " (1 of 2)", or "". */
+  const transactionPlace = (t: PlannedTransaction) => marker(placeOf(t.transaction.rows[0]));
   // What a possible duplicate's line and buttons name it by: its fund, movement, amount and day.
   const duplicateWords = offered.map((t) => ({
     fund: transactionFund(t), word: statementWord(t), money: amountOf(t.transaction.rows[0]), when: longDate(t.transaction.rows[0].date),
@@ -1815,7 +1818,7 @@ export function DetailedImport({
       announce([
         summary,
         ...outcomesOf(state).filter((a) => a.state !== "imported").map((a) => `${outcomeWords(a)}${a.retryable ? ` Try again for ${a.name}.` : ""}`),
-        ...run.links.filter((l) => l.stage).map((l) => `${linkWords(l)}${l.stage === "trade" ? "" : " Try again to link the bank entry."}`),
+        ...run.links.filter((l) => l.stage).map((l) => `${linkLine(l, fundInFolio, transactionPlace)}${l.stage === "trade" ? "" : " Try again to link the bank entry."}`),
         ...(latestImported.current?.closing === "failed" ? ["Saved, but the units couldn't be checked in Wealthfolio. Check again."] : []),
       ].join(" "));
     } catch (e) {
@@ -1870,7 +1873,7 @@ export function DetailedImport({
       const outcome = outcomesOf(latestImported.current ?? next).find((a) => a.key === key);
       announce([
         outcome ? `${outcomeWords(outcome)}${outcome.state === "imported" ? "." : ""}` : "",
-        ...run.links.filter((l) => l.stage).map((l) => `${linkWords(l)}${l.stage === "trade" ? "" : " Try again to link the bank entry."}`),
+        ...run.links.filter((l) => l.stage).map((l) => `${linkLine(l, fundInFolio, transactionPlace)}${l.stage === "trade" ? "" : " Try again to link the bank entry."}`),
         ...(run.done.length && latestImported.current?.closing === "failed" ? ["Saved, but the units couldn't be checked in Wealthfolio. Check again."] : []),
       ].join(" "));
     } catch (e) {
@@ -2022,7 +2025,8 @@ export function DetailedImport({
           outcomes={outcomesOf(imported)}
           closing={imported.closing}
           links={imported.links}
-          fundName={transactionFund}
+          fundName={fundInFolio}
+          place={transactionPlace}
           accountName={accountName}
           base={id("result")}
           onRetryAccount={(key) => void retryAccount(key)}
@@ -2100,7 +2104,7 @@ export function DetailedImport({
             answered={answer ? (answer.linked ? ticked.size : 0) : undefined}
             facts={current!.facts}
             fundName={(pair) => fundInFolio(pair.t)}
-            place={(pair) => marker(placeOf(pair.t.transaction.rows[0]))}
+            place={(pair) => transactionPlace(pair.t)}
             headingId={ids.check(check.id)}
             changeId={ids.checkChange(check.id)}
             pairId={(pair) => id(`pair-${pair.key}`)}
@@ -2430,7 +2434,7 @@ export function DetailedImport({
             The review now shows them as Wealthfolio has them. Check them, then import again.
             <ul className="list-disc ps-4">
               {stale.map((s) => (
-                <li key={s.before.id}>{staleText(s, accountName, transactionFund)}</li>
+                <li key={s.before.id}>{staleText(s, accountName, fundInFolio, transactionPlace)}</li>
               ))}
             </ul>
           </AlertDescription>

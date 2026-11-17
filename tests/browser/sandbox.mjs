@@ -1469,7 +1469,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       if (outcome === "rejectLine") {
         assert.equal(await frame.getByRole("button", { name: "Try again: Mutual funds", exact: true }).count(), 0, "the other transactions saved automatically");
       } else {
-        await frame.getByText(/: The trade wasn't imported, so the bank entry of 4 May 2023 was left as it is\.$/).waitFor();
+        // Its line, and what's announced, name the transaction.
+        const skippedLink = "Purchase of Fund INFZ90K01LQ6 on 5 May 2023: The trade wasn't imported, so the bank entry of 4 May 2023 was left as it is.";
+        await frame.getByText(skippedLink, { exact: true }).waitFor();
+        await dSaid.getByText(new RegExp(`${literal(skippedLink)}$`)).waitFor();
       }
       const unchanged = await hosted(() => ({
         bank: window.host.activities.find((a) => a.id === "bank-neft"),
@@ -1536,7 +1539,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
       const before = await hosted(() => ({ rows: window.host.activities.length, updates: window.host.updates.length, links: window.host.links.length }));
       await hosted(() => { window.host.failLinkStep = ""; });
-      const retry = frame.getByRole("button", { name: "Try again: link the bank entry of 4 May 2023" });
+      // Its name says which transaction's entry it links.
+      const retry = frame.getByRole("button", { name: "Try again: link the bank entry of 4 May 2023 with the purchase of Fund INFZ90K01LQ6 on 5 May 2023", exact: true });
       await retry.press("Enter");
       await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
       await focused(frame.locator("[id$='-result-linked']"), `Try again after a failed ${step}`);
