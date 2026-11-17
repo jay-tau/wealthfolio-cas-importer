@@ -16,6 +16,9 @@ const digest = (file) => createHash("sha256").update(file).digest("hex");
 const urls = [pure, native].map((filename) => ({
   filename, url: `https://files.test/${filename}`, digests: { sha256: digest(filename) },
 }));
+// A Pyodide-built wheel, which Pyodide's CDN serves and its pyodide-lock.json lists.
+const locked = "lockdemo-1.0-py3-none-any.whl";
+const cdn = "https://cdn.jsdelivr.net/pyodide/v314.0.7/full/";
 
 function fixture() {
   const files = new Map([
@@ -23,7 +26,8 @@ function fixture() {
     ["runtime-requirements.txt", `demo==1.0 \\\n    --hash=sha256:${digest(pure)} \\\n    --hash=sha256:${digest(native)}\n`],
     ["/pyodide/package.json", JSON.stringify({ version: "314.0.7" })],
     ["/pyodide/pyodide-lock.json", JSON.stringify({
-      info: { python: "3.14.2", abi_version: "2026_0", arch: "wasm32", platform: "emscripten_5_0_3" }, packages: {},
+      info: { python: "3.14.2", abi_version: "2026_0", arch: "wasm32", platform: "emscripten_5_0_3" },
+      packages: { lockdemo: { file_name: locked, sha256: digest(locked) } },
     })],
     ...["pyodide.mjs", "pyodide.asm.mjs", "python_stdlib.zip", "pyodide.asm.wasm"]
       .map((name) => [`/pyodide/${name}`, Buffer.from(name)]),
@@ -31,7 +35,9 @@ function fixture() {
   return files;
 }
 
-async function run(files, online = true, release = urls) {
+// Each wheel's bytes are its file name, unless `served` maps its URL to others.
+async function run(files, online = true, release = urls, served = new Map()) {
+  const network = new Map([...release.map(({ url, filename }) => [url, filename]), [cdn + locked, locked], ...served]);
   await vm.runInNewContext(`(async () => { ${source} })()`, {
     Buffer, createHash, dirname, join,
     console: { log() {} },
@@ -50,13 +56,50 @@ async function run(files, online = true, release = urls) {
     fetch: async (url) => {
       assert.ok(online, `unexpected offline request: ${url}`);
       if (url === "https://pypi.org/pypi/demo/1.0/json") return { ok: true, json: async () => ({ urls: release }) };
-      const wheel = release.find((wheel) => wheel.url === url);
-      assert.ok(wheel, `unexpected request: ${url}`);
-      return { ok: true, arrayBuffer: async () => Buffer.from(wheel.filename) };
+      assert.ok(network.has(url), `unexpected request: ${url}`);
+      return { ok: true, arrayBuffer: async () => Buffer.from(network.get(url)) };
     },
   });
   return JSON.parse(files.get("assets/runtime/files.json")).wheels;
 }
+
+// A fixture whose runtime.json names Pyodide's lockdemo package.
+function withLocked() {
+  const files = fixture();
+  files.set("runtime.json", JSON.stringify({ pyodidePackages: ["lockdemo"] }));
+  return files;
+}
+
+test("runtime downloads runtime.json's Pyodide packages by pyodide-lock.json, and rejects one it lacks", async () => {
+  const files = withLocked();
+  assert.deepEqual(await run(files), [locked, native]);
+  assert.deepEqual(await run(files, false), [locked, native]);
+  assert.ok(files.get(`assets/runtime/${locked}`).equals(Buffer.from(locked)));
+
+  files.set("runtime.json", JSON.stringify({ pyodidePackages: ["missing"] }));
+  await assert.rejects(run(files), /missing is not in Pyodide 314\.0\.7's pyodide-lock\.json/);
+});
+
+test("runtime rejects a downloaded PyPI or Pyodide wheel whose bytes don't match, and keeps none of it", async () => {
+  for (const [url, file] of [[urls[1].url, native], [cdn + locked, locked]]) {
+    const files = withLocked();
+    await assert.rejects(run(files, true, urls, new Map([[url, "made-up bytes"]])), {
+      message: `${file}: SHA-256 ${digest("made-up bytes")}, expected ${digest(file)}`,
+    });
+    for (const dir of [".cache/runtime", "assets/runtime"]) assert.ok(!files.has(`${dir}/${file}`), `${dir}/${file}`);
+  }
+});
+
+test("runtime downloads a cached wheel again when its bytes don't match", async () => {
+  const files = withLocked();
+  for (const file of [locked, native]) files.set(`.cache/runtime/${file}`, Buffer.from("made-up bytes"));
+  assert.deepEqual(await run(files), [locked, native]);
+  for (const file of [locked, native]) {
+    for (const dir of [".cache/runtime", "assets/runtime"]) {
+      assert.ok(files.get(`${dir}/${file}`).equals(Buffer.from(file)), `${dir}/${file}`);
+    }
+  }
+});
 
 test("runtime selects the same pinned wheel with an empty, partial or full cache and offline", async () => {
   for (const cached of [[], [pure], [pure, native]]) {
