@@ -414,10 +414,10 @@ export function DetailedImport({
   const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
   const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
   // Answers to the rare questions: skip (true) or import a possible duplicate, by its transaction's
-  // key, and skip (true) or import a fund whose rows don't add up, by its folio's scheme.
+  // key, and skip or import a fund whose rows don't add up, by its folio's scheme, with what it was
+  // answered for.
   const [duplicateAnswers, setDuplicateAnswers] = useState<ReadonlyMap<string, boolean>>(new Map());
-  const [unbalancedAnswers, setUnbalancedAnswers] = useState<ReadonlyMap<string, boolean>>(new Map());
-  const importsUnbalanced = (key: string) => unbalancedAnswers.get(key) === false;
+  const [unbalancedAnswers, setUnbalancedAnswers] = useState<ReadonlyMap<string, { skip: boolean; evidence: string }>>(new Map());
   // Each bank check's answer and ticks, for the pairs they were given for.
   const [checkAnswers, setCheckAnswers] = useState<Record<string, BankAnswer>>({});
   const [ticks, setTicks] = useState<Record<string, { signature: string; keys: string[]; changed: boolean }>>({});
@@ -575,17 +575,21 @@ export function DetailedImport({
     setGeneration((n) => n + 1);
   }, [visit]);
   const destinations = data.folios.map((f) => [folioState(f), accountOf(f) ?? "", bankOf(f) ?? ""]);
-  const questionSignature = JSON.stringify([
-    generation,
-    // Creating the chosen account doesn't change the question the user answered.
-    destinations.map(([state, account, bank]) => [state, [...created.current].find(([, a]) => a.id === account)?.[0] ?? account, bank]),
-    items.map((item) => fundOf(item.key) ?? null),
-  ]);
-  // A different destination, fund or refreshed host needs new answers to its evidence.
-  useEffect(() => {
-    setDuplicateAnswers(new Map());
-    setUnbalancedAnswers(new Map());
-  }, [questionSignature]);
+  // Where each folio goes, as its questions were answered: creating the chosen account doesn't change it.
+  const asked = destinations.map(([state, account, bank]) => [state, [...created.current].find(([, a]) => a.id === account)?.[0] ?? account, bank]);
+  // The destinations, funds and host reads that the rare questions' cards were worked out from.
+  const questionSignature = JSON.stringify([generation, asked, items.map((item) => fundOf(item.key) ?? null)]);
+  // A "don't add up" answer belongs to its folio's account and bank account and to its fund, so
+  // changing another folio or fund keeps it; it counts only while they're as it was given for. The
+  // units it's about are the statement's. A possible duplicate's answer belongs to its rows and
+  // Wealthfolio's, checked each time the plan is worked out.
+  const unbalancedEvidence = new Map(data.folios.flatMap((folio, i) => folio.schemes.map((scheme) =>
+    [schemeKey(folio, scheme.scheme), JSON.stringify([asked[i], fundOf(fundKey(scheme)) ?? null])] as const)));
+  const unbalancedAnswer = (key: string) => {
+    const answer = unbalancedAnswers.get(key);
+    return answer && answer.evidence === unbalancedEvidence.get(key) ? answer.skip : undefined;
+  };
+  const importsUnbalanced = (key: string) => unbalancedAnswer(key) === false;
   const [attempt, setAttempt] = useState(0);
   const signature = JSON.stringify([
     questionSignature,
@@ -611,9 +615,11 @@ export function DetailedImport({
     prepare(signature).then(
       (next) => {
         if (run !== latestPrepare.current) return;
+        // A plan worked out with other evidence drops its answers: they don't come back if it does.
         const before = prepared && duplicateEvidence(prepared);
         const after = duplicateEvidence(next);
         setDuplicateAnswers((all) => new Map([...all].filter(([key]) => after.has(key) && before?.get(key) === after.get(key))));
+        setUnbalancedAnswers((all) => new Map([...all].filter(([key, answer]) => answer.evidence === unbalancedEvidence.get(key))));
         setPrepared(next);
         settleRetry(true);
       },
@@ -906,7 +912,7 @@ export function DetailedImport({
   const counts = current
     ? breakdown({
         mapping: current.mapping, planned, sent: sentOf, why, duplicate: duplicateState,
-        unbalancedAnswer: (folio, scheme) => (unbalancedAnswers.get(schemeKey(folio, scheme.scheme)) ? false : undefined),
+        unbalancedAnswer: (folio, scheme) => (unbalancedAnswer(schemeKey(folio, scheme.scheme)) ? false : undefined),
       })
     : undefined;
   const earlier: EarlierFund[] = (() => {
@@ -1068,12 +1074,12 @@ export function DetailedImport({
       target: which,
       fundKey: scheme && fundKey(scheme),
       folio: twice ? w.folio : undefined,
-      answer: unbalancedAnswers.get(key),
-      warn: unbalancedAnswers.get(key) === false,
+      answer: unbalancedAnswer(key),
+      warn: importsUnbalanced(key),
       set: (answer) => setUnbalancedAnswers((all) => {
         const next = new Map(all);
         if (answer === undefined) next.delete(key);
-        else next.set(key, answer);
+        else next.set(key, { skip: answer, evidence: unbalancedEvidence.get(key)! });
         return next;
       }),
     };

@@ -84,7 +84,12 @@ the statement is read, one Review screen shows, in this order:
   same units can both be real."): **Skip this transaction** is the safe answer, and **Import it as
   another purchase** imports it. More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
   Credit Risk Fund's transactions don't add up. They add up to 1,204.500 units; the statement says
-  1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**. When
+  1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**. An
+  answer stays until what it was given for changes. A possible duplicate is asked again when its
+  rows change, as with another fund for it or another account for its folio, or when the activity
+  Wealthfolio matched it with changes, such as one edited in Wealthfolio before the page is opened
+  again; a fund whose rows don't add up, when its fund or its folio's account or bank account
+  changes. Confirming another fund, AMFI matching one, or choosing for another folio keeps them. When
   an equal question is about another folio, each card names its folio in its heading, its buttons
   and its answered line ("This purchase in folio 7712045 may already be in Mutual funds"), and a
   possible duplicate's "On this statement:" line names its folio ("3 Jul 2026 · Purchase · Fictiva
