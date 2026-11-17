@@ -278,35 +278,65 @@ export const houseWords = (amc: string) =>
 
 /** What can follow a fund house's word in one run of letters and still name it: "ICICIPRU", "HDFCMF", "SBIMFSIP". */
 const HOUSE_SUFFIX = /^(PRU(DENTIAL)?)?(MF|MUTUAL(FUNDS?)?|AMC|AM|FUNDS?)?(SIP)?$/;
-/** Other-company words, unless the fund house's own name has them, as Sun Life's does. */
+/**
+ * Words many companies' names share. In a fund house's name, one names the house only beside the word
+ * before or after it there: "WHITEOAK CAPITAL", "JM FINANCIAL", "SUN LIFE", not "TATA CAPITAL" or "HDFC LIFE".
+ */
+const SHARED = new Set(["CAPITAL", "FINANCIAL", "FINSERV", "SUN", "LIFE", "ONE"]);
+/**
+ * Other-company words, unless the fund house's own name has them, as Sun Life's does: insurers, cards,
+ * brokers, lenders and their loans, a TV service and its recharge.
+ */
 const OTHER_COMPANY = new Set([
   "INSURANCE", "INSURANCES", "PREMIUM", "POLICY", "LIFE", "ERGO", "LOMBARD", "GENERAL", "GIC", "ASSURANCE",
   "CARD", "CARDS", "SEC", "SECURITIES", "AIA", "ALLIANZ",
+  "FINANCE", "FINSERV", "LOAN", "LOANS", "EMI", "PLAY", "RECHARGE",
 ]);
+/**
+ * Other companies named with words that funds' names have too, so only as these names: ICICI DIRECT
+ * (DIRECT is a plan), TATA CAPITAL (not Tata Capital Protection Oriented Fund), ADITYA BIRLA CAPITAL
+ * (HDFC Capital Builder Value Fund), JM FINANCIAL SERVICES (Banking and Financial Services funds).
+ */
+const OTHER_NAME = /\b(?:ICICI DIRECT|TATA CAPITAL(?! PROTECTION\b)|ADITYA BIRLA CAPITAL|JM ?FINANCIAL SERVICES)\b/;
+/** Places whose name starts with a fund house's word. */
+const PLACES = new Set(["NAVI MUMBAI"]);
 
 /**
  * What a bank entry's description says about whom it paid or was paid by: the fund house, by a word
  * of its name, alone or run together with a fund suffix as in "ICICIPRU" (not "HDFCLIFE" or
- * "HDFCBANK"), not when its words name a bank ("HDFC BANK", "KOTAK MAHINDRA BANK") and not in an
- * insurance premium's description; or mutual funds in general ("MF", "mutual fund").
+ * "HDFCBANK"), a shared word such as CAPITAL only beside its neighbour in the name ("WHITEOAK
+ * CAPITAL"), not when its words name a bank ("HDFC BANK", "KOTAK MAHINDRA BANK", "BANK OF BARODA") or
+ * a place ("NAVI MUMBAI") and not in another company's description, such as an insurance premium's or
+ * a loan's ("BAJAJ FINANCE LTD EMI"); or mutual funds in general ("MF", "mutual fund").
  */
 export function describes(description: string | null | undefined, amc: string): "house" | "funds" | undefined {
   const tokens = (description ?? "").toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean);
   const words = houseWords(amc);
-  // Keep India and Asset only in this house's joined name: NIPPONINDIAMF, MIRAEASSET.
-  const joined = amc.toUpperCase().split(/[^A-Z0-9]+/).filter((word) => words.includes(word) || word === "INDIA" || word === "ASSET").join("");
+  // The name's words in order, short ones too: JM FINANCIAL.
+  const all = amc.toUpperCase().split(/[^A-Z0-9]+/).filter((word) => word && !GENERIC.has(word));
+  // Keep the short words, India and Asset only in this house's joined name: JMFINANCIAL, NIPPONINDIAMF, MIRAEASSET.
+  const joined = amc.toUpperCase().split(/[^A-Z0-9]+/).filter((word) => all.includes(word) || word === "INDIA" || word === "ASSET").join("");
   const names = words.length ? [...words, joined] : words;
   const isWord = (token: string) => words.includes(token);
-  // The house's words, possibly several in a row, then BANK: a bank of the same name.
-  const bankAfter = (i: number) => {
-    let j = i + 1;
-    while (j < tokens.length && isWord(tokens[j])) j++;
-    return tokens[j]?.startsWith("BANK") || words.some((word) => tokens[j]?.startsWith(`${word}BANK`));
+  // The run of the house's words around a token, then what's before or after it: a bank of the same
+  // name, after it as in "HDFC BANK" or "KOTAK MAHINDRABANK", or before it as in "BANK OF BARODA".
+  const bank = (i: number) => {
+    let start = i;
+    while (start > 0 && isWord(tokens[start - 1])) start--;
+    let end = i + 1;
+    while (end < tokens.length && isWord(tokens[end])) end++;
+    const after = tokens[end];
+    return after?.startsWith("BANK") || words.some((word) => after?.startsWith(`${word}BANK`)) ||
+      (tokens[start - 2] === "BANK" && tokens[start - 1] === "OF");
   };
-  const named = tokens.some((token, i) =>
-    !bankAfter(i) && names.some((word) => token.startsWith(word) && HOUSE_SUFFIX.test(token.slice(word.length))));
-  // ICICI DIRECT is its broker; DIRECT elsewhere can be a fund's plan.
-  const otherCompany = tokens.some((token, i) => (OTHER_COMPANY.has(token) && !isWord(token)) || (token === "ICICI" && tokens[i + 1] === "DIRECT"));
+  // A shared word beside the word before or after it in the house's name.
+  const beside = (i: number, word: string) => {
+    const k = all.indexOf(word);
+    return k >= 0 && ((k > 0 && tokens[i - 1] === all[k - 1]) || (k + 1 < all.length && tokens[i + 1] === all[k + 1]));
+  };
+  const named = tokens.some((token, i) => !bank(i) && !PLACES.has(`${token} ${tokens[i + 1]}`) && names.some((word) =>
+    token.startsWith(word) && HOUSE_SUFFIX.test(token.slice(word.length)) && (!SHARED.has(word) || beside(i, word))));
+  const otherCompany = tokens.some((token) => OTHER_COMPANY.has(token) && !isWord(token)) || OTHER_NAME.test(tokens.join(" "));
   if (named && !otherCompany) return "house";
   if (tokens.includes("MF") || /MUTUAL\s*FUNDS?\b/i.test(description ?? "")) return "funds";
   return undefined;
