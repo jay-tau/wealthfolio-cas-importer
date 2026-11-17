@@ -25,6 +25,7 @@ import {
   RECORD_PREFIX,
   rowsOf,
   sameUnits,
+  savedSincePlanned,
   statementDay,
 } from "../cas/plan";
 import {
@@ -48,6 +49,7 @@ import { type NotCreated, NotCreatedAlert } from "../components/holdings-preview
 import {
   ActivityTable,
   type BankLink,
+  canRetryLink,
   type ClosingCheck,
   importIds,
   type ImportOutcome,
@@ -73,6 +75,7 @@ import { useHoldingSearches } from "../components/review/search";
 import { bankKey, type ChosenFund, folioKey, fundKey, LEFT_OUT, NO_BANK, panKey } from "../lib/choices";
 import { readableName } from "../lib/fund-name";
 import { explanation, Explained } from "../lib/explained";
+import { isDuplicateActivity } from "../lib/host-errors";
 import { nextOpen, type QuestionStop } from "../lib/focus";
 import { instrumentType } from "../lib/instrument-type";
 import { accountLabels } from "../lib/account-labels";
@@ -98,6 +101,13 @@ interface Imported {
   done: ReadonlySet<Part>;
   /** Those that wait: for an account Wealthfolio didn't create, or because it didn't import them. */
   held: Part[];
+  /**
+   * Those Wealthfolio has all or part of now, saved by another import while one of this review's ran,
+   * which Wealthfolio then refused: they aren't sent again.
+   */
+  found: Part[];
+  /** Those of an import Wealthfolio refused that way, not checked again yet: the next try checks them first. */
+  recheck: ReadonlySet<Part>;
   closing: ClosingCheck;
   links: BankLink[];
 }
@@ -416,6 +426,8 @@ export function DetailedImport({
   // Accounts the last import couldn't create; it imported nothing else, so the review stays.
   const [notCreated, setNotCreated] = useState<NotCreated[]>([]);
   const [stale, setStale] = useState<StaleEntry[] | null>(null);
+  // The last import was refused because Wealthfolio has some of it now, so the review was read again.
+  const [savedMeanwhile, setSavedMeanwhile] = useState(false);
   const [error, setError] = useState("");
   // Bumped when the page is opened again or bank entries changed: Wealthfolio may have changed meanwhile.
   const [generation, setGeneration] = useState(0);
@@ -1189,6 +1201,7 @@ export function DetailedImport({
     showAll: id("show-all"),
     every: id("every"),
     notCreated: id("not-created"),
+    savedMeanwhile: id("saved-meanwhile"),
   };
   // The accounts the last import couldn't create, while something still goes to them.
   const missingNow = notCreated.filter((n) => data.folios.some((f) => accountOf(f) === n.accountId));
@@ -1589,7 +1602,8 @@ export function DetailedImport({
    * checks the rows for accounts created now, imports what's ready in one go, then uses the bank
    * entries chosen once their trades are in. A transaction that needs an account Wealthfolio didn't
    * create waits whole, with both sides of a gift and a trade's bank transfer; so does each one
-   * Wealthfolio didn't import. One Wealthfolio refuses stays out, with its message.
+   * Wealthfolio didn't import. One Wealthfolio refuses stays out, with its message. `duplicates` are
+   * those of an import Wealthfolio refused because it has some of it now, saved since its check.
    */
   const sendParts = async (parts: Part[], made: Account[], remembered: [string, string][], only?: string) => {
     const missing = await createAccounts([...new Set(parts.flatMap(waitsFor))].filter((a) => !only || a === only), made, remembered);
@@ -1599,6 +1613,7 @@ export function DetailedImport({
     let result: ImportActivitiesResult = EMPTY;
     let sent: ActivityImport[] = [];
     let failed = false;
+    let duplicates: Part[] = [];
     try {
       // Rows for an account this review created are checked there before anything is imported.
       const fresh = ready.flatMap((p) => p.rows.filter((r) => isProposed(r.accountId)).map((row) => ({ p, row })));
@@ -1649,6 +1664,8 @@ export function DetailedImport({
     } catch (e) {
       api.logger.error(`Wealthfolio didn't import the transactions: ${String(e)}`);
       failed = true;
+      // Nothing of it was saved, but Wealthfolio now has some of it, from another import.
+      if (isDuplicateActivity(e)) duplicates = ready;
     }
     if (failed) {
       // Nothing went in: what wasn't refused waits for Try again, as it was.
@@ -1689,7 +1706,7 @@ export function DetailedImport({
       api.query.invalidateQueries([QueryKeys.ACTIVITY_DATA]);
       api.query.invalidateQueries([QueryKeys.ACTIVITIES]);
     }
-    return { missing, held, done, result, sent, links, failed };
+    return { missing, held, done, result, sent, links, failed, duplicates };
   };
 
   /**
@@ -1748,6 +1765,7 @@ export function DetailedImport({
     setBusy("import");
     setError("");
     setNotCreated([]);
+    setSavedMeanwhile(false);
     const made: Account[] = [];
     const nowRemembered: [string, string][] = [];
     // The review stays as it was, its alert saying why, and the focus goes there.
@@ -1802,13 +1820,25 @@ export function DetailedImport({
       reviewedRef.current = { target, groups, fundsIn, pointing };
 
       const run = await sendParts(parts, made, nowRemembered);
+      if (run.duplicates.length) {
+        // Nothing went in, but Wealthfolio has some of it now, saved since its check. The plan is
+        // worked out again from fresh reads, as Try again does, before another import: what's there
+        // is no longer sent, and answers stay where their evidence is unchanged.
+        setNotCreated(run.missing);
+        setSavedMeanwhile(true);
+        cache.current = { reads: new Map() };
+        setAttempt((n) => n + 1);
+        return focusSoon(ids.savedMeanwhile, false, pressed);
+      }
       if (!run.done.length && !run.result.activities.length) {
         // Nothing went in: the review stays as it was, saying why.
         setNotCreated(run.missing);
         if (run.failed) setError(IMPORT_FAILED);
         return stay();
       }
-      const state: Imported = { result: run.result, sent: run.sent, parts, done: new Set(run.done), held: run.held, links: run.links, closing: undefined };
+      const state: Imported = {
+        result: run.result, sent: run.sent, parts, done: new Set(run.done), held: run.held, found: [], recheck: new Set(), links: run.links, closing: undefined,
+      };
       setImported(state);
       await runCheck(state);
       const imported = run.done.length;
@@ -1818,7 +1848,7 @@ export function DetailedImport({
       announce([
         summary,
         ...outcomesOf(state).filter((a) => a.state !== "imported").map((a) => `${outcomeWords(a)}${a.retryable ? ` Try again for ${a.name}.` : ""}`),
-        ...run.links.filter((l) => l.stage).map((l) => `${linkLine(l, fundInFolio, transactionPlace)}${l.stage === "trade" ? "" : " Try again to link the bank entry."}`),
+        ...run.links.filter((l) => l.stage).map((l) => `${linkLine(l, fundInFolio, transactionPlace)}${canRetryLink(l) ? " Try again to link the bank entry." : ""}`),
         ...(latestImported.current?.closing === "failed" ? ["Saved, but the units couldn't be checked in Wealthfolio. Check again."] : []),
       ].join(" "));
     } catch (e) {
@@ -1829,6 +1859,21 @@ export function DetailedImport({
       settleCreated(made, nowRemembered);
       setBusy("");
     }
+  };
+
+  /**
+   * The transactions Wealthfolio has all or part of now that it didn't have when the review was
+   * worked out, by its own check of their rows (`savedSincePlanned`), all checked in one go.
+   */
+  const savedSince = async (parts: Part[]) => {
+    const rows = parts.flatMap((p) => p.rows.map(inCreated));
+    const answers = await api.activities.checkImport(rows);
+    if (answers.length !== rows.length || rows.some((_, i) => {
+      const answer = answers[i];
+      return !answer || answer.isValid === false || Object.keys(answer.errors ?? {}).length > 0;
+    })) throw new Error("Wealthfolio didn't check every row for duplicates.");
+    let at = 0;
+    return parts.filter((p) => savedSincePlanned(p.t, p.rows, answers.slice(at, (at += p.rows.length))));
   };
 
   /** Try again beside an account: creates it if it wasn't, then imports what waits for it. */
@@ -1843,12 +1888,26 @@ export function DetailedImport({
     const made: Account[] = [];
     const remembered: [string, string][] = [];
     try {
+      // Transactions of an import Wealthfolio refused as a duplicate are checked again first.
+      const unchecked = parts.filter((p) => state.recheck.has(p));
+      let found: Part[] = [];
+      if (unchecked.length) {
+        try {
+          found = await savedSince(unchecked);
+        } catch (e) {
+          api.logger.error(`Couldn't check which transactions Wealthfolio has now: ${String(e)}`);
+          setError("We couldn't check which of these transactions Wealthfolio has now, so nothing more was imported. Try again.");
+          return;
+        }
+      }
+      const sending = parts.filter((p) => !found.includes(p));
+      const foundFirst = found.length;
       // The bank entries chosen are read again, as before the first import.
-      const linking = parts.filter((p) => p.entry).map((p): [PlannedTransaction, ActivityDetails] => [p.t, p.entry!.row]);
+      const linking = sending.filter((p) => p.entry).map((p): [PlannedTransaction, ActivityDetails] => [p.t, p.entry!.row]);
       if (linking.length) {
         let latest: Awaited<ReturnType<typeof recheckEntries>>;
         try {
-          latest = await recheckEntries(api, linking, new Map(parts.flatMap((p) => (p.entry ? [[p.entry.row.id, p.entry.facts] as const] : []))), accountName);
+          latest = await recheckEntries(api, linking, new Map(sending.flatMap((p) => (p.entry ? [[p.entry.row.id, p.entry.facts] as const] : []))), accountName);
         } catch (e) {
           api.logger.error(`Couldn't read the bank entries chosen again: ${String(e)}`);
           setError("We couldn't check the bank entries you chose again, so nothing more was imported. Try again.");
@@ -1859,23 +1918,51 @@ export function DetailedImport({
           return;
         }
       }
-      const run = await sendParts(parts, made, remembered, key);
+      const run = await sendParts(sending, made, remembered, key);
+      const recheck = new Set([...state.recheck].filter((p) => !unchecked.includes(p)));
+      let refused = "";
+      if (run.duplicates.length) {
+        // Nothing went in, but Wealthfolio has some of it now, saved since its check. Before another
+        // import, its own check says which transactions: those wait for the user, the rest for Try
+        // again, each whole.
+        const why = "Nothing more was imported: Wealthfolio refused it as a duplicate of something saved elsewhere while the import ran";
+        try {
+          const more = await savedSince(run.duplicates);
+          found = [...found, ...more];
+          const n = more.length;
+          const of = run.duplicates.length;
+          refused = n
+            ? `Nothing more was imported: Wealthfolio now has ${n === of ? (n === 1 ? "this transaction" : `these ${n} transactions`) : `${n} of these ${plural(of, "transaction")}`}, in whole or in part, saved elsewhere while the import ran.${n < of ? " Try again imports the rest." : ""}`
+            : `${why}, but the check couldn't confirm any newly saved transactions. Try again.`;
+        } catch (e) {
+          api.logger.error(`Couldn't check which transactions Wealthfolio has now: ${String(e)}`);
+          for (const p of run.duplicates) recheck.add(p);
+          refused = `${why}, and we couldn't check which of these transactions it has. Try again.`;
+        }
+      }
       const next: Imported = {
         ...state,
         result: mergeResults(state.result, run.result),
         sent: [...state.sent, ...run.sent],
         done: new Set([...state.done, ...run.done]),
-        held: [...state.held.filter((p) => !parts.includes(p)), ...run.held],
+        held: [...state.held.filter((p) => !parts.includes(p)), ...run.held.filter((p) => !found.includes(p))],
+        found: [...state.found, ...found],
+        recheck,
         links: [...state.links, ...run.links],
       };
       setImported(next);
+      if (refused) setError(refused);
       if (run.done.length) await runCheck(next);
       const outcome = outcomesOf(latestImported.current ?? next).find((a) => a.key === key);
       announce([
+        refused ||
+          (foundFirst
+            ? `Wealthfolio now has ${foundFirst} of these transactions, in whole or in part, saved elsewhere, so ${foundFirst === 1 ? "it wasn't" : "they weren't"} imported again.`
+            : ""),
         outcome ? `${outcomeWords(outcome)}${outcome.state === "imported" ? "." : ""}` : "",
-        ...run.links.filter((l) => l.stage).map((l) => `${linkLine(l, fundInFolio, transactionPlace)}${l.stage === "trade" ? "" : " Try again to link the bank entry."}`),
+        ...run.links.filter((l) => l.stage).map((l) => `${linkLine(l, fundInFolio, transactionPlace)}${canRetryLink(l) ? " Try again to link the bank entry." : ""}`),
         ...(run.done.length && latestImported.current?.closing === "failed" ? ["Saved, but the units couldn't be checked in Wealthfolio. Check again."] : []),
-      ].join(" "));
+      ].filter(Boolean).join(" "));
     } catch (e) {
       api.logger.error(`The import stopped: ${String(e)}`);
       setError("Nothing more was imported. Try again.");
@@ -2020,6 +2107,7 @@ export function DetailedImport({
         <ImportResult
           result={imported.result}
           sent={imported.sent}
+          found={imported.found.map((p) => ({ transaction: p.t, bankRow: p.entry?.row }))}
           total={imported.parts.length}
           imported={imported.done.size}
           outcomes={outcomesOf(imported)}
@@ -2425,6 +2513,17 @@ export function DetailedImport({
           <WrapButton type="button" variant="outline" className="justify-self-start" aria-label="Try again importing transactions" onClick={() => void runImport()} disabled={!canImport}>
             Try again
           </WrapButton>
+        </div>
+      )}
+      {savedMeanwhile && (
+        <div id={ids.savedMeanwhile} tabIndex={-1}>
+          <Alert variant="warning">
+            <AlertTitle>Nothing was imported: Wealthfolio already has some of these transactions</AlertTitle>
+            <AlertDescription>
+              They were saved elsewhere while the import ran, such as in another window. The review now shows what Wealthfolio has. Check it, then
+              import again.
+            </AlertDescription>
+          </Alert>
         </div>
       )}
       {stale && stale.length > 0 && (

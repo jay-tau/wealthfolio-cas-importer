@@ -22,6 +22,7 @@ import {
   RECORD_PREFIX,
   rowsOf,
   sameUnits,
+  savedSincePlanned,
   statementDay,
 } from "../src/cas/plan.ts";
 import { sha256 } from "../src/lib/sha256.ts";
@@ -1274,6 +1275,63 @@ describe("bank account", () => {
     calls.length = 0;
     assert.deepEqual(await linkBankRow(api, t, withdrawal, { fundId: linked.fundId, converted: linked.converted }), { fundId: "fund-leg", converted: true, linked: true });
     assert.deepEqual(calls, [["link", withdrawal.id, "fund-leg"]]);
+  });
+
+  test("a transfer Wealthfolio refuses as a duplicate by its code says it may be there, and nothing more is changed", async () => {
+    const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
+    const withdrawal = bankRow("WITHDRAWAL", "5000.00", "2023-04-08");
+    const calls = [];
+    const refusing = (error) => ({
+      create: async (a) => { calls.push(["create", a.idempotencyKey]); throw error; },
+      update: async () => void calls.push(["update"]),
+      linkTransfer: async () => void calls.push(["link"]),
+    });
+    const coded = (message, code) => Object.assign(new Error(message), code === undefined ? {} : { code });
+    // Wealthfolio's message is localized, or may be anything: only the code says it's a duplicate.
+    for (const message of ["Duplicate activity", "Doppelte Aktivität", ""]) {
+      calls.length = 0;
+      const refused = await linkBankRow(refusing(coded(message, "DUPLICATE_ACTIVITY")), t, withdrawal);
+      assert.deepEqual([refused.stage, refused.fundId, refused.converted, refused.linked], ["exists", undefined, false, false]);
+      assert.match(refused.error, /^Wealthfolio refused the fund account's transfer as a duplicate: .*\. It may already have one for the bank's row on 2023-04-08: check the transfers and link the two in Wealthfolio\.$/);
+      assert.doesNotMatch(refused.error, /without its cash/);
+      // The bank's row isn't changed or linked, nor the transfer added again.
+      assert.deepEqual(calls, [["create", `cas-importer-bank:${withdrawal.id}`]]);
+    }
+    // A retry that finds the key taken stops there too.
+    calls.length = 0;
+    assert.equal((await linkBankRow(refusing(coded("taken", "DUPLICATE_ACTIVITY")), t, withdrawal, {})).stage, "exists");
+    assert.deepEqual(calls.map(([step]) => step), ["create"]);
+    // Without the code, or with another one, the transfer wasn't added, as before, whatever the message says.
+    for (const error of [coded("DUPLICATE_ACTIVITY: Duplicate activity"), coded("Duplicate activity", "INVALID_ACTIVITY"), coded("Duplicate activity", null), { message: "Duplicate activity" }]) {
+      calls.length = 0;
+      const failed = await linkBankRow(refusing(error), t, withdrawal);
+      assert.equal(failed.stage, "transfer");
+      assert.match(failed.error, /^Couldn't add the fund account's transfer: .*\. The trade is in Wealthfolio without its cash\.$/);
+      assert.deepEqual(calls.map(([step]) => step), ["create"]);
+    }
+  });
+
+  test("a check after a refused import finds a transaction saved meanwhile; one imported anyway only by an activity its plan didn't see", () => {
+    const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
+    const rows = importRows([t], () => false);
+    assert.equal(rows.length, 3);
+    const answers = rows.map((r) => ({ ...r }));
+    assert.equal(savedSincePlanned(t, rows, answers), false);
+    // Any one row Wealthfolio now calls a duplicate of an activity it has, its bank transfer too.
+    for (const at of [0, 1, 2]) {
+      assert.equal(savedSincePlanned(t, rows, answers.map((r, i) => (i === at ? { ...r, duplicateOfId: "saved-meanwhile" } : r))), true);
+    }
+    // A duplicate within the rows checked isn't in Wealthfolio, and no answer finds nothing.
+    assert.equal(savedSincePlanned(t, rows, answers.map((r) => ({ ...r, duplicateOfLineNumber: 1 }))), false);
+    assert.equal(savedSincePlanned(t, rows, []), false);
+    // Imported anyway beside what the plan saw: the add-on's match and Wealthfolio's flag don't count, another activity does.
+    const seen = { ...t, status: "duplicate", rows: t.rows.map((r, i) => (i === 0 ? { ...r, existingId: "by-hand" } : i === 1 ? { ...r, flagged: true, duplicateOfId: "flagged" } : r)) };
+    const forced = importRows([seen], () => true);
+    assert.ok(forced.every((r) => r.forceImport));
+    const known = forced.map((r, i) => ({ ...r, ...(i < 2 && { duplicateOfId: ["by-hand", "flagged"][i] }) }));
+    assert.equal(savedSincePlanned(seen, forced, known), false);
+    assert.equal(savedSincePlanned(seen, forced, known.map((r, i) => (i === 0 ? { ...r, duplicateOfId: "saved-meanwhile" } : r))), true);
+    assert.equal(savedSincePlanned(seen, forced, known.map((r, i) => (i === 2 ? { ...r, duplicateOfId: "saved-meanwhile" } : r))), true);
   });
 
   test("equal confirmed bank rows get distinct cash, including Import anyway, but retries cannot create it twice", async () => {

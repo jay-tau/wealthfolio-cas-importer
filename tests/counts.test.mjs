@@ -733,6 +733,16 @@ test("the import result names each bank entry the add-on changed, and says how f
   assert.ok(failedAt("trade").includes(": The trade wasn't imported, so the bank entry of 4 May 2023 was left as it is. "));
   assert.ok(!failedAt("trade").includes("Try again"));
   assert.ok(failedAt("transfer").includes(": The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of 4 May 2023 wasn't linked. Try again"));
+  // Wealthfolio may have the transfer already: the user checks it there, and nothing says the cash is missing.
+  assert.ok(failedAt("exists").includes(": The trade is in Wealthfolio, but Wealthfolio refused the fund account's transfer as a duplicate: it may already have one for the bank entry of 4 May 2023, from an earlier try. Check the fund account's transfers, then link the bank entry in Wealthfolio. "), failedAt("exists"));
+  assert.ok(!failedAt("exists").includes("Try again"));
+  assert.ok(!failedAt("exists").includes("wasn't added"));
+  // A transaction Wealthfolio now has all or part of, saved elsewhere while an import ran, says what to do, with its bank entry if one was chosen.
+  const found = importResult({ found: [{ transaction }, { transaction, bankRow: bankRow("d", "WITHDRAWAL") }], fundName });
+  assert.ok(found.includes(
+    " ✗ Purchase of Fictiva Liquid Fund on 5 May 2023: Wealthfolio now has all or part of it, saved elsewhere while the import ran, so it wasn't imported again. Check it in Wealthfolio, then read the statement again to import anything missing. " +
+      "✗ Purchase of Fictiva Liquid Fund on 5 May 2023: Wealthfolio now has all or part of it, saved elsewhere while the import ran, so it wasn't imported again, nor linked with the bank entry of 4 May 2023. Check it in Wealthfolio, then read the statement again to import anything missing. ",
+  ), found);
   assert.ok(failedAt("convert").includes(": The trade and the fund account's transfer are in Wealthfolio; the bank entry of 4 May 2023 wasn't changed into a transfer or linked. Try again"));
 });
 

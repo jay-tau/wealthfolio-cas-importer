@@ -3209,3 +3209,453 @@ test("the bar's narrow form says what's imported in one line, for one account or
   await run.flush();
   assert.equal(find(run, "Footer").narrow, undefined, "nothing is imported: one line, nothing folded");
 });
+
+/** An error as Wealthfolio's sandbox rejects a host call with: its message, and its code if the host gave one. */
+const hostError = (message, code) => Object.assign(new Error(message), code === undefined ? {} : { code });
+/** A row as Wealthfolio stores an import of it, with the add-on's row ID. */
+const savedCopy = (r, i) => stored(r, r.accountId, `saved-elsewhere-${i}`, `addon:cas-importer:${r.sourceRecordId}`);
+/** A transaction's rows among `rows`: its trade's, and its cash's and bank transfer's, which share its row ID. */
+const rowsOfTransaction = (rows, trade) => rows.filter((r) => r.sourceRecordId === trade.sourceRecordId || r.sourceRecordId.startsWith(`${trade.sourceRecordId}:`));
+
+for (const message of ["Duplicate activity", "", "Network unavailable"]) {
+  test(`an import Wealthfolio refuses as a duplicate reads it again, keeps valid answers and imports only what it lacks (message "${message}")`, async () => {
+    const { run, api, activities, imported, logged } = setup({ entries: [], remembered: {
+      [choices.panKey("ABCDE1234F")]: "mf", [choices.bankKey(choices.panKey("ABCDE1234F"))]: "bank",
+    }, change(data) {
+      const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));
+      scheme.close = String(Number(scheme.close_calculated) + 1);
+      return data;
+    } });
+    let reads = 0;
+    const getAll = api.activities.getAll;
+    api.activities.getAll = async (id) => (reads++, getAll(id));
+    await run.flush();
+    askCards(run)[0].other.onClick();
+    await run.flush();
+    const answers = askAnswers(run).map((a) => a.text);
+    assert.deepEqual(answers.length, 1);
+    const send = api.activities.import;
+    let refused;
+    let whole;
+    let part;
+    api.activities.import = async (rows) => {
+      if (refused) return send(rows);
+      refused = rows;
+      // Another import saved one purchase whole, and only the trade of another, before this one's rows went in.
+      const [first, second] = rows.filter((r) => r.activityType === "BUY" && r.symbol && rowsOfTransaction(rows, r).length === 3);
+      whole = rowsOfTransaction(rows, first);
+      part = [second];
+      activities.push(...[...whole, ...part].map(savedCopy));
+      throw hostError(message, "DUPLICATE_ACTIVITY");
+    };
+    const before = reads;
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    assert.equal(find(run, "ImportResult"), undefined);
+    assert.equal(imported.length, 0);
+    assert.match(logged.join("\n"), /Wealthfolio didn't import the transactions/);
+    assert.match(textOf(run.tree), /Nothing was imported: Wealthfolio already has some of these transactionsThey were saved elsewhere while the import ran, such as in another window\. The review now shows what Wealthfolio has\. Check it, then import again\./);
+    assert.doesNotMatch(textOf(run.tree), /Nothing was imported: Wealthfolio couldn't import the transactions/);
+    // Read again: the answer whose evidence didn't change stays, and the transaction Wealthfolio has part of is asked about.
+    assert.ok(reads > before);
+    assert.deepEqual(askAnswers(run).map((a) => a.text), answers);
+    const cards = askCards(run);
+    assert.equal(cards.length, 1);
+    assert.match(cards[0].title, /may already be in Mutual funds$/);
+    assert.equal(find(run, "Footer").action.disabled, true);
+    cards[0].main.onClick();
+    await run.flush();
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    // What Wealthfolio has isn't sent again, nor is the rest of the purchase it has part of; everything else is, whole.
+    assert.equal(imported.length, 1);
+    const left = new Set([...whole, ...rowsOfTransaction(refused, part[0])].map((r) => r.sourceRecordId));
+    assert.deepEqual(imported[0].map((r) => r.sourceRecordId).sort(), refused.map((r) => r.sourceRecordId).filter((id) => !left.has(id)).sort());
+    assert.ok(find(run, "ImportResult"));
+  });
+}
+
+for (const [why, error] of [
+  ["no code", hostError("DUPLICATE_ACTIVITY: Duplicate activity already exists")],
+  ["another code", hostError("Duplicate activity already exists", "VALIDATION_ERROR")],
+  ["an empty code", hostError("Duplicate activity already exists", "")],
+]) {
+  test(`an import refused with ${why} keeps the review as it was, whatever its message says`, async () => {
+    const { run, api, imported } = setup({ entries: [] });
+    let reads = 0;
+    const getAll = api.activities.getAll;
+    api.activities.getAll = async (id) => (reads++, getAll(id));
+    await run.flush();
+    const send = api.activities.import;
+    api.activities.import = async () => { throw error; };
+    const before = reads;
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    assert.equal(find(run, "ImportResult"), undefined);
+    assert.equal(reads, before, "nothing is read again");
+    assert.match(textOf(run.tree), /Nothing was imported: Wealthfolio couldn't import the transactions\.The review is as you left it\./);
+    assert.doesNotMatch(textOf(run.tree), /already has some of these transactions/);
+    api.activities.import = send;
+    nodes(run.tree).find((n) => n.props?.["aria-label"] === "Try again importing transactions").props.onClick();
+    await run.flush();
+    assert.equal(imported.length, 1);
+  });
+}
+
+/**
+ * A result whose Testbridge folio's transactions wait for its new account, which Wealthfolio didn't
+ * create, its dividend with the bank entry chosen for it; Wealthfolio creates the account now.
+ */
+async function withHeldFolio() {
+  const name = "Testbridge Mutual Fund folio 1040012345";
+  const refuse = new Set([name]);
+  const context = withNewAccounts({ accounts: [account("bank", "Savings")], refuse });
+  const { run, props, api, keys, activities } = context;
+  api.accounts.getAll = async () => props.allAccounts;
+  activities.push({ ...ENTRIES[0] });
+  const changed = [];
+  api.activities.create = async () => { changed.push("create"); return { id: "fund-transfer" }; };
+  api.activities.update = async () => { changed.push("update"); };
+  api.activities.linkTransfer = async () => { changed.push("link"); };
+  await run.flush();
+  saveTo(run).onChange(keys.pan, proposedId(keys.pan));
+  saveTo(run).onChange(keys.testbridge, proposedId(keys.testbridge));
+  saveTo(run).onChange(choices.bankKey(keys.pan), "bank");
+  await run.flush();
+  checksUnder(run, choices.bankKey(keys.pan))[0].onLink();
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  const tb = find(run, "ImportResult").outcomes.find((a) => a.name === name);
+  assert.equal(tb.state, "not-created");
+  refuse.clear();
+  // Wealthfolio's check calls a row whose ID is in `elsewhere` a duplicate of an activity it has.
+  const elsewhere = new Set();
+  const checked = [];
+  const check = api.activities.checkImport;
+  api.activities.checkImport = async (rows) => {
+    checked.push(rows);
+    return (await check(rows)).map((r) => (elsewhere.has(r.sourceRecordId) ? { ...r, duplicateOfId: "saved-elsewhere" } : r));
+  };
+  const status = () => nodes(run.tree).find((n) => n.props?.role === "status").props.children;
+  return { ...context, name, key: tb.key, changed, elsewhere, checked, status };
+}
+/** How many transactions `rows` are: a trade's cash and bank transfer share its row ID. */
+const transactionsIn = (rows) => new Set(rows.map((r) => r.sourceRecordId.split(":")[0])).size;
+
+for (const message of ["Duplicate activity", "", "Network unavailable"]) {
+  test(`an account's Try again refused as a duplicate checks Wealthfolio again, lists what it has and keeps the rest whole (message "${message}")`, async () => {
+    const { run, api, imported, logged, name, key, changed, elsewhere, checked, status } = await withHeldFolio();
+    const send = api.activities.import;
+    let refused;
+    let checks;
+    api.activities.import = async (rows) => {
+      if (refused) return send(rows);
+      refused = rows;
+      checks = checked.length;
+      // Another import saved the dividend, whose bank entry was chosen, before this one's rows went in.
+      elsewhere.add(rows.find((r) => r.activityType === "DIVIDEND").sourceRecordId);
+      throw hostError(message, "DUPLICATE_ACTIVITY");
+    };
+    find(run, "ImportResult").onRetryAccount(key);
+    await run.flush();
+    // After the refusal, Wealthfolio's own check of everything refused, where it was sent, says which transactions it has.
+    assert.deepEqual(checked.slice(checks), [refused]);
+    assert.match(logged.join("\n"), /Wealthfolio didn't import the transactions/);
+    const total = transactionsIn(refused);
+    assert.ok(total > 1);
+    const said = `Nothing more was imported: Wealthfolio now has 1 of these ${total} transactions, in whole or in part, saved elsewhere while the import ran. Try again imports the rest.`;
+    assert.ok(textOf(run.tree).includes(said), textOf(run.tree));
+    await new Promise((resolve) => setTimeout(resolve, 85));
+    await run.flush();
+    assert.ok(status().startsWith(said), status());
+    let result = find(run, "ImportResult");
+    // The dividend isn't sent again, nor its bank entry used: it's listed for the user to check.
+    assert.deepEqual(result.found.map((f) => [f.transaction.transaction.activity.activityType, f.bankRow?.id]), [["DIVIDEND", "dividend"]]);
+    assert.deepEqual(changed, []);
+    let tb = result.outcomes.find((a) => a.name === name);
+    assert.deepEqual([tb.state, tb.waiting, tb.retryable], ["failed", total, true]);
+    assert.equal(find(run, "ReviewHeader").unfinished, true);
+    // Try again imports the others, each whole, and only them.
+    result.onRetryAccount(key);
+    await run.flush();
+    assert.equal(imported.length, 2);
+    assert.deepEqual(imported[1], refused.filter((r) => !elsewhere.has(r.sourceRecordId)));
+    assert.equal(transactionsIn(imported[1]), total - 1);
+    assert.deepEqual(changed, []);
+    result = find(run, "ImportResult");
+    tb = result.outcomes.find((a) => a.name === name);
+    assert.deepEqual([tb.state, tb.imported, tb.waiting, tb.retryable], ["failed", total - 1, 1, false]);
+    assert.equal(result.found.length, 1);
+    assert.ok(Array.isArray(result.closing));
+    assert.ok(!result.closing.some((f) => f.schemes.some((s) => s.scheme.startsWith("Testbridge"))), "a fund with found transactions isn't checked");
+    assert.doesNotMatch(textOf(run.tree), /Nothing more was imported/);
+  });
+}
+
+test("an account's duplicate refusal checks only the batch left after both validation steps, and can find it all", async () => {
+  const { run, api, imported, name, key, elsewhere, checked, changed, status } = await withHeldFolio();
+  const check = api.activities.checkImport;
+  let firstCheck = true;
+  api.activities.checkImport = async (rows) => {
+    const answers = await check(rows);
+    if (!firstCheck) return answers;
+    firstCheck = false;
+    return answers.map((r) => r.activityType === "DIVIDEND" ? { ...r, isValid: false, errors: { general: ["Made-up created-account refusal."] } } : r);
+  };
+  let attempts = 0;
+  let refused;
+  let checks;
+  api.activities.import = async (rows) => {
+    if (++attempts === 1) {
+      assert.ok(!rows.some((r) => r.activityType === "DIVIDEND"));
+      return { activities: rows.map((r, i) => i ? r : { ...r, errors: { general: ["Made-up import validation refusal."] } }), summary: { success: false } };
+    }
+    refused = rows;
+    checks = checked.length;
+    rows.forEach((r) => elsewhere.add(r.sourceRecordId));
+    throw hostError("Any message", "DUPLICATE_ACTIVITY");
+  };
+  find(run, "ImportResult").onRetryAccount(key);
+  await run.flush();
+  assert.equal(attempts, 2);
+  assert.deepEqual(checked.slice(checks), [refused], "only the actually refused batch is rechecked");
+  const total = transactionsIn(refused);
+  assert.ok(total > 1);
+  const said = `Nothing more was imported: Wealthfolio now has these ${total} transactions, in whole or in part, saved elsewhere while the import ran.`;
+  assert.ok(textOf(run.tree).includes(said));
+  await new Promise((resolve) => setTimeout(resolve, 85));
+  await run.flush();
+  assert.ok(status().startsWith(said));
+  const result = find(run, "ImportResult");
+  assert.equal(result.found.length, total);
+  assert.deepEqual(result.sent, imported[0], "the refused batch wasn't saved");
+  assert.ok(result.result.activities.some((r) => r.errors?.general?.[0] === "Made-up created-account refusal."));
+  assert.ok(result.result.activities.some((r) => r.errors?.general?.[0] === "Made-up import validation refusal."));
+  assert.equal(result.outcomes.find((a) => a.name === name).retryable, false);
+  assert.deepEqual(changed, []);
+});
+
+test("recovery from an unchecked duplicate refusal still checks a pending transaction's bank entry before sending", async () => {
+  const { run, api, imported, key, elsewhere, activities, changed } = await withHeldFolio();
+  const send = api.activities.import;
+  const check = api.activities.checkImport;
+  let refused;
+  let found;
+  let sends = 0;
+  api.activities.import = async (rows) => {
+    sends++;
+    if (refused) return send(rows);
+    refused = rows;
+    found = rowsOfTransaction(rows, rows.find((r) => r.activityType === "BUY"));
+    elsewhere.add(found[0].sourceRecordId);
+    api.activities.checkImport = async () => { throw new Error("Made-up check failure."); };
+    throw hostError("Any message", "DUPLICATE_ACTIVITY");
+  };
+  find(run, "ImportResult").onRetryAccount(key);
+  await run.flush();
+  api.activities.checkImport = check;
+  const entry = activities.find((a) => a.id === "dividend");
+  const amount = entry.amount;
+  entry.amount = "1.00";
+  find(run, "ImportResult").onRetryAccount(key);
+  await run.flush();
+  assert.match(textOf(run.tree), /A bank entry you chose changed since the import, so nothing more was imported/);
+  assert.equal(sends, 1);
+  assert.deepEqual(changed, []);
+  entry.amount = amount;
+  find(run, "ImportResult").onRetryAccount(key);
+  await run.flush();
+  assert.equal(sends, 2);
+  assert.deepEqual(imported[1], refused.filter((r) => !found.includes(r)));
+  assert.deepEqual(changed, ["create", "update", "link"]);
+  assert.equal(find(run, "ImportResult").found.length, 1);
+});
+
+for (const failure of ["throws", "invalid row", "row errors", "missing row"]) {
+  test(`an account's Try again whose refusal couldn't be checked checks first next time, and sends nothing until it can (${failure})`, async () => {
+    const { run, api, imported, key, elsewhere, checked } = await withHeldFolio();
+    const send = api.activities.import;
+    const check = api.activities.checkImport;
+    let refused;
+    let sends = 0;
+    api.activities.import = async (rows) => {
+      sends++;
+      if (refused) return send(rows);
+      refused = rows;
+      elsewhere.add(rows.find((r) => r.activityType === "DIVIDEND").sourceRecordId);
+      // Wealthfolio's check fails from now on.
+      api.activities.checkImport = async (rows) => {
+        if (failure === "throws") throw new Error("made-up check failure");
+        if (failure === "missing row") return rows.slice(1);
+        return rows.map((r) => ({ ...r, ...(failure === "invalid row" ? { isValid: false } : { errors: { general: ["Made-up check failure."] } }) }));
+      };
+      throw hostError("Duplicate activity", "DUPLICATE_ACTIVITY");
+    };
+    find(run, "ImportResult").onRetryAccount(key);
+    await run.flush();
+    assert.match(textOf(run.tree), /Nothing more was imported: Wealthfolio refused it as a duplicate of something saved elsewhere while the import ran, and we couldn't check which of these transactions it has\. Try again\./);
+    assert.deepEqual(find(run, "ImportResult").found, []);
+    assert.equal(sends, 1);
+    // Still not checked: nothing is sent.
+    find(run, "ImportResult").onRetryAccount(key);
+    await run.flush();
+    assert.match(textOf(run.tree), /We couldn't check which of these transactions Wealthfolio has now, so nothing more was imported\. Try again\./);
+    assert.equal(sends, 1);
+    // Checked: what Wealthfolio has stays out, and the rest goes in.
+    api.activities.checkImport = check;
+    const checks = checked.length;
+    find(run, "ImportResult").onRetryAccount(key);
+    await run.flush();
+    // The refused transactions are checked first; those sent are then checked in the account created for them, as always.
+    const rest = refused.filter((r) => !elsewhere.has(r.sourceRecordId));
+    assert.deepEqual(checked.slice(checks), [refused, rest.filter((r) => r.accountId !== "bank")]);
+    assert.equal(sends, 2);
+    assert.equal(imported.length, 2);
+    assert.deepEqual(imported[1], rest);
+    assert.equal(transactionsIn(imported[1]), transactionsIn(refused) - 1);
+    await new Promise((resolve) => setTimeout(resolve, 85));
+    await run.flush();
+    assert.match(nodes(run.tree).find((n) => n.props?.role === "status").props.children,
+      /^Wealthfolio now has 1 of these transactions, in whole or in part, saved elsewhere, so it wasn't imported again\. /);
+    assert.deepEqual(find(run, "ImportResult").found.map((f) => f.transaction.transaction.activity.activityType), ["DIVIDEND"]);
+  });
+}
+
+test("an account's duplicate refusal with only a known Import anyway match doesn't deny that match exists", async () => {
+  const { run, api, imported } = setup({ entries: [] });
+  const check = api.activities.checkImport;
+  api.activities.checkImport = async (rows) => (await check(rows)).map((r) =>
+    r.activityType === "DIVIDEND" ? { ...r, duplicateOfId: "known-dividend" } : r);
+  await run.flush();
+  const [duplicate] = askCards(run);
+  assert.match(duplicate.title, /dividend may already be/);
+  duplicate.other.onClick();
+  await run.flush();
+  for (const ask of askCards(run)) ask.other.onClick();
+  await run.flush();
+  const send = api.activities.import;
+  let attempts = 0;
+  let refused;
+  api.activities.import = async (rows) => {
+    attempts++;
+    if (attempts === 1) {
+      // One unrelated transaction fails validation; the next send fails outright, leaving a result with held transactions.
+      return { activities: rows.map((r, i) => i ? r : { ...r, errors: { general: ["Made-up validation failure."] } }), summary: { success: false } };
+    }
+    if (attempts === 2) throw new Error("made-up import failure");
+    if (attempts === 3) {
+      refused = rows;
+      throw hostError("Duplicate activity", "DUPLICATE_ACTIVITY");
+    }
+    return send(rows);
+  };
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  let result = find(run, "ImportResult");
+  const key = result.outcomes.find((a) => a.retryable).key;
+  result.onRetryAccount(key);
+  await run.flush();
+  assert.ok(refused.some((r) => r.forceImport && r.activityType === "DIVIDEND"));
+  result = find(run, "ImportResult");
+  assert.deepEqual(result.found, []);
+  assert.match(textOf(run.tree), /but the check couldn't confirm any newly saved transactions\. Try again\./);
+  assert.doesNotMatch(textOf(run.tree), /has none of these transactions/);
+  result.onRetryAccount(key);
+  await run.flush();
+  assert.deepEqual(imported, [refused]);
+});
+
+test("an account's Try again refused as a duplicate with no new match keeps every transaction for Try again", async () => {
+  const { run, api, imported, name, key } = await withHeldFolio();
+  const send = api.activities.import;
+  let refused;
+  api.activities.import = async (rows) => {
+    if (refused) return send(rows);
+    refused = rows;
+    throw hostError("Duplicate activity", "DUPLICATE_ACTIVITY");
+  };
+  find(run, "ImportResult").onRetryAccount(key);
+  await run.flush();
+  assert.match(textOf(run.tree), /Nothing more was imported: Wealthfolio refused it as a duplicate of something saved elsewhere while the import ran, but the check couldn't confirm any newly saved transactions\. Try again\./);
+  assert.deepEqual(find(run, "ImportResult").found, []);
+  assert.equal(find(run, "ImportResult").outcomes.find((a) => a.name === name).retryable, true);
+  find(run, "ImportResult").onRetryAccount(key);
+  await run.flush();
+  assert.deepEqual(imported[1], refused);
+  assert.equal(find(run, "ImportResult").outcomes.find((a) => a.name === name).state, "imported");
+});
+
+for (const [why, error] of [
+  ["no code", hostError("DUPLICATE_ACTIVITY: Duplicate activity already exists")],
+  ["another code", hostError("Duplicate activity already exists", "VALIDATION_ERROR")],
+]) {
+  test(`an account's Try again refused with ${why} keeps today's result, whatever its message says`, async () => {
+    const { run, api, imported, name, key, changed, checked } = await withHeldFolio();
+    const send = api.activities.import;
+    let checks;
+    api.activities.import = async () => {
+      checks = checked.length;
+      throw error;
+    };
+    find(run, "ImportResult").onRetryAccount(key);
+    await run.flush();
+    assert.equal(checked.length, checks, "nothing is checked again");
+    assert.doesNotMatch(textOf(run.tree), /Nothing more was imported/);
+    const result = find(run, "ImportResult");
+    assert.deepEqual(result.found ?? [], []);
+    assert.deepEqual(changed, []);
+    const tb = result.outcomes.find((a) => a.name === name);
+    assert.deepEqual([tb.state, tb.imported, tb.retryable], ["failed", 0, true]);
+    api.activities.import = send;
+    result.onRetryAccount(key);
+    await run.flush();
+    assert.equal(imported.length, 2);
+    assert.equal(find(run, "ImportResult").outcomes.find((a) => a.name === name).state, "imported");
+    assert.deepEqual(changed, ["create", "update", "link"]);
+  });
+}
+
+for (const message of ["Duplicate activity", ""]) {
+  test(`a fund transfer Wealthfolio refuses as a duplicate leaves the bank entry for the user, with no Try again (message "${message}")`, async () => {
+    const { run, api, steps, logged } = await withChosenEntry();
+    api.activities.create = async () => { throw hostError(message, "DUPLICATE_ACTIVITY"); };
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    let result = find(run, "ImportResult");
+    assert.deepEqual(result.links.map((l) => [l.stage, l.fundId, l.converted]), [["exists", undefined, false]]);
+    // The bank entry isn't changed or linked, nor its categories touched.
+    assert.deepEqual(steps, []);
+    assert.deepEqual(result.links[0].warnings, []);
+    assert.match(logged.join("\n"), /Wealthfolio refused the fund account's transfer as a duplicate/);
+    await new Promise((resolve) => setTimeout(resolve, 85));
+    await run.flush();
+    const notice = () => nodes(run.tree).find((n) => n.props?.role === "status").props.children;
+    assert.match(notice(), /: The trade is in Wealthfolio, but Wealthfolio refused the fund account's transfer as a duplicate: it may already have one for the bank entry of 4 May 2023, from an earlier try\. Check the fund account's transfers, then link the bank entry in Wealthfolio\./);
+    assert.doesNotMatch(notice(), /Try again to link the bank entry|without its cash|wasn't added/);
+    assert.equal(find(run, "ReviewHeader").unfinished, true);
+  });
+
+  test(`a bank link's Try again that finds its transfer refused as a duplicate stops there (message "${message}")`, async () => {
+    const { run, api, steps } = await withChosenEntry();
+    const create = api.activities.create;
+    let failure = new Error("made-up create failure");
+    api.activities.create = async (row) => {
+      if (failure) throw failure;
+      return create(row);
+    };
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    let result = find(run, "ImportResult");
+    assert.equal(result.links[0].stage, "transfer");
+    failure = hostError(message, "DUPLICATE_ACTIVITY");
+    result.onRetryLink(result.links[0]);
+    await run.flush();
+    result = find(run, "ImportResult");
+    assert.deepEqual(result.links.map((l) => [l.stage, l.fundId, l.converted]), [["exists", undefined, false]]);
+    assert.deepEqual(steps, []);
+    await new Promise((resolve) => setTimeout(resolve, 85));
+    await run.flush();
+    assert.match(nodes(run.tree).find((n) => n.props?.role === "status").props.children, /^Still not done\. The trade is in Wealthfolio, but Wealthfolio refused the fund account's transfer as a duplicate/);
+  });
+}
