@@ -13,8 +13,10 @@ import { Disclosure } from "./parts";
 export interface FundsBox {
   /** The PAN's key, or the folio's for a folio without one: its account choice's storage key. */
   key: string;
-  /** Who the funds belong to: "A. Investor". */
+  /** Who the funds belong to: "A. Investor", or "PAN ABCDE1234F" for one of several PANs printed without a name. */
   name: string;
+  /** Who its new account is named for: `name`, "PAN ending 234F", or "This investor" if too little of the PAN was read. */
+  who: string;
   /** Its heading: "A. Investor's funds", "Fictiva Mutual Fund folio 123 (no PAN printed)". */
   title: string;
   folios: CasFolio[];
