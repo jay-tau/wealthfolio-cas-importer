@@ -2573,6 +2573,121 @@ test("a fund with nothing new still has Change on its line", async () => {
   assert.ok(find(run, "QuestionCard"));
 });
 
+test("Change on a Ready row answers no question, unless its fund was asked about in this review (#291)", async () => {
+  const fund = (symbol) => ({ symbol, exchangeMic: "XBOM", quoteCcy: "INR", name: `Fund ${symbol}`, instrumentType: "MUTUALFUND", providerId: "YAHOO" });
+  const heading = (run) => {
+    const node = nodes(run.tree).find((n) => n.type === "h3" && /questions/i.test(textOf(n)));
+    return node && textOf(node);
+  };
+  const answered = (run) => nodes(run.tree).filter((n) => n.type?.name === "AnsweredLine").map((n) => [n.props.item.key, n.props.choice.fund?.symbol]);
+  const changeOnReady = async (run, key, symbol) => {
+    let ready = find(run, "FundsReadyTable");
+    ready.handlers.onChange(ready.rows.find((r) => r.items.some((i) => i.key === key)));
+    await run.flush();
+    ready = find(run, "FundsReadyTable");
+    const panel = ready.handlers.changePanel(ready.rows.find((r) => r.id === ready.handlers.changing));
+    nodes(panel).find((node) => node.type?.name === "Picker").props.onUse(fund(symbol));
+    await run.flush();
+    assert.ok(find(run, "FundsReadyTable").rows.some((r) => r.fund.symbol === symbol && r.by === "you"));
+  };
+  /** The review with these funds to match, once their first searches are done. */
+  const review = async (asked) => {
+    const { run, props } = setup({ entries: [] });
+    const keys = Object.fromEntries(["Liquid", "Corporate Bond", "Overnight"]
+      .map((name) => [name, Object.keys(props.fundChoices).find((key) => props.fundChoices[key].fund.name.includes(name))]));
+    for (const name of asked) delete props.fundChoices[keys[name]];
+    await run.flush();
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    await run.flush();
+    return { run, keys };
+  };
+
+  // With no questions, a fund changed in its Ready row adds no Questions for you.
+  const first = await review([]);
+  assert.equal(heading(first.run), undefined);
+  await changeOnReady(first.run, first.keys.Liquid, "LIQUID-NEW");
+  assert.equal(heading(first.run), undefined);
+  assert.deepEqual(answered(first.run), []);
+  let ready = find(first.run, "FundsReadyTable");
+  ready.handlers.onChange(ready.rows.find((r) => r.items.some((i) => i.key === first.keys.Liquid)));
+  await first.run.flush();
+  ready = find(first.run, "FundsReadyTable");
+  nodes(ready.handlers.changePanel(ready.rows.find((r) => r.id === ready.handlers.changing)))
+    .find((n) => n.props?.["aria-label"]?.startsWith("Skip this fund:")).props.onClick();
+  await first.run.flush();
+  assert.equal(heading(first.run), undefined);
+  assert.deepEqual(answered(first.run), []);
+  assert.ok(!find(first.run, "FundsReadyTable").rows.some((r) => r.items.some((i) => i.key === first.keys.Liquid)));
+  const { NotIncludedDetailed } = await server.ssrLoadModule("/src/components/review/detailed-parts.tsx");
+  const skipped = nodes(NotIncludedDetailed(find(first.run, "NotIncludedDetailed")))
+    .find((n) => n.props?.["aria-label"]?.startsWith("Change: Fictiva Liquid") && n.props["aria-label"].endsWith(", skipped"));
+  assert.ok(skipped, "a row skipped through Change can be changed again under Not included");
+  skipped.props.onClick();
+  await first.run.flush();
+  assert.equal(heading(first.run), "Questions for you · 1 of 1 left");
+  find(first.run, "QuestionCard").onAnswer({ fund: fund("LIQUID-RESTORED") });
+  await first.run.flush();
+  assert.deepEqual(answered(first.run), [[first.keys.Liquid, "LIQUID-RESTORED"]]);
+  assert.ok(find(first.run, "FundsReadyTable").rows.some((r) => r.fund.symbol === "LIQUID-RESTORED" && r.by === "you"));
+  first.run.dispose();
+
+  // With questions open, it doesn't count as one of them.
+  const { run, keys } = await review(["Corporate Bond", "Overnight"]);
+  assert.equal(heading(run), "Questions for you · 2 of 2 left");
+  await changeOnReady(run, keys.Liquid, "LIQUID-NEW");
+  assert.equal(heading(run), "Questions for you · 2 of 2 left");
+  assert.deepEqual(answered(run), []);
+  // A fund that was asked about keeps its answered line, with the new choice, when changed again in its Ready row.
+  find(run, "QuestionCard").onAnswer({ fund: fund("CORPORATE") });
+  await run.flush();
+  assert.equal(heading(run), "Questions for you · 1 of 2 left");
+  assert.deepEqual(answered(run), [[keys["Corporate Bond"], "CORPORATE"]]);
+  await changeOnReady(run, keys["Corporate Bond"], "CORPORATE-NEW");
+  await changeOnReady(run, keys.Liquid, "LIQUID-NEWER");
+  assert.equal(heading(run), "Questions for you · 1 of 2 left");
+  assert.deepEqual(answered(run), [[keys["Corporate Bond"], "CORPORATE-NEW"]]);
+  find(run, "QuestionCard").onAnswer({ leftOut: true });
+  await run.flush();
+  assert.equal(heading(run), "Questions for you");
+  assert.ok(nodes(run.tree).some((n) => n.type === "span" && n.props.children === "All 2 questions answered."));
+  assert.deepEqual(answered(run).map(([key]) => key), [keys["Corporate Bond"], keys.Overnight]);
+});
+
+test("a fund asked about, then left out with its folio and included again, is a change on its row again (#291)", async () => {
+  const { run, props, profiles, keys } = setup({ entries: [] });
+  const [key, choice] = Object.entries(props.fundChoices).find(([, c]) => c.fund.name.includes("Liquid"));
+  // A remembered asset Wealthfolio can't use asks about the fund again.
+  choice.fund.assetId = "missing-type";
+  profiles["missing-type"] = { instrumentSymbol: choice.fund.symbol, instrumentExchangeMic: "XBOM" };
+  await run.flush();
+  nodes(run.tree).find((node) => node.props?.["aria-label"]?.startsWith("Change: Fictiva Liquid") && node.props.onClick).props.onClick();
+  await run.flush();
+  const { assetId, ...replacement } = choice.fund;
+  find(run, "QuestionCard").onAnswer({ fund: replacement });
+  await run.flush();
+  const answered = () => nodes(run.tree).filter((n) => n.type?.name === "AnsweredLine").map((n) => n.props.item.key);
+  assert.deepEqual(answered(), [key]);
+  // Wealthfolio's asset is fixed meanwhile. Leaving the folio out drops the answer, so the remembered
+  // asset is back, and Change on its row is a change there.
+  profiles["missing-type"].instrumentType = "MUTUALFUND";
+  saveTo(run).onChange(keys.fictiva, choices.LEFT_OUT);
+  await run.flush();
+  props.visit = {};
+  saveTo(run).onChange(keys.fictiva, "");
+  await run.flush();
+  let ready = find(run, "FundsReadyTable");
+  assert.equal(ready.rows.find((r) => r.items.some((i) => i.key === key)).fund.assetId, "missing-type");
+  ready.handlers.onChange(ready.rows.find((r) => r.items.some((i) => i.key === key)));
+  await run.flush();
+  ready = find(run, "FundsReadyTable");
+  nodes(ready.handlers.changePanel(ready.rows.find((r) => r.id === ready.handlers.changing)))
+    .find((node) => node.type?.name === "Picker").props.onUse({ ...replacement, symbol: "LIQUID-NEW" });
+  await run.flush();
+  assert.ok(find(run, "FundsReadyTable").rows.some((r) => r.fund.symbol === "LIQUID-NEW"));
+  assert.deepEqual(answered(), []);
+  assert.equal(nodes(run.tree).find((n) => n.type === "h3" && /questions/i.test(textOf(n))), undefined);
+});
+
 test("a shared bank check anchors under its first imported folio even if only a later folio has a match", async () => {
   const { run, keys } = setup({ entries: [ENTRIES[0]] });
   await run.flush();

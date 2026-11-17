@@ -187,12 +187,13 @@ export function NotIncluded({
   onSaveBoth,
   onDontSave,
   onReview,
+  onReopen,
   partId,
 }: {
   tracked: TrackedGroup[];
   /** Already-tracked funds the user saves in both accounts. */
   counted: Pick<TrackedFund, "key" | "name" | "label">[];
-  skipped: string[];
+  skipped: { key: string; name: string }[];
   unsaved: string[];
   defaulted: LeftOutRow[];
   lines: LeftOutLine[];
@@ -201,6 +202,7 @@ export function NotIncluded({
   onSaveBoth: (key: string) => void;
   onDontSave: (key: string) => void;
   onReview: (accountId: string, accountName: string) => void;
+  onReopen: (key: string) => void;
   partId: string;
 }) {
   const anyTracked = tracked.some((g) => g.funds.some((f) => !f.included));
@@ -242,9 +244,17 @@ export function NotIncluded({
         </p>
       )}
       {skipped.length > 0 && (
-        <p className="text-sm">
-          <span className="font-semibold">Skipped ({skipped.length})</span>: {list(skipped)}, by your answer.
-        </p>
+        <div className="grid gap-1 text-sm">
+          <p><span className="font-semibold">Skipped ({skipped.length})</span>, by your answer:</p>
+          {skipped.map((fund) => (
+            <p key={fund.key}>
+              {fund.name} ·{" "}
+              <LinkButton type="button" aria-label={`Change: ${fund.name}, skipped`} onClick={() => onReopen(fund.key)}>
+                Change
+              </LinkButton>
+            </p>
+          ))}
+        </div>
       )}
       {unsaved.length > 0 && (
         <p className="text-sm">

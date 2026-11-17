@@ -513,6 +513,9 @@ export function HoldingsImport({
   const [answers, setAnswers] = useState<Record<string, FundChoice | undefined>>({});
   const [matched, setMatched] = useState<Record<string, ChosenFund>>({});
   const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
+  // Holdings whose question was answered in this review: only their answers are listed under
+  // Questions for you, whatever their row's Change picks later. Change on another row is a change there.
+  const [fromQuestion, setFromQuestion] = useState<ReadonlySet<string>>(new Set());
   const [costs, setCosts] = useState<ReadonlyMap<string, ReadonlyMap<string, string>>>(new Map());
   // Answers to the rare questions, by account: keep (true) or remove an account's units of a
   // position, replace (true) or keep an old asset, and keep (true) or replace the holdings saved for the date.
@@ -1436,6 +1439,7 @@ export function HoldingsImport({
   const answer = (key: string, choice: FundChoice) => {
     clearAssetWrites(key, choice);
     setAnswers((all) => ({ ...all, [key]: choice }));
+    setFromQuestion((all) => new Set(all).add(key));
     setHandled((all) => new Set(all).add(key));
     setTouched((all) => new Set(all).add(key));
     searches.settle(key);
@@ -1579,6 +1583,7 @@ export function HoldingsImport({
     const dropped = items.filter((item) => sourcesOf(item.key).every((s) => after(s) === LEFT_OUT)).map((i) => i.key);
     if (dropped.length) {
       setAnswers((all) => Object.fromEntries(Object.entries(all).filter(([k]) => !dropped.includes(k))));
+      setFromQuestion((all) => new Set([...all].filter((k) => !dropped.includes(k))));
       for (const k of dropped) searches.settle(k);
     }
     const moved = holdings.sources.filter((s) => destination(s) !== after(s));
@@ -2016,7 +2021,7 @@ export function HoldingsImport({
     const auto = searches.get(key).auto;
     return item.noun === "fund" && item.isin && auto?.status === "done" && !auto.amfi;
   }).length;
-  const answeredKeys = items.filter((item) => item.key in answers && answers[item.key] && snapshotKeys.has(item.key) && sourcesOf(item.key).some(savingSource)).map((i) => i.key);
+  const answeredKeys = items.filter((item) => fromQuestion.has(item.key) && answers[item.key] && snapshotKeys.has(item.key) && sourcesOf(item.key).some(savingSource)).map((i) => i.key);
   const anyQuestions = questionKeys.length > 0 || answeredKeys.length > 0 || asks.length > 0;
   const openCount = openKeys.length + openAsks.length;
   const answeredCount = answeredKeys.length + asks.length - openAsks.length;
@@ -2320,7 +2325,7 @@ export function HoldingsImport({
       <NotIncluded
         tracked={tracked}
         counted={counted}
-        skipped={skipped.map((item) => labelOf.get(item.key)!)}
+        skipped={skipped.map((item) => ({ key: item.key, name: labelOf.get(item.key)! }))}
         unsaved={unsaved.map((item) => labelOf.get(item.key)!)}
         defaulted={defaulted.map(({ plan, position }) => {
           // A row left out can be changed to another asset, as a ready row can.
@@ -2365,6 +2370,7 @@ export function HoldingsImport({
           focusSoon(id("not-included-heading"), false, document.activeElement);
         }}
         onReview={(accountId) => review(accountId)}
+        onReopen={reopen}
         partId={id("not-included")}
       />
       {missingNow.length > 0 && (

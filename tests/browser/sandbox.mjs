@@ -2664,7 +2664,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await answerAll(howToAnswer);
     assert.equal(await amfiQuestionsNote.count(), 0);
     await frame.getByText("All 13 questions answered.", { exact: true }).waitFor();
-    await frame.getByText(/^Skipped \(1\): PLACEHOLDER PHARMA LIMITED, by your answer\.$/).waitFor();
+    await frame.getByText("Skipped (1)", { exact: true }).waitFor();
+    await frame.getByRole("button", { name: "Change: PLACEHOLDER PHARMA LIMITED, skipped", exact: true }).waitFor();
     // The answers fold away: each is a line under Show answers.
     await frame.getByRole("button", { name: "Show answers", exact: true }).click();
     await frame.getByText(`${bond}: priced from the statement`, { exact: true }).waitFor();
@@ -3065,7 +3066,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await revisit();
     await settled();
     await liquidReady.getByText(priced, { exact: true }).waitFor({ state: "detached" });
-    await frame.getByText(/^Skipped \(1\): PLACEHOLDER PHARMA LIMITED, by your answer\.$/).waitFor();
+    await frame.getByText("Skipped (1)", { exact: true }).waitFor();
+    await frame.getByRole("button", { name: "Change: PLACEHOLDER PHARMA LIMITED, skipped", exact: true }).waitFor();
     await frame.getByText("Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout. Their account in “Save to” is set to Don't save.", { exact: false }).waitFor();
     const nsdl = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
     const rendered = await frame.locator("body").innerText();

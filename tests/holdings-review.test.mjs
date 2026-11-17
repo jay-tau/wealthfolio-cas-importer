@@ -1815,7 +1815,7 @@ test("an existing account without a snapshot gets no empty one when every holdin
     find(run, "QuestionCard").onAnswer({ leftOut: true });
     await settle(run);
   }
-  assert.deepEqual(find(run, "NotIncluded").skipped, ["Example ISINX", "Example ISINY"]);
+  assert.deepEqual(find(run, "NotIncluded").skipped.map((s) => s.name), ["Example ISINX", "Example ISINY"]);
   assert.deepEqual(footerText(run), ["Nothing will be saved: every holding was skipped."]);
   assert.equal(said(run), "Nothing will be saved: every holding was skipped.");
   const action = find(run, "Footer").action;
@@ -2410,6 +2410,90 @@ const settle = async (run) => {
   await new Promise((resolve) => setTimeout(resolve, 70));
   await run.flush();
 };
+
+test("Change on a Ready row answers no question, unless its holding was asked about in this review (#291)", async () => {
+  const [a, b, c] = ["ISINA", "ISINB", "ISINC"].map(holding);
+  const asset = (symbol) => ({ symbol, exchangeMic: "XBOM", quoteCcy: "INR", name: `Asset ${symbol}`, instrumentType: "EQUITY", providerId: "YAHOO" });
+  const heading = (run) => {
+    const node = nodes(run.tree).find((n) => n.type === "h3" && /questions/i.test(textOf(n)));
+    return node && textOf(node);
+  };
+  const answered = (run) => nodes(run.tree).filter((n) => n.type?.name === "AnsweredLine").map((n) => [n.props.item.isin, n.props.choice.fund?.symbol]);
+  const changeOnReady = async (run, h, symbol) => {
+    let ready = find(run, "ReadyTable");
+    const row = ready.rows.find((r) => r.items.some((i) => i.key === holdingKey(h)));
+    ready.handlers.onChange(row, row.items.find((i) => i.key === holdingKey(h)));
+    await run.flush();
+    ready = find(run, "ReadyTable");
+    nodes(ready.handlers.changePanel(ready.rows.find((r) => r.id === ready.handlers.changing)))
+      .find((node) => node.type?.name === "Picker").props.onUse(asset(symbol));
+    await run.flush();
+    assert.ok(find(run, "ReadyTable").rows.some((r) => r.fund.symbol === symbol && r.by === "you"));
+  };
+
+  // With no questions, a holding changed in its Ready row adds no Questions for you.
+  const first = setup([source("X", [a, b, c])]);
+  await settle(first.run);
+  assert.equal(heading(first.run), undefined);
+  await changeOnReady(first.run, a, "A-NEW");
+  assert.equal(heading(first.run), undefined);
+  assert.deepEqual(answered(first.run), []);
+  let ready = find(first.run, "ReadyTable");
+  ready.handlers.onChange(ready.rows.find((r) => r.items.some((i) => i.key === holdingKey(a))));
+  await first.run.flush();
+  ready = find(first.run, "ReadyTable");
+  nodes(ready.handlers.changePanel(ready.rows.find((r) => r.id === ready.handlers.changing)))
+    .find((n) => n.props?.["aria-label"]?.startsWith("Skip this holding:")).props.onClick();
+  await first.run.flush();
+  assert.equal(heading(first.run), undefined);
+  assert.deepEqual(answered(first.run), []);
+  assert.ok(!find(first.run, "ReadyTable").rows.some((r) => r.items.some((i) => i.key === holdingKey(a))));
+  const { NotIncluded } = await server.ssrLoadModule("/src/components/review/not-included.tsx");
+  const skipped = nodes(NotIncluded(find(first.run, "NotIncluded")))
+    .find((n) => n.props?.["aria-label"] === "Change: Example ISINA, skipped");
+  assert.ok(skipped, "a row skipped through Change can be changed again under Not included");
+  skipped.props.onClick();
+  await first.run.flush();
+  assert.equal(heading(first.run), "Questions for you · 1 of 1 left");
+  find(first.run, "QuestionCard").onAnswer({ fund: asset("A-RESTORED") });
+  await first.run.flush();
+  assert.deepEqual(answered(first.run), [["ISINA", "A-RESTORED"]]);
+  assert.ok(find(first.run, "ReadyTable").rows.some((r) => r.fund.symbol === "A-RESTORED" && r.by === "you"));
+  // Leaving the source out drops the answer. Restoring it uses the remembered asset again.
+  find(first.run, "SaveTo").onChange(investorKey("TEST"), LEFT_OUT);
+  await first.run.flush();
+  find(first.run, "SaveTo").onChange(investorKey("TEST"), "A");
+  await first.run.flush();
+  assert.ok(find(first.run, "ReadyTable").rows.some((r) => r.fund.symbol === "ISINA" && r.by === "before"));
+  await changeOnReady(first.run, a, "A-AFTER-RESET");
+  assert.equal(heading(first.run), undefined);
+  assert.deepEqual(answered(first.run), []);
+  first.run.dispose();
+
+  // With questions open, it doesn't count as one of them.
+  const { run, props } = setup([source("X", [a, b, c])]);
+  delete props.fundChoices[holdingKey(b)];
+  delete props.fundChoices[holdingKey(c)];
+  await settle(run);
+  assert.equal(heading(run), "Questions for you · 2 of 2 left");
+  await changeOnReady(run, a, "A-NEW");
+  assert.equal(heading(run), "Questions for you · 2 of 2 left");
+  assert.deepEqual(answered(run), []);
+  // A holding that was asked about keeps its answered line, with the new choice, when changed again in its Ready row.
+  find(run, "QuestionCard").onAnswer({ fund: asset("B-ASSET") });
+  await run.flush();
+  assert.equal(heading(run), "Questions for you · 1 of 2 left");
+  assert.deepEqual(answered(run), [["ISINB", "B-ASSET"]]);
+  await changeOnReady(run, b, "B-NEW");
+  await changeOnReady(run, a, "A-NEWER");
+  assert.equal(heading(run), "Questions for you · 1 of 2 left");
+  assert.deepEqual(answered(run), [["ISINB", "B-NEW"]]);
+  find(run, "QuestionCard").onAnswer({ leftOut: true });
+  await run.flush();
+  assert.equal(heading(run), "Questions for you");
+  assert.ok(nodes(run.tree).some((n) => n.type === "span" && n.props.children === "All 2 questions answered."));
+  assert.deepEqual(answered(run).map(([isin]) => isin), ["ISINB", "ISINC"]);
+});
 
 test("excluding every source after a failed refresh drops obsolete questions and allows Finish", async () => {
   const { run, api, saved } = sameDate([source("X", [holding("ISINX")])]);
