@@ -115,8 +115,8 @@ the statement is read, one Review screen shows, in this order:
   check, or that a split or option expiry there keeps its units from being counted, with that to
   check instead, and that a new account they go to won't be created when nothing ready to import
   goes into it (see [New accounts](#new-accounts)); funds you skipped; folios set to "Don't
-  import"; funds you skipped because their rows don't add up, with **Change**; and transactions
-  left out, each with why.
+  import"; funds you skipped because their rows don't add up, with **Change**, which opens that
+  question again; and transactions left out, each with why.
 - **Transactions in this statement**: how many there are, and what happens to each: to import,
   imported before, possible duplicates waiting for your answer or skipped or imported by it, waiting
   for your answers or for earlier purchases, in skipped funds or folios not imported, or left out,

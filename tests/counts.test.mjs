@@ -186,9 +186,9 @@ test("every transaction's second row tells its own statement row from equal ones
 test("earlier-purchase help and Change distinguish equal funds and their separate reasons", () => {
   const earlier = [1, 2].map((n) => ({ key: String(n), name: "Fictiva Fund", units: "10.000 units", waiting: 1 }));
   const props = {
-    earlier, unbalanced: earlier.map((fund, i) => ({ id: `unbalanced|${fund.key}`, key: fund.key, name: fund.name, label: `${fund.name}, fund ${i + 1}` })),
+    earlier, unbalanced: earlier.map((fund, i) => ({ id: `unbalanced|${fund.key}`, name: fund.name, label: `${fund.name}, fund ${i + 1}` })),
     skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: {}, setOpen() {},
-    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   };
   const markup = renderToStaticMarkup(createElement(components.NotIncludedDetailed, props));
   for (const n of [1, 2]) {
@@ -205,7 +205,7 @@ test("a fund waiting for earlier purchases in two accounts says how many units e
   const props = (accounts, units) => ({
     earlier: [{ key: "1", name: "Fictiva Liquid Fund", units, waiting: 12, accounts }],
     unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: { "how:1": true }, setOpen() {},
-    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   });
   const two = text("NotIncludedDetailed", props([
     { units: "100.000", account: "Mutual funds", folios: ["7712045"] },
@@ -232,7 +232,7 @@ test("a fund waiting for earlier purchases in a new account this import won't cr
   const props = (fund) => ({
     earlier: [{ key: "1", name: "Fictiva Liquid Fund", units: "100.000 units", waiting: 3, ...fund }],
     unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: { "how:1": true }, setOpen() {},
-    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   });
   // In one account.
   const one = text("NotIncludedDetailed", props({ uncreated: [{ account: "Mutual funds", folios: ["7712045"] }] }));
@@ -276,7 +276,7 @@ test("a fund waiting for earlier purchases says what each account already has of
   const props = (accounts) => ({
     earlier: [{ key: "1", name: "Fictiva Liquid Fund", units: "100.000 units", waiting: 12, accounts }],
     unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", from: "1 Apr 2023", open: { "how:1": true }, setOpen() {},
-    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, changePanel: () => null,
+    partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   });
   const mf = (held, folios = ["7712045"]) => ({ units: "100.000", account: "Mutual funds", folios, held });
   const shown = (held, folios) => text("NotIncludedDetailed", props([mf(held, folios)]));
@@ -366,7 +366,7 @@ test("one fund's Ready and Not included Change controls have distinct names", ()
     earlier: [], skipped: [], notImported: [], unbalanced: [],
     leftOut: [{ key: item.key, name: item.name, label: item.name, canChange: true, lines: [{ when: "5 Jan 2026", reason: "This row isn't supported." }] }],
     registrar: "CAMS", open: {}, setOpen() {}, partId: "not-included", changeId: () => "left-change",
-    onChange() {}, onReopen() {}, changePanel: () => null,
+    onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   };
   const markup = renderToStaticMarkup(createElement("div", null, ready, createElement(components.NotIncludedDetailed, leftOut)));
   const names = [...markup.matchAll(/aria-label="(Change:[^"]+)"/g)].map((match) => match[1]);

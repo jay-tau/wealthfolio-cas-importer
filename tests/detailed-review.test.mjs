@@ -1898,9 +1898,22 @@ test("a confirmed fund waiting only for earlier purchases can be changed", async
   assert.deepEqual(remembers, []);
 });
 
-test("a fund skipped because its rows don't add up can be changed even when it has no meaningful rows", async () => {
+/** Clicks the Change beside a fund skipped because its rows don't add up under Not included, by its folio's text. */
+const changeUnbalanced = (run, match = /./) => {
+  const part = nodes(run.tree).find((node) => node.type?.name === "NotIncludedDetailed");
+  const change = nodes(part.type(part.props)).find((node) =>
+    node.props?.["aria-label"]?.endsWith("transactions don't add up") && match.test(node.props["aria-label"]) && node.props.onClick);
+  assert.ok(change);
+  document.activeElement = document.body;
+  const focused = [];
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  change.props.onClick();
+  return focused;
+};
+
+test("Change beside a fund skipped because its rows don't add up opens that question again, even when it has no meaningful rows", async () => {
   for (const noRows of [false, true]) {
-    const { run, props } = setup({ entries: [], change(data) {
+    const { run, remembers } = setup({ entries: [], change(data) {
       const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
       data.folios = [{ ...data.folios[0], schemes: [scheme] }];
       if (noRows) { scheme.transactions = []; scheme.close_calculated = "0"; }
@@ -1913,15 +1926,43 @@ test("a fund skipped because its rows don't add up can be changed even when it h
     assert.match(nodes(card.children).map((n) => n.props?.children).join(""), /^They add up to [\d,.]+ units; the statement says [\d,.]+\. A row may be missing or misread\.$/);
     card.main.onClick();
     await run.flush();
-    const part = nodes(run.tree).find((node) => node.type?.name === "NotIncludedDetailed");
-    assert.deepEqual(part.props.unbalanced.map((f) => f.key), Object.keys(props.fundChoices));
-    const change = nodes(part.type(part.props)).find((node) => node.props?.["aria-label"]?.endsWith("transactions don't add up") && node.props.onClick);
-    assert.ok(change);
-    change.props.onClick();
+    assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced.map((f) => f.name), ["Fictiva Liquid Fund"]);
+    const focused = changeUnbalanced(run);
     await run.flush();
-    assert.equal(find(run, "QuestionCard").item.key, Object.keys(props.fundChoices)[0]);
+    // Its own question is open again, with the focus on it; the fund stays confirmed (#282).
+    const [again] = askCards(run);
+    assert.deepEqual(askCards(run).map((c) => c.title), [card.title]);
+    assert.deepEqual(focused, [again.headingId]);
+    assert.equal(find(run, "QuestionCard"), undefined);
+    assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced, []);
+    assert.deepEqual(remembers, []);
     run.dispose();
   }
+});
+
+test("Change beside one of a fund's two skipped folios opens only that folio's question again", async () => {
+  const { run, data } = setup({ entries: [], change(data) {
+    const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    scheme.close = String(Number(scheme.close_calculated) + 1);
+    const first = { ...data.folios[0], schemes: [scheme] };
+    data.folios = [first, { ...structuredClone(first), folio: "222222222" }];
+    return data;
+  } });
+  await run.flush();
+  askCards(run).forEach((card) => card.main.onClick());
+  await run.flush();
+  assert.equal(askCards(run).length, 0);
+  const [first, second] = data.folios.map((folio) => folio.folio);
+  // The second folio's, so it isn't just the first question with the fund's key.
+  const focused = changeUnbalanced(run, new RegExp(`, folio ${second}, `));
+  await run.flush();
+  const [again] = askCards(run);
+  assert.deepEqual(askCards(run).map((c) => c.title), [`Fictiva Liquid Fund's transactions in folio ${second} don't add up`]);
+  assert.deepEqual(focused, [again.headingId]);
+  assert.equal(find(run, "QuestionCard"), undefined);
+  // The other folio stays skipped.
+  assert.deepEqual(askAnswers(run).map((a) => a.text), [`Fictiva Liquid Fund, folio ${first}: skipped`]);
+  assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced.map((f) => f.name), [`Fictiva Liquid Fund, folio ${first}`]);
 });
 
 test("a fund with nothing new still has Change on its line", async () => {

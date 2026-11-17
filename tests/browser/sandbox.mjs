@@ -2129,7 +2129,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await skipFlexi.click();
     await readyFund("Fund INFZ90K01FC8").waitFor({ state: "detached" });
     await notIncluded.getByText(/^Skipped because their transactions don't add up \(1\)/).waitFor();
-    await notIncluded.getByRole("button", { name: /^Change: Fictiva Flexi Cap Fund - Direct Plan - Growth, transactions don't add up$/ }).waitFor();
+    const gapChange = notIncluded.getByRole("button", { name: /^Change: Fictiva Flexi Cap Fund - Direct Plan - Growth, transactions don't add up$/ });
+    // Its Change there opens the same question again, the fund still confirmed (#282), and it's skipped again.
+    await gapChange.focus();
+    await tab.keyboard.press("Enter");
+    await focused(gapCard.getByRole("heading"), "Change under Not included on a fund whose rows don't add up");
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await skipFlexi.click();
+    await gapChange.waitFor();
     await dSettled();
     assert.match(await transactionParts(), /^13 to import · \d+ in funds whose rows don't add up, skipped by your answer$/);
     await importButton.click();
