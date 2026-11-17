@@ -101,6 +101,81 @@ test("units an earlier import added of a fund tracked from its transactions ask 
   ]);
 });
 
+test("shares and bonds are counted as shares and bonds in the questions, their answers and the same-date changes", () => {
+  // An earlier import of a demat account added them; Wealthfolio stores shares and funds alike as EQUITY.
+  const held = (name, units, symbol, instrumentType) => ({ ...existing(name, units, symbol), instrumentType });
+  const missing = (key, more) => position(key, { removable: [demat], ask: { kind: "missing" }, ...more });
+  const industries = missing("INE0FI101011@XBOM", { name: "Fictiva Industries Ltd", existing: held("Fictiva Industries Ltd", "100", "INE0FI101011", "EQUITY") });
+  const words = holdingAskWords(planOf(industries), industries, { account: "Demat", name });
+  assert.deepEqual([words.line, words.main, words.receipt(true), words.done(true)], [
+    "Demat holds 100 shares of it, from an earlier import of Fictiva Securities demat account.",
+    "Keep 100 shares",
+    "Fictiva Industries Ltd: 100 shares kept in Demat",
+    "Fictiva Industries Ltd kept at 100 shares",
+  ]);
+  const moved = { ...industries, ask: { kind: "moved", moved: [{ source: demat, account: "Shares" }] } };
+  assert.equal(holdingAskWords(planOf(moved), moved, { account: "Demat", name }).line, "Demat holds 100 shares of Fictiva Industries Ltd that this demat account added.");
+  const bond = missing("INE0FB107016@XBOM", { name: "Fictiva Bond 2030", existing: held("Fictiva Bond 2030", "1", "INE0FB107016", "BOND") });
+  const bondWords = holdingAskWords(planOf(bond), bond, { account: "Demat", name });
+  assert.deepEqual([bondWords.main, bondWords.done(true)], ["Keep 1 bond", "Fictiva Bond 2030 kept at 1 bond"]);
+  // Funds and NPS schemes stay in units: by their symbol in a demat account, from a folio, or with an unknown type.
+  for (const fund of [
+    missing("INFZ90K01LQ6@XBOM", { existing: held("Fictiva Liquid Fund", "512.3", "INFZ90K01LQ6", "EQUITY") }),
+    missing("119551@", { existing: { ...held("Testbridge Gilt Fund", "512.3", "119551", "EQUITY"), ref: "119551@" } }),
+    missing("NPS-FICTIVA-E-TIER-I@", { existing: { ...held("Fictiva Scheme E", "512.3", "NPS-FICTIVA-E-TIER-I", "EQUITY"), ref: "NPS-FICTIVA-E-TIER-I@" } }),
+    missing("FICTIVA@XBOM", { existing: held("Fictiva Fund", "512.3", "FICTIVA", "EQUITY"), removable: [folio] }),
+    missing("FICTIVA@XBOM", { existing: held("Fictiva Fund", "512.3", "FICTIVA", undefined) }),
+  ]) assert.equal(holdingAskWords(planOf(fund), fund, { account: "Demat", name }).main, "Keep 512.300 units", fund.existing.name);
+
+  // Use the canonical profile symbol, not the snapshot's editable display code.
+  for (const [symbol, type, from, expected] of [
+    ["INFY", "EQUITY", [demat], "512.3 shares"], ["INFY.NS", "EQUITY", undefined, "512.3 shares"],
+    ["INFIBEAM", "EQUITY", [demat], "512.3 shares"], ["INE0FI101011", "EQUITY", undefined, "512.3 shares"],
+    ["INFZ90K01LQ6", "EQUITY", [demat], "512.300 units"], ["119551", "EQUITY", [demat], "512.300 units"],
+    ["0P0000GILT.BO", "EQUITY", [demat], "512.300 units"], ["MF-CAMS-FFCDG", "EQUITY", [demat], "512.300 units"],
+    ["NPS-FICTIVA-E-TIER-I", "EQUITY", undefined, "512.300 units"],
+    ["FICTIVA", "EQUITY", [folio], "512.300 units"], ["FICTIVA", "EQUITY", [{ ...folio, kind: "nps" }], "512.300 units"],
+    ["INE0FB107016", "BOND", [demat], "512.3 bonds"], ["INE0FB107016", "BOND", undefined, "512.3 bonds"],
+    ["INE0FB107016", "EQUITY", undefined, "512.3 shares"],
+    ["UNKNOWN", null, undefined, "512.300 units"], ["UNKNOWN", "CRYPTO", undefined, "512.300 units"],
+  ]) {
+    const p = position(`${symbol}@`, { existing: { ...held(symbol, "512.3", "EDITED", type), ref: `${symbol}@` }, removable: from, include: false });
+    const change = sameDateChanges(planOf(p), choices({ keep: new Map([[p.key, false]]) }), name);
+    assert.deepEqual(change, [`${p.name}: ${expected} now, removed`], `${symbol} ${type}`);
+  }
+  for (const kind of ["share", "bond", "fund", "nps"]) for (const misread of [false, true]) {
+    const statement = { source: demat, holding: { ...line(demat, "Example", "1").holding, kind } };
+    const p = missing("EXAMPLE@", { existing: held("Example", "1", "EXAMPLE", "EQUITY"), ...(misread ? { misread: [statement] } : { lines: [statement] }) });
+    assert.equal(holdingAskWords(planOf(p), p, { account: "Demat", name }).main, `Keep ${kind === "share" || kind === "bond" ? `1 ${kind}` : "1.000 units"}`);
+  }
+  // A row combining kinds counts units, as its notes do; so does one whose misread lines combine them.
+  for (const kinds of [["share", "fund"], ["share", "bond"]]) for (const misread of [false, true]) {
+    const statement = kinds.map((kind) => ({ source: demat, holding: { ...line(demat, "Example", "1").holding, kind } }));
+    const p = missing("EXAMPLE@", { existing: held("Example", "1", "EXAMPLE", "EQUITY"), ...(misread ? { misread: statement } : { lines: statement }) });
+    assert.equal(holdingAskWords(planOf(p), p, { account: "Demat", name }).main, "Keep 1.000 units", `${kinds} ${misread}`);
+  }
+
+  // The same-date changes count each holding as its statement line, or its asset, does.
+  const shareLine = (units) => ({ source: demat, holding: { ...line(demat, "Fictiva Industries Ltd", units).holding, kind: "share" } });
+  const more = position("INE0FI101011@XBOM", {
+    name: "Fictiva Industries Ltd", existing: held("Fictiva Industries Ltd", "100", "INE0FI101011", "EQUITY"), lines: [shareLine("120")], units: "120",
+  });
+  const added = position("INE0FB107016@XBOM", {
+    name: "Fictiva Bond 2030", lines: [{ source: demat, holding: { ...line(demat, "Fictiva Bond 2030", "1").holding, kind: "bond" } }], units: "1",
+  });
+  const gone = missing("INE0FO101019@XBOM", { name: "Fictiva Oils Ltd", existing: held("Fictiva Oils Ltd", "1250", "INE0FO101019", "EQUITY") });
+  const fund = position("INFZ90K01FC8@XBOM", { name: "Fictiva Flexi Cap Fund", lines: [line(folio, "Fictiva Flexi Cap Fund", "40")], units: "40" });
+  const plan = planOf(more, added, gone, fund);
+  assert.deepEqual(sameDateChanges(plan, choices(), name, [{ name: "Fictiva Steel Ltd", units: "1", noun: "share" }]), [
+    "Fictiva Industries Ltd: 100 shares now, 120 on this statement",
+    "Fictiva Bond 2030: added, 1 bond",
+    "Fictiva Oils Ltd: 1,250 shares now, not on this statement",
+    "Fictiva Flexi Cap Fund: added, 40.000 units",
+    "Fictiva Steel Ltd: 1 share on this statement, still to be matched",
+  ]);
+  assert.deepEqual(sameDateChanges(plan, choices({ keep: new Map([[gone.key, false]]) }), name).slice(2, 3), ["Fictiva Oils Ltd: 1,250 shares now, set to zero"]);
+});
+
 test("an old asset to replace keeps it for now as the main answer, and says what that leaves", () => {
   const old = position("0P0000GILT.BO@XBOM", { name: "Testbridge Gilt Reg Gr", existing: { ...existing("Testbridge Gilt Reg Gr", "812.3", "0P0000GILT.BO") }, replacedBy: "119551" });
   const gilt = position("119551@", {
@@ -148,9 +223,12 @@ test("replacing holdings saved for the date says what changes, from what would b
     "4 other holdings: same units",
   ]);
   // Answered, and a holding still waiting to be matched.
-  assert.deepEqual(sameDateChanges(plan, choices({ keep: new Map([[missing.key, false]]) }), name, [{ name: "Unmatched Fund", units: "5" }]).slice(2), [
+  assert.deepEqual(sameDateChanges(plan, choices({ keep: new Map([[missing.key, false]]) }), name, [
+    { name: "Unmatched Fund", units: "5", noun: "unit" }, { name: "Unmatched Share", units: "1", noun: "share" },
+  ]).slice(2), [
     "Fictiva Liquid Fund: 512.300 units now, set to zero",
     "Unmatched Fund: 5.000 units on this statement, still to be matched",
+    "Unmatched Share: 1 share on this statement, still to be matched",
     "4 other holdings: same units",
   ]);
   assert.deepEqual(sameDateChanges(planOf(same(1)), choices(), name), ["1 holding: same units"]);

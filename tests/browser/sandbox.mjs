@@ -3681,9 +3681,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("9 holdings", { exact: true }).waitFor();
     await openParts();
     assert.match(await sourceSelect(nsdlTitle).textContent(), /Demat/);
-    for (const name of ["Fund INEZ90A01017", "Fund INFZ90K01NE8", "FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31"]) {
+    // Each is counted as its asset is: an EQUITY share in shares, a fund in units, a BOND in bonds.
+    for (const [name, held] of [
+      ["Fund INEZ90A01017", "[\\d,]+ shares"],
+      ["Fund INFZ90K01NE8", "[\\d,]+\\.\\d{3} units"],
+      ["FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31", "[\\d,]+ bonds?"],
+    ]) {
       const card = askCard(`${name} isn't on this statement`);
-      await card.getByRole("button", { name: new RegExp(`^Keep [\\d,.]+ units: ${escaped(name)} in Demat$`) }).waitFor();
+      await card.getByRole("button", { name: new RegExp(`^Keep ${held}: ${escaped(name)} in Demat$`) }).waitFor();
       await card.getByRole("button", { name: `Set it to zero on 31 Mar: ${name} in Demat`, exact: true }).click();
       await changeAnswer(`Change answer: ${name}: set to zero in Demat on 31 Mar`);
     }

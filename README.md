@@ -678,8 +678,9 @@ rules:
   account: "CDSL Demat already has holdings saved for 31 Jul 2026. Replacing them with this statement
   changes:", then the differences, from what would be saved there ("Fictiva Balanced Advantage Fund:
   added, 1,000.000 units", "Fictiva Liquid Fund: 512.300 units now, not on this statement", "9 other
-  holdings: same units"); the comparison uses each asset's actual saved quantity, leaving out
-  skipped, excluded and rerouted statement contributions.
+  holdings: same units"), with shares and bonds counted as such ("Fictiva Industries Ltd: 100 shares
+  now, 120 on this statement"), as in the questions, the bar and **Kept as they are**; the comparison
+  uses each asset's actual saved quantity, leaving out skipped, excluded and rerouted statement contributions.
   **Keep the saved ones** is the safe answer: nothing is saved in that account, and its holdings and
   their questions make way for "CDSL Demat: nothing will be saved", with **Show this statement's
   holdings**. Folios, demat accounts and PRANs that go to other accounts are still saved there. If

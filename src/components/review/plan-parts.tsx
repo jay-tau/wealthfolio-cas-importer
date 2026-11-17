@@ -1,6 +1,6 @@
 import { Badge, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@wealthfolio/ui";
-import { type AccountPlan, type Choices, costOf, included, type PlannedPosition, undecided } from "../../cas/holdings";
-import { longDate, rupees, units } from "../../lib/review-format";
+import { type AccountPlan, type Choices, costOf, countedIn, included, type PlannedPosition, undecided } from "../../cas/holdings";
+import { figure, longDate, rupees } from "../../lib/review-format";
 
 /** A position's state in the snapshot as saved. */
 export function status(position: PlannedPosition, yes: boolean, keep: boolean | undefined, open = false) {
@@ -42,6 +42,8 @@ export function SnapshotTable({ plan, choices, account }: { plan: AccountPlan; c
             const { badge, variant } = status(position, yes, choices.keep?.get(position.key), undecided(position, choices));
             const statement = position.lines.length > 0;
             const before = position.existing?.units;
+            // Shares and bonds as printed, units with three decimals.
+            const noun = countedIn(position);
             const listedIn = [...new Set([...position.lines, ...(position.misread ?? [])].map((l) => l.source.title ?? l.source.label))];
             const cost = statement && yes ? costOf(position, choices.costs.get(position.key)) : position.existing?.cost ?? undefined;
             const currency = statement && yes ? "INR" : position.existing?.currency;
@@ -59,9 +61,10 @@ export function SnapshotTable({ plan, choices, account }: { plan: AccountPlan; c
                   </div>
                 </TableCell>
                 <TableCell className="text-end tabular-nums whitespace-nowrap">
-                  {statement && yes ? (before !== undefined ? `${units(before)} → ${units(position.units!)}` : units(position.units!)) : before !== undefined ? units(before) : ""}
+                  {statement && yes ? (before !== undefined ? `${figure(noun, before)} → ${figure(noun, position.units!)}` : figure(noun, position.units!)) : before !== undefined ? figure(noun, before) : ""}
                 </TableCell>
-                <TableCell className="text-end tabular-nums whitespace-nowrap">{statement && position.value ? rupees(position.value) : ""}</TableCell>
+                {/* The statement's value goes with its units: none where the account's units stay. */}
+                <TableCell className="text-end tabular-nums whitespace-nowrap">{statement && yes && position.value ? rupees(position.value) : ""}</TableCell>
                 <TableCell className="text-end tabular-nums whitespace-nowrap">{cost ? currency === "INR" ? rupees(cost) : `${currency} ${cost}` : position.existing || (statement && yes) ? "Unknown" : ""}</TableCell>
                 <TableCell>
                   {/* The badge hides its overflow, so without a minimum width Chromium sizes the column without it. */}
