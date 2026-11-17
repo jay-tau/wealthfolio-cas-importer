@@ -789,6 +789,9 @@ function settleHeldBack(position: PlannedPosition) {
   }
 }
 
+/** The end of the note on a hand-priced row whose statement prints its price: it says what saving does, with nothing to check. */
+export const SAVES_PRICE = "also saves the statement's price as its price on this date.";
+
 function settleStatement(position: PlannedPosition, accountId: string, input: PlanInput, unread: Source[]) {
   const holdings = position.lines.map((l) => l.holding);
   const units = sum(holdings.map((h) => h.units));
@@ -823,7 +826,7 @@ function settleStatement(position: PlannedPosition, accountId: string, input: Pl
   const leftOut = overlap || unread.length > 0;
   if (pricedByHand(position)) {
     position.notes.push(statementPrice(position) !== undefined
-      ? `Priced by hand: ${leftOut ? "importing this row" : "saving"} also saves the statement's price as its price on this date.`
+      ? `Priced by hand: ${leftOut ? "importing this row" : "saving"} ${SAVES_PRICE}`
       : `Priced by hand, but the statement prints no price for it. ${leftOut ? "If you keep or import it, enter" : "Enter"} its price for this date on its asset page after saving.`);
   }
 

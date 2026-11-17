@@ -1,7 +1,7 @@
 import type { AddonContext } from "@wealthfolio/addon-sdk";
 import { Button, Input, Label, Table, TableBody, TableHead, TableHeader, TableRow } from "@wealthfolio/ui";
 import { Fragment, type ReactNode } from "react";
-import type { PlannedPosition } from "../../cas/holdings";
+import { type PlannedPosition, SAVES_PRICE } from "../../cas/holdings";
 import type { ChosenFund } from "../../lib/choices";
 import { listingName } from "../../lib/fund-label";
 import { planAndOption } from "../../lib/fund-name";
@@ -229,12 +229,17 @@ function RowHead({ ctx, row, handlers }: { ctx: AddonContext; row: ReadyRow; han
   );
 }
 
-const missingCost = (row: ReadyRow) => !row.cost;
+/**
+ * Something to check on the row: a missing cost, a plan, option or currency warning, or a note other
+ * than the one saying that saving also saves the statement's price.
+ */
+const toCheck = (row: ReadyRow) =>
+  !row.cost || planWarnings(row).length > 0 || !!otherCurrency(row.fund.quoteCcy) || row.notes.some((note) => !note.endsWith(SAVES_PRICE));
 
 /**
  * Every holding that will be saved, with its source, units, value and purchase cost: a table from the
  * `sm` width, a stacked list below it. Grouped by account when they go to more than one. With more than
- * five rows, only the first three, rows with a missing cost and rows just changed show until Show all.
+ * five rows, only the first three, rows with something to check and rows just changed show until Show all.
  */
 export function ReadyTable({
   ctx,
@@ -260,7 +265,7 @@ export function ReadyTable({
   const open = (row: ReadyRow) => handlers.editing?.rowId === row.id || handlers.changing === row.id;
   const visible = showAll || rows.length <= 5
     ? rows
-    : rows.filter((row, i) => i < 3 || missingCost(row) || row.touched || open(row));
+    : rows.filter((row, i) => i < 3 || toCheck(row) || row.touched || open(row));
   const more = rows.length - visible.length;
   const groups = grouped
     ? accounts.filter((id) => visible.some((r) => r.accountId === id)).map((id) => ({ id, title: `To ${rows.find((r) => r.accountId === id)!.accountName}`, rows: visible.filter((r) => r.accountId === id) }))

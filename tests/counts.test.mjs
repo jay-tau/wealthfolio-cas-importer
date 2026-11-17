@@ -641,6 +641,94 @@ test("ready rows in different accounts still fold until Show all, keeping rows t
   assert.ok(text("ReadyTable", { ...props, rows: [unnamed], wide: true }).includes("Chosen listing's plan and option are unknown."));
 });
 
+test("a row with a warning or a note to check stays shown when Ready to save or Ready to import is folded", () => {
+  const fund = (n, plan = "Direct Plan - Growth") => `Fictiva Fund ${n} - ${plan}`;
+  const item = (n) => ({ key: `fund-${n}`, noun: "fund", name: fund(n) });
+  const names = (markup) => [...markup.matchAll(/aria-label="Change: Fictiva Fund (\d+)"/g)].map((match) => Number(match[1]));
+  const plan = "Statement: Direct · Growth. Chosen: Regular · Growth. Different plan.";
+  const option = "Statement: Direct · Growth. Chosen: Direct · IDCW. Different option.";
+  const currency = "The statement's prices and amounts are in rupees, but this asset is quoted in USD. Check that it's the right listing.";
+  const listed = { quoteCcy: "INR", providerId: "AMFI" };
+  // Seven funds with printed costs, none changed in this review; the fifth is each case in turn.
+  const fifth = {
+    plan: { fund: { ...listed, symbol: "100004", name: fund(5, "Regular Plan - Growth") }, says: plan },
+    option: { fund: { ...listed, symbol: "100004", name: fund(5, "Direct Plan - IDCW") }, says: option },
+    "unknown plan and option": {
+      fund: { ...listed, symbol: "0P0000UNNAMED.BO", name: "0P0000UNNAMED.BO", providerId: "YAHOO" },
+      says: "Chosen listing's plan and option are unknown.",
+    },
+    currency: { fund: { symbol: "EXAMPLE5.L", name: fund(5), quoteCcy: "USD", providerId: "YAHOO" }, says: currency },
+  };
+
+  const readyHandlers = {
+    ids: (r, it = r.item) => ({ change: `c-${r.id}-${it.key}`, cost: `k-${r.id}`, field: `f-${r.id}` }),
+    label: (r, it) => it.name, nag: false, changePanel: () => null,
+    onChange() {}, onCost() {}, onDraft() {}, onSaveCost() {}, onCancelCost() {},
+  };
+  const readyRows = (change = {}) => Array.from({ length: 7 }, (_, i) => ({
+    id: `a|${i}`, accountId: "a", accountName: "Fund folios", name: `Fictiva Fund ${i + 1}`, label: `Fictiva Fund ${i + 1}`,
+    item: item(i + 1), items: [item(i + 1)], fund: { ...listed, symbol: `10000${i}`, name: fund(i + 1) },
+    by: "before", units: "10.000 units", cost: { total: "1000", from: "statement" }, notes: [], touched: false,
+    position: { value: "2000", lines: [{ holding: { kind: "fund", name: fund(i + 1) } }] },
+    ...(i === 4 && change),
+  }));
+  const statementPriced = components.statementAsset({ kind: "fund", isin: "INF000000005", name: fund(5) });
+  const readyCases = {
+    ...fifth,
+    "a cost for only some lines": {
+      cost: { total: "1000", from: "wealthfolio" },
+      notes: ["The statement prints a cost for only some of its lines for this holding."],
+      says: "The statement prints a cost for only some of its lines for this holding.",
+    },
+    "no statement price": {
+      fund: statementPriced,
+      notes: ["Priced by hand, but the statement prints no price for it. Enter its price for this date on its asset page after saving."],
+      says: "Enter its price for this date on its asset page after saving.",
+    },
+    "a price saved and another account holding it": {
+      fund: statementPriced,
+      notes: [`Priced by hand: saving ${components.SAVES_PRICE}`, "Other funds also holds it."],
+      says: "Other funds also holds it.",
+    },
+  };
+  for (const wide of [true, false]) {
+    const props = { ctx: {}, date: "2025-03-31", wide, showAll: false, onShowAll() {}, showAllId: "all", handlers: readyHandlers };
+    for (const [name, { says, ...change }] of Object.entries(readyCases)) {
+      const shown = { ...props, rows: readyRows(change) };
+      assert.deepEqual(names(renderToStaticMarkup(createElement(components.ReadyTable, shown))), [1, 2, 3, 5], name);
+      const words = text("ReadyTable", shown);
+      assert.ok(words.includes(says), `${name}: ${words}`);
+      assert.match(words, /Show all 7 \(3 more, nothing to check\)/, name);
+    }
+    // Saving the statement's price as the holding's price is what saving does: nothing to check.
+    for (const action of ["saving", "importing this row"]) {
+      const saves = { ...props, rows: readyRows({ fund: statementPriced, notes: [`Priced by hand: ${action} ${components.SAVES_PRICE}`] }) };
+      assert.deepEqual(names(renderToStaticMarkup(createElement(components.ReadyTable, saves))), [1, 2, 3], action);
+      assert.match(text("ReadyTable", saves), /Show all 7 \(4 more, nothing to check\)/, action);
+    }
+    assert.deepEqual(names(renderToStaticMarkup(createElement(components.ReadyTable, { ...props, rows: readyRows() }))), [1, 2, 3]);
+  }
+
+  const fundRows = (change = {}) => Array.from({ length: 7 }, (_, i) => ({
+    id: `mf|${i}`, group: { sent: 2, before: 0 }, groupTitle: "A. Investor → Mutual funds",
+    item: item(i + 1), items: [item(i + 1)], fund: { ...listed, symbol: `10000${i}`, name: fund(i + 1) },
+    by: "before", name: `Fictiva Fund ${i + 1}`, label: `Fictiva Fund ${i + 1}`, unitsAfter: "10.000", touched: false,
+    ...(i === 4 && change),
+  }));
+  const fundHandlers = { ids: (r, it = r.item) => ({ change: `c-${r.id}-${it.key}` }), label: (r, it) => it.name, nag: false, onChange() {}, changePanel: () => null };
+  for (const wide of [true, false]) {
+    const props = { ctx: {}, wide, showAll: false, onShowAll() {}, showAllId: "all", handlers: fundHandlers };
+    for (const [name, { says, ...change }] of Object.entries(fifth)) {
+      const shown = { ...props, rows: fundRows(change) };
+      assert.deepEqual(names(renderToStaticMarkup(createElement(components.FundsReadyTable, shown))), [1, 2, 3, 5], name);
+      const words = text("FundsReadyTable", shown);
+      assert.ok(words.includes(says), `${name}: ${words}`);
+      assert.match(words, /Show all 7 \(3 more, nothing to check\)/, name);
+    }
+    assert.deepEqual(names(renderToStaticMarkup(createElement(components.FundsReadyTable, { ...props, rows: fundRows() }))), [1, 2, 3]);
+  }
+});
+
 test("rows left out so that units aren't counted twice say why, each with its Change", () => {
   const shown = text("NotIncluded", {
     tracked: [], counted: [], skipped: [], unsaved: [], lines: [], open: {}, setOpen() {}, onSaveBoth() {}, onDontSave() {}, onReview() {}, partId: "n",

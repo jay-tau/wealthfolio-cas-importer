@@ -117,10 +117,13 @@ the statement is read, one Review screen shows, in this order:
   whose units then won't match the statement's
   says so ("After import: 1,204.500 units · Statement: 1,250.000. Imported with the difference you
   accepted.", or "Includes another purchase you chose."; another cash dividend you chose adds
-  income instead: "Includes another cash dividend you chose: ₹500 more income.") and always
-  shows; with more than five rows, only the first three, those and the ones
-  just changed show until **Show all**. A fund with nothing new is one line under the table. A family
-  statement's funds are grouped by investor and account ("A. Investor → Mutual funds").
+  income instead: "Includes another cash dividend you chose: ₹500 more income."). With more than
+  five rows, only the first three, the ones just changed and those with something to check show
+  until **Show all**: a note about units that won't match or extra income, a plan or option warning
+  ("Statement: Direct · Growth. Chosen: Regular · Growth. Different plan.", or "Chosen listing's
+  plan and option are unknown.") or a listing quoted in another currency than rupees. A fund with
+  nothing new is one line under the table. A family statement's funds are grouped by investor and
+  account ("A. Investor → Mutual funds").
 - **Not included in this import**: a fund that starts with units bought before the statement, which
   Wealthfolio doesn't have ("Earlier purchases needed", with **How to fix**), saying how many of its
   transactions wait, or that the statement has none for it ("…, and the statement has no
@@ -486,8 +489,11 @@ Review screen shows, in this order:
   come from (and whether it was chosen before or by you), **Change**, units, value and purchase cost.
   **Add cost** takes the total cost of the holding's units in rupees, with or without grouping commas
   (Indian or Western) and up to two decimals; anything else stays open with a hint. With more than
-  five rows, only the first three, those with a missing cost and those just changed show, until
-  **Show all**. Below the `sm` width, the rows are a stacked list.
+  five rows, only the first three, those just changed and those with something to check show, until
+  **Show all**: a missing cost, a plan or option warning, a listing quoted in another currency than
+  rupees, or a note, such as "The statement prints a cost for only some of its lines for this
+  holding.", other than one saying that saving also saves the statement's price as a hand-priced
+  holding's price. Below the `sm` width, the rows are a stacked list.
 - **Kept as they are**: holdings the account keeps as it has them, with a note to check them, such as
   one that a folio the statement doesn't list added (below).
 - **Not included in this save**: funds already tracked from transactions in another account
