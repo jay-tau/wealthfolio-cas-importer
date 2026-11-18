@@ -954,11 +954,17 @@ export function DetailedImport({
         const held = heldOf(f, key);
         return { units: unitsOf(list), account: accountName(f.accountId), folios: [...new Set(list.map((s) => folioOf.get(s)!))], ...(held && { held }) };
       });
+      const outcomes = count ? [] : current.mapping.outcomes.filter((o) => fundKey(o.scheme) === key);
+      const folios = [...new Set([...byAccount.values()].flat().map((s) => folioOf.get(s)!))];
       return {
         key,
         name: shownName(itemOf.get(key)!, fundOf(key)),
         units: `${unitsOf(schemes)} units`,
         waiting: count,
+        // A folio can have both an empty section and transactions for the same fund.
+        ...(outcomes.length > 0 && {
+          noTransactionsIn: { folios, parts: outcomes.some((o) => folios.includes(o.folio.folio)) },
+        }),
         // A fund in one account that has none of them says only its units.
         accounts: spread || accounts.some((a) => a.held) ? accounts : undefined,
         uncreated: [...byAccount].filter(([f]) => uncreated(f.accountId)).map(([f, list]) => ({
@@ -1063,6 +1069,13 @@ export function DetailedImport({
         return next;
       }),
     };
+  });
+  // Under Not included, one line for each question skipped, its folio named where the fund's in two,
+  // as its card does. A line needs its fund, to name it.
+  const skippedUnbalanced = unbalancedAsks.flatMap(({ answer, fundKey: key, folio, id }) => {
+    if (answer !== true || !key) return [];
+    const inFolio = folio ? `, folio ${folio}` : "";
+    return [{ id, name: `${fundNameOf(key)}${inFolio}`, label: `${labelOf.get(key)!}${inFolio}` }];
   });
   const offered = (shown?.plan ?? []).filter(canImportAnyway);
   const amountOf = (row: CasTransaction) => (row.amount ? rupees(format(abs(dec(row.amount)))) : undefined);
@@ -2539,13 +2552,7 @@ export function DetailedImport({
       <NotIncludedDetailed
         earlier={earlier}
         skipped={skipped.map((item) => labelOf.get(item.key)!)}
-        // One line for each question skipped, its folio named where the fund's in two, as its card does.
-        // A line needs its fund, to name it.
-        unbalanced={unbalancedAsks.flatMap(({ answer, fundKey: key, folio, id }) => {
-          if (answer !== true || !key) return [];
-          const inFolio = folio ? `, folio ${folio}` : "";
-          return [{ id, name: `${fundNameOf(key)}${inFolio}`, label: `${labelOf.get(key)!}${inFolio}` }];
-        })}
+        unbalanced={skippedUnbalanced}
         notImported={notImported.map((f) => `${folioName(f)} (${plural(f.schemes.length, "fund")})`)}
         duplicates={skippedDuplicates}
         leftOut={leftOutFunds}
@@ -2651,7 +2658,7 @@ export function DetailedImport({
           if (editor) return { lines: [<p key="e" className="text-warning">Save or cancel {editWhat} first.</p>] };
           if (lookingUp.length) return { lines: [<p key="l">Looking up {plural(lookingUp.length, "fund")}…</p>] };
           if (questionCount) return { lines: [<p key="q">{leftWords}</p>] };
-          if (nothing) return { lines: [<p key="n">Nothing from this statement will be imported.</p>] };
+          if (nothing && counts?.total !== 0) return { lines: [<p key="n">Nothing from this statement will be imported.</p>] };
           if (!current || !counts) return { lines: [<p key="w" className="text-muted-foreground">Working out what will be imported…</p>] };
           const see = (
             <p key="see">
@@ -2667,7 +2674,9 @@ export function DetailedImport({
             </p>
           );
           if (!toImport) {
-            const none = <p key="0">{nothingWords(counts)}</p>;
+            // Whether “Not included” lists anything, as it shows only then.
+            const notIncluded = [earlier, skipped, notImported, skippedUnbalanced, skippedDuplicates, leftOutFunds].some((part) => part.length > 0);
+            const none = <p key="0">{nothingWords(counts, notIncluded)}</p>;
             return { lines: [none, ...answerLine, see], narrow: { brief: none, more: [...answerLine, see], warnings: 0 } };
           }
           const mains = perAccount.map((a) => (

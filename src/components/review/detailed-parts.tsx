@@ -26,6 +26,11 @@ export interface EarlierFund {
   /** Its transactions that wait. */
   waiting: number;
   /**
+   * When none wait, but the statement has transactions for the fund elsewhere: the folios that
+   * start with these units. `parts`: those folios have transactions in other sections for the fund.
+   */
+  noTransactionsIn?: { folios: string[]; parts: boolean };
+  /**
    * When its folios go to more than one account, or an account has some of its units: each waiting
    * account's units ("100.000"), its name as the screen gives it, its folios' numbers, and what it
    * has of the fund before the statement.
@@ -68,8 +73,11 @@ function addLine(a: EarlierAccount, from: string) {
   return `${held.add} units in ${a.account}, from ${folioWords(a.folios)} (${held.has} in this account before ${from})`;
 }
 
-/** What to do about an account that has more units than its folios start with, or ones that can't be counted. */
-function checkLine(a: EarlierAccount, from: string) {
+/**
+ * What to do about an account that has more units than its folios start with, or ones that can't be
+ * counted. `none`: the statement has no transactions for the fund, so none are to add by hand.
+ */
+function checkLine(a: EarlierAccount, from: string, none: boolean) {
   const held = a.held;
   const startWith = `${a.units} that ${folioWords(a.folios)} ${a.folios.length === 1 ? "starts" : "start"} with`;
   if (held?.kind === "over") {
@@ -77,35 +85,44 @@ function checkLine(a: EarlierAccount, from: string) {
   }
   if (held?.kind !== "uncounted") return "";
   const one = held.by.length === 1;
-  return `In ${a.account}, the add-on can't count this fund's units across ${uncountedWords(held.by)}, so it can't check that they come to the ${startWith}. Check ${one ? "it" : "them"} in Wealthfolio: if ${one ? "it's" : "they're"} wrong, delete ${one ? "it" : "them"}; if not, add this statement's transactions for this fund from ${folioWords(a.folios)} in Wealthfolio by hand: the add-on will still leave them out.`;
+  const cantCount = `In ${a.account}, the add-on can't count this fund's units across ${uncountedWords(held.by)}, so it can't check that they come to the ${startWith}.`;
+  if (none) return `${cantCount} Check ${one ? "it" : "them"} in Wealthfolio, and delete ${one ? "it" : "them"} if ${one ? "it's" : "they're"} wrong.`;
+  return `${cantCount} Check ${one ? "it" : "them"} in Wealthfolio: if ${one ? "it's" : "they're"} wrong, delete ${one ? "it" : "them"}; if not, add this statement's transactions for this fund from ${folioWords(a.folios)} in Wealthfolio by hand: the add-on will still leave them out.`;
 }
 
 /**
  * How to fix a fund waiting for earlier purchases: read an earlier statement, or add the units in
  * Wealthfolio, first creating each new account they go to that this import won't create; and check
- * each account that has too many of them, or ones that can't be counted.
+ * each account that has too many of them, or ones that can't be counted. Then read this statement
+ * again, unless it has no transactions for the fund.
  */
 function howToFix(fund: EarlierFund, registrar: string, from: string) {
+  const none = fund.waiting === 0;
   const earlier = `Read an earlier ${registrar} statement that includes its first purchase`;
   // An earlier statement or more units can't fix too many, or units that can't be counted.
   const adds = fund.accounts?.filter((a) => !a.held || a.held.kind === "short");
-  const checks = (fund.accounts ?? []).map((a) => checkLine(a, from)).filter(Boolean).map((line) => `${line} `).join("");
+  const checks = (fund.accounts ?? []).map((a) => checkLine(a, from, none)).filter(Boolean).map((line) => `${line} `).join("");
   const buys = adds
     ? `add the units in Wealthfolio as ${adds.length === 1 ? "a buy" : "buys"} with their cost and date: ${adds.map((a) => addLine(a, from)).join("; ")}.`
     : `add the ${fund.units} in Wealthfolio as a buy with their cost and date.`;
   const missing = fund.uncreated ?? [];
   if (!missing.length) {
-    return `${adds?.length === 0 ? "" : `${earlier}, or ${buys} `}${checks}Then read this statement again: transactions already imported are skipped.`;
+    const fix = `${adds?.length === 0 ? "" : `${earlier}, or ${buys} `}${checks}`;
+    return none ? fix.trimEnd() : `${fix}Then read this statement again: transactions already imported are skipped.`;
   }
-  const again = `${earlier}, then this one again.`;
-  const end = "Transactions already imported are skipped.";
+  const again = none ? `${earlier}.` : `${earlier}, then this one again.`;
+  const end = none ? "" : " Transactions already imported are skipped.";
   // In one account, the account is the fund's only one.
   if (!fund.accounts) {
-    return `${again} Or, as ${missing[0].account} doesn't exist yet, create an account that tracks transactions in Wealthfolio, add the ${fund.units} there as a buy with their cost and date, then read this statement again and choose that account in “Save to”. ${end}`;
+    const add = `add the ${fund.units} there as a buy with their cost and date`;
+    return `${again} Or, as ${missing[0].account} doesn't exist yet, create an account that tracks transactions in Wealthfolio${
+      none ? ` and ${add}.` : `, ${add}, then read this statement again and choose that account in “Save to”.`
+    }${end}`;
   }
   const one = missing.length === 1;
   const names = list(missing.map((a) => a.account));
-  return `${checks}${again} Or, as ${names} ${one ? "doesn't" : "don't"} exist yet, first create ${one ? "an account that tracks" : "accounts that track"} transactions in Wealthfolio for ${one ? "its" : "their"} units, then ${buys} Then read this statement again and choose ${one ? "it" : "them"} in “Save to” for ${one ? folioWords(missing[0].folios) : "their folios"}. ${end}`;
+  const then = none ? "" : ` Then read this statement again and choose ${one ? "it" : "them"} in “Save to” for ${one ? folioWords(missing[0].folios) : "their folios"}.`;
+  return `${checks}${again} Or, as ${names} ${one ? "doesn't" : "don't"} exist yet, first create ${one ? "an account that tracks" : "accounts that track"} transactions in Wealthfolio for ${one ? "its" : "their"} units, then ${buys}${then}${end}`;
 }
 
 /** A fund with transactions left out for a reason of their own, each said in a line. */
@@ -182,7 +199,11 @@ export function NotIncludedDetailed({
           <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span>
               <span className="font-semibold">Earlier purchases needed</span>: {fund.name} starts with {fund.units} bought before this statement,
-              so its {plural(fund.waiting, "transaction")} {fund.waiting === 1 ? "waits" : "wait"}.
+              {fund.waiting
+                ? ` so its ${plural(fund.waiting, "transaction")} ${fund.waiting === 1 ? "waits" : "wait"}.`
+                : ` and the statement has no transactions for it${fund.noTransactionsIn
+                  ? ` in ${fund.noTransactionsIn.parts ? "the parts of " : ""}${folioWords(fund.noTransactionsIn.folios)}${fund.noTransactionsIn.parts ? " that start with these units" : ""}`
+                  : ""}.`}
               {fund.accounts && ` Units needed: ${fund.accounts.map((a) => accountLine(a, from)).join("; ")}.`}
               {!!fund.uncreated?.length &&
                 (fund.uncreated.length === 1
@@ -304,12 +325,17 @@ export function breakdownParts(b: Breakdown) {
 
 /**
  * What the footer and the transactions say when nothing is ready to import: "Nothing new" only when
- * Wealthfolio has every transaction already.
+ * Wealthfolio has every transaction already, or the statement has none and nothing is under “Not
+ * included”, which `notIncluded` says. A statement with no transactions points at no transactions.
  */
-export const nothingWords = (b: Breakdown) =>
-  b.total > 0 && b.before === b.total
-    ? "Nothing new: every transaction on this statement is already in Wealthfolio."
-    : "Nothing is ready to import. See the transactions left out or waiting above.";
+export function nothingWords(b: Breakdown, notIncluded: boolean) {
+  if (b.total > 0) {
+    return b.before === b.total
+      ? "Nothing new: every transaction on this statement is already in Wealthfolio."
+      : "Nothing is ready to import. See the transactions left out or waiting above.";
+  }
+  return notIncluded ? "This statement has no transactions. See what's not included above." : "Nothing new: this statement has no transactions.";
+}
 
 /** The statement's transactions by what happens to them, whose parts add up to the total. */
 export function TransactionsSummary({ breakdown, range, partId }: { breakdown: Breakdown; range: string; partId: string }) {
