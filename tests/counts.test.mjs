@@ -187,7 +187,7 @@ test("earlier-purchase help and Change distinguish equal funds and their separat
   const earlier = [1, 2].map((n) => ({ key: String(n), name: "Fictiva Fund", units: "10.000 units", waiting: 1 }));
   const props = {
     earlier, unbalanced: earlier.map((fund, i) => ({ id: `unbalanced|${fund.key}`, name: fund.name, label: `${fund.name}, fund ${i + 1}` })),
-    skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: {}, setOpen() {},
+    skipped: [], notImported: [], duplicates: [], leftOut: [], registrar: "CAMS", open: {}, setOpen() {},
     partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   };
   const markup = renderToStaticMarkup(createElement(components.NotIncludedDetailed, props));
@@ -204,7 +204,7 @@ test("earlier-purchase help and Change distinguish equal funds and their separat
 test("a fund waiting for earlier purchases in two accounts says how many units each needs and from which folios", () => {
   const props = (accounts, units) => ({
     earlier: [{ key: "1", name: "Fictiva Liquid Fund", units, waiting: 12, accounts }],
-    unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: { "how:1": true }, setOpen() {},
+    unbalanced: [], skipped: [], notImported: [], duplicates: [], leftOut: [], registrar: "CAMS", open: { "how:1": true }, setOpen() {},
     partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   });
   const two = text("NotIncludedDetailed", props([
@@ -231,7 +231,7 @@ test("a fund waiting for earlier purchases in two accounts says how many units e
 test("a fund waiting for earlier purchases in a new account this import won't create says to create one first", () => {
   const props = (fund) => ({
     earlier: [{ key: "1", name: "Fictiva Liquid Fund", units: "100.000 units", waiting: 3, ...fund }],
-    unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", open: { "how:1": true }, setOpen() {},
+    unbalanced: [], skipped: [], notImported: [], duplicates: [], leftOut: [], registrar: "CAMS", open: { "how:1": true }, setOpen() {},
     partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   });
   // In one account.
@@ -275,7 +275,7 @@ test("a fund waiting for earlier purchases in a new account this import won't cr
 test("a fund waiting for earlier purchases says what each account already has of them, and what to do", () => {
   const props = (accounts) => ({
     earlier: [{ key: "1", name: "Fictiva Liquid Fund", units: "100.000 units", waiting: 12, accounts }],
-    unbalanced: [], skipped: [], notImported: [], leftOut: [], registrar: "CAMS", from: "1 Apr 2023", open: { "how:1": true }, setOpen() {},
+    unbalanced: [], skipped: [], notImported: [], duplicates: [], leftOut: [], registrar: "CAMS", from: "1 Apr 2023", open: { "how:1": true }, setOpen() {},
     partId: "not-included", changeId: (key) => key, onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,
   });
   const mf = (held, folios = ["7712045"]) => ({ units: "100.000", account: "Mutual funds", folios, held });
@@ -363,7 +363,7 @@ test("one fund's Ready and Not included Change controls have distinct names", ()
     handlers: { ids: () => ({ change: "ready-change" }), label: () => item.name, nag: false, onChange() {}, changePanel: () => null },
   });
   const leftOut = {
-    earlier: [], skipped: [], notImported: [], unbalanced: [],
+    earlier: [], skipped: [], notImported: [], unbalanced: [], duplicates: [],
     leftOut: [{ key: item.key, name: item.name, label: item.name, canChange: true, lines: [{ when: "5 Jan 2026", reason: "This row isn't supported." }] }],
     registrar: "CAMS", open: {}, setOpen() {}, partId: "not-included", changeId: () => "left-change",
     onChange() {}, onReopen() {}, onReopenAsk() {}, changePanel: () => null,

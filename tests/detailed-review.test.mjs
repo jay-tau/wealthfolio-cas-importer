@@ -118,6 +118,11 @@ function nodes(node) {
 const find = (run, name) => nodes(run.tree).find((node) => node.type?.name === name)?.props;
 const textOf = (node) => (Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : node === false || node == null ? "" : String(node));
 const footer = (run) => find(run, "Footer").lines.map(textOf);
+/** Ready to import's heading, when it's shown. */
+const readyHeading = (run) => {
+  const heading = nodes(run.tree).find((node) => node.props?.id === "review-ready");
+  return heading && textOf(heading);
+};
 
 const account = (id, name, trackingMode = "TRANSACTIONS") => ({ id, name, currency: "INR", trackingMode, isActive: true, isArchived: false });
 const ACCOUNTS = [account("mf", "Mutual funds"), account("other", "Other funds"), account("bank", "Savings"), account("demat", "Demat", "HOLDINGS")];
@@ -831,11 +836,102 @@ test("chips count each PAN's own rows when one shared fund waits for earlier pur
   }, remembered: { [choices.panKey("ABCDE1234F")]: "mf", [choices.panKey("OTHER1234F")]: "mf" } });
   await run.flush();
   assert.match(textOf(run.tree), /2 funds1 ready1 not included/);
+  // Ready to import and the bar count the one that's ready, as the chips do.
+  assert.equal(readyHeading(run), "Ready to import (1)");
+  assert.deepEqual(footer(run)[0], "Import 3 transactions for 1 fund into Mutual funds.");
   assert.equal(find(run, "NotIncludedDetailed").earlier.length, 1);
   // Excluding one PAN doesn't mark the other PAN's waiting rows ready.
   saveTo(run).onChange(keys.pan, choices.LEFT_OUT);
   await run.flush();
   assert.match(textOf(run.tree), /2 funds0 ready2 not included/);
+  assert.equal(readyHeading(run), undefined);
+});
+
+/** The made-up statement's Liquid Fund alone, in its first folio and in `second`, a copy of it. */
+const liquidTwice = (second) => (data) => {
+  const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+  data.folios[0].schemes = [liquid];
+  data.folios[1] = { ...structuredClone(data.folios[0]), folio: "1040012345", ...second };
+  return data;
+};
+
+test("the ready count, Ready to import and the bar count one fund in two folios once, whatever accounts they go to", async () => {
+  const { run, keys } = setup({ entries: [], change: liquidTwice() });
+  await run.flush();
+  saveTo(run).onChange(keys.testbridge, "other");
+  await run.flush();
+  // One row for each account it goes to, and one fund in every count.
+  assert.deepEqual(find(run, "FundsReadyTable").rows.map((r) => [r.groupTitle, r.name]),
+    [["To Mutual funds", "Fictiva Liquid Fund"], ["To Other funds", "Fictiva Liquid Fund"]]);
+  assert.match(textOf(run.tree), /1 fund1 ready/);
+  assert.equal(readyHeading(run), "Ready to import (1)");
+  assert.deepEqual(footer(run).slice(0, 2), ["Import 3 transactions for 1 fund into Mutual funds.", "Import 3 transactions for 1 fund into Other funds."]);
+  assert.equal(textOf(find(run, "Footer").narrow.brief), "Import 6 transactions for 1 fund into 2 accounts.");
+});
+
+test("on a family statement, the ready count, Ready to import and the bar count each investor's fund, in one row of one account", async () => {
+  const { run } = setup({
+    entries: [],
+    change: (data) => {
+      data.folios[0].name = "A. Investor";
+      return liquidTwice({ PAN: "OTHER1234F", name: "B. Investor" })(data);
+    },
+    remembered: { [choices.panKey("ABCDE1234F")]: "mf", [choices.panKey("OTHER1234F")]: "mf" },
+  });
+  await run.flush();
+  assert.deepEqual(find(run, "FundsReadyTable").rows.map((r) => r.groupTitle), ["A. Investor and B. Investor → Mutual funds"]);
+  assert.match(textOf(run.tree), /2 funds2 ready/);
+  assert.equal(readyHeading(run), "Ready to import (2)");
+  assert.deepEqual(footer(run)[0], "Import 6 transactions for 2 funds into Mutual funds.");
+});
+
+test("a fund whose only questions are possible duplicates counts under questions, and once they're skipped it's listed under Not included", async () => {
+  const { run, api } = setup({ entries: [], change(data) {
+    data.folios = [{ ...data.folios[0], schemes: data.folios[0].schemes.filter((s) => /Liquid|Balanced/.test(s.scheme)) }];
+    return data;
+  } });
+  // The Liquid Fund's purchase, switch in and redemption.
+  api.activities.checkImport = async (rows) => rows.map((r) => (r.symbol === "INFZ90K01LQ6" ? { ...r, duplicateOfId: "previous" } : r));
+  await run.flush();
+  assert.equal(askCards(run).length, 3);
+  assert.match(textOf(run.tree), /2 funds1 ready3 questions/);
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  // Still a question, with one skipped: listed, but not counted as not included.
+  assert.match(textOf(run.tree), /2 funds1 ready2 questions/);
+  const notIncluded = () => markup(nodes(run.tree).find((n) => n.type?.name === "NotIncludedDetailed"));
+  assert.match(notIncluded(), /Fictiva Liquid Fund<\/span>: 1 possible duplicate skipped by your answer\./);
+  for (const card of askCards(run)) card.main.onClick();
+  await run.flush();
+  assert.match(textOf(run.tree), /2 funds1 ready1 not included/);
+  assert.deepEqual(find(run, "NotIncludedDetailed").duplicates.map((d) => [d.name, d.count]), [["Fictiva Liquid Fund", 3]]);
+  assert.match(notIncluded(), /Not included in this import.*Fictiva Liquid Fund<\/span>: 3 possible duplicates skipped by your answer\./);
+  assert.deepEqual(footer(run).slice(0, 2), ["Import 4 transactions for 1 fund into Mutual funds.", "3 possible duplicates skipped by your answer."]);
+});
+
+test("while the plan is worked out, or couldn't be, the import button gives no count", async () => {
+  const { run, api, keys } = setup({ entries: [] });
+  const check = api.activities.checkImport;
+  let finish;
+  api.activities.checkImport = (rows) => new Promise((resolve, reject) => { finish = (ok) => (ok ? check(rows).then(resolve) : reject(new Error("made-up check failure"))); });
+  await run.flush();
+  const shown = () => ({ line: footer(run)[0], label: find(run, "Footer").action.label, disabled: find(run, "Footer").action.disabled });
+  // The first plan.
+  assert.deepEqual(shown(), { line: "Working out what will be imported…", label: "Import", disabled: true });
+  finish(true);
+  await run.flush();
+  assert.deepEqual(shown(), { line: "Import 13 transactions for 4 funds into Mutual funds.", label: "Import 13 transactions", disabled: false });
+  // A change works it out again, and it fails.
+  saveTo(run).onChange(choices.bankKey(keys.pan), "bank");
+  await run.flush();
+  assert.deepEqual(shown(), { line: "Working out what will be imported…", label: "Import", disabled: true });
+  finish(false);
+  await run.flush();
+  assert.deepEqual(shown(), { line: "We couldn't work out what will be saved. Nothing was saved.", label: "Import", disabled: true });
+  // With every folio set to Don't import, it's still Finish.
+  saveTo(run).onChange(keys.pan, choices.LEFT_OUT);
+  await run.flush();
+  assert.deepEqual(shown(), { line: "Nothing from this statement will be imported.", label: "Finish", disabled: false });
 });
 
 test("a fund waiting for earlier purchases says how many units each account needs when its folios go to two", async () => {
