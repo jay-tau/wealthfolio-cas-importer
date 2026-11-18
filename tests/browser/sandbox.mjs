@@ -4668,11 +4668,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const schemeCodes = await readyRows.evaluateAll((all) => all.map((row) => row.textContent.match(/Scheme (\d{6})/)[1]));
     assert.equal(schemeCodes.length, 6);
     assert.equal(new Set(schemeCodes).size, schemeCodes.length, "different funds have different AMFI scheme codes");
-    // Skips every fund but the Liquid fund, from their rows.
-    const skipOthersThanLiquid = async () => {
+    // Skips every fund but the Liquid fund, and `also` when given, from their rows.
+    const skipOthersThanLiquid = async (also) => {
+      const kept = also ? new RegExp(`${escaped(liquidName)}|${escaped(also)}`) : liquidName;
       await showAllRows();
-      while (await readyRows.filter({ hasNotText: liquidName }).count()) {
-        await readyRows.filter({ hasNotText: liquidName }).first().getByRole("button", { name: /^Change: / }).click();
+      while (await readyRows.filter({ hasNotText: kept }).count()) {
+        await readyRows.filter({ hasNotText: kept }).first().getByRole("button", { name: /^Change: / }).click();
         await changePanelOf().getByRole("button", { name: /^Skip this holding: / }).click();
         await changePanelOf().waitFor({ state: "detached" });
       }
@@ -4731,7 +4732,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frameWidth(1000);
     await summaryLiquid().waitFor();
 
-    // A line whose units can't be read leaves the account's fund as it is, and isn't saved.
+    // A line whose units can't be read leaves the account's fund as it is, and isn't saved. The
+    // Balanced Advantage fund, in another folio, is saved beside it: with nothing else to save, the
+    // bar would offer Finish and save no snapshot (#276).
+    const balancedFund = "Fictiva Balanced Advantage Fund";
     await hosted(() => { window.host.summaryMisread = ["INFZ90K01LQ6"]; });
     await readHoldings();
     const liquidFolio = "Fictiva Mutual Fund account (folio 91234567 / 12)";
@@ -4739,8 +4743,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       `${liquidName}, ${liquidFolio}: It has no units but a value of ₹35799.22, so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.`,
       { exact: true },
     ).waitFor();
-    await skipOthersThanLiquid();
+    await skipOthersThanLiquid(balancedFund);
     assert.equal(await summaryLiquid().count(), 0);
+    assert.equal(await readyRows.filter({ hasText: balancedFund }).count(), 1);
     // The account's AMFI asset stays, under its own name.
     const heldBack = (await snapshotTable("Fund folios")).getByRole("row").filter({ hasText: liquidFolio });
     assert.equal(await heldBack.count(), 1);
@@ -4762,7 +4767,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await saveHoldings.click();
     await frame.getByText("Holdings saved", { exact: true }).waitFor();
     const keptSnapshot = await snapshot("holdings-2", "2025-03-31");
-    assert.deepEqual(keptSnapshot.holdings, preservedSnapshot.holdings);
+    assert.deepEqual(keptSnapshot.holdings.filter((h) => h.assetId === `asset-${summaryAmfi.symbol}`), preservedSnapshot.holdings);
+    assert.equal(keptSnapshot.holdings.length, 2, "the Liquid fund as it was, and the Balanced Advantage fund");
     assert.deepEqual(keptSnapshot.cash, preservedSnapshot.cash);
     assert.deepEqual(await hosted((code) => window.host.quotes[`asset-${code}`], summaryAmfi.symbol), liquidQuotes);
     await hosted(() => { window.host.summaryMisread = []; });

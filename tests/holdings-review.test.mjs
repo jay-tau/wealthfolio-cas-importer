@@ -1,5 +1,6 @@
 // Exercises the real Review controller and search hook with made-up host data, without a browser.
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { after, afterEach, before, test } from "node:test";
 import { createServer } from "vite";
 import { proposedId } from "../src/lib/new-accounts.ts";
@@ -1766,6 +1767,326 @@ test("a remembered account wins over a new one", async () => {
   assert.deepEqual(asked, []);
 });
 
+test("a summary statement whose funds are all tracked from transactions creates no account and saves no snapshot, and says why", async () => {
+  // Only an account that tracks transactions, which already holds both funds.
+  const funds = ["INFZ90A01017", "INFZ90B01015"].map((isin) => ({ ...holding(isin), kind: "fund" }));
+  const folio = { id: "folio|7712045", kind: "folio", label: "Folio 7712045", title: "Fictiva Mutual Fund account (folio 7712045)", holdings: funds };
+  const accounts = [{ id: "T", name: "Mutual funds", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false }];
+  const { run, props, api, asked, saved, remembers } = withNewAccounts([folio], { accounts });
+  props.statement = { ...props.statement, file_type: "CAMS", cas_type: "SUMMARY" };
+  api.portfolio.getHoldings = async (id) => id !== "T" ? [] : funds.map((fund) => ({
+    holdingType: "security", quantity: "10", localCurrency: "INR", instrument: { id: fund.isin, symbol: fund.isin, name: fund.name, quoteMode: "MARKET" },
+  }));
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id, instrumentExchangeMic: "XBOM" });
+  const notices = [];
+  props.onAnother = (notice) => notices.push(notice);
+  await run.flush();
+  const investor = investorKey("TEST");
+  assert.deepEqual(find(run, "SaveTo").proposed(investor), { id: proposedId(investor), name: "Mutual funds 2" });
+  assert.equal(find(run, "SaveTo").values[investor], proposedId(investor));
+  assert.deepEqual(find(run, "NotIncluded").tracked.map((g) => [g.accounts, g.funds.map((f) => f.included)]), [["Mutual funds", [false, false]]]);
+  assert.equal(find(run, "ReadyTable"), undefined);
+  assert.deepEqual(footerText(run), ["Nothing will be saved: every holding is already tracked in Mutual funds."]);
+  const action = find(run, "Footer").action;
+  assert.equal(action.label, "Finish");
+  assert.equal(action.disabled, false);
+  action.onClick();
+  await run.flush();
+  assert.deepEqual(asked, [], "no account is created");
+  assert.deepEqual(saved, [], "no snapshot is saved");
+  assert.deepEqual(remembers.map((r) => r.accounts), [[]], "the new account isn't remembered");
+  assert.deepEqual(notices, ["Finished: nothing from made-up.pdf was saved."]);
+});
+
+test("an existing account without a snapshot gets no empty one when every holding is skipped, and the bar says why", async () => {
+  const x = source("X", [holding("ISINX"), holding("ISINY")]);
+  const { run, props, api } = setup([x], false);
+  props.accounts[0].name = "Demat";
+  const saved = [];
+  api.snapshots.save = async (accountId, positions) => { saved.push([accountId, positions.length]); };
+  api.storage.set = async () => {};
+  api.query = { invalidateQueries() {} };
+  const notices = [];
+  props.onAnother = (notice) => notices.push(notice);
+  await settle(run);
+  for (const isin of ["ISINX", "ISINY"]) {
+    assert.equal(find(run, "QuestionCard").item.isin, isin);
+    find(run, "QuestionCard").onAnswer({ leftOut: true });
+    await settle(run);
+  }
+  assert.deepEqual(find(run, "NotIncluded").skipped, ["Example ISINX", "Example ISINY"]);
+  assert.deepEqual(footerText(run), ["Nothing will be saved: every holding was skipped."]);
+  assert.equal(said(run), "Nothing will be saved: every holding was skipped.");
+  const action = find(run, "Footer").action;
+  assert.equal(action.label, "Finish");
+  action.onClick();
+  await run.flush();
+  assert.deepEqual(saved, []);
+  assert.deepEqual(notices, ["Finished: nothing from made-up.pdf was saved."]);
+});
+
+test("an unchanged account's manual-price notes depend on saving its snapshot", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINX")]);
+  const { run, props, api } = setup([x, y]);
+  props.accountChoices[sourceKey(y)] = LEFT_OUT;
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => ["ISINX", "OLD"].map((symbol) => ({
+    holdingType: "security", quantity: "10", costBasis: { local: "100" }, localCurrency: "INR",
+    instrument: { id: `asset-${symbol}`, symbol, name: `Example ${symbol}`, quoteMode: "MANUAL" },
+  }));
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+  const writes = [];
+  api.quotes = { getHistory: async () => [], update: async () => { writes.push("price"); } };
+  api.snapshots.save = async () => { writes.push("snapshot"); };
+  const stored = new Map();
+  api.storage.get = async (key) => stored.get(key) ?? null;
+  api.storage.set = async (key, value) => stored.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, y, "A", "2025-02-28", { "ISINX@XBOM": ["ISINX"] });
+  api.storage.set = async () => { writes.push("import record"); };
+  await run.flush();
+  assert.equal(find(run, "Footer").action.label, "Finish");
+  const condition = "If you save this account's snapshot and no included holding supplies the statement's price";
+  assert.ok(find(run, "NotIncluded").defaulted[0].notes.some((note) => note.includes(condition)));
+  const kept = nodes(run.tree).find((n) => n.props?.["aria-labelledby"] === "review-kept-as-is");
+  assert.ok(textOf(kept).includes(condition));
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(writes, []);
+});
+
+test("a holding held back by a line that may have been misread saves nothing, and the bar says why", async () => {
+  const h = holding("ISINX");
+  const x = source("X", [h]);
+  const misread = { ...source("M", []), misread: [h] };
+  const { run, api } = setup([x, misread]);
+  const saved = [];
+  api.snapshots.save = async (accountId) => { saved.push(accountId); };
+  await run.flush();
+  assert.equal(find(run, "ReadyTable"), undefined);
+  assert.deepEqual(footerText(run), ["Nothing will be saved: every holding may have been misread."]);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(saved, []);
+});
+
+for (const units of ["", "-1"]) {
+  test(`a skipped holding beside a ${units ? "negative" : "blank"}-unit line kept only in leftOut gets the generic explanation`, async () => {
+    const statement = JSON.parse(await readFile("tests/fixtures/made-up-nsdl.json", "utf8"));
+    const account = statement.accounts[0];
+    const share = account.equities[0];
+    // Equal names must not hide a row that the source's holdings, misread and zero arrays omit.
+    statement.accounts = [{ ...account, equities: [share, { ...share, isin: "ISINY", num_shares: units }], mutual_funds: [], bonds: [] }];
+    statement.nps = null;
+    const { readHoldings } = await server.ssrLoadModule("/src/cas/holdings.ts");
+    const holdings = readHoldings(statement);
+    assert.equal(holdings.leftOut.length, 1);
+    assert.equal(holdings.sources[0].holdings.length, 1);
+    assert.equal(holdings.sources[0].zero, undefined);
+    assert.equal(holdings.sources[0].misread, undefined);
+    const { run, props } = setup(holdings.sources);
+    props.holdings = holdings;
+    props.statement = statement;
+    props.accountChoices = { [investorKey(holdings.investor)]: "A" };
+    props.fundChoices[holdingKey(holdings.sources[0].holdings[0])] = { leftOut: true };
+    await run.flush();
+    assert.deepEqual(footerText(run), ["Nothing will be saved: no holding on this statement is ready to save."]);
+    assert.equal(find(run, "Footer").action.label, "Finish");
+  });
+}
+
+test("a skipped holding beside a Don't-save source with only a leftOut line gets the generic explanation", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", []);
+  const { run, props } = setup([x, y]);
+  props.fundChoices[holdingKey(x.holdings[0])] = { leftOut: true };
+  props.accountChoices[sourceKey(y)] = LEFT_OUT;
+  props.holdings.leftOut = [{ source: y.label, name: "Example ISINY", reason: "No units on the statement." }];
+  await run.flush();
+  assert.deepEqual(footerText(run), ["Nothing will be saved: no holding on this statement is ready to save."]);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("funds tracked in different accounts do not say every fund is tracked in all of them", async () => {
+  const funds = ["INFTESTX", "INFTESTY"].map((isin) => ({ ...holding(isin), kind: "fund" }));
+  const x = { ...source("X", funds), kind: "folio" };
+  const { run, props, api } = setup([x]);
+  props.allAccounts = [...props.allAccounts, ...["T1", "T2"].map((id) => ({ id, name: id, trackingMode: "TRANSACTIONS", isArchived: false }))];
+  api.portfolio.getHoldings = async (id) => {
+    const fund = funds[["T1", "T2"].indexOf(id)];
+    return fund ? [{ holdingType: "security", quantity: "10", localCurrency: "INR", instrument: { id: fund.isin, symbol: fund.isin, quoteMode: "MARKET" } }] : [];
+  };
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id, instrumentExchangeMic: "XBOM" });
+  await run.flush();
+  assert.deepEqual(find(run, "NotIncluded").tracked.map((g) => [g.accounts, g.funds.map((f) => f.key)]), [["T1", [holdingKey(funds[0])]], ["T2", [holdingKey(funds[1])]]]);
+  assert.deepEqual(footerText(run), ["Nothing will be saved: every holding is already tracked in at least one of T1 and T2."]);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("a skipped holding and a printed zero holding do not say every holding was skipped", async () => {
+  const x = { ...source("X", [holding("ISINX")]), zero: [{ ...holding("ISINY"), units: "0", value: "0" }] };
+  const { run, props } = setup([x]);
+  props.fundChoices[holdingKey(x.holdings[0])] = { leftOut: true };
+  await run.flush();
+  assert.deepEqual(footerText(run), ["Nothing will be saved: no holding on this statement is ready to save."]);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("a kept account and a skipped holding alongside a printed zero keep the generic explanation", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = { ...source("Y", [holding("ISINY")]), zero: [{ ...holding("ISINZ"), units: "0", value: "0" }] };
+  const { run, props } = sameDate([x, y]);
+  props.accountChoices[sourceKey(y)] = "B";
+  props.fundChoices[holdingKey(y.holdings[0])] = { leftOut: true };
+  await run.flush();
+  find(run, "AskCard").main.onClick();
+  await settle(run);
+  assert.deepEqual(footerText(run), ["Nothing will change: you kept the holdings already saved in A for 31 Mar 2025, and no other holding on this statement is ready to save."]);
+  assert.equal(said(run), footerText(run)[0]);
+});
+
+test("the same fund in two folios gives each row's own reason when only one account has a misread line", async () => {
+  const h = { ...holding("INFTEST"), kind: "fund" };
+  const x = { ...source("X", [h]), kind: "folio" };
+  const y = { ...source("Y", [{ ...h }]), kind: "folio" };
+  const m = { ...source("M", []), misread: [{ ...h }] };
+  const { run, props, api } = setup([x, y, m]);
+  props.accountChoices[sourceKey(y)] = "B";
+  props.allAccounts = [...props.allAccounts, { id: "T", name: "Transactions", trackingMode: "TRANSACTIONS", isArchived: false }];
+  api.portfolio.getHoldings = async (id) => id === "T" ? [{ holdingType: "security", quantity: "10", localCurrency: "INR", instrument: { id: "asset-INFTEST", symbol: h.isin, quoteMode: "MARKET" } }] : [];
+  api.assets.getProfile = async () => ({ instrumentSymbol: h.isin, instrumentExchangeMic: "XBOM" });
+  await run.flush();
+  assert.equal(find(run, "ReadyTable"), undefined);
+  assert.deepEqual(footerText(run), ["Nothing will be saved: every holding is already tracked in Transactions or may have been misread."]);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("an unchanged account's preview and later warning stay hidden while another account has an open question", async () => {
+  const x = source("X", [holding("ISINX"), holding("ISINNEW")]);
+  const y = source("Y", [holding("ISINY")]);
+  const { run, props, api } = sameDate([x, y], [["ISINX", "10"], ["ISINOLD", "5"]]);
+  props.accountChoices[sourceKey(y)] = "B";
+  api.snapshots.getAll = async (id) => id === "A" ? [{ snapshotDate: "2025-03-31", source: "MANUAL" }] : [{ snapshotDate: "2025-04-30", source: "MANUAL" }];
+  await run.flush();
+  find(run, "AskCard").other.onClick();
+  await run.flush();
+  nodes(find(run, "Footer").lines).filter((n) => n.type?.name === "LinkButton").find((n) => textOf(n).startsWith("See the holdings in B")).props.onClick();
+  await run.flush();
+  assert.equal(find(run, "SnapshotTable").account, "B");
+  const ready = find(run, "ReadyTable");
+  const row = ready.rows.find((r) => r.accountId === "B");
+  ready.handlers.onChange(row);
+  await run.flush();
+  nodes(find(run, "ReadyTable").handlers.changePanel(row)).find((n) => n.type?.name === "Button" && textOf(n) === "Skip this holding").props.onClick();
+  await run.flush();
+  find(run, "AskAnswered").onChange();
+  await run.flush();
+  const footer = find(run, "Footer");
+  assert.equal(footer.action.label, "Update holdings");
+  assert.equal(footer.action.disabled, true);
+  assert.equal(footer.narrow.warnings, 0);
+  assert.ok(!textOf(footer.lines).includes("holdings in B"));
+  assert.ok(!textOf(footer.lines).includes("current holdings in B"));
+  assert.equal(find(run, "SnapshotTable"), undefined);
+});
+
+test("an open snapshot preview disappears when its last holding is skipped", async () => {
+  const { run } = setup([source("X", [holding("ISINX")])]);
+  await run.flush();
+  nodes(find(run, "Footer").lines).find((n) => n.type?.name === "LinkButton").props.onClick();
+  await run.flush();
+  assert.ok(find(run, "SnapshotTable"));
+  const ready = find(run, "ReadyTable");
+  ready.handlers.onChange(ready.rows[0]);
+  await run.flush();
+  nodes(find(run, "ReadyTable").handlers.changePanel(ready.rows[0])).find((n) => n.type?.name === "Button" && textOf(n) === "Skip this holding").props.onClick();
+  await run.flush();
+  assert.equal(find(run, "Footer").action.label, "Finish");
+  assert.equal(find(run, "SnapshotTable"), undefined);
+});
+
+test("a failed new account's retry disappears when its last holding is skipped", async () => {
+  const { run } = withNewAccounts([source("X", [holding("ISINX")])], { refuse: new Set(["NSDL Demat"]) });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.ok(find(run, "NotCreatedAlert"));
+  const ready = find(run, "ReadyTable");
+  ready.handlers.onChange(ready.rows[0]);
+  await run.flush();
+  nodes(find(run, "ReadyTable").handlers.changePanel(ready.rows[0])).find((n) => n.type?.name === "Button" && textOf(n) === "Skip this holding").props.onClick();
+  await run.flush();
+  assert.equal(find(run, "Footer").action.label, "Finish");
+  assert.equal(find(run, "NotCreatedAlert"), undefined);
+  assert.ok(!nodes(run.tree).some((n) => n.type?.name === "WrapButton" && textOf(n) === "Try again"));
+});
+
+for (const kind of ["missing", "overlap"]) {
+  test(`with nothing else to save, ${kind === "missing" ? "Set it to zero" : "Remove them"} still saves the account's snapshot, and keeping the units saves nothing`, async () => {
+    // The account's only holding, which an earlier import of the folio added.
+    const isin = kind === "missing" ? "INFOLD" : "INFTEST";
+    const listed = kind === "missing" ? { ...holding("INFNEW"), kind: "fund" } : { ...holding("INFTEST"), kind: "fund" };
+    const x = { ...source("X", [listed]), kind: "folio" };
+    const { run, props, api } = setup([x]);
+    // The folio's other fund is skipped; the tracked one is left out by default.
+    if (kind === "missing") props.fundChoices[holdingKey(listed)] = { leftOut: true };
+    else props.allAccounts = [...props.allAccounts, { id: "T", name: "Transactions", trackingMode: "TRANSACTIONS", isArchived: false }];
+    const instrument = { id: `asset-${isin}`, symbol: isin, name: `Example ${isin}`, quoteMode: "MARKET" };
+    api.snapshots.getAll = async (id) => id === "A" ? [{ snapshotDate: "2025-02-28", source: "MANUAL" }] : [];
+    api.snapshots.getByDate = async (id) => id === "A" ? [{ holdingType: "security", quantity: "5", costBasis: null, localCurrency: "INR", instrument }] : [];
+    api.portfolio.getHoldings = async (id) => id === "T" ? [{ holdingType: "security", quantity: "10", localCurrency: "INR", instrument }] : [];
+    api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+    const stored = new Map();
+    api.storage.get = async (key) => stored.get(key) ?? null;
+    api.storage.set = async (key, value) => stored.set(key, value);
+    const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+    await saveImported(api.storage, x, "A", "2025-02-28", { [`${isin}@XBOM`]: [isin] });
+    const saved = [];
+    api.snapshots.save = async (accountId, positions, cash, date) => { saved.push([accountId, positions.map((p) => [p.assetId, p.quantity]), date]); };
+    api.query = { invalidateQueries() {} };
+    await run.flush();
+    const card = () => find(run, "AskCard");
+    assert.deepEqual([card().main.label, card().other.label], kind === "missing" ? ["Keep 5.000 units", "Set it to zero on 31 Mar"] : ["Keep them in A", "Remove them from A"]);
+    card().main.onClick();
+    await settle(run);
+    const why = kind === "missing" ? "every holding was skipped" : "every holding is already tracked in Transactions";
+    assert.deepEqual(footerText(run), [`Nothing will be saved: ${why}.`]);
+    assert.equal(said(run), `Nothing will be saved: ${why}.`);
+    assert.equal(find(run, "Footer").action.label, "Finish");
+    find(run, "AskAnswered").onChange();
+    await run.flush();
+    card().other.onClick();
+    await run.flush();
+    assert.match(footerText(run)[0], /^Update A to 31 Mar 2025 with 0 holdings from this statement\. Its other holdings and cash stay\./);
+    assert.equal(find(run, "Footer").action.label, "Update holdings");
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    assert.deepEqual(saved, [["A", [], "2025-03-31"]]);
+  });
+}
+
+test("a new account that nothing ready to save goes into isn't created while another account is saved", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const { run, props, asked, saved } = withNewAccounts([x, y]);
+  props.fundChoices[holdingKey(y.holdings[0])] = { leftOut: true };
+  await run.flush();
+  find(run, "SaveTo").onChange(sourceKey(y), proposedId(sourceKey(y)));
+  await run.flush();
+  assert.deepEqual(footerText(run).map((line) => line.replace(/See .*$/, "")), [
+    "Create the Wealthfolio account NSDL Demat and save 1 holding on 31 Mar 2025.",
+    "The new account Y demat won't be created: nothing ready to save goes into it.",
+    "Purchase cost missing for 1 · Add costs",
+  ]);
+  assert.equal(find(run, "Footer").action.label, "Save holdings");
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["NSDL Demat"]);
+  assert.deepEqual(saved, [{ accountId: "created-1", holdings: 1 }]);
+  assert.deepEqual(outcomes(find(run, "HoldingsResult")), [["created-1", "saved"]]);
+});
+
 test("a source sent to its own new account gets one; one Wealthfolio doesn't create saves nothing, and Try again creates only it", async () => {
   const x = source("X", [holding("ISINX")]);
   const y = source("Y", [holding("ISINY")]);
@@ -2296,6 +2617,24 @@ test("keeping one account's saved holdings still saves another's, and warns when
   assert.ok(textOf(run.tree).includes(warning));
 });
 
+test("keeping one account's saved holdings when every other holding is skipped saves nothing, and the bar says both", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const { run, props, saved } = sameDate([x, y]);
+  props.accountChoices[sourceKey(y)] = "B";
+  props.fundChoices[holdingKey(y.holdings[0])] = { leftOut: true };
+  await run.flush();
+  find(run, "AskCard").main.onClick();
+  await settle(run);
+  const words = "Nothing will change: you kept the holdings already saved in A for 31 Mar 2025, and every other holding was skipped.";
+  assert.deepEqual(footerText(run), [words]);
+  assert.equal(said(run), words);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(saved, []);
+});
+
 test("Keep … in the kept account assigns it there itself, and with nothing left to save the focus goes to the summary", async () => {
   const x = source("X", [holding("ISINX")]);
   const y = source("Y", [holding("ISINY")]);
@@ -2304,13 +2643,15 @@ test("Keep … in the kept account assigns it there itself, and with nothing lef
   props.accountChoices = { [investorKey("TEST")]: "B", [sourceKey(x)]: "A" };
   await run.flush();
   const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
+  document.activeElement = document.body;
+  const focused = [];
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
   find(run, "AskCard").main.onClick();
   await run.flush();
   const keep = nodes(run.tree).find((node) => node.type?.name === "WrapButton" && textOf(node) === "Keep the Y demat account in A");
   assert.ok(keep, textOf(run.tree));
   document.activeElement = document.body;
-  const focused = [];
-  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  focused.length = 0;
   keep.props.onClick();
   await settle(run);
   // Y now goes to A itself, not "Same as above", which is B.
@@ -2319,6 +2660,50 @@ test("Keep … in the kept account assigns it there itself, and with nothing lef
   assert.equal(said(run), "Nothing will be saved. The holdings in A for 31 Mar 2025 are kept.");
   assert.equal(find(run, "Footer").action.label, "Finish");
   assert.deepEqual(saved, []);
+});
+
+test("Keep in the kept account focuses Finish when another account's only holding is skipped", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const z = source("Z", [holding("ISINZ")]);
+  const { run, props } = sameDate([x, y, z], [["ISINX", "10"], ["ISINY", "4"]]);
+  props.accountChoices = { [investorKey("TEST")]: "B", [sourceKey(x)]: "A" };
+  props.fundChoices[holdingKey(z.holdings[0])] = { leftOut: true };
+  await run.flush();
+  document.activeElement = document.body;
+  const focused = [];
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  find(run, "AskCard").main.onClick();
+  await run.flush();
+  document.activeElement = document.body;
+  focused.length = 0;
+  nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Keep the Y demat account in A").props.onClick();
+  await settle(run);
+  assert.equal(find(run, "ReadyTable"), undefined);
+  assert.deepEqual(focused, ["review-summary"]);
+  assert.equal(said(run), "Nothing will change: you kept the holdings already saved in A for 31 Mar 2025, and every other holding was skipped.");
+  assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("Keep in the kept account focuses an unanswered holding before announcing Finish", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINY")]);
+  const z = source("Z", [holding("ISINZ")]);
+  const { run, props } = sameDate([x, y, z], [["ISINX", "10"], ["ISINY", "4"]]);
+  props.accountChoices = { [investorKey("TEST")]: "B", [sourceKey(x)]: "A" };
+  delete props.fundChoices[holdingKey(z.holdings[0])];
+  await settle(run);
+  document.activeElement = document.body;
+  const focused = [];
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  find(run, "AskCard").main.onClick();
+  await run.flush();
+  focused.length = 0;
+  nodes(run.tree).find((n) => n.type?.name === "WrapButton" && textOf(n) === "Keep the Y demat account in A").props.onClick();
+  await settle(run);
+  assert.deepEqual(focused, [find(run, "QuestionCard").headingId]);
+  assert.equal(said(run), "Y demat account now goes to A, whose holdings for 31 Mar 2025 are kept.");
+  assert.equal(find(run, "Footer").action.disabled, true);
 });
 
 test("keeping a snapshot drops its overlap controls but preserves another source's overlap", async () => {
@@ -3025,7 +3410,7 @@ test("Kept as they are lists the account's holdings that aren't on the statement
   ];
   const keptOLD = [
     "Example OLD · 4.000 units in A",
-    "It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date if you keep it.",
+    "It's priced by hand and has no price on or before this date. If you save this account's snapshot and no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date if you keep it.",
   ];
   // INFMISS is asked about, INFNONE has no note, INFHELD's line may have been misread, and OLD is
   // kept until the user replaces it with INFNEW.

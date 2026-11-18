@@ -8,6 +8,7 @@ import {
   asked,
   assetDetails,
   assetNames,
+  changesNothing,
   checkUnits,
   type Choices,
   countedAs,
@@ -881,6 +882,11 @@ export function HoldingsImport({
   // The plans of the accounts this import saves: not those whose saved holdings the user keeps.
   const allPlans = current?.plans ?? [];
   const plans = allPlans.filter((plan) => !keptSaved.has(plan.accountId));
+  // Of those, the ones saving changes something in: a plan that saves none of the statement's rows
+  // and keeps the account's holdings as they are creates no account and saves no snapshot.
+  const toSave = plans.filter((plan) => !changesNothing(plan, choicesFor(plan.accountId, plan)));
+  const previewPlans = plans.filter((plan) => toSave.includes(plan) ||
+    asked(plan, choicesFor(plan.accountId, plan)).some((p) => undecided(p, choicesFor(plan.accountId, plan))));
   const clearPositionWrites = (affected: (plan: AccountPlan, position: PlannedPosition) => boolean) => {
     const removed = new Set((current?.plans ?? prepared?.plans ?? []).flatMap((plan) => plan.positions.filter((p) => affected(plan, p)).map((p) => `${plan.accountId}|${p.key}`)));
     const clean = <T,>(all: ReadonlyMap<string, ReadonlyMap<string, T>>) => new Map([...all].map(([account, values]) =>
@@ -1178,9 +1184,9 @@ export function HoldingsImport({
   /** "14 questions left: the account choice and 13 fund questions" */
   const questionsWords = (words: string) => `${plural(questionCount, "question")} ${words}${countParts ? `: ${countParts}` : ""}`;
   // Nothing to save: every folio, demat account and PRAN is set to Don't save or goes to an account
-  // whose saved holdings are kept.
+  // whose saved holdings are kept, or saving changes nothing in the accounts the others go to.
   const nothing = !accountQuestion &&
-    holdings.sources.every((s) => destination(s) === LEFT_OUT || keptSaved.has(accountOf(s) ?? ""));
+    (holdings.sources.every((s) => destination(s) === LEFT_OUT || keptSaved.has(accountOf(s) ?? "")) || (!!current && !toSave.length));
   const keptPlans = askPlans.filter((plan) => keptSaved.has(plan.accountId));
   const keptWords = (plan: AccountPlan) => `The holdings in ${accountName(plan.accountId)} for ${date} are kept`;
 
@@ -1254,13 +1260,66 @@ export function HoldingsImport({
     ...holdingAsks.map(askStop),
   ];
   const firstOpen = () => questionOrder().find((q) => q.open);
+  /**
+   * Why none of the statement's holdings that don't go to a kept account are saved, as Not included
+   * in this save says of each: "every holding was skipped or is already tracked in Mutual funds".
+   * Undefined when one of them has no reason it can name.
+   */
+  const whyNothing = (other: boolean) => {
+    const skippedKeys = new Set(skipped.map((item) => item.key));
+    const leftOut = new Set(defaulted.map(({ position }) => position));
+    const trackers = new Set<string>();
+    const found = new Set<number>();
+    for (const s of holdings.sources.filter((s) => !keptSaved.has(accountOf(s) ?? ""))) {
+      // Blank or negative units can leave a line only in leftOut, without a reason below.
+      if (holdings.leftOut.filter((l) => l.source === s.label).length >
+        (s.misread?.length ?? 0) + (s.zero?.length ?? 0)) return undefined;
+      const plan = plans.find((p) => p.accountId === accountOf(s));
+      for (const h of [...s.holdings, ...(s.misread ?? []), ...(s.zero ?? [])]) {
+        const key = holdingKey(h);
+        const position = plan?.positions.find((p) => p.lines.some((l) => l.source === s && l.holding === h));
+        const reason = destination(s) === LEFT_OUT ? 4
+          : s.zero?.includes(h) ? -1
+          : s.misread?.includes(h) || position?.misread ? 3
+          : skippedKeys.has(key) ? 0
+          : position?.heldBy ? 1
+          : position && leftOut.has(position) ? 2
+          : -1;
+        if (reason < 0) return undefined;
+        if (reason === 1) for (const account of position!.heldBy!) trackers.add(account.name);
+        found.add(reason);
+      }
+    }
+    if (!found.size) return `the statement lists no ${other ? "other " : ""}holdings with units`;
+    const reasons = [
+      "was skipped",
+      `is already tracked in ${trackers.size > 1 ? "at least one of " : ""}${list([...trackers])}`,
+      "is left out so that units aren't counted twice",
+      "may have been misread",
+      "is set to Don't save",
+    ];
+    const words = reasons.filter((_, i) => found.has(i));
+    return `every ${other ? "other " : ""}holding ${words.length < 2 ? words.join("") : `${words.slice(0, -1).join(", ")} or ${words[words.length - 1]}`}`;
+  };
+  /** What the bar says when nothing will be saved, and what's announced then once the last question is answered. */
+  const nothingLine = () => {
+    // What goes to accounts whose saved holdings aren't kept changes nothing there: why.
+    const why = plans.length ? whyNothing(keptPlans.length > 0) ?? `no ${keptPlans.length ? "other " : ""}holding on this statement is ready to save` : undefined;
+    if (keptPlans.length) {
+      return `Nothing will change: you kept the holdings already saved in ${list(keptPlans.map((plan) => accountName(plan.accountId)))} for ${date}${why ? `, and ${why}` : ""}.`;
+    }
+    if (!plans.length) return "Nothing from this statement will be saved.";
+    return `Nothing will be saved: ${why}.`;
+  };
   const nothingWords = () =>
-    keptPlans.length ? `Nothing will be saved. ${keptPlans.map(keptWords).join(". ")}.` : "Nothing from this statement will be saved.";
+    keptPlans.length && !plans.length ? `Nothing will be saved. ${keptPlans.map(keptWords).join(". ")}.` : nothingLine();
   // The accounts the last save couldn't create, while something still goes to them.
-  const missingNow = notCreated.filter((n) => holdings.sources.some((s) => accountOf(s) === n.accountId));
+  const missingNow = notCreated.filter((n) => current
+    ? toSave.some((plan) => plan.accountId === n.accountId)
+    : holdings.sources.some((s) => accountOf(s) === n.accountId));
   // Whether the review can be saved as it stands: the save button's checks, which Try again shares.
   const canSave = !questionCount && !lookingUp.length && !nothing && !!current && !editor && !renaming && busy === "" &&
-    !prepareError && plans.length > 0;
+    !prepareError && toSave.length > 0;
 
   // As "Reading the statement…" ends: says what's still looked up, until the first searches are done.
   useEffect(() => {
@@ -1308,8 +1367,17 @@ export function HoldingsImport({
   // The question just answered, until the plan is worked out again with its answer.
   const afterAnswer = useRef<string | null>(null);
   const afterChange = useRef<{ key: string; accountId: string } | null>(null);
+  const afterKept = useRef<string | null>(null);
   useEffect(() => {
     if (!current) return;
+    if (afterKept.current) {
+      const words = afterKept.current;
+      afterKept.current = null;
+      const next = firstOpen();
+      if (next) next.go();
+      else focusSoon(lookingUp.length ? ids.questions : nothing ? ids.summary : ids.ready);
+      announce(nothing && !questionCount && !lookingUp.length ? nothingWords() : words);
+    }
     const changed = afterChange.current;
     if (changed) {
       afterChange.current = null;
@@ -1609,12 +1677,12 @@ export function HoldingsImport({
    * never one that was, and saves its snapshot.
    */
   const runSave = async (again?: Pending) => {
-    // An account whose saved holdings are kept isn't saved.
+    // An account whose saved holdings are kept isn't saved, nor one where saving changes nothing.
     const run: Pending | null = again ?? (current && {
-      plans,
-      choices: new Map(plans.map((plan) => [plan.accountId, choicesFor(plan.accountId, plan)])),
+      plans: toSave,
+      choices: new Map(toSave.map((plan) => [plan.accountId, choicesFor(plan.accountId, plan)])),
       // The statement's price for each manual-priced asset any account's snapshot lists.
-      listed: new Map(plans.flatMap((plan) =>
+      listed: new Map(toSave.flatMap((plan) =>
         pricesToSave(plan, choicesFor(plan.accountId, plan)).filter((p) => p.from === "statement").map((p) => [p.ref, p.price] as const))),
       quotes: current.quotes,
       warnings: rows.flatMap((row) => planWarnings(row).map((warning) => ({ accountId: row.accountId, name: row.name, warning }))),
@@ -1980,16 +2048,10 @@ export function HoldingsImport({
     }));
   /** Keeps the sources a double-count warning names in the account whose saved holdings are kept. */
   const keepInKept = (d: (typeof doubles)[number]) => {
+    afterKept.current = `${d.sources.length === 1 ? `${d.sources[0].title ?? d.sources[0].label} now goes` : `${plural(d.sources.length, "statement section")} now go`} to ${d.account}, whose holdings for ${date} are kept.`;
     chooseAccounts(Object.fromEntries(d.sources.map((s) => [sourceKey(s), d.accountId])));
-    const left = holdings.sources.some((s) => !d.sources.includes(s) && destination(s) !== LEFT_OUT && !keptSaved.has(accountOf(s) ?? ""));
-    if (!left) {
-      focusSoon(ids.summary);
-      return announce(`Nothing will be saved. The holdings in ${d.account} for ${date} are kept.`);
-    }
-    focusSoon(ids.ready);
-    announce(`${d.sources.length === 1 ? `${d.sources[0].title ?? d.sources[0].label} now goes` : `${plural(d.sources.length, "statement section")} now go`} to ${d.account}, whose holdings for ${date} are kept.`);
   };
-  const laterPlans = plans.filter((plan) => plan.existing.later.length > 0);
+  const laterPlans = toSave.filter((plan) => plan.existing.later.length > 0);
   const later = (plan: AccountPlan) =>
     `This saves holdings history for ${date}. The current holdings in ${accountName(plan.accountId)} still come from its snapshot of ${longDate(plan.existing.later[plan.existing.later.length - 1])}.`;
 
@@ -2298,7 +2360,7 @@ export function HoldingsImport({
           </WrapButton>
         </div>
       )}
-      {plans.filter((plan) => open[`snapshot:${plan.accountId}`]).map((plan) => (
+      {previewPlans.filter((plan) => open[`snapshot:${plan.accountId}`]).map((plan) => (
         // Its heading says whose holdings it shows, as two can be open at once.
         <section key={plan.accountId} id={id(`snapshot-${plan.accountId}`)} aria-labelledby={id(`snapshot-heading-${plan.accountId}`)} className="grid grid-cols-1 gap-2" style={{ overflowWrap: "anywhere" }}>
           <h3 id={id(`snapshot-heading-${plan.accountId}`)} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
@@ -2312,7 +2374,7 @@ export function HoldingsImport({
         {...((): { lines: ReactNode[]; narrow?: Narrow } => {
           if (busy === "import") {
             return {
-              lines: plans.map((plan) => {
+              lines: toSave.map((plan) => {
                 const name = <span className="font-semibold">{accountName(plan.accountId)}</span>;
                 const state = saving[plan.accountId];
                 return (
@@ -2352,23 +2414,13 @@ export function HoldingsImport({
           if (questionCount) {
             // Only the rare questions left: the snapshots they decide can be seen already.
             const left = <p key="q">{questionsWords("left")} before saving.</p>;
-            const more = answeredAll && current ? plans.flatMap((plan) => [...laterLine(plan), see(plan)]) : [];
-            return { lines: [left, ...more], narrow: { brief: left, more, warnings: more.length ? laterPlans.length : 0 } };
+            const more = answeredAll && current ? previewPlans.flatMap((plan) => [...laterLine(plan), see(plan)]) : [];
+            return { lines: [left, ...more], narrow: { brief: left, more, warnings: more.length ? previewPlans.filter((plan) => plan.existing.later.length).length : 0 } };
           }
-          if (nothing) {
-            return {
-              lines: [
-                <p key="n">
-                  {keptPlans.length
-                    ? `Nothing will change: you kept the holdings already saved in ${list(keptPlans.map((plan) => accountName(plan.accountId)))} for ${date}.`
-                    : "Nothing from this statement will be saved."}
-                </p>,
-              ],
-            };
-          }
+          if (nothing) return { lines: [<p key="n">{nothingLine()}</p>] };
           if (!current) return { lines: [<p key="w" className="text-muted-foreground">Working out what will be saved…</p>] };
           const count = (plan: AccountPlan) => rows.filter((r) => r.accountId === plan.accountId).length;
-          const parts = plans.map((plan) => {
+          const parts = toSave.map((plan) => {
             const n = count(plan);
             const name = <span className="font-semibold">{accountName(plan.accountId)}</span>;
             // What the answers about its holdings do.
@@ -2403,6 +2455,14 @@ export function HoldingsImport({
                 {accountName(plan.accountId)}: existing holdings kept for {date}.
               </p>
             )),
+            // Accounts where saving would change nothing: none is created, and nothing is saved there.
+            ...plans.filter((plan) => !toSave.includes(plan)).map((plan) => (
+              <p key={`none:${plan.accountId}`} className="text-muted-foreground">
+                {isProposed(plan.accountId)
+                  ? `The new account ${accountName(plan.accountId)} won't be created: nothing ready to save goes into it.`
+                  : `Nothing will be saved in ${accountName(plan.accountId)}.`}
+              </p>
+            )),
             ...doubles.map((d) => (
               <p key={`double:${d.accountId}`} className="text-warning">
                 {d.text}
@@ -2424,14 +2484,14 @@ export function HoldingsImport({
           const warnings = laterPlans.length + doubles.length + (missingCosts.length ? 1 : 0);
           if (parts.length === 1) return { lines, narrow: { brief: parts[0].main, more: [...parts[0].extra, ...rest], warnings } };
           // Several accounts: one line for all of them, each account's own lines folded.
-          const total = plural(plans.reduce((n, plan) => n + count(plan), 0), "holding");
-          const accountsCount = plural(plans.length, "account");
-          const creating = plans.filter((plan) => isProposed(plan.accountId)).length;
+          const total = plural(toSave.reduce((n, plan) => n + count(plan), 0), "holding");
+          const accountsCount = plural(toSave.length, "account");
+          const creating = toSave.filter((plan) => isProposed(plan.accountId)).length;
           const brief = (
             <p key="brief">
               {creating
                 ? `Create ${plural(creating, "new account")} and save ${total} in ${accountsCount} on ${date}.`
-                : plans.every((plan) => plan.existing.date)
+                : toSave.every((plan) => plan.existing.date)
                   ? `Update ${accountsCount} to ${date} with ${total} from this statement.`
                   : `Save ${total} in ${accountsCount} on ${date}.`}
             </p>
@@ -2440,7 +2500,7 @@ export function HoldingsImport({
         })()}
         action={
           questionCount || lookingUp.length
-            ? { label: plans.every((p) => p.existing.date) && plans.length ? "Update holdings" : "Save holdings", disabled: true }
+            ? { label: toSave.every((p) => p.existing.date) && toSave.length ? "Update holdings" : "Save holdings", disabled: true }
             : nothing
               ? {
                   label: "Finish",
@@ -2451,7 +2511,7 @@ export function HoldingsImport({
                   },
                 }
               : {
-                  label: busy === "import" ? "Saving…" : plans.every((p) => p.existing.date) && plans.length ? "Update holdings" : "Save holdings",
+                  label: busy === "import" ? "Saving…" : toSave.every((p) => p.existing.date) && toSave.length ? "Update holdings" : "Save holdings",
                   disabled: !canSave,
                   busy: busy === "import",
                   onClick: () => void runSave(),

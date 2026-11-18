@@ -785,7 +785,7 @@ function settleHeldBack(position: PlannedPosition) {
     position.notes.push("A split was recorded since the account's snapshot, so these units predate it. Correct its units in Wealthfolio after saving.");
   }
   if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
-    position.notes.push("It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
+    position.notes.push("It's priced by hand and has no price on or before this date. If you save this account's snapshot and no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
   }
 }
 
@@ -938,7 +938,7 @@ function settleUnread(position: PlannedPosition, unread: Source[]) {
     : "."}`);
   position.include = false;
   if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
-    position.notes.push("It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
+    position.notes.push("It's priced by hand and has no price on or before this date. If you save this account's snapshot and no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date.");
   }
 }
 
@@ -1217,7 +1217,7 @@ function settleOther(
     position.notes.push("A split was recorded since the account's snapshot, so these units predate it. If you keep it, correct its units in Wealthfolio after saving.");
   }
   if (keepsAverageCost(position.existing) && position.existing!.price === undefined) {
-    position.notes.push("It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date if you keep it.");
+    position.notes.push("It's priced by hand and has no price on or before this date. If you save this account's snapshot and no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date if you keep it.");
   }
   return replaced;
 }
@@ -1299,6 +1299,16 @@ export function snapshotOf(plan: AccountPlan, choices: Choices) {
     holdings: [...kept.values()].map((p) => p.holding).concat([...listed.values()].map((p) => p.holding)),
     cash: plan.existing.cash,
   };
+}
+
+/**
+ * Whether saving the account's snapshot would change nothing there: it saves none of the statement's
+ * rows, and keeps each of the account's holdings as it is, as no answer removes one or sets it to
+ * zero. Such a snapshot only repeats the account's holdings, or is empty in an account without any.
+ */
+export function changesNothing(plan: AccountPlan, choices: Choices) {
+  const { listed, kept } = composition(plan, choices);
+  return listed.size === 0 && plan.existing.positions.every((p) => kept.has(p.assetId));
 }
 
 /**
