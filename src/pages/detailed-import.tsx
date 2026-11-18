@@ -2499,7 +2499,7 @@ export function DetailedImport({
         // One line for each question skipped, its folio named where the fund's in two, as its card does.
         unbalanced={unbalancedAsks.filter((a) => a.answer === true).map((a) => {
           const inFolio = a.folio ? `, folio ${a.folio}` : "";
-          return { id: a.id, key: a.fundKey!, name: `${fundNameOf(a.fundKey!)}${inFolio}`, label: `${labelOf.get(a.fundKey!)!}${inFolio}` };
+          return { id: a.id, name: `${fundNameOf(a.fundKey!)}${inFolio}`, label: `${labelOf.get(a.fundKey!)!}${inFolio}` };
         })}
         notImported={notImported.map((f) => `${folioName(f)} (${plural(f.schemes.length, "fund")})`)}
         leftOut={leftOutFunds}
@@ -2510,6 +2510,11 @@ export function DetailedImport({
         partId={id("not-included")}
         changeId={(key) => id(`left-change-${key}`)}
         onReopen={reopen}
+        // Its own question again, as its Change answer does: the fund's choice and other answers stay.
+        onReopenAsk={(askId) => {
+          const ask = unbalancedAsks.find((a) => a.id === askId);
+          if (ask) reopenAsk(ask);
+        }}
         onChange={(key) => openEditor(`left|${key}`, itemOf.get(key)!, fundNameOf(key), id(`left-change-${key}`))}
         changePanel={(key) => editor?.rowId === `left|${key}` && changePanel(editor.rowId, itemOf.get(key)!, id(`left-change-${key}`))}
       />

@@ -140,14 +140,18 @@ export function NotIncludedDetailed({
   changeId,
   onChange,
   onReopen,
+  onReopenAsk,
   changePanel,
 }: {
   earlier: EarlierFund[];
   skipped: string[];
   /** Folios set to Don't import, by name. */
   notImported: string[];
-  /** Funds whose rows don't add up, skipped by an answer, one per question: each can still be changed. */
-  unbalanced: (Pick<LeftOutFund, "key" | "name" | "label"> & { id: string })[];
+  /**
+   * Funds whose rows don't add up, skipped by an answer, one per question, by the question's id:
+   * Change opens that question again.
+   */
+  unbalanced: (Pick<LeftOutFund, "name" | "label"> & { id: string })[];
   leftOut: LeftOutFund[];
   /** "CAMS", "KFintech": whose earlier statement to read. */
   registrar: string;
@@ -159,6 +163,8 @@ export function NotIncludedDetailed({
   changeId: (key: string) => string;
   onChange: (key: string) => void;
   onReopen: (key: string) => void;
+  /** Opens a skipped "don't add up" question again, by its id. */
+  onReopenAsk: (id: string) => void;
   changePanel: (key: string) => ReactNode;
 }) {
   if (!earlier.length && !skipped.length && !notImported.length && !unbalanced.length && !leftOut.length) return null;
@@ -213,7 +219,7 @@ export function NotIncludedDetailed({
           {unbalanced.map((fund) => (
             <p key={fund.id}>
               {fund.name} ·{" "}
-              <LinkButton type="button" aria-label={`Change: ${fund.label}, transactions don't add up`} onClick={() => onReopen(fund.key)}>
+              <LinkButton type="button" aria-label={`Change: ${fund.label}, transactions don't add up`} onClick={() => onReopenAsk(fund.id)}>
                 Change
               </LinkButton>
             </p>
