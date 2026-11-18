@@ -1,5 +1,5 @@
 import { cmp, dec } from "../cas/decimal.ts";
-import { type AccountPlan, assetName, assetNames, type Choices, included, type PlannedPosition, snapshotOf, type Source } from "../cas/holdings.ts";
+import { type AccountPlan, assetName, assetNames, type Choices, included, type PlannedPosition, snapshotOf, type Source, titleOf } from "../cas/holdings.ts";
 import { fundRef } from "../cas/plan.ts";
 import { nameNumber } from "./name-number.ts";
 import { plural } from "./plural.ts";
@@ -78,7 +78,6 @@ export function answerNames(lines: readonly (string | undefined)[]) {
 export const list = (names: readonly string[]) =>
   names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
 
-const titleOf = (s: Source) => s.title ?? s.label;
 const titles = (sources: readonly Source[]) => list([...new Set(sources.map(titleOf))]);
 /** "this folio", "this demat account", "this NPS account". */
 const thisOne = (s: Source) => (s.kind === "folio" ? "this folio" : s.kind === "demat" ? "this demat account" : "this NPS account");

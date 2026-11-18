@@ -90,7 +90,7 @@ import { holdingsBase, isProposed, nameProblem, newAccount, proposalKey, propose
 import { warningLines } from "../lib/parse-warnings";
 import { plural } from "../lib/plural";
 import { type OpenQuestions, questionParts, questionsHeading, questionTotal } from "../lib/questions-left";
-import { grouped, longDate, parseCost, rupees, shortDate, units } from "../lib/review-format";
+import { longDate, parseCost, quantity, rupees, shortDate, units } from "../lib/review-format";
 import { sha256 } from "../lib/sha256";
 
 /** Remembered or chosen: investor key or source key → account ID, or `LEFT_OUT`. */
@@ -406,10 +406,7 @@ const CANT_PLAN = "We couldn't work out what will be saved. Nothing was saved.";
 const OVERLAP_NOTE = "from its transactions. Including it here counts it twice.";
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
-const unitWords = (item: FundItem, value: string) =>
-  item.noun === "share" ? `${grouped(value)} ${value === "1" ? "share" : "shares"}`
-  : item.noun === "bond" ? `${grouped(value)} ${value === "1" ? "bond" : "bonds"}`
-  : `${units(value)} units`;
+const unitWords = (item: FundItem, value: string) => quantity(item.noun === "share" || item.noun === "bond" ? item.noun : "unit", value);
 
 /**
  * A summary or depository statement's holdings on one Review screen: where they're saved, what needs

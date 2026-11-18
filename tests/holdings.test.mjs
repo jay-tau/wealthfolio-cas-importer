@@ -11,7 +11,6 @@ import {
   importedRefs,
   included,
   keepsDetails,
-  labels,
   npsSymbol,
   planSnapshots,
   pricesToSave,
@@ -25,6 +24,7 @@ import {
   isStatementAsset,
   statementAsset,
   statementSymbol,
+  titles,
   undecided,
   unidentified,
   unitStatus,
@@ -236,13 +236,15 @@ test("tells apart two fund houses' depository folios with the same number, or wi
     ["folio||INFZ90K", "Mutual fund folios (Fictiva Liquid Fund - Direct Plan - Growth)", 1],
     ["folio||INFZ91T", "Mutual fund folios (Testbridge Short Term Fund - Regular Plan - Growth and 1 other fund)", 1],
   ]);
-  // The left-out line names the folio the same way, and notes name each folio.
+  // The left-out line names the folio the same way, and notes name each folio as Save to does.
   assert.deepEqual(holdings.leftOut.filter((l) => l.source.startsWith("Mutual")), [{
     source: "Mutual fund folios (Testbridge Short Term Fund - Regular Plan - Growth and 1 other fund)",
     name: "Testbridge Overnight Fund - Direct Plan - Growth",
     reason: "No units on the statement.",
   }]);
-  assert.equal(labels(sources.slice(0, 2)), `${sources[0].label} and ${sources[1].label}`);
+  assert.equal(titles(sources.slice(0, 2)),
+    "Mutual fund folio 91234567/12 (Fictiva Flexi Cap Fund - Direct Plan - Growth and 1 other fund) and " +
+    "Mutual fund folio 91234567/12 (Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout and 1 other fund)");
 
   // Folios whose first funds have the same name also get its ISIN.
   for (const f of folios.mutual_funds) if (f.folio === null) f.name = "Liquid Fund";
@@ -286,7 +288,7 @@ test("tells apart depository folios whose fund names and counts give the same la
       ["Folio 123 (Liquid Fund and 1 other fund), INFZ91T01CB6", 1],
       ["Folio 123 (Liquid Fund and 1 other fund, INFZ90K01FC8)", 1],
     ]);
-    assert.equal(labels(sources), sources.map((s) => s.label).join(" and "));
+    assert.equal(titles(sources), sources.map((s) => s.label.replace(/^Folio /, "Mutual fund folio ")).join(" and "));
     assert.deepEqual(holdings.leftOut.filter((l) => l.source.startsWith("Folio")), [{
       source: sources[1].label, name: "Overnight Fund", reason: "No units on the statement.",
     }]);
@@ -1170,7 +1172,7 @@ test("a fund left out for overlap that an earlier import of its folio added need
 });
 
 test("a fund left out for overlap keeps units that another source or no import may have added, with a note", () => {
-  const note = (why) => `Leaving this row out keeps this account's 100 units of it, so Mutual funds may count them too. ${why} Check them in Wealthfolio.`;
+  const note = (why) => `Leaving this row out keeps this account's 100.000 units of it, so Mutual funds may count them too. ${why} Check them in Wealthfolio.`;
   const other = flexi("5", { isin: "INFZ90K01FC9", rtaCode: "FFCRG", name: "Fictiva Flexi Cap Fund - Regular Plan - Growth" });
   const R = fundRef("119551");
   const check = (account, why) => {
@@ -1234,7 +1236,7 @@ test("a holding that a left-out source's earlier import added keeps its units, w
   assert.deepEqual([shared.ref, shared.units, shared.include], [ref(S), "100", false]);
   assert.deepEqual([shared.notes, shared.ask], [[
     "An earlier import of Demat account 2, which this import leaves out, recorded adding this holding. " +
-    "Importing this row would replace the 150 units this account holds with the statement's 100, which don't count any that Demat account 2 holds, so it's left out and the account keeps its units. " +
+    "Importing this row would replace the 150 shares this account holds with the statement's 100, which don't count any that Demat account 2 holds, so it's left out and the account keeps its shares. " +
     "To update them, save Demat account 2 too.",
   ], undefined]);
   // T is only Demat account 2's, so it stays as before, with no note.
@@ -1258,6 +1260,68 @@ test("a holding that a left-out source's earlier import added keeps its units, w
     remembered: (s, accountId) => (s.id === "demat|2|2" && accountId === "holdings-1" ? new Map() : records.get(s.id) ?? new Map()),
   });
   assert.deepEqual(elsewhere.positions.map((p) => [p.ref, p.include, p.notes]), [[ref(S), true, []], [ref(T), true, []]]);
+});
+
+test("notes name folios and demat accounts as Save to does, and count shares and bonds as such", async () => {
+  // The made-up NSDL statement, without its CDSL demat account and folio 91234567/12.
+  const holdings = readHoldings(await fixture("made-up-nsdl"));
+  const [fictiva, testbridge, folio] = holdings.sources;
+  const OLD = "INFZ90K01OL1";
+  const held = [["INEZ90A01017", "5"], ["INEZ91A07012", "1"], ["INFZ90K01NE8", "1000"], [OLD, "12.5"]];
+  const records = new Map([
+    // The CDSL demat account's earlier import added a share, a bond and a fund the NSDL one lists.
+    [testbridge.id, new Map(held.slice(0, 3).map(([isin]) => [ref(isin), [isin]]))],
+    // Both NSDL's and the folio's added a fund the statement no longer lists.
+    [fictiva.id, new Map([[ref(OLD), [OLD]]])],
+    [folio.id, new Map([[ref(OLD), [OLD]]])],
+  ]);
+  const [account] = plan(holdings, {
+    account: (s) => (s === testbridge || s === folio ? undefined : "holdings-1"),
+    existing: () => ({ ...none, date: "2025-02-28", positions: held.map(([isin, units]) =>
+      ({ assetId: `asset-${isin}`, symbol: isin, ref: ref(isin), name: `Asset ${isin}`, units, cost: null, currency: "INR" })) }),
+    remembered: (s) => records.get(s.id) ?? new Map(),
+  });
+  const notes = (isin) => account.positions.find((p) => p.ref === ref(isin)).notes;
+  const unread = (replace, kept) =>
+    "An earlier import of TESTBRIDGE BROKING LIMITED demat account, which this import leaves out, recorded adding this holding. " +
+    `Importing this row would replace the ${replace}, which don't count any that TESTBRIDGE BROKING LIMITED demat account holds, ` +
+    `so it's left out and the account keeps ${kept}, save TESTBRIDGE BROKING LIMITED demat account too.`;
+  assert.deepEqual(notes("INEZ90A01017"), [unread("5 shares this account holds with the statement's 150", "its shares. To update them")]);
+  assert.deepEqual(notes("INEZ91A07012"), [unread("1 bond this account holds with the statement's 50", "its bond. To update it")]);
+  assert.deepEqual(notes("INFZ90K01NE8"), [unread("1,000.000 units this account holds with the statement's 1,200.000", "its units. To update them")]);
+  assert.deepEqual(notes(OLD), [
+    "An earlier import of FICTIVA SECURITIES PRIVATE LIMITED demat account added it, and FICTIVA SECURITIES PRIVATE LIMITED demat account no longer lists it. " +
+    "An earlier import of Mutual fund folio 91234567/12, which this import leaves out, added it too, so it's kept. " +
+    "Correct its units in Wealthfolio after saving: they may include some that came from FICTIVA SECURITIES PRIVATE LIMITED demat account, " +
+    "and none are left if Mutual fund folio 91234567/12 no longer holds any.",
+  ]);
+  // Labels such as "CDSL Demat Account 2, TESTBRIDGE BROKING LIMITED" and "Folio 91234567/12" are the add-on's own.
+  const all = account.positions.flatMap((p) => p.notes).join("\n");
+  for (const s of [fictiva, testbridge, folio]) assert.ok(!all.includes(s.label), s.label);
+});
+
+test("left-out source notes handle one share or bond, decimal counts, NPS units and mixed kinds", () => {
+  for (const [kinds, held, printed, quantity, figure, verb, word, pronoun] of [
+    [["share"], "1.000", "1.000", "1.000 share", "1", "doesn't", "share", "it"],
+    [["bond"], "1.000", "1", "1.000 bond", "1", "doesn't", "bond", "it"],
+    [["share"], "200.000", "200.000", "200.000 shares", "200", "don't", "shares", "them"],
+    [["nps"], "1000", "1", "1,000.000 units", "1.000", "don't", "units", "them"],
+    [["share", "fund"], "1000", "1", "1,000.000 units", "2.000", "don't", "units", "them"],
+  ]) {
+    const nps = kinds[0] === "nps";
+    const lines = kinds.map((kind) => ({ ...share(S, printed), kind, ...(nps ? { isin: null, code: "NPS-EXAMPLE" } : {}) }));
+    const own = { ...demat(1, ...lines), kind: nps ? "nps" : "demat" };
+    const unread = { ...demat(2), kind: own.kind, title: nps ? "NPS account (PRAN XXXXXXXX9001)" : "Example demat account" };
+    const [account] = plan(statementOf("2025-04-30", own, unread), {
+      account: withoutDemat2, asset: () => asset(share(S, "1")), existing: () => sharesHeld([S, held]),
+      remembered: (s) => s === unread ? recorded(S) : new Map(),
+    });
+    assert.deepEqual(account.positions[0].notes, [
+      `An earlier import of ${unread.title}, which this import leaves out, recorded adding this holding. ` +
+      `Importing this row would replace the ${quantity} this account holds with the statement's ${figure}, which ${verb} count any that ${unread.title} holds, ` +
+      `so it's left out and the account keeps its ${word}. To update ${pronoun}, save ${unread.title} too.`,
+    ]);
+  }
 });
 
 test("a shared holding left out by default describes the kept manual price, not the statement's", () => {
@@ -1338,8 +1402,8 @@ test("an asset that a left-out source's earlier import added isn't offered for r
   assert.deepEqual(row.notes, [
     OVERLAP,
     "An earlier import of Fictiva Mutual Fund, folio 2, which this import leaves out, recorded adding this holding. " +
-    "Importing this row would replace the 100 units this account holds with the statement's 66, which don't count any that Fictiva Mutual Fund, folio 2 holds.",
-    "Leaving this row out keeps this account's 100 units of it, so Mutual funds may count them too. " +
+    "Importing this row would replace the 100.000 units this account holds with the statement's 66.000, which don't count any that Fictiva Mutual Fund, folio 2 holds.",
+    "Leaving this row out keeps this account's 100.000 units of it, so Mutual funds may count them too. " +
     "An earlier import of Fictiva Mutual Fund, folio 1 recorded adding this holding, but its units may also include others. Check them in Wealthfolio.",
   ]);
   assert.deepEqual(savedOf(overlap, keeping(row.key, false)), [["flexi-asset", "100"]]);
@@ -1673,7 +1737,7 @@ test("an asset that an unlisted source's earlier import added isn't offered for 
   assert.deepEqual(overlap().removable?.map((s) => s.label), ["Fictiva Mutual Fund, folio 1"]);
   const row = overlap(unlistedOf(amfiRecords, "folio|2|amc:Fictiva Mutual Fund"));
   assert.deepEqual([row.include, row.removable, undecided(row, noChoices)], [false, undefined, false]);
-  assert.equal(row.notes.at(-1), "Leaving this row out keeps this account's 100 units of it, so Mutual funds may count them too. " +
+  assert.equal(row.notes.at(-1), "Leaving this row out keeps this account's 100.000 units of it, so Mutual funds may count them too. " +
     "An earlier import of Fictiva Mutual Fund, folio 1 recorded adding this holding, but its units may also include others. Check them in Wealthfolio.");
 });
 
@@ -1780,7 +1844,7 @@ test("a moved folio's earlier import keeps an old asset from replacement, overla
   assert.deepEqual([row.include, row.removable, undecided(row, noChoices)], [false, undefined, false]);
   assert.deepEqual(row.notes, [
     OVERLAP,
-    "Leaving this row out keeps this account's 100 units of it, so Mutual funds may count them too. " +
+    "Leaving this row out keeps this account's 100.000 units of it, so Mutual funds may count them too. " +
     "An earlier import of Fictiva Mutual Fund, folio 1 recorded adding this holding, but its units may also include others. Check them in Wealthfolio.",
     MOVED,
   ]);
@@ -2831,7 +2895,7 @@ test("a misread line's fund keeps the account's units, cost, price and import re
     const held = account.positions.filter((p) => p.misread);
     assert.deepEqual(held.map((p) => [p.ref, p.lines.length, p.include]), MISREAD.map((isin) => [ref(isin), 0, true]));
     assert.deepEqual(held[0].notes, [
-      "Its line in Fictiva Mutual Fund, folio 91234567 / 12 may have been misread, so this import leaves it as it is: its units, cost and price stay. Check it against the PDF.",
+      "Its line in Fictiva Mutual Fund account (folio 91234567 / 12) may have been misread, so this import leaves it as it is: its units, cost and price stay. Check it against the PDF.",
     ]);
     // Units that can't be read no longer look sold.
     assert.ok(account.positions.every((p) => !p.notes.some((note) => note.startsWith("Not on the statement any more"))));
@@ -2866,7 +2930,7 @@ test("a fund in two folios, one misread, keeps the account's units and needs rev
   const holdings = readHoldings(data);
   const [listed, unread] = holdings.sources;
   const line = unread.misread[0];
-  const note = "Its line in Fictiva Mutual Fund, folio 91234568 / 34 may have been misread";
+  const note = "Its line in Fictiva Mutual Fund account (folio 91234568 / 34) may have been misread";
   const flexiOf = (account) => account.positions.find((p) => p.ref === ref(flexi.isin));
   // By the asset confirmed for it, or else by its ISIN, which the other folio's line prints.
   for (const confirmed of [asset, (h) => (h === line ? undefined : asset(h))]) {

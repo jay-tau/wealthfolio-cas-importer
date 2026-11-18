@@ -2909,3 +2909,64 @@ test("opened in a short frame, the bar's details fit below the sticky header and
   assert.equal(details.style.maxHeight, "40px");
   assert.equal(panel().tabIndex, 0);
 });
+
+test("Kept as they are lists the account's holdings that aren't on the statement, misread or asked about, with their units, account and note", async () => {
+  const fund = (isin) => ({ ...holding(isin), kind: "fund" });
+  // X goes to A, listing two funds and a line that may have been misread; Y isn't saved.
+  const x = { ...source("X", [fund("INFLISTED"), fund("INFNEW")]), misread: [fund("INFHELD")] };
+  const y = source("Y", [fund("INFOTHER")]);
+  const { run, props, api } = setup([x, y]);
+  props.accountChoices[sourceKey(y)] = LEFT_OUT;
+  props.fundChoices[holdingKey(x.misread[0])] = {
+    fund: { symbol: "INFHELD", exchangeMic: "XBOM", quoteCcy: "INR", name: "Example INFHELD", instrumentType: "MUTUALFUND", providerId: "YAHOO" },
+  };
+  // Listed and asked-about holdings have notes too, so neither exclusion can rely on a missing note.
+  const manual = new Set(["INFLISTED", "INFMISS", "OLD"]);
+  const held = { INFKEPT: "1250.5", INFLISTED: "2", INFMISS: "10", INFNONE: "7", INFHELD: "3", OLD: "4" };
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => Object.entries(held).map(([symbol, quantity]) => ({
+    holdingType: "security", quantity, localCurrency: "INR", costBasis: manual.has(symbol) ? { local: "400" } : null,
+    instrument: { id: `asset-${symbol}`, symbol, name: `Example ${symbol}`, quoteMode: manual.has(symbol) ? "MANUAL" : "MARKET" },
+  }));
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+  api.quotes = { getHistory: async () => [] };
+  const store = new Map();
+  api.storage.get = async (key) => store.get(key) ?? null;
+  api.storage.set = async (key, value) => store.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  // X added INFKEPT and INFMISS, which it no longer lists, and OLD for the fund it now lists as INFNEW; Y added INFKEPT too.
+  await saveImported(api.storage, x, "A", "2025-02-28", { "INFKEPT@XBOM": ["INFKEPT"], "INFMISS@XBOM": ["INFMISS"], "OLD@XBOM": ["INFNEW"] });
+  await saveImported(api.storage, y, "A", "2025-02-28", { "INFKEPT@XBOM": ["INFKEPT"] });
+  await run.flush();
+  const kept = () => {
+    const section = nodes(run.tree).find((n) => n.props?.["aria-labelledby"] === "review-kept-as-is");
+    return section && nodes(section).filter((n) => n.type === "li").map((li) => li.props.children.flat().map(textOf));
+  };
+  const keptINFKEPT = [
+    "Example INFKEPT · 1,250.500 units in A",
+    "An earlier import of X demat account added it, and X demat account no longer lists it. " +
+    "An earlier import of Y demat account, which this import leaves out, added it too, so it's kept. " +
+    "Correct its units in Wealthfolio after saving: they may include some that came from X demat account, and none are left if Y demat account no longer holds any.",
+  ];
+  const keptOLD = [
+    "Example OLD · 4.000 units in A",
+    "It's priced by hand and has no price on or before this date. If no included holding supplies the statement's price, Wealthfolio takes its average cost as its price on this date if you keep it.",
+  ];
+  // INFMISS is asked about, INFNONE has no note, INFHELD's line may have been misread, and OLD is
+  // kept until the user replaces it with INFNEW.
+  assert.deepEqual(kept(), [keptINFKEPT, keptOLD]);
+  const cards = () => nodes(run.tree).filter((n) => n.type?.name === "AskCard").map((n) => n.props);
+  assert.deepEqual(cards().map((c) => c.title), ["Example INFMISS isn't on this statement", "Example INFNEW is now matched to Example INFNEW (INFNEW · XBOM)"]);
+  // Set to zero, INFMISS is removed; replaced with INFNEW, OLD is too.
+  for (const card of cards()) {
+    card.other.onClick();
+    await run.flush();
+  }
+  assert.deepEqual(kept(), [keptINFKEPT]);
+  // Keeping OLD after all lists it again.
+  nodes(run.tree).filter((n) => n.type?.name === "AskAnswered").map((n) => n.props).at(-1).onChange();
+  await run.flush();
+  cards()[0].main.onClick();
+  await run.flush();
+  assert.deepEqual(kept(), [keptINFKEPT, keptOLD]);
+});

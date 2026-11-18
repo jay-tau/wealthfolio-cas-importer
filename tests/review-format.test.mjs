@@ -1,7 +1,7 @@
 // The Review screen's dates, units, amounts and the purchase cost a user types.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { exchangeOf, grouped, longDate, movements, ordinal, parseCost, rupees, shortDate, units } from "../src/lib/review-format.ts";
+import { exchangeOf, figure, grouped, longDate, movements, ordinal, parseCost, quantity, rupees, shortDate, units } from "../src/lib/review-format.ts";
 
 test("dates read as a day, a short month and a year", () => {
   assert.equal(longDate("2026-07-31"), "31 Jul 2026");
@@ -27,6 +27,21 @@ test("units and amounts are grouped the Indian way", () => {
   assert.equal(rupees("39999.99999999999999"), "₹40,000");
   assert.equal(rupees("1234.565"), "₹1,234.57");
   assert.equal(rupees("not a number"), "₹not a number");
+});
+
+test("a fund's or NPS scheme's quantity reads in units, a share's or bond's in shares or bonds", () => {
+  assert.equal(quantity("unit", "1500"), "1,500.000 units");
+  assert.equal(quantity("unit", "1"), "1.000 units");
+  assert.equal(quantity("share", "1500"), "1,500 shares");
+  assert.equal(quantity("share", "1"), "1 share");
+  assert.equal(quantity("share", "1.000"), "1.000 share");
+  assert.equal(quantity("bond", "2"), "2 bonds");
+  assert.equal(quantity("bond", "1"), "1 bond");
+  assert.equal(quantity("bond", "1.000"), "1.000 bond");
+  // As printed: a CDSL statement prints shares with decimals.
+  assert.equal(quantity("share", "200.000"), "200.000 shares");
+  assert.equal(figure("unit", "66"), "66.000");
+  assert.equal(figure("share", "1500"), "1,500");
 });
 
 test("a typed purchase cost is read only when the whole input is an amount", () => {
