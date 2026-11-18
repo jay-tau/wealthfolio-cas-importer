@@ -12,7 +12,113 @@ import { sha256 } from "./sha256.ts";
 type Storage = AddonContext["api"]["storage"];
 
 export const panKey = (pan: string) => `pan:${sha256(`cas-importer pan ${pan.trim().toUpperCase()}`)}`;
-export const folioKey = (folio: CasFolio) => `folio:${sha256(`cas-importer folio ${folio.amc}|${folio.folio}`)}`;
+
+/**
+ * Fund houses that were renamed, keeping their folios and folio numbers: each one's names as
+ * SEBI and the fund houses give them, the current one first. A
+ * merger isn't a rename, as the folios it brings in come from another fund house, so these leave out
+ * Baroda BNP Paribas (Baroda and BNP Paribas), HSBC (L&T), Sundaram (Principal) and LIC (IDBI).
+ */
+export const RENAMED_HOUSES: readonly (readonly string[])[] = [
+  ["360 ONE Mutual Fund", "IIFL Mutual Fund"],
+  ["Aditya Birla Sun Life Mutual Fund", "Birla Sun Life Mutual Fund"],
+  ["Bandhan Mutual Fund", "IDFC Mutual Fund"],
+  ["Bank of India Mutual Fund", "BOI AXA Mutual Fund"],
+  ["DSP Mutual Fund", "DSP BlackRock Mutual Fund"],
+  ["Groww Mutual Fund", "Indiabulls Mutual Fund"],
+  ["Invesco Mutual Fund", "Religare Invesco Mutual Fund"],
+  ["LIC Mutual Fund", "LIC Nomura Mutual Fund"],
+  ["Mahindra Manulife Mutual Fund", "Mahindra Mutual Fund"],
+  ["Navi Mutual Fund", "Essel Mutual Fund"],
+  ["Nippon India Mutual Fund", "Reliance Mutual Fund"],
+  ["PGIM India Mutual Fund", "DHFL Pramerica Mutual Fund"],
+  ["quant Mutual Fund", "Escorts Mutual Fund"],
+  ["Union Mutual Fund", "Union KBC Mutual Fund"],
+  ["WhiteOak Capital Mutual Fund", "YES Mutual Fund"],
+];
+const spelled = (name: string) => name.trim().replace(/\s+/g, " ").toLowerCase();
+/** A renamed fund house's names, whichever of them `amc` is, in any case and spacing. */
+const houseOf = (amc: string) => RENAMED_HOUSES.find((names) => names.some((name) => spelled(name) === spelled(amc)));
+const printedFolioKey = (amc: string, folio: string) => `folio:${sha256(`cas-importer folio ${amc}|${folio}`)}`;
+/**
+ * A folio's choices go by its fund house and number. A renamed fund house goes by its current name
+ * in `RENAMED_HOUSES`, whichever name the statement prints; any other by the name as printed, as no
+ * name it had before is known.
+ */
+export const folioKey = (folio: Pick<CasFolio, "amc" | "folio">) => printedFolioKey(houseOf(folio.amc)?.[0] ?? folio.amc, folio.folio);
+
+/** A key a folio's choice had before its fund house was known by its current name. */
+export interface FormerKey {
+  key: string;
+  /** The fund house's name in it. */
+  name: string;
+  /** The name as this statement prints it. */
+  printed: boolean;
+}
+/**
+ * The keys of a renamed fund house's folio other than `folioKey`'s: its name as the statement prints
+ * it, and its former names, each spelled as in `RENAMED_HOUSES`.
+ */
+export function formerFolioKeys(folio: Pick<CasFolio, "amc" | "folio">): FormerKey[] {
+  const names = houseOf(folio.amc);
+  if (!names) return [];
+  return [...new Set([folio.amc, ...names.slice(1)])]
+    .filter((name) => name !== names[0])
+    .map((name) => ({ key: printedFolioKey(name, folio.folio), name, printed: name === folio.amc }));
+}
+
+/** A folio's choice found under its fund house's other names. */
+export interface Renamed {
+  /** The other names' keys with a choice, forgotten once the folio's key has the choice. */
+  keys: string[];
+  /** The former name the choice was found under, when neither the folio's key nor the printed name had it. */
+  from?: string;
+  /** Different choices: each, with the fund house's name it was found under, the folio's key's first. */
+  found?: { name: string; value: string }[];
+}
+
+/**
+ * The choices read for a detailed statement, by key, with those found under a renamed fund house's
+ * other names for each folio's account and bank account, in `renamed` by the folio's key or its bank
+ * key. One choice goes under the folio's key; different ones go to none, as the user chooses again.
+ */
+export function settleRenamed(folios: Pick<CasFolio, "amc" | "folio">[], read: Readonly<Record<string, string>>) {
+  const choices: Record<string, string> = { ...read };
+  const renamed: Record<string, Renamed> = {};
+  const formers = new Map<string, { current: string; keys: FormerKey[] }>();
+  for (const folio of folios) {
+    const keys = formerFolioKeys(folio);
+    if (!keys.length) continue;
+    const own = folioKey(folio);
+    // The account's keys, then the bank account's.
+    for (const [i, key] of [own, bankKey(own)].entries()) {
+      const former = formers.get(key) ?? { current: houseOf(folio.amc)![0], keys: [] };
+      for (const k of keys) {
+        const other = { ...k, key: i ? bankKey(k.key) : k.key };
+        const previous = former.keys.find((f) => f.key === other.key);
+        if (previous) previous.printed ||= other.printed;
+        else former.keys.push(other);
+      }
+      formers.set(key, former);
+    }
+  }
+  for (const { keys } of formers.values()) for (const { key } of keys) delete choices[key];
+  for (const [key, { current, keys }] of formers) {
+    const found = keys.filter((k) => read[k.key]);
+    if (!found.length) continue;
+    const values = [...(read[key] ? [{ name: current, value: read[key] }] : []), ...found.map((k) => ({ name: k.name, value: read[k.key] }))];
+    const at = found.map((k) => k.key);
+    if (new Set(values.map((v) => v.value)).size > 1) {
+      delete choices[key];
+      renamed[key] = { keys: at, found: values };
+    } else {
+      choices[key] = values[0].value;
+      renamed[key] = { keys: at, ...(!read[key] && !found.some((k) => k.printed) && { from: found[0].name }) };
+    }
+  }
+  return { choices, renamed };
+}
+
 /** The bank account for a PAN's or folio's cash, keyed by `panKey` or `folioKey`, or `NO_BANK`. */
 export const bankKey = (key: string) => `bank-${key}`;
 /** A folio's cash comes from and goes outside Wealthfolio, whatever its PAN's bank account. */

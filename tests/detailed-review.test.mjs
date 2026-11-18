@@ -197,6 +197,8 @@ function setup({ remembered, entries = ENTRIES, change = (data) => data } = {}) 
   return { run: active, props, api, keys, data, remembers, departures, imported, activities, profiles, logged };
 }
 const saveTo = (run) => find(run, "SaveToDetailed");
+/** The made-up statement's folio keys, before a review is set up. */
+const keys0 = () => ({ fictiva: choices.folioKey(fixture.folios[0]), testbridge: choices.folioKey(fixture.folios[1]) });
 /** The rare questions' open cards, and their answered lines. */
 const askCards = (run) => nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
 const askAnswers = (run) => nodes(run.tree).filter((node) => node.type?.name === "AskAnswered").map((node) => node.props);
@@ -795,6 +797,79 @@ test("choices are remembered on import, not before, so Use another file discards
   await run.flush();
   assert.equal(imported.length, 1);
   assert.deepEqual(remembers.map((r) => r.accounts), [[[choices.bankKey(keys.pan), "bank"]]]);
+});
+
+// #280: a folio's choices under its fund house's other names.
+test("a folio's choices that differ under its fund house's names ask on Save to before importing, with its box's folios open", async () => {
+  const { run, props, keys, remembers, imported } = setup({ entries: [] });
+  const bank = choices.bankKey(keys.fictiva);
+  const under = (a, b) => ({ under: [{ name: "Bandhan Mutual Fund", choice: a }, { name: "IDFC Mutual Fund", choice: b }] });
+  props.unavailable = { [keys.fictiva]: under("Other funds", "Don't import"), [bank]: under("Savings", "None") };
+  await run.flush();
+  assert.deepEqual([saveTo(run).values[keys.fictiva], saveTo(run).values[bank]], [null, null]);
+  assert.deepEqual(saveTo(run).ignored[keys.fictiva], props.unavailable[keys.fictiva]);
+  assert.equal(saveTo(run).open[keys.pan], true);
+  assert.deepEqual(footer(run), ["1 question left: the account choice before importing."]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  // Same as above and None are choices here, and are remembered as such.
+  saveTo(run).onChange(keys.fictiva, "");
+  await run.flush();
+  assert.equal(saveTo(run).ignored[keys.fictiva], undefined);
+  assert.deepEqual(footer(run), ["1 question left: the account choice before importing."]);
+  saveTo(run).onChange(bank, "");
+  await run.flush();
+  assert.equal(find(run, "Footer").action.disabled, false);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 1);
+  assert.deepEqual(remembers.map((r) => r.accounts), [[[keys.fictiva, ""], [bank, ""]]]);
+});
+
+test("a folio's choice found under its fund house's former name is used and says so, with its box's folios open", async () => {
+  const { run, props, keys } = setup({ entries: [], remembered: { [choices.panKey("ABCDE1234F")]: "mf", [keys0().fictiva]: "other" } });
+  props.formerNames = { [keys.fictiva]: "IDFC Mutual Fund" };
+  await run.flush();
+  assert.equal(saveTo(run).values[keys.fictiva], "other");
+  assert.deepEqual(saveTo(run).formerNames, { [keys.fictiva]: "IDFC Mutual Fund" });
+  assert.equal(saveTo(run).open[keys.pan], true);
+  assert.equal(find(run, "Footer").action.disabled, false);
+  // Another choice is the user's own.
+  saveTo(run).onChange(keys.fictiva, "mf");
+  await run.flush();
+  assert.deepEqual(saveTo(run).formerNames, {});
+  // Its box's folios stay open until closed.
+  saveTo(run).onOpen(keys.pan, false);
+  await run.flush();
+  assert.equal(saveTo(run).open[keys.pan], false);
+});
+
+test("a renamed folio without a PAN shows its recovered no-bank choice and requires answers to disputes", async () => {
+  const own = choices.folioKey({ ...fixture.folios[0], amc: "Bandhan Mutual Fund" });
+  const bank = choices.bankKey(own);
+  const { run, props, remembers } = setup({ entries: [], remembered: { [own]: "other", [bank]: choices.NO_BANK }, change(data) {
+    data.folios = [data.folios[0]];
+    data.folios[0].amc = "Bandhan Mutual Fund";
+    data.folios[0].PAN = "";
+    return data;
+  } });
+  props.formerNames = { [own]: "IDFC Mutual Fund", [bank]: "IDFC Mutual Fund" };
+  await run.flush();
+  assert.equal(saveTo(run).boxes[0].key, own);
+  assert.equal(saveTo(run).boxes[0].pan, false);
+  assert.deepEqual([saveTo(run).values[own], saveTo(run).values[bank]], ["other", ""]);
+  assert.deepEqual(saveTo(run).formerNames, props.formerNames);
+  const under = { under: [{ name: "Bandhan Mutual Fund", choice: "Other funds" }, { name: "IDFC Mutual Fund", choice: "Savings" }] };
+  run.update({ accountChoices: {}, formerNames: {}, unavailable: { [own]: under, [bank]: under } });
+  await run.flush();
+  assert.deepEqual([saveTo(run).values[own], saveTo(run).values[bank]], [null, null]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  saveTo(run).onChange(own, "mf");
+  saveTo(run).onChange(bank, "");
+  await run.flush();
+  assert.equal(find(run, "Footer").action.disabled, false);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(remembers.map((r) => r.accounts), [[[own, "mf"], [bank, ""]]]);
 });
 
 test("a failed remembered asset can be changed without a prepared plan", async () => {

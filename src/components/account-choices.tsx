@@ -5,16 +5,25 @@ import { LinkButton } from "./review/parts";
 
 /**
  * A remembered account that can't be chosen now: its name, unless Wealthfolio no longer lists it,
- * and whether it's hidden or archived there. Without either state, it tracks the wrong thing.
+ * and whether it's hidden or archived there. Without either state, it tracks the wrong thing. With
+ * `under`, a folio's different choices under its fund house's names: each choice as the screen names
+ * it, with the name.
  */
 export interface Ignored {
   name?: string;
   state?: string;
+  under?: { name: string; choice: string }[];
 }
+
+const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
 
 /** Why a remembered account is ignored. `mode` finishes "which …" for one that tracks the wrong thing. */
 export function ChooseAgain({ ignored, mode }: { ignored: Ignored | undefined; mode: string }) {
   if (!ignored) return null;
+  if (ignored.under) {
+    const choices = list(ignored.under.map(({ name, choice }) => `${choice} for ${name}`));
+    return <p className="text-muted-foreground w-full text-sm">Chosen before under this fund house's names: {choices}, so choose again.</p>;
+  }
   const account =
     ignored.name === undefined
       ? "an account that's no longer available"

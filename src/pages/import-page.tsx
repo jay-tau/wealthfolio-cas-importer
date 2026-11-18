@@ -10,7 +10,9 @@ import { AmfiBanner, useAmfiCheck } from "../components/amfi-banner";
 import { type FundChoice, fundsOf } from "../components/fund-choices";
 import { StatementForm } from "../components/statement-form";
 import { accountLabels } from "../lib/account-labels";
-import { bankKey, folioKey, forgetFund, investorKey, LEFT_OUT, NO_BANK, panKey, readFund, saveFund, sourceKey } from "../lib/choices";
+import {
+  bankKey, folioKey, forgetFund, formerFolioKeys, investorKey, LEFT_OUT, NO_BANK, panKey, readFund, type Renamed, saveFund, settleRenamed, sourceKey,
+} from "../lib/choices";
 import { focusDropped } from "../lib/focus";
 import { DetailedImport } from "./detailed-import";
 import { HoldingsImport, holdingItems } from "./holdings-import";
@@ -62,6 +64,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   // readable name.
   const data = useMemo(() => detailed && withoutClosed(withReadableNames(detailed)), [detailed]);
   const [remembered, setRemembered] = useState<AccountChoices | null>(null);
+  // A detailed statement's folio choices also found under their fund houses' other names, by key.
+  const renamed = useRef<Record<string, Renamed>>({});
   const [fundChoices, setFundChoices] = useState<Record<string, FundChoice | undefined>>({});
   // Storage requests can finish out of order; rereads must wait for these writes too.
   const choiceWrites = useRef(Promise.resolve());
@@ -75,15 +79,29 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   );
   // How the review names each account: told apart from another account of the same name.
   const labels = allAccounts && accountLabels(allAccounts);
+  const stateOf = (account: Account) => [!account.isActive && "hidden", account.isArchived && "archived"].filter(Boolean).join(" and ");
   const unavailable: Record<string, Ignored> = Object.fromEntries(
     Object.entries(remembered ?? {}).flatMap(([key, id]) => {
       // Empty goes with the PAN or the statement.
       if (!allAccounts || !id || key in accountChoices) return [];
       const account = allAccounts.find((a) => a.id === id);
-      const state = account && [!account.isActive && "hidden", account.isArchived && "archived"].filter(Boolean).join(" and ");
-      return [[key, account ? { name: labels?.get(account.id)?.text ?? account.name, state } : {}]];
+      return [[key, account ? { name: labels?.get(account.id)?.text ?? account.name, state: stateOf(account) } : {}]];
     }),
   );
+  // A folio's choices that differ under its fund house's names are ignored too, and the user chooses again.
+  const choiceName = (value: string) => {
+    if (value === LEFT_OUT) return "Don't import";
+    if (value === NO_BANK) return "None";
+    const account = allAccounts?.find((a) => a.id === value);
+    if (!account) return "an account that's no longer available";
+    const state = stateOf(account);
+    return `${labels?.get(account.id)?.text ?? account.name}${state ? ` (${state} in Wealthfolio)` : ""}`;
+  };
+  for (const [key, { found }] of Object.entries(renamed.current)) {
+    if (found) unavailable[key] = { under: found.map(({ name, value }) => ({ name, choice: choiceName(value) })) };
+  }
+  // Where a choice was found under a fund house's former name, by key.
+  const formerNames = Object.fromEntries(Object.entries(renamed.current).flatMap(([key, { from }]) => (from ? [[key, from]] : [])));
 
   const clear = () => {
     setStatement(null);
@@ -96,10 +114,12 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     let keys: string[];
     let fundKeys: string[];
     let held: Holdings | null = null;
+    let folios: CasData["folios"] = [];
     const isDetailed = !isDepository(full) && full.cas_type === "DETAILED";
     if (isDetailed) {
       const next = withoutClosed(full);
-      keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : [])]))];
+      folios = next.folios;
+      keys = [...new Set(next.folios.flatMap((f) => [folioKey(f), ...(f.PAN ? [panKey(f.PAN)] : []), ...formerFolioKeys(f).map((k) => k.key)]))];
       keys.push(...keys.map(bankKey));
       fundKeys = [...fundsOf(next).keys()];
     } else {
@@ -119,7 +139,10 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
         throw new CasError("accounts", `Couldn't load the accounts: ${String(e)}`);
       }),
       ...keys.map(async (key) => {
-        const id = await api.storage.get(key).catch(() => null);
+        const id = await api.storage.get(key).catch((e) => {
+          if (isDetailed) throw new CasError("accounts", `Couldn't read the remembered account choices: ${String(e)}`);
+          return null;
+        });
         if (id) choices[key] = id;
       }),
       ...fundKeys.map(async (key) => {
@@ -129,9 +152,12 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
         if (fund) funds[key] = { fund };
       }),
     ]);
+    // A renamed fund house's folios go by its current name: their choices under other names move there.
+    const settled = settleRenamed(folios, choices);
     setAllAccounts(loaded);
     setFundChoices(funds);
-    setRemembered(choices);
+    setRemembered(settled.choices);
+    renamed.current = settled.renamed;
     setHoldings(held);
     setStatement(full);
     setFileName(name);
@@ -139,9 +165,16 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   };
 
   const chooseAccount = (key: string, id: string) => {
+    // Once the folio's key has the choice, its copies under the fund house's other names go.
+    const former = renamed.current[key]?.keys ?? [];
     setRemembered((choices) => ({ ...choices, [key]: id }));
+    // Account creation can call the same render's onRemember again; each migration runs once.
+    delete renamed.current[key];
     choiceWrites.current = choiceWrites.current
-      .then(() => (id ? api.storage.set(key, id) : api.storage.delete(key)))
+      .then(async () => {
+        await (id ? api.storage.set(key, id) : api.storage.delete(key));
+        for (const other of former) await api.storage.delete(other);
+      })
       .catch(() => api.toast.error("Couldn't remember the account."));
   };
 
@@ -230,8 +263,13 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
               visit={location}
               busy={busy}
               setBusy={setBusy}
+              formerNames={formerNames}
               onRemember={({ accounts: picked, funds }) => {
                 for (const [key, value] of picked) chooseAccount(key, value);
+                // A choice found only under a fund house's other name goes under the folio's key.
+                for (const key of Object.keys(renamed.current)) {
+                  if (remembered?.[key] && !picked.some(([k]) => k === key)) chooseAccount(key, remembered[key]);
+                }
                 for (const [key, choice] of funds) chooseFund(key, choice, true);
               }}
               onCreated={created}
