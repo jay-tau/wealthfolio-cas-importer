@@ -252,6 +252,7 @@ export function QuestionCard({
   item,
   label,
   units,
+  where = item.where,
   search,
   searches,
   base,
@@ -266,6 +267,8 @@ export function QuestionCard({
   skip?: string;
   /** The statement's units, already grouped, with their noun: "1,000.000 units", "40 shares". */
   units: string;
+  /** Where the statement lists those units, when it's more than one place: the item's by default. */
+  where?: string;
   search: ItemSearch;
   searches: HoldingSearches;
   base: string;
@@ -285,7 +288,7 @@ export function QuestionCard({
         <span className="text-muted-foreground">
           {plan?.plan && ` · ${plan.plan} plan`}
           {plan?.option && ` · ${plan.option}`} · {units}
-          {item.where && ` · ${item.where}`}
+          {where && ` · ${where}`}
         </span>
       </p>
       {reason && <p className="text-muted-foreground text-sm">{reason}</p>}

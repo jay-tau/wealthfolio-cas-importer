@@ -245,7 +245,7 @@ interface Ask {
   warn?: boolean;
   /** The fund it's about, for a fund whose rows don't add up. */
   fundKey?: string;
-  /** Its folio, when the same fund's rows don't add up in another folio too. */
+  /** Its folio, when another imported folio lists a fund the screen names the same. */
   folio?: string;
   set: (answer: boolean | undefined) => void;
 }
@@ -487,6 +487,19 @@ export function DetailedImport({
   const foliosOf = (key: string) => data.folios.filter((f) => f.schemes.some((s) => fundKey(s) === key));
   const fundNameOf = (key: string) => shownName(itemOf.get(key)!, fundOf(key));
   const included = (folio: CasFolio) => folioAccount(folio) !== LEFT_OUT;
+  /**
+   * A fund's units on the statement in the folios imported, and how many folios those are where it's
+   * in more than one: "8.053 units", "in 1 of its 2 folios".
+   */
+  const onStatement = (key: string) => {
+    const all = foliosOf(key);
+    const imported = all.filter(included);
+    const total = imported.flatMap((f) => f.schemes.filter((s) => fundKey(s) === key)).reduce((sum, s) => add(sum, dec(s.close)), dec("0"));
+    return {
+      units: `${units(format(total))} units`,
+      where: all.length < 2 ? undefined : imported.length < all.length ? `in ${imported.length} of its ${all.length} folios` : `in ${all.length} folios`,
+    };
+  };
 
   // Funds that need an answer: in a folio that's imported, or whose account isn't chosen yet, and with
   // no fund confirmed.
@@ -986,10 +999,11 @@ export function DetailedImport({
   });
   const unbalancedAsks: Ask[] = unbalancedFunds.map(({ warning: w, scheme, fund }) => {
     const key = schemeKey(w.folio, w.scheme);
-    const twice = unbalancedFunds.some((other) => other.warning.folio !== w.folio && other.fund === fund);
+    // Skipping it leaves out only this folio's rows, so while another imported folio lists a fund the
+    // screen names the same, its heading, buttons, answered line, the bar and Not included name the folio.
+    const twice = data.folios.some((f) => f.folio !== w.folio && included(f) && f.schemes.some((s) => fundNameOf(fundKey(s)) === fund));
     const added = units(w.units?.added ?? "");
     const closing = units(w.units?.closing ?? "");
-    // In two folios, its heading, buttons, answered line and the bar name the folio.
     const which = twice ? `${fund}, folio ${w.folio}` : fund;
     return {
       id: `unbalanced|${key}`,
@@ -2424,8 +2438,7 @@ export function DetailedImport({
                       item={item}
                       label={labelOf.get(item.key)!}
                       skip="fund"
-                      units={`${units(format(foliosOf(item.key).filter(included).flatMap((f) => f.schemes.filter((s) => fundKey(s) === item.key))
-                        .reduce((total, s) => add(total, dec(s.close)), dec("0"))))} units`}
+                      {...onStatement(item.key)}
                       search={searches.get(item.key)}
                       searches={searches}
                       base={ids.picker(item.key)}
