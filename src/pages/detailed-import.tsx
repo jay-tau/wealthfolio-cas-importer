@@ -7,9 +7,9 @@ import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, sub } from "../
 import { type Mapping, mapStatement } from "../cas/mapping";
 import {
   bankCandidates,
+  bankDay,
   bankMatches,
   closingUnits,
-  day,
   engineTimeZone,
   fundRef,
   fundRefs,
@@ -110,6 +110,8 @@ interface Imported {
   recheck: ReadonlySet<Part>;
   closing: ClosingCheck;
   links: BankLink[];
+  /** The review's timezone, from `engineTimeZone`: each bank entry is on its `bankDay` there. */
+  timeZone: string;
 }
 
 const EMPTY: ImportActivitiesResult = {
@@ -658,7 +660,7 @@ export function DetailedImport({
     const checked = rows.map((row) => (isProposed(row.accountId) ? { ...row, isValid: true } : checkedKnown[at++]));
     const plan = planImport(mapping, existing, checked, funds, timeZone);
     // A bank transfer already linked to another can't be used.
-    const candidates = [...new Map(plan.flatMap((t) => bankCandidates(t, existing)).map((a) => [a.id, a])).values()];
+    const candidates = [...new Map(plan.flatMap((t) => bankCandidates(t, existing, timeZone)).map((a) => [a.id, a])).values()];
     const linked = new Set<string>();
     await Promise.all(
       candidates.filter((a) => a.activityType.startsWith("TRANSFER")).map(async (a) => {
@@ -742,7 +744,7 @@ export function DetailedImport({
 
   // The bank entries that may be transactions' bank sides, one check per box and bank account, shown
   // under the bank choice that set it.
-  const matches = current ? bankMatches(sentPlan, current.existing, current.linked) : new Map<PlannedTransaction, ActivityDetails>();
+  const matches = current ? bankMatches(sentPlan, current.existing, current.linked, current.timeZone) : new Map<PlannedTransaction, ActivityDetails>();
   const pairs = current
     ? bankPairs({
         transactions: sentPlan.filter((t) => t.transaction.bank),
@@ -751,6 +753,7 @@ export function DetailedImport({
         linked: current.linked,
         facts: current.facts,
         amcOf: (t) => folioOfTransaction.get(t.transaction)?.amc ?? "",
+        timeZone: current.timeZone,
       })
     : [];
   const checks: BankCheckModel[] = [];
@@ -1682,7 +1685,7 @@ export function DetailedImport({
    * Wealthfolio didn't import. One Wealthfolio refuses stays out, with its message. `duplicates` are
    * those of an import Wealthfolio refused because it has some of it now, saved since its check.
    */
-  const sendParts = async (parts: Part[], made: Account[], remembered: [string, string][], only?: string) => {
+  const sendParts = async (parts: Part[], made: Account[], remembered: [string, string][], timeZone: string, only?: string) => {
     const missing = await createAccounts([...new Set(parts.flatMap(waitsFor))].filter((a) => !only || a === only), made, remembered);
     const held = parts.filter((p) => waitsFor(p).length > 0);
     let ready = parts.filter((p) => !held.includes(p));
@@ -1772,9 +1775,10 @@ export function DetailedImport({
       links.push({
         transaction: p.t,
         bankRow: p.entry!.row,
+        day: bankDay(p.entry!.row, p.t, timeZone),
         facts: p.entry!.facts,
         ...(ok
-          ? await reuseBankEntry(api, transactionInCreated(p.t), p.entry!.row, p.entry!.facts)
+          ? await reuseBankEntry(api, transactionInCreated(p.t), p.entry!.row, p.entry!.facts, timeZone)
           : { error: "The trade wasn't imported, so the bank's entry was left as it is.", stage: "trade" as const, changes: [], warnings: [] }),
       });
     }
@@ -1854,7 +1858,7 @@ export function DetailedImport({
       const shownFacts = new Map([...approved].map(([entryId, shown]) => [entryId, shown.facts]));
       let checked: Awaited<ReturnType<typeof recheckEntries>>;
       try {
-        checked = await recheckEntries(api, chosen, shownFacts, accountName);
+        checked = await recheckEntries(api, chosen, shownFacts, accountName, current.timeZone);
       } catch (e) {
         api.logger.error(`Couldn't read the bank entries chosen again: ${String(e)}`);
         setError(RECHECK_FAILED);
@@ -1896,7 +1900,7 @@ export function DetailedImport({
       }
       reviewedRef.current = { target, groups, fundsIn, pointing };
 
-      const run = await sendParts(parts, made, nowRemembered);
+      const run = await sendParts(parts, made, nowRemembered, current.timeZone);
       if (run.duplicates.length) {
         // Nothing went in, but Wealthfolio has some of it now, saved since its check. The plan is
         // worked out again from fresh reads, as Try again does, before another import: what's there
@@ -1914,7 +1918,7 @@ export function DetailedImport({
         return stay();
       }
       const state: Imported = {
-        result: run.result, sent: run.sent, parts, done: new Set(run.done), held: run.held, found: [], recheck: new Set(), links: run.links, closing: undefined,
+        result: run.result, sent: run.sent, parts, done: new Set(run.done), held: run.held, found: [], recheck: new Set(), links: run.links, closing: undefined, timeZone: current.timeZone,
       };
       setImported(state);
       await runCheck(state);
@@ -1984,7 +1988,7 @@ export function DetailedImport({
       if (linking.length) {
         let latest: Awaited<ReturnType<typeof recheckEntries>>;
         try {
-          latest = await recheckEntries(api, linking, new Map(sending.flatMap((p) => (p.entry ? [[p.entry.row.id, p.entry.facts] as const] : []))), accountName);
+          latest = await recheckEntries(api, linking, new Map(sending.flatMap((p) => (p.entry ? [[p.entry.row.id, p.entry.facts] as const] : []))), accountName, state.timeZone);
         } catch (e) {
           api.logger.error(`Couldn't read the bank entries chosen again: ${String(e)}`);
           setError("We couldn't check the bank entries you chose again, so nothing more was imported. Try again.");
@@ -1994,8 +1998,12 @@ export function DetailedImport({
           setError("A bank entry you chose changed since the import, so nothing more was imported. Read the statement again to review it.");
           return;
         }
+        for (const p of sending.filter((p) => p.entry)) {
+          const row = latest.current.get(p.t)!;
+          p.entry = { row, facts: latest.facts.get(row.id)! };
+        }
       }
-      const run = await sendParts(sending, made, remembered, key);
+      const run = await sendParts(sending, made, remembered, state.timeZone, key);
       const recheck = new Set([...state.recheck].filter((p) => !unchecked.includes(p)));
       let refused = "";
       if (run.duplicates.length) {
@@ -2061,8 +2069,8 @@ export function DetailedImport({
       setError("");
       const t = transactionInCreated(link.transaction);
       const from = { fundId: link.fundId, converted: link.converted };
-      const checked = await recheckLink(api, t, link.bankRow, link.facts, from);
-      const again = await reuseBankEntry(api, t, checked.row, checked.facts,
+      const checked = await recheckLink(api, t, link.bankRow, link.facts, state.timeZone, from);
+      const again = await reuseBankEntry(api, t, checked.row, checked.facts, state.timeZone,
         { ...from, converted: checked.converted, linked: checked.linked },
         checked.converted && !from.converted ? link.facts : checked.facts);
       if (again.error) api.logger.error(again.error);
@@ -2070,7 +2078,7 @@ export function DetailedImport({
       setImported({ ...(latestImported.current ?? state), links: (latestImported.current ?? state).links.map((l) => (l === link ? next : l)) });
       api.query.invalidateQueries([QueryKeys.ACTIVITY_DATA]);
       api.query.invalidateQueries([QueryKeys.ACTIVITIES]);
-      announce(next.stage ? `Still not done. ${linkWords(next)}` : `The bank entry of ${longDate(day(link.bankRow.date))} is linked.`);
+      announce(next.stage ? `Still not done. ${linkWords(next)}` : `The bank entry of ${longDate(link.day)} is linked.`);
     } catch (e) {
       api.logger.error(`Couldn't resume the bank link: ${String(e)}`);
       setError(explanation(e) || "We couldn't check the bank entries again. Nothing more was changed. Try again.");
@@ -2184,7 +2192,7 @@ export function DetailedImport({
         <ImportResult
           result={imported.result}
           sent={imported.sent}
-          found={imported.found.map((p) => ({ transaction: p.t, bankRow: p.entry?.row }))}
+          found={imported.found.map((p) => ({ transaction: p.t, entryDay: p.entry && bankDay(p.entry.row, p.t, imported.timeZone) }))}
           total={imported.parts.length}
           imported={imported.done.size}
           outcomes={outcomesOf(imported)}

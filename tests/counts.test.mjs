@@ -928,9 +928,9 @@ test("the import result names each bank entry the add-on changed, and says how f
   const bankRow = (id, activityType, comment) =>
     ({ id, accountId: "bank-1", activityType, amount: "25000.00", date: "2023-05-04T00:00:00+00:00", comment });
   const links = [
-    { transaction, bankRow: bankRow("a", "WITHDRAWAL", "NEFT"), facts: {}, changes: ["Its split across 2 spending categories was deleted."], warnings: ["Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio."] },
-    { transaction, bankRow: bankRow("b", "TRANSFER_OUT"), facts: {}, changes: [], warnings: [] },
-    { transaction, bankRow: bankRow("c", "WITHDRAWAL"), facts: {}, error: "Added the fund account's transfer, but couldn't link it.", stage: "link", changes: [], warnings: ["Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio."] },
+    { transaction, bankRow: bankRow("a", "WITHDRAWAL", "NEFT"), day: "2023-05-04", facts: {}, changes: ["Its split across 2 spending categories was deleted."], warnings: ["Couldn't remove its spending category: Error: refused. A transfer isn't spending: remove it in Wealthfolio."] },
+    { transaction, bankRow: bankRow("b", "TRANSFER_OUT"), day: "2023-05-04", facts: {}, changes: [], warnings: [] },
+    { transaction, bankRow: bankRow("c", "WITHDRAWAL"), day: "2023-05-04", facts: {}, error: "Added the fund account's transfer, but couldn't link it.", stage: "link", changes: [], warnings: ["Its spending category wasn't removed because linking failed. After linking the transfers, remove it in Wealthfolio."] },
   ];
   const shown = importResult({ total: 3, outcomes: [outcome({ imported: 3 })], links, fundName, accountName: (id) => (id === "bank-1" ? "Savings" : "?") });
   assert.match(shown, / ✓ Linked 2 of 3 bank entries you chose with their transactions\. /);
@@ -954,7 +954,7 @@ test("the import result names each bank entry the add-on changed, and says how f
   assert.ok(!failedAt("exists").includes("Try again"));
   assert.ok(!failedAt("exists").includes("wasn't added"));
   // A transaction Wealthfolio now has all or part of, saved elsewhere while an import ran, says what to do, with its bank entry if one was chosen.
-  const found = importResult({ found: [{ transaction }, { transaction, bankRow: bankRow("d", "WITHDRAWAL") }], fundName });
+  const found = importResult({ found: [{ transaction }, { transaction, entryDay: "2023-05-04" }], fundName });
   assert.ok(found.includes(
     " ✗ Purchase of Fictiva Liquid Fund on 5 May 2023: Wealthfolio now has all or part of it, saved elsewhere while the import ran, so it wasn't imported again. Check it in Wealthfolio, then read the statement again to import anything missing. " +
       "✗ Purchase of Fictiva Liquid Fund on 5 May 2023: Wealthfolio now has all or part of it, saved elsewhere while the import ran, so it wasn't imported again, nor linked with the bank entry of 4 May 2023. Check it in Wealthfolio, then read the statement again to import anything missing. ",

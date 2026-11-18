@@ -69,12 +69,12 @@ const transactionName = (t: PlannedTransaction, fundName: FundName, place: Place
 const capital = (words: string) => `${words.slice(0, 1).toUpperCase()}${words.slice(1)}`;
 /** "Purchase (1 of 2) of Fictiva Liquid Fund on 5 May 2023" */
 const transactionTitle = (t: PlannedTransaction, fundName: FundName, place: Place) => capital(transactionWords(t, fundName, place));
-/** "withdrawal of ₹25,000 on 4 May 2023": a bank entry's amount and day as its review card gives them. */
-const movement = (entry: ActivityDetails) =>
-  `${label(entry)}${entry.amount ? ` of ${rupees(String(entry.amount))}` : ""} on ${longDate(day(entry.date))}`;
+/** "withdrawal of ₹25,000 on 4 May 2023": a bank entry's amount and day (its `bankDay`) as its review card gives them. */
+const movement = (entry: ActivityDetails, on: string) =>
+  `${label(entry)}${entry.amount ? ` of ${rupees(String(entry.amount))}` : ""} on ${longDate(on)}`;
 /** "The withdrawal of ₹25,000 on 4 May 2023 in Savings (NEFT FICTIVA MF)" */
-const entryName = (entry: ActivityDetails, accountName: string) =>
-  `The ${movement(entry)} in ${accountName}${entry.comment ? ` (${entry.comment})` : ""}`;
+const entryName = (entry: ActivityDetails, on: string, accountName: string) =>
+  `The ${movement(entry, on)} in ${accountName}${entry.comment ? ` (${entry.comment})` : ""}`;
 const list = (names: string[]) =>
   names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "";
 
@@ -100,29 +100,31 @@ export interface BankLink extends Reused {
   transaction: PlannedTransaction;
   /** As read right before the import. */
   bankRow: ActivityDetails;
+  /** Its `bankDay` then. */
+  day: string;
   /** What linking it changes, as read then, for a retry. */
   facts: EntryFacts;
 }
 
 /**
  * A transaction Wealthfolio has all or part of now, saved elsewhere while an import ran, so it isn't
- * sent again, with the bank entry chosen for it.
+ * sent again, with the day of the bank entry chosen for it: its `bankDay`, as the review showed it.
  */
 export interface FoundTransaction {
   transaction: PlannedTransaction;
-  bankRow?: ActivityDetails;
+  entryDay?: string;
 }
 
 /** What a transaction found in Wealthfolio after a refused import needs, as its line in the result says it. */
 export const foundLine = (f: FoundTransaction, fundName: FundName, place: Place) =>
   `${transactionTitle(f.transaction, fundName, place)}: Wealthfolio now has all or part of it, saved elsewhere while the import ran, so it wasn't imported again${
-    f.bankRow ? `, nor linked with the bank entry of ${longDate(day(f.bankRow.date))}` : ""
+    f.entryDay ? `, nor linked with the bank entry of ${longDate(f.entryDay)}` : ""
   }. Check it in Wealthfolio, then read the statement again to import anything missing.`;
 
 /** What changed in an entry the user chose, between the review and Import. */
 export function staleText(s: StaleEntry, accountName: (id: string) => string, fundName: FundName, place: Place) {
-  const then = `${entryName(s.before, accountName(s.before.accountId))}, chosen for ${transactionName(s.transaction, fundName, place)},`;
-  const now = s.after && `a ${movement(s.after)}`;
+  const then = `${entryName(s.before, s.beforeDay, accountName(s.before.accountId))}, chosen for ${transactionName(s.transaction, fundName, place)},`;
+  const now = s.after && `a ${movement(s.after, s.afterDay!)}`;
   const instead = `so the transaction now comes with a new ${label(s.transaction.transaction.bank!)}.`;
   const why = {
     gone: `is no longer in Wealthfolio, ${instead}`,
@@ -331,7 +333,7 @@ export function outcomeWords(a: ImportOutcome) {
 
 /** What happened to a bank entry the user chose, when using it failed part-way. */
 export function linkWords(l: BankLink) {
-  const when = longDate(day(l.bankRow.date));
+  const when = longDate(l.day);
   switch (l.stage) {
     case "trade":
       return `The trade wasn't imported, so the bank entry of ${when} was left as it is.`;
@@ -651,7 +653,7 @@ export function ImportResult({
                   <WrapButton type="button" variant="outline" size="sm" onClick={() => onRetryLink(l)}>
                     Try again
                     <span className="sr-only">
-                      : link the bank entry of {longDate(day(l.bankRow.date))} with {transactionName(l.transaction, fundName, place)}
+                      : link the bank entry of {longDate(l.day)} with {transactionName(l.transaction, fundName, place)}
                     </span>
                   </WrapButton>
                 )}
@@ -667,7 +669,7 @@ export function ImportResult({
               <ul className="list-disc ps-4">
                 {changedLinks.map((l) => (
                   <li key={l.bankRow.id}>
-                    {entryName(l.bankRow, accountName(l.bankRow.accountId))}, for {transactionName(l.transaction, fundName, place)}:{" "}
+                    {entryName(l.bankRow, l.day, accountName(l.bankRow.accountId))}, for {transactionName(l.transaction, fundName, place)}:{" "}
                     {[...l.changes, ...l.warnings].join(" ")}
                   </li>
                 ))}

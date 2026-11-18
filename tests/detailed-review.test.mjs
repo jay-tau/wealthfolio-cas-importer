@@ -2461,6 +2461,84 @@ test("Import rechecks accepted bank details after a revisit, then accepts the di
   }
 });
 
+for (const [timeZone, date, sourceSystem, day] of [
+  // Made in Wealthfolio's form at 02:00 on 4 May in India, stored on 3 May in UTC.
+  ["Asia/Kolkata", "2023-05-03T20:30:00+00:00", "MANUAL", "4 May 2023"],
+  // Made in Wealthfolio's form at 21:00 on 4 May in Toronto, stored on 5 May in UTC.
+  ["America/Toronto", "2023-05-05T01:00:00+00:00", "MANUAL", "4 May 2023"],
+  // Imported from a bank statement at UTC midnight on 6 May, 20:00 on 5 May in Toronto.
+  ["America/Toronto", "2023-05-06T00:00:00+00:00", "CSV", "6 May 2023"],
+]) test(`a bank entry is offered, linked and retried on its day in Wealthfolio's timezone (${timeZone}, ${sourceSystem})`, async () => {
+  const withdrawal = { ...entry("neft", "WITHDRAWAL", "25000.00", "2023-05-04", "NEFT FICTIVA MF"), date, sourceSystem, isUserModified: false };
+  const { run, api, keys, activities } = setup({ entries: [withdrawal], remembered: withSavings() });
+  api.settings.get = async () => ({ timezone: timeZone });
+  const getAll = api.activities.getAll;
+  api.activities.getAll = async (id) => (await getAll(id)).map((row) => ({ ...row }));
+  api.activities.create = async (row) => {
+    const transfer = { ...row, id: "fund-transfer", date: row.activityDate, status: "POSTED", assetId: "", assetSymbol: "", sourceSystem: "MANUAL" };
+    activities.push(transfer);
+    return transfer;
+  };
+  // Changing an entry marks it as edited, as Wealthfolio does; linking fails the first time.
+  api.activities.update = async (row) => void Object.assign(activities.find((a) => a.id === row.id), { activityType: row.activityType, isUserModified: true });
+  let linkFails = true;
+  api.activities.linkTransfer = async () => { if (linkFails) throw new Error("made-up link failure"); };
+  api.spending.unassignCategory = async () => {};
+  await run.flush();
+  // One day from the purchase of 5 May: ticked.
+  const [node] = checkNodes(run, choices.bankKey(keys.pan));
+  const [pair] = node.props.check.pairs;
+  assert.deepEqual([pair.days, pair.strong, pair.reason], [1, true, "1 day apart · names the fund house"]);
+  assert.ok(shownPairs(node)[0].name.includes(`Savings: NEFT FICTIVA MF · ${day} · −₹25,000`), shownPairs(node)[0].name);
+  node.props.onLink();
+  await run.flush();
+  // Rechecks and retries keep the reviewed timezone even if the setting changes.
+  api.settings.get = async () => ({ timezone: "UTC" });
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(find(run, "ImportResult").links.map((l) => l.stage), ["link"]);
+  // A revisit invalidates current; the result and retry still have the review's day and timezone.
+  run.update({ visit: {} });
+  await run.flush();
+  const purchase = "the purchase of Fictiva Liquid Fund on 5 May 2023";
+  const failed = shownResult(run);
+  assert.ok(failed.lines.some((line) => line.includes(`the bank entry of ${day} wasn't linked.`)), failed.lines.join(" | "));
+  assert.ok(failed.buttons.includes(`Try again: link the bank entry of ${day} with ${purchase}`), failed.buttons.join(" | "));
+  // The retry finds the entry as this import changed it: a transfer, marked as edited, on the same day.
+  linkFails = false;
+  const result = find(run, "ImportResult");
+  result.onRetryLink(result.links[0]);
+  await run.flush();
+  assert.deepEqual(find(run, "ImportResult").links.map((l) => l.stage), [undefined]);
+  assert.equal(await announced(run), `The bank entry of ${day} is linked.`);
+  assert.ok(shownResult(run).lines.includes(
+    `The withdrawal of ₹25,000 on ${day} in Savings (NEFT FICTIVA MF), for ${purchase}: Any split it had across spending categories was deleted.`,
+  ), shownResult(run).lines.join(" | "));
+});
+
+test("a bank entry moved to another day in Wealthfolio's timezone, though not in UTC, stops the import", async () => {
+  // Made in Wealthfolio's form at 02:00 on 4 May in India, then moved to 23:00 on 3 May: 3 May in UTC both times.
+  const withdrawal = { ...entry("neft", "WITHDRAWAL", "25000.00", "2023-05-04", "NEFT FICTIVA MF"), date: "2023-05-03T20:30:00+00:00", sourceSystem: "MANUAL" };
+  const { run, api, keys, activities, imported } = setup({ entries: [withdrawal], remembered: withSavings() });
+  api.settings.get = async () => ({ timezone: "Asia/Kolkata" });
+  await run.flush();
+  checksUnder(run, choices.bankKey(keys.pan))[0].onLink();
+  await run.flush();
+  activities[0] = { ...activities[0], date: "2023-05-03T17:30:00+00:00", isUserModified: true };
+  let finish;
+  api.settings.get = () => new Promise((resolve) => { finish = () => resolve({ timezone: "UTC" }); });
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(typeof finish, "function", "the stale alert is checked while re-planning waits");
+  assert.equal(imported.length, 0);
+  const warning = textOf(run.tree);
+  assert.match(warning, /Nothing was imported: bank entries you chose changed/);
+  assert.ok(warning.includes("The withdrawal of ₹25,000 on 4 May 2023 in Savings (NEFT FICTIVA MF), chosen for the purchase of Fictiva Liquid Fund on 5 May 2023, " +
+    "is now a withdrawal of ₹25,000 on 3 May 2023."), warning);
+  finish();
+  await run.flush();
+});
+
 test("funds held back with no counted rows are not called Nothing new", async () => {
   for (const reason of ["earlier", "unbalanced"]) {
     const { run } = setup({ entries: [], change(data) {
@@ -3833,13 +3911,14 @@ for (const [why, error] of [
  * A result whose Testbridge folio's transactions wait for its new account, which Wealthfolio didn't
  * create, its dividend with the bank entry chosen for it; Wealthfolio creates the account now.
  */
-async function withHeldFolio() {
+async function withHeldFolio({ dividend = ENTRIES[0], timeZone = "UTC" } = {}) {
   const name = "Testbridge Mutual Fund folio 1040012345";
   const refuse = new Set([name]);
   const context = withNewAccounts({ accounts: [account("bank", "Savings")], refuse });
   const { run, props, api, keys, activities } = context;
   api.accounts.getAll = async () => props.allAccounts;
-  activities.push({ ...ENTRIES[0] });
+  api.settings.get = async () => ({ timezone: timeZone });
+  activities.push({ ...dividend });
   const changed = [];
   api.activities.create = async () => { changed.push("create"); return { id: "fund-transfer" }; };
   api.activities.update = async () => { changed.push("update"); };
@@ -3870,6 +3949,21 @@ async function withHeldFolio() {
 /** How many transactions `rows` are: a trade's cash and bank transfer share its row ID. */
 const transactionsIn = (rows) => new Set(rows.map((r) => r.sourceRecordId.split(":")[0])).size;
 
+test("an account's retry converts the freshly checked entry after a time edit within its local day", async () => {
+  // 02:00 and 06:00 on 28 Dec in India fall on different UTC days.
+  const dividend = { ...ENTRIES[0], date: "2023-12-27T20:30:00Z", sourceSystem: "MANUAL" };
+  const { run, api, key, activities } = await withHeldFolio({ dividend, timeZone: "Asia/Kolkata" });
+  const latest = { ...dividend, date: "2023-12-28T00:30:00Z", comment: "Edited TESTBRIDGE MF IDCW", isUserModified: true };
+  activities[activities.findIndex((a) => a.id === dividend.id)] = latest;
+  const updates = [];
+  api.activities.update = async (row) => { updates.push(row); };
+  api.settings.get = async () => ({ timezone: "UTC" });
+  find(run, "ImportResult").onRetryAccount(key);
+  await run.flush();
+  assert.deepEqual(updates.map((row) => [row.id, row.activityDate, row.comment]), [[latest.id, latest.date, latest.comment]]);
+  assert.equal(find(run, "ImportResult").outcomes.find((a) => a.key === key).state, "imported");
+});
+
 for (const message of ["Duplicate activity", "", "Network unavailable"]) {
   test(`an account's Try again refused as a duplicate checks Wealthfolio again, lists what it has and keeps the rest whole (message "${message}")`, async () => {
     const { run, api, imported, logged, name, key, changed, elsewhere, checked, status } = await withHeldFolio();
@@ -3898,7 +3992,7 @@ for (const message of ["Duplicate activity", "", "Network unavailable"]) {
     assert.ok(status().startsWith(said), status());
     let result = find(run, "ImportResult");
     // The dividend isn't sent again, nor its bank entry used: it's listed for the user to check.
-    assert.deepEqual(result.found.map((f) => [f.transaction.transaction.activity.activityType, f.bankRow?.id]), [["DIVIDEND", "dividend"]]);
+    assert.deepEqual(result.found.map((f) => [f.transaction.transaction.activity.activityType, f.entryDay]), [["DIVIDEND", "2023-12-28"]]);
     assert.deepEqual(changed, []);
     let tb = result.outcomes.find((a) => a.name === name);
     assert.deepEqual([tb.state, tb.waiting, tb.retryable], ["failed", total, true]);
@@ -3926,6 +4020,23 @@ for (const message of ["Duplicate activity", "", "Network unavailable"]) {
     assert.ok(question.includes("Stay") && question.includes("Leave and choose another file"), question);
   });
 }
+
+test("a transaction found after a duplicate refusal names its bank entry on its day in Wealthfolio's timezone", async () => {
+  // The dividend's bank entry, made in Wealthfolio's form at 02:00 on 28 Dec in India, is stored on 27 Dec in UTC.
+  const dividend = { ...ENTRIES[0], date: "2023-12-27T20:30:00+00:00", sourceSystem: "MANUAL", isUserModified: false };
+  const { run, api, key, elsewhere } = await withHeldFolio({ dividend, timeZone: "Asia/Kolkata" });
+  // The import's retries keep the review's timezone even if the setting changes.
+  api.settings.get = async () => ({ timezone: "UTC" });
+  api.activities.import = async (rows) => {
+    elsewhere.add(rows.find((r) => r.activityType === "DIVIDEND").sourceRecordId);
+    throw hostError("Duplicate activity", "DUPLICATE_ACTIVITY");
+  };
+  find(run, "ImportResult").onRetryAccount(key);
+  await run.flush();
+  assert.deepEqual(find(run, "ImportResult").found.map((f) => f.entryDay), ["2023-12-28"]);
+  const lines = shownResult(run).lines;
+  assert.ok(lines.some((line) => line.includes("so it wasn't imported again, nor linked with the bank entry of 28 Dec 2023.")), lines.join(" | "));
+});
 
 test("an account's duplicate refusal checks only the batch left after both validation steps, and can find it all", async () => {
   const { run, api, imported, name, key, elsewhere, checked, changed, status } = await withHeldFolio();

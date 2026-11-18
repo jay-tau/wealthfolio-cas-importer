@@ -10,7 +10,7 @@ import type {
 import { Explained } from "../lib/explained.ts";
 import { plural } from "../lib/plural.ts";
 import { cmp, dec } from "./decimal.ts";
-import { bankCandidates, day, linkBankRow, type LinkProgress, type LinkStage, type PlannedTransaction } from "./plan.ts";
+import { bankCandidates, bankDay, day, linkBankRow, type LinkProgress, type LinkStage, movedDay, type PlannedTransaction } from "./plan.ts";
 
 // What reusing a bank account's entry for a fund's cash changes in it besides its link, in
 // Wealthfolio 3.13.0. Changing a withdrawal or deposit into a transfer deletes its spending splits,
@@ -178,9 +178,14 @@ export interface StaleEntry {
   before: ActivityDetails;
   /** As read again; undefined when it's gone. */
   after?: ActivityDetails;
+  /** `before`'s `bankDay`, as the preview showed it. */
+  beforeDay: string;
+  /** `after`'s `bankDay`. */
+  afterDay?: string;
   /**
    * Gone, or no longer offered for the transaction: it no longer matches it, or it's linked with
-   * another transfer. Otherwise its type, amount or day changed.
+   * another transfer. Otherwise its type, amount or day changed: its date changed to another
+   * `bankDay`.
    */
   reason?: "gone" | "unmatched" | "linked" | "changed";
   /** Notes it needs now that the preview didn't show. */
@@ -188,16 +193,27 @@ export interface StaleEntry {
 }
 
 /**
+ * The entry as read again, with the date as the review read it when it's the same instant in another
+ * form: a bare date and its UTC midnight are, but `localDay` reads a bare date as that day anywhere.
+ */
+function keepReviewedDate(before: ActivityDetails, after: ActivityDetails | undefined) {
+  return after && after.date !== before.date && new Date(after.date).getTime() === new Date(before.date).getTime()
+    ? { ...after, date: before.date } : after;
+}
+
+/**
  * Reads again the entries ticked for transactions about to be imported, and what reusing each
  * changes, right before importing: Wealthfolio keeps the page loaded while the user changes
  * things elsewhere. `shown` has the facts the preview's notes said. `current` has each entry still
- * offered as just read, with its `facts`; `stale` what changed, if anything.
+ * offered as just read, with its `facts`; `stale` what changed, if anything. Each entry is on its
+ * `bankDay` in `timeZone`, the preview's.
  */
 export async function recheckEntries(
   api: Reads & { activities: Pick<Activities, "getAll" | "getTransferPair"> },
   chosen: [PlannedTransaction, ActivityDetails][],
   shown: ReadonlyMap<string, EntryFacts>,
   accountName: (id: string) => string,
+  timeZone: string,
 ) {
   const rows = new Map<string, ActivityDetails>();
   for (const accountId of new Set(chosen.map(([, entry]) => entry.accountId))) {
@@ -205,16 +221,18 @@ export async function recheckEntries(
   }
   const current = new Map<PlannedTransaction, ActivityDetails>();
   const stale: StaleEntry[] = [];
+  const days = (t: PlannedTransaction, before: ActivityDetails, after?: ActivityDetails) =>
+    ({ beforeDay: bankDay(before, t, timeZone), afterDay: after && bankDay(after, t, timeZone) });
   for (const [t, before] of chosen) {
-    const after = rows.get(before.id);
+    const after = keepReviewedDate(before, rows.get(before.id));
     let reason: StaleEntry["reason"];
     if (!after) reason = "gone";
-    else if (!bankCandidates(t, [after]).length) reason = "unmatched";
+    else if (!bankCandidates(t, [after], timeZone).length) reason = "unmatched";
     else if (after.activityType.startsWith("TRANSFER_") && (await api.activities.getTransferPair(after.id))) reason = "linked";
-    else if (after.activityType !== before.activityType || after.amount !== before.amount || day(after.date) !== day(before.date)) {
+    else if (after.activityType !== before.activityType || after.amount !== before.amount || movedDay(before, after, t, timeZone)) {
       reason = "changed";
     }
-    if (reason) stale.push({ transaction: t, before, after, reason, notes: [] });
+    if (reason) stale.push({ transaction: t, before, after, ...days(t, before, after), reason, notes: [] });
     if (after && (!reason || reason === "changed")) current.set(t, after);
   }
   const facts = await readEntryFacts(api, [...current.values()]);
@@ -225,27 +243,34 @@ export async function recheckEntries(
     if (!notes.length) continue;
     const known = stale.find((s) => s.transaction === t);
     if (known) known.notes = notes;
-    else stale.push({ transaction: t, before: chosen.find(([c]) => c === t)![1], after, notes });
+    else {
+      const before = chosen.find(([c]) => c === t)![1];
+      stale.push({ transaction: t, before, after, ...days(t, before, after), notes });
+    }
   }
   return { current, facts, stale };
 }
 
-/** Rechecks a failed link's entries and consent, allowing only the changes this import already made. */
+/**
+ * Rechecks a failed link's entries and consent, allowing only the changes this import already made.
+ * The entry is on its `bankDay` in `timeZone`, the preview's.
+ */
 export async function recheckLink(
   api: Reads & { activities: Pick<Activities, "getAll" | "getTransferPair"> },
   t: PlannedTransaction,
   before: ActivityDetails,
   shown: EntryFacts,
+  timeZone: string,
   from: LinkProgress = {},
 ) {
   try {
-    const row = (await api.activities.getAll(before.accountId)).find((r) => r.id === before.id);
+    const row = keepReviewedDate(before, (await api.activities.getAll(before.accountId)).find((r) => r.id === before.id));
     const bankType = t.transaction.bank!.activityType;
     // Once the fund account's transfer was added, the entry may have been changed into a transfer
     // before that answer was lost: then it's this import's change, and isn't made again.
     const convertedNow = !from.converted && !!from.fundId && before.activityType !== bankType && row?.activityType === bankType;
     const type = from.converted || convertedNow ? bankType : before.activityType;
-    if (!row || row.activityType !== type || row.amount !== before.amount || day(row.date) !== day(before.date) || !bankCandidates(t, [row]).length) {
+    if (!row || row.activityType !== type || row.amount !== before.amount || movedDay(before, row, t, timeZone) || !bankCandidates(t, [row], timeZone).length) {
       throw new Explained("The bank entry changed since the import. Finish linking it in Wealthfolio.");
     }
     const cash = t.transaction.cash!;
@@ -298,16 +323,18 @@ export interface Reused extends LinkProgress {
  * own conversion does. An entry that was already a transfer keeps its categories, as when
  * Wealthfolio links two transfers. Says what changed, also when a later step failed.
  * `before` keeps a recovered conversion's split and sync effects; category removal uses `facts`.
+ * `timeZone` is the preview's, for the day a failure names.
  */
 export async function reuseBankEntry(
   api: { activities: Pick<Activities, "create" | "update" | "linkTransfer">; spending: Pick<Spending, "unassignCategory">; logger: Pick<AddonContext["api"]["logger"], "warn"> },
   t: PlannedTransaction,
   entry: ActivityDetails,
   facts: EntryFacts,
+  timeZone: string,
   from: LinkProgress = {},
   before: EntryFacts = facts,
 ): Promise<Reused> {
-  const { error, stage, fundId, converted, linked } = await linkBankRow(api.activities, t, entry, from);
+  const { error, stage, fundId, converted, linked } = await linkBankRow(api.activities, t, entry, timeZone, from);
   const changes: string[] = [];
   const warnings: string[] = [];
   const known = facts.inSpending === false ? undefined : facts.spending;

@@ -5,8 +5,8 @@ import type { FundAsset, Mapping, MappedTransaction, RowOutcome } from "./mappin
 import {
   bankAmounts,
   bankCandidates,
+  bankDay,
   conversionSide,
-  day,
   type FundRefs,
   PAISA,
   fundRef,
@@ -348,6 +348,8 @@ export interface BankPair {
   key: string;
   t: PlannedTransaction;
   entry: ActivityDetails;
+  /** The entry's `bankDay`, as the pair shows it. */
+  day: string;
   /** Days between the entry and the transaction's bank row. */
   days: number;
   /** The entry's amount is the transaction's bank row's, to the paisa. */
@@ -370,10 +372,11 @@ const apart = (days: number) => (days === 0 ? "Same day" : days === 1 ? "1 day a
 /**
  * The bank entries for `transactions`, which the import sends, as the bank matches offer them: each
  * transaction's closest entry, each entry once (`matches`, from `bankMatches`), with the evidence
- * for each pair. A pair starts ticked only when the evidence is strong: the only candidate for the
- * transaction and the entry, the exact amount, at most a day apart, and a description that names the
- * fund house or mutual funds. An entry linking would change into a transfer is never ticked when it
- * has spending splits or they couldn't be checked.
+ * for each pair, each entry on its `bankDay` in `timeZone`. A pair starts ticked only when the
+ * evidence is strong: the only candidate for the transaction and the entry, the exact amount, at
+ * most a day apart, and a description that names the fund house or mutual funds. An entry linking
+ * would change into a transfer is never ticked when it has spending splits or they couldn't be
+ * checked.
  */
 export function bankPairs({
   transactions,
@@ -382,6 +385,7 @@ export function bankPairs({
   linked,
   facts,
   amcOf,
+  timeZone,
 }: {
   transactions: PlannedTransaction[];
   matches: ReadonlyMap<PlannedTransaction, ActivityDetails>;
@@ -389,15 +393,18 @@ export function bankPairs({
   linked: ReadonlySet<string>;
   facts: ReadonlyMap<string, EntryFacts>;
   amcOf: (t: PlannedTransaction) => string;
+  /** Wealthfolio's timezone setting, from `engineTimeZone`. */
+  timeZone: string;
 }): BankPair[] {
-  const candidates = new Map(transactions.map((t) => [t, bankCandidates(t, existing).filter((a) => !linked.has(a.id))]));
+  const candidates = new Map(transactions.map((t) => [t, bankCandidates(t, existing, timeZone).filter((a) => !linked.has(a.id))]));
   const fits = new Map<string, number>();
   for (const list of candidates.values()) for (const a of list) fits.set(a.id, (fits.get(a.id) ?? 0) + 1);
   return transactions.flatMap((t) => {
     const entry = matches.get(t);
     if (!entry) return [];
     const bank = t.transaction.bank!;
-    const days = daysApart(day(entry.date), String(bank.date));
+    const on = bankDay(entry, t, timeZone);
+    const days = daysApart(on, String(bank.date));
     // Candidates match to the paisa, the transfer's amount or the printed one with or without charges.
     const amounts = bankAmounts(t);
     const exact = entry.amount !== null && amounts.has(PAISA(entry.amount));
@@ -410,7 +417,7 @@ export function bankPairs({
     const strong = !otherEntries && !otherTransactions && exact && days <= 1 && !!said;
     return [{
       key: `${bank.sourceRecordId ?? t.transaction.activity.lineNumber}|${entry.id}`,
-      t, entry, days, exact, otherEntries, otherTransactions, said, splits, strong: strong && !splits,
+      t, entry, day: on, days, exact, otherEntries, otherTransactions, said, splits, strong: strong && !splits,
       reason: pairReason({ days, exact, otherEntries, otherTransactions, said, splits: splits ? (knownSplit ? "known" : "unknown") : undefined, strong, entry, amounts, paid: bank.activityType === "TRANSFER_OUT" }),
     }];
   });
