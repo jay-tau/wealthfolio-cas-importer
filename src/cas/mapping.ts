@@ -44,6 +44,8 @@ export interface MappingInput {
 }
 
 export interface MappedTransaction {
+  /** Its folio's fund house, which tells it from another fund house's folio with its number. */
+  amc: string;
   folio: string;
   scheme: string;
   /** The statement's transaction, then the charges in its `tax`. */
@@ -251,8 +253,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
   const number = (activity: ActivityImport) => ({ ...activity, lineNumber: ++lineNumber });
   for (const state of schemes) {
     const { folio, scheme, problem, unbalanced, units, entries } = state;
-    const names = { folio: folio.folio, scheme: scheme.scheme };
-    const where = { amc: folio.amc, ...names };
+    const where = { amc: folio.amc, folio: folio.folio, scheme: scheme.scheme };
     const warn = (rows: CasTransaction[], message: string, leftOut = true) =>
       mapping.warnings.push({ ...where, rows, message, leftOut });
     if (problem) {
@@ -293,7 +294,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
         const into = entry.partner;
         const [leaving, arriving] = [entry.rows, into.rows!];
         const transaction: MappedTransaction = {
-          ...names,
+          ...where,
           rows,
           activity: number(leaving.activity),
           arriving: { scheme: into.scheme.scheme.scheme, rows: [into.row, ...into.charges], activity: number(arriving.activity) },
@@ -307,7 +308,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
         if (entry.row.type === "GIFT_IN") continue;
         const into = entry.counterpart;
         const transaction: MappedTransaction = {
-          ...names,
+          ...where,
           rows,
           activity: number(entry.rows.activity),
           receiving: {
@@ -323,7 +324,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
       } else if (entry.rows) {
         const { activity, cash, bank, note, standIns } = entry.rows;
         const transaction: MappedTransaction = {
-          ...names,
+          ...where,
           rows,
           activity: number(activity),
           cash: cash && number(cash),

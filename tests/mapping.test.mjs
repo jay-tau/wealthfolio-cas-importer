@@ -60,6 +60,8 @@ const input = (overrides = {}) => ({
 const map = (data, overrides) => {
   const mapping = mapStatement(data, input(overrides));
   for (const transaction of mapping.transactions) checkRows(transaction);
+  // Each transaction, a gift's or merger's too, has its first row's folio's fund house.
+  for (const { folio, row, transaction } of mapping.outcomes) if (transaction?.rows[0] === row) assert.equal(transaction.amc, folio.amc);
   return mapping;
 };
 
