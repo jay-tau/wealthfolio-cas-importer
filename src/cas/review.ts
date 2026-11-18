@@ -125,7 +125,7 @@ export function fundGroups({
   }
   const unbalanced = mapping.warnings.filter((w) => w.unbalanced && !w.leftOut);
   for (const group of groups.values()) {
-    group.unbalanced = group.schemes.some(({ folio, scheme }) => unbalanced.some((w) => w.folio === folio.folio && w.scheme === scheme.scheme));
+    group.unbalanced = group.schemes.some(({ folio, scheme }) => unbalanced.some((w) => w.amc === folio.amc && w.folio === folio.folio && w.scheme === scheme.scheme));
     const held = unitsHeld(existing, group.accountId, group.asset, funds, (d) => d <= to, timeZone);
     group.after = held;
   }
