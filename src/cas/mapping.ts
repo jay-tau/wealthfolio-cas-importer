@@ -1,6 +1,7 @@
 import type { ActivityCharge, ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
 import { hasSegregatedMarker, readableName } from "../lib/fund-name.ts";
 import { plural } from "../lib/plural.ts";
+import { rupees } from "../lib/review-format.ts";
 import { sha256 } from "../lib/sha256.ts";
 import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, step, sub } from "./decimal.ts";
 import { fundRef } from "./plan.ts";
@@ -118,6 +119,8 @@ const CURRENCY = "INR";
 const PAISA = dec("0.01");
 const HALF = dec("0.5");
 const ZERO = dec("0");
+/** An amount in a message as the Review screen writes rupees: "₹1,02,310.50". What's imported keeps every decimal. */
+const shown = (amount: Dec) => rupees(format(amount));
 /** casparser's tolerance when it checks the rows against the printed unit balances. */
 const UNIT_TOLERANCE = dec("0.005");
 
@@ -453,7 +456,7 @@ function readScheme(folio: CasFolio, scheme: CasScheme, from: string, input: Map
     }
     for (const entry of candidates) {
       if (candidates.length > 1) {
-        entry.problem ??= `Can't tell which of the ${candidates.length} transactions on this day the ₹${charge.row.amount} ${rule.name} belongs to.`;
+        entry.problem ??= `Can't tell which of the ${candidates.length} transactions on this day the ${charge.row.amount === null ? "" : `${rupees(charge.row.amount)} `}${rule.name} belongs to.`;
       } else if (entry.charges.some((other) => other.type === charge.row.type)) {
         entry.problem ??= `More than one ${rule.name} row follows this transaction.`;
       }
@@ -637,7 +640,7 @@ function giftRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"]
       isExternal: true,
     },
     note: differs
-      ? `The statement's ₹${format(printed)} differs from ${quantity} units × NAV ${row.nav} by more than the units' rounding. It's imported at NAV ${row.nav}.`
+      ? `The statement's ${shown(printed)} differs from ${quantity} units × NAV ${row.nav} by more than the units' rounding. It's imported at NAV ${row.nav}.`
       : undefined,
   };
 }
@@ -723,7 +726,7 @@ function segregationRows(entry: Entry, target: SchemeTarget): NonNullable<Entry[
   }
   if (row.units === null || dec(row.units).n <= 0n) return "This row has no units, or units with the wrong sign.";
   if (row.amount !== null && !isZero(dec(row.amount))) {
-    return `This segregated portfolio row lists ₹${format(abs(dec(row.amount)))}, which units credited without a payment don't have, so it isn't imported. Check it against the PDF.`;
+    return `This segregated portfolio row lists ${shown(abs(dec(row.amount)))}, which units credited without a payment don't have, so it isn't imported. Check it against the PDF.`;
   }
   return {
     activity: { ...baseRow(entry, target), ...assetOf(entry, target), activityType: "BUY", quantity: row.units, amount: "0" },
@@ -903,7 +906,7 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
     charges = add(charges, dec(charge.amount));
     lines.push({ category: "tax", label: CHARGES[charge.type]!.label, amount: format(dec(charge.amount)) });
   }
-  const names = `₹${format(charges)} ${[...new Set(entry.charges.map((charge) => CHARGES[charge.type]!.name))].join(" and ")}`;
+  const names = `${shown(charges)} ${[...new Set(entry.charges.map((charge) => CHARGES[charge.type]!.name))].join(" and ")}`;
   const base = baseRow(entry, target);
   const tax = isZero(charges) ? {} : { tax: format(charges), charges: lines };
   const asset = assetOf(entry, target);
@@ -930,14 +933,14 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
     let gross = printed;
     if (!isZero(charges)) {
       // Printed before or after TDS: the dividend rate × the units held shows which.
-      const unsure = `Can't tell whether ₹${format(printed)} is before or after the ${names}`;
+      const unsure = `Can't tell whether ${shown(printed)} is before or after the ${names}`;
       if (row.dividend_rate === null) return `${unsure}: the dividend rate is missing.`;
       const worth = mul(dec(row.dividend_rate), unitsHeldBefore(entry.scheme.scheme, entry.index));
       const fits = [printed, add(printed, charges)].filter((amount) => cmp(abs(sub(worth, amount)), PAISA) <= 0);
       if (fits.length !== 1) {
         return fits.length
           ? `${unsure}: both fit the dividend rate and the units held.`
-          : `₹${format(printed)} doesn't match the dividend rate and the units held, with or without the ${names}.`;
+          : `${shown(printed)} doesn't match the dividend rate and the units held, with or without the ${names}.`;
       }
       gross = fits[0];
     }
@@ -967,7 +970,7 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
   const matches = [value, charged].some((amount) => cmp(abs(sub(printed, amount)), tolerance) <= 0);
   const note = matches
     ? undefined
-    : `The statement's ₹${format(printed)} differs from ${quantity} units × NAV ${row.nav}${isZero(charges) ? "" : `, with or without the ${names},`} by more than the units' rounding. It's imported at ₹${format(final)} using the printed units and NAV.`;
+    : `The statement's ${shown(printed)} differs from ${quantity} units × NAV ${row.nav}${isZero(charges) ? "" : `, with or without the ${names},`} by more than the units' rounding. It's imported at ${shown(final)} using the printed units and NAV.`;
   const trade = { ...base, ...asset, ...tax, quantity, unitPrice: row.nav };
   if (kind === "reinvest") {
     // Wealthfolio splits this into dividend income, which takes the tax, and a purchase of `value`.
