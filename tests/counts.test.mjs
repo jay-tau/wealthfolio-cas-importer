@@ -648,6 +648,53 @@ test("the read-only snapshot keeps an existing cost's currency while statement c
   assert.ok(!shown.includes("₹100") && !shown.includes("₹75"), shown);
 });
 
+test("the read-only snapshot shows the statement's value only beside its units, when they're saved", () => {
+  // Demat holds 1,500 units; the statement lists 1,600, left out because Mutual funds tracks them from transactions.
+  const existing = { assetId: "flexi", symbol: "INFZ90K01FC8", ref: "INFZ90K01FC8@XBOM", name: "Fictiva Flexi Cap Fund", units: "1500", cost: null, currency: "INR" };
+  const row = {
+    key: "flexi", ref: existing.ref, name: existing.name, include: false, notes: [], units: "1600", value: "320000",
+    lines: [{ source: { label: "Folio 7712045" }, holding: { kind: "fund", name: existing.name } }], existing,
+  };
+  const shown = (choices, position = row) => text("SnapshotTable", {
+    plan: { date: "2025-03-31", positions: [position], existing: { date: "2025-02-28", cash: {} } }, choices: { flipped: new Set(), costs: new Map(), ...choices }, account: "Demat",
+  });
+  const left = shown();
+  assert.ok(left.includes(" Fictiva Flexi Cap Fund Folio 7712045 1,500.000 Unknown Left out "), left);
+  assert.ok(!left.includes("₹3,20,000"), left);
+  // Included after all: the statement's units and their value.
+  assert.ok(shown({ flipped: new Set(["flexi"]) }).includes(" 1,500.000 → 1,600.000 ₹3,20,000 "));
+  assert.ok(shown({}, { ...row, existing: undefined, include: true }).includes(" ₹3,20,000 Unknown New "));
+  for (const [more, choices, badge] of [
+    [{ misread: row.lines }, {}, "Kept"],
+    [{ misread: row.lines, lines: [], include: true }, {}, "Kept"],
+    [{ misread: row.lines, existing: undefined }, {}, "Left out"],
+    [{ lines: [], include: true }, {}, "Kept"],
+    [{ lines: [], include: false }, {}, "Removed"],
+    [{ lines: [], include: false, replacedBy: "other" }, {}, "Replaced"],
+    [{ removable: [{}] }, {}, "Needs an answer"],
+    [{ removable: [{}] }, { keep: new Map([[row.key, false]]) }, "Removed"],
+  ]) {
+    const result = shown(choices, { ...row, ...more });
+    assert.ok(result.includes(` ${badge} `), result);
+    assert.ok(!result.includes("₹3,20,000"), result);
+  }
+  // Shares are counted as printed.
+  const share = { ...row, include: true, units: "120", value: "24000", lines: [{ ...row.lines[0], holding: { kind: "share", name: "Fictiva Industries Ltd" } }], existing: { ...existing, units: "100" } };
+  const shares = text("SnapshotTable", { plan: { date: "2025-03-31", positions: [share], existing: { date: "2025-02-28", cash: {} } }, choices: { flipped: new Set(), costs: new Map() }, account: "Demat" });
+  assert.ok(shares.includes(" 100 → 120 ₹24,000 "), shares);
+});
+
+test("a question whose units are unknown, as a line of it may have been misread, gives none", () => {
+  const holdings = { date: "2025-03-31", sources: [{
+    id: "folio|1", kind: "folio", label: "Folio 7712045", holdings: [],
+    misread: [{ kind: "fund", name: "Fictiva Liquid Fund - Direct Plan - Growth", isin: "INFZ90K01LQ6", rta: null, rtaCode: null, units: "1000", price: "0", value: "25000", cost: null }],
+  }] };
+  const [item] = components.holdingItems(holdings);
+  const card = text("QuestionCard", { item, label: item.name, search: idle, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} });
+  assert.ok(card.includes("On your statement: Fictiva Liquid Fund - Direct Plan - Growth · Direct plan · Growth · a line may have been misread, so the import leaves its holding as it is "), card);
+  assert.ok(!card.includes("units"), card);
+});
+
 test("the read-only snapshot's name reads naturally for an account named for its holdings", () => {
   const markup = renderToStaticMarkup(createElement(components.SnapshotTable, {
     plan: { date: "2026-03-31", positions: [], existing: { date: "2026-02-28", cash: {} } },

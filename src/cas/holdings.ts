@@ -1,7 +1,7 @@
 import type { ActivityDetails, MonetaryValue, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { Explained } from "../lib/explained.ts";
 import { mayBeCut, readableName } from "../lib/fund-name.ts";
-import { type Counted, counts, figure, quantity } from "../lib/review-format.ts";
+import { type Counted, counts, exchangeOf, figure, longDate, quantity } from "../lib/review-format.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
 import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
@@ -442,6 +442,8 @@ export interface ExistingPosition {
   currency: string;
   /** Priced by hand: saving a nonzero average cost writes it as the asset's price on the snapshot's date. */
   manual?: boolean;
+  /** The asset's instrument type in Wealthfolio: EQUITY for shares and funds alike, BOND, CRYPTO… */
+  instrumentType?: string | null;
   /** For a manual-priced asset, its latest quote on or before the statement's date. */
   price?: { close: string; currency: string };
   /** A split was recorded since the snapshot, so its units and cost predate it. */
@@ -637,6 +639,22 @@ export interface AccountPlan {
   positions: PlannedPosition[];
 }
 
+/**
+ * Why an account's snapshot can't be planned: `positions`, more than one, share a symbol and
+ * exchange, so the import can't tell which one a holding is. Named as Wealthfolio names them.
+ */
+function sameIdentity(account: string, positions: ExistingPosition[]) {
+  const ref = positions[0].ref;
+  const at = ref.lastIndexOf("@");
+  const mic = ref.slice(at + 1);
+  const where = mic ? `on ${exchangeOf(mic)?.short ?? mic}` : "and no exchange";
+  const count = positions.length === 2 ? "two" : String(positions.length);
+  const names = [...new Set(positions.map((p) => p.name))];
+  const last = names.pop()!;
+  const which = names.length ? `: ${names.join(", ")} and ${last}.` : `, ${positions.length === 2 ? "both" : "all"} named ${last}.`;
+  return `${account} has ${count} assets with the symbol ${ref.slice(0, at)} ${where}${which} Resolve their identity in Wealthfolio or choose another account.`;
+}
+
 /** Each account's snapshot, before the user's changes in the preview. */
 export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan[] {
   const plans = new Map<string, AccountPlan & { byRef: Map<string, PlannedPosition>; misread: Line[] }>();
@@ -653,7 +671,7 @@ export function planSnapshots(holdings: Holdings, input: PlanInput): AccountPlan
     if (!plan) {
       const existing = input.existing(accountId);
       const duplicate = existing.positions.find((p, i) => existing.positions.findIndex((other) => other.ref === p.ref) !== i);
-      if (duplicate) throw new Explained(`The account's snapshot has multiple assets for ${duplicate.ref}. Resolve their identity in Wealthfolio or choose another account.`);
+      if (duplicate) throw new Explained(sameIdentity(input.accountName(accountId), existing.positions.filter((p) => p.ref === duplicate.ref)));
       const byRef = new Map(
         existing.positions.map((p): [string, PlannedPosition] => [
           p.ref,
@@ -924,13 +942,6 @@ function settleUnread(position: PlannedPosition, unread: Source[]) {
   }
 }
 
-/** What a statement row's quantity counts: shares or bonds when every line holds them, else units. */
-function countedIn(position: PlannedPosition): Counted {
-  const kinds = new Set(position.lines.map((l) => l.holding.kind));
-  const [kind] = kinds;
-  return kinds.size === 1 && (kind === "share" || kind === "bond") ? kind : "unit";
-}
-
 /** A source's listed holdings, possibly misread ones included. */
 const listedIn = (s: Source) => [...s.holdings, ...(s.misread ?? [])];
 /** Missing ISINs across formats can leave no common identity to compare. */
@@ -996,6 +1007,32 @@ export const assetName = (position: PlannedPosition) => {
 export const titleOf = (source: Source) => source.title ?? source.label;
 /** The folios, demat accounts and PRANs, each named once by `titleOf`: "A and B". */
 export const titles = (sources: Iterable<Source>) => [...new Set([...sources].map(titleOf))].join(" and ");
+
+/** A mutual fund's symbol: its ISIN (INF…), an AMFI scheme code, a Yahoo fund listing (0P…) or the statement's price. */
+export const FUND_SYMBOL = /^(INF[A-Z0-9]{9}$|\d+$|0P|MF-)/i;
+
+/** What a statement holding's units count. */
+export const countedAs = (kind: HoldingKind): Counted => (kind === "share" || kind === "bond" ? kind : "unit");
+
+/**
+ * What a position's quantity counts: shares or bonds when every statement line, or else every line
+ * that may have been misread, holds them, else units. For a holding only the account has, its
+ * asset's: Wealthfolio stores funds as EQUITY too, so an EQUITY asset counts shares unless its symbol
+ * is a fund's or an NPS scheme's, and anything it can't tell counts units.
+ */
+export function countedIn(position: PlannedPosition): Counted {
+  const lines = position.lines.length ? position.lines : position.misread ?? [];
+  if (lines.length) {
+    const kinds = new Set(lines.map((l) => countedAs(l.holding.kind)));
+    return kinds.size === 1 ? [...kinds][0] : "unit";
+  }
+  const existing = position.existing;
+  // A folio's or PRAN's earlier import added a fund's or NPS scheme's units.
+  if (!existing || position.removable?.every((s) => s.kind !== "demat")) return "unit";
+  if (existing.instrumentType === "BOND") return "bond";
+  const symbol = existing.ref.slice(0, existing.ref.lastIndexOf("@"));
+  return existing.instrumentType === "EQUITY" && !FUND_SYMBOL.test(symbol) && !symbol.startsWith("NPS-") ? "share" : "unit";
+}
 export const assetNames = (positions: Iterable<PlannedPosition>) => [...new Set([...positions].map(assetName))].join(" and ");
 
 /** A position an earlier import added for lines the statement now puts under another asset. */
@@ -1667,7 +1704,7 @@ export function checkUnits(holdings: Holdings, input: CheckInput): UnitCheck[] {
       .map(({ id, name }) => ({ id, name, units: countUnits(rows.filter((a) => a.accountId === id), until, timeZone) }));
     const unknown = check.accounts.filter((a) => a.units === undefined);
     if (!check.accounts.length) {
-      check.problem = `No account that tracks transactions has posted activities for it on or before ${holdings.date}.`;
+      check.problem = `No account that tracks transactions has posted activities for it on or before ${longDate(holdings.date)}.`;
     } else if (unknown.length) {
       check.problem = `A split or option expiry in ${names(unknown)} needs Wealthfolio's portfolio engine to count its units.`;
     } else {

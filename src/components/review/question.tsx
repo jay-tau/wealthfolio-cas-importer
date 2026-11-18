@@ -265,8 +265,8 @@ export function QuestionCard({
   label: string;
   /** What Skip calls it: "Skip this holding", "Skip this fund". */
   skip?: string;
-  /** The statement's units, already grouped, with their noun: "1,000.000 units", "40 shares". */
-  units: string;
+  /** The statement's units, already grouped, with their noun: "1,000.000 units", "40 shares". None when they're unknown. */
+  units?: string;
   /** Where the statement lists those units, when it's more than one place: the item's by default. */
   where?: string;
   search: ItemSearch;
@@ -287,7 +287,8 @@ export function QuestionCard({
         On your statement: <span className="font-semibold">{item.name}</span>
         <span className="text-muted-foreground">
           {plan?.plan && ` · ${plan.plan} plan`}
-          {plan?.option && ` · ${plan.option}`} · {units}
+          {plan?.option && ` · ${plan.option}`}
+          {units && ` · ${units}`}
           {where && ` · ${where}`}
         </span>
       </p>

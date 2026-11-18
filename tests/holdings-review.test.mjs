@@ -2227,15 +2227,19 @@ test("the first announcement counts the questions about saved holdings", async (
 
 test("holdings saved for the statement's date are asked about first, and keeping them saves nothing there", async () => {
   const x = { ...holding("ISINX"), units: "12" };
-  const { run, props, saved } = sameDate([source("X", [x, holding("ISINNEW"), holding("ISINASK")])]);
+  // Shares and bonds are counted as such, and a fund in units.
+  const bond = { ...holding("ISINBOND"), kind: "bond", units: "3" };
+  const fund = { ...holding("INFFUND"), kind: "fund", name: "Example Fund" };
+  const { run, props, saved } = sameDate([source("X", [x, holding("ISINNEW"), holding("ISINASK"), bond, fund])], [["ISINX", "10"], ["ISINOLD", "5"], ["ISINBOND", "2"]]);
   delete props.fundChoices[holdingKey(holding("ISINASK"))];
   await run.flush();
   const [card] = nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
   assert.equal(card.title, "A already has holdings saved for 31 Mar 2025");
   const textOf = (node) => Array.isArray(node) ? node.map(textOf).join("|") : node && typeof node === "object" ? textOf(node.props?.children) : String(node ?? "");
   assert.equal(textOf(card.children), "Replacing them with this statement changes:|" + [
-    "Example ISINX: 10.000 units now, 12.000 on this statement", "Example ISINNEW: added, 10.000 units",
-    "Example ISINASK: 10.000 units on this statement, still to be matched", "1 other holding: same units",
+    "Example ISINX: 10 shares now, 12 on this statement", "Example ISINNEW: added, 10 shares",
+    "Example ISINBOND: 2 bonds now, 3 on this statement", "Example Fund: added, 10.000 units",
+    "Example ISINASK: 10 shares on this statement, still to be matched", "1 other holding: same units",
   ].join("|"));
   assert.deepEqual([card.main.name, card.other.name], ["Keep the saved ones: holdings in A for 31 Mar 2025", "Replace them with this statement: holdings in A for 31 Mar 2025"]);
   assert.ok(find(run, "QuestionCard"), "the holding to match is asked about too");
@@ -2610,6 +2614,77 @@ for (const retry of [false, true]) test(`a holding the statement no longer lists
     await run.flush();
   }
   assert.deepEqual(saved, [[["asset-ISINX", "10"]]]);
+});
+
+for (const [type, symbol, five, seven] of [
+  ["EQUITY", "ISINOLD", "5 shares", "7 shares"], ["BOND", "ISINOLD", "5 bonds", "7 bonds"],
+  ["EQUITY", "INFY", "5 shares", "7 shares"],
+  // Wealthfolio stores funds as EQUITY too: a fund's symbol counts units, as does an unknown type.
+  ["EQUITY", "INFZ90K01LQ6", "5.000 units", "7.000 units"], [undefined, "ISINOLD", "5.000 units", "7.000 units"],
+]) test(`a holding only the account has is counted as its ${type ?? "untyped"} asset ${symbol} is: ${five}`, async () => {
+  const x = source("X", [holding("ISINX")]);
+  const { run, api } = setup([x]);
+  // An earlier import of X added the old holding; nothing added the one priced by hand, which is kept as it is.
+  const hand = symbol === "INFZ90K01LQ6" ? "INFZ90K01FC8" : `${symbol}HAND`;
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => [["ISINX", "5"], [symbol, "5"], [hand, "7"]].map(([isin, quantity]) => ({
+    holdingType: "security", quantity, costBasis: isin === hand ? { local: 700 } : null, localCurrency: "INR",
+    instrument: { id: `asset-${isin}`, name: `Example ${isin}`, symbol: isin, quoteMode: isin === hand ? "MANUAL" : "MARKET" },
+  }));
+  api.assets.getProfile = async (id) => ({
+    instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM", instrumentType: id === "asset-ISINX" ? "EQUITY" : type,
+    quoteMode: id === `asset-${hand}` ? "MANUAL" : "MARKET",
+  });
+  api.quotes = { getHistory: async () => [] };
+  const stored = new Map();
+  api.storage.get = async (key) => stored.get(key) ?? null;
+  api.storage.set = async (key, value) => stored.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, x, "A", "2025-02-28", { "ISINX@XBOM": ["ISINX"], [`${symbol}@XBOM`]: [symbol] });
+  await run.flush();
+  const card = find(run, "AskCard");
+  assert.deepEqual([card.main.label, textOf(card.children)], [`Keep ${five}`, `A holds ${five} of it, from an earlier import of X demat account.`]);
+  card.main.onClick();
+  await run.flush();
+  assert.equal(find(run, "AskAnswered").text, `Example ${symbol}: ${five} kept in A`);
+  assert.ok(footerText(run)[0].includes(`Example ${symbol} kept at ${five}.`), footerText(run)[0]);
+  // Kept as they are.
+  assert.ok(textOf(run.tree).includes(`Example ${hand} · ${seven} in A`), textOf(run.tree));
+});
+
+test("a question about a fund whose line may have been misread gives no units, as they're unknown", async () => {
+  // casparser read its NAV as 0, so its units may be wrong too.
+  const misread = { ...holding("INFZ90K01LQ6"), kind: "fund", name: "Fictiva Liquid Fund - Direct Plan - Growth", units: "1000", price: "0", value: "25000" };
+  const read = { ...misread, units: "40", price: "25", value: "1000" };
+  const folio = (id, holdings, more) => ({ ...source(id, holdings), kind: "folio", ...more });
+  for (const [sources, units] of [
+    [[folio("F1", [], { misread: [misread] })], undefined],
+    // Another folio's line of it is read, but the misread one's units are still unknown.
+    [[folio("F1", [], { misread: [misread] }), folio("F2", [read])], undefined],
+    [[folio("F2", [read])], "40.000 units"],
+  ]) {
+    const { run, props } = setup(sources, false);
+    props.accountChoices = { [investorKey("TEST")]: "A" };
+    await run.flush();
+    const card = find(run, "QuestionCard");
+    assert.equal(card.units, units, sources.map((s) => s.id).join());
+    assert.equal(card.item.where?.includes("a line may have been misread") ?? false, units === undefined);
+    run.dispose();
+  }
+  for (const keep of [false, true]) {
+    const unread = folio("F1", [], { misread: [misread] });
+    const { run, props, api } = setup([unread, folio("F2", [read])], false);
+    props.accountChoices = { [investorKey("TEST")]: "B", [sourceKey(unread)]: keep ? "A" : LEFT_OUT };
+    if (keep) api.snapshots.getAll = async (id) => id === "A" ? [{ snapshotDate: "2025-03-31", source: "MANUAL" }] : [];
+    await run.flush();
+    if (keep) {
+      assert.equal(find(run, "AskCard").title, "A already has holdings saved for 31 Mar 2025");
+      find(run, "AskCard").main.onClick();
+      await run.flush();
+    }
+    assert.equal(find(run, "QuestionCard").units, "40.000 units", keep ? "misread source's account kept" : "misread source not saved");
+    run.dispose();
+  }
 });
 
 test("a snapshot Wealthfolio doesn't save in an existing account gets its own Try again, and the other account's stays saved", async () => {

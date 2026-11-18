@@ -524,7 +524,26 @@ test("rejects ambiguous existing asset references before they can be lost", asyn
   const existing = { ...none, positions: ["equity", "fund"].map((assetId) => ({
     assetId, ref: ref("ABC"), symbol: "ABC", name: assetId, units: "10", cost: "100", currency: "INR",
   })) };
-  assert.throws(() => plan(holdings, { existing: () => existing }), /multiple assets for ABC@XBOM/);
+  const accountName = (id) => ({ "holdings-1": "Demat", "holdings-2": "Other demat" })[id];
+  assert.throws(() => plan(holdings, { existing: () => existing, accountName }), {
+    message: "Demat has two assets with the symbol ABC on BSE: equity and fund. Resolve their identity in Wealthfolio or choose another account.",
+  });
+  // Without an exchange, and with one name, in the account whose snapshot has them.
+  const liquid = (assetId) => ({ assetId, ref: fundRef("INFZ90K01LQ6", null), symbol: "INFZ90K01LQ6", name: "Fictiva Liquid Fund", units: "10", cost: null, currency: "INR" });
+  const unnamed = { ...none, positions: [liquid("first"), liquid("second")] };
+  const second = holdings.sources[1].id;
+  assert.throws(() => plan(holdings, { account: (s) => (s.id === second ? "holdings-2" : "holdings-1"), existing: (id) => (id === "holdings-2" ? unnamed : none), accountName }), {
+    message: "Other demat has two assets with the symbol INFZ90K01LQ6 and no exchange, both named Fictiva Liquid Fund. Resolve their identity in Wealthfolio or choose another account.",
+  });
+  // An exchange the Review screen has no name for goes by its code.
+  const london = { ...none, positions: [...existing.positions, { ...existing.positions[0], assetId: "third", name: "third" }].map((p) => ({ ...p, ref: fundRef("ABC", "XLON") })) };
+  assert.throws(() => plan(holdings, { existing: () => london, accountName }), {
+    message: "Demat has 3 assets with the symbol ABC on XLON: equity, fund and third. Resolve their identity in Wealthfolio or choose another account.",
+  });
+  const at = { ...unnamed, positions: unnamed.positions.map((p) => ({ ...p, ref: fundRef("ABC@P", "XNSE") })) };
+  assert.throws(() => plan(holdings, { existing: () => at, accountName }), {
+    message: "Demat has two assets with the symbol ABC@P on NSE, both named Fictiva Liquid Fund. Resolve their identity in Wealthfolio or choose another account.",
+  });
 });
 
 test("manual-priced holdings get the statement's price, and kept ones the price they had", async () => {
@@ -2684,7 +2703,7 @@ test("checks each holding's units against accounts that track transactions, each
     ["asset-INFZ90K01LQ6", [fictiva, second], "12.296", [["account-1", "12.296"]], "12.296", null],
     ["asset-INFZ90K01BA1", ["Fictiva Mutual Fund, folio 91234570/0"], "3443.91", [["account-1", "3000"], ["unset-1", "443.91"]], "3443.91", null],
     ["asset-INFZ91T01CB6", [testbridge], "9511.474", [["account-1", "9500"]], "9500", null],
-    [ref("INFZ91T01GL6"), [testbridge], "845.512", [], null, "No account that tracks transactions has posted activities for it on or before 2025-03-31."],
+    [ref("INFZ91T01GL6"), [testbridge], "845.512", [], null, "No account that tracks transactions has posted activities for it on or before 31 Mar 2025."],
     ["asset-INFZ91T01FT1", [testbridge], "5000", [["account-1", null]], null, "A split or option expiry in Mutual funds needs Wealthfolio's portfolio engine to count its units."],
   ]);
   assert.deepEqual(checks.map((c) => unitStatus(c)), ["match", "match", "match", "differ", "review", "review"]);
@@ -2775,7 +2794,7 @@ test("the check finds a holding's asset by its ID, or by the symbol and exchange
   // Another asset whose display code is this fund's symbol supplies no history.
   const other = [activity("account-1", "BUY", "2024-04-01", isin, "30", { assetId: "other" })];
   const [notIt] = check(holdings, other, { asset: confirmed, identities: new Map([["other", ref("SOMETHING-ELSE")]]) });
-  assert.deepEqual([notIt.ref, notIt.held, notIt.problem], [ref(isin), undefined, "No account that tracks transactions has posted activities for it on or before 2025-03-31."]);
+  assert.deepEqual([notIt.ref, notIt.held, notIt.problem], [ref(isin), undefined, "No account that tracks transactions has posted activities for it on or before 31 Mar 2025."]);
   // Nor does it for a choice that has the asset's ID.
   assert.equal(check(holdings, other, { asset: (h) => confirmed(h, { assetId: "fund-1" }) })[0].held, undefined);
   // Two assets with its symbol and exchange, or one whose profile can't be read, need review.
@@ -3003,7 +3022,7 @@ test("a fund in two folios, one misread, keeps the account's units and needs rev
   const alone = readHoldings({ ...data, folios: [data.folios[1]] });
   const [own] = check(alone, []);
   assert.deepEqual([own.ref, own.lines, own.misread.length, format(own.statement), unitStatus(own)], [ref(flexi.isin), [], 1, "0", "review"]);
-  assert.equal(own.problem, `${note}, so its units on the statement are unknown. Check it against the PDF. No account that tracks transactions has posted activities for it on or before 2025-03-31.`);
+  assert.equal(own.problem, `${note}, so its units on the statement are unknown. Check it against the PDF. No account that tracks transactions has posted activities for it on or before 31 Mar 2025.`);
   assert.deepEqual(check(alone, [], { asset: () => undefined }), []);
 });
 

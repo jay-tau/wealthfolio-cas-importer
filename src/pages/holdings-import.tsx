@@ -10,8 +10,11 @@ import {
   assetNames,
   checkUnits,
   type Choices,
+  countedAs,
+  countedIn,
   existingCost,
   type ExistingSnapshot,
+  FUND_SYMBOL,
   type HoldingKind,
   type Holdings,
   importedRefs,
@@ -199,6 +202,8 @@ async function readExisting(api: Api, profileOf: Profiles, accountId: string, da
       cost: existingCost(h.costBasis),
       currency: h.localCurrency,
       manual: isManual(instrument),
+      // refsOf read the profile, so this reads it again from the cache.
+      instrumentType: (await profileOf(instrument.id)).instrumentType,
     });
   }
   return existing;
@@ -400,8 +405,6 @@ interface Ask {
 const KINDS: Record<string, string> = { CAMS: "CAMS", KFINTECH: "KFintech", NSDL: "NSDL", CDSL: "CDSL" };
 /** The order of an account's rare questions. */
 const ASK_ORDER = ["missing", "moved", "overlap", "replace"];
-/** A mutual fund's symbol: its ISIN (INF…), an AMFI scheme code, a Yahoo fund listing (0P…) or the statement's price. */
-const FUND_SYMBOL = /^(INF|\d+$|0P|MF-)/i;
 const CANT_PLAN = "We couldn't work out what will be saved. Nothing was saved.";
 const OVERLAP_NOTE = "from its transactions. Including it here counts it twice.";
 
@@ -575,6 +578,16 @@ export function HoldingsImport({
   // saved there, so what goes there needs no answers.
   const keptSaved = new Set((prepared?.plans ?? []).filter((plan) => replacesSnapshot(plan) && sameDate.get(plan.accountId) === true).map((p) => p.accountId));
   const savingSource = (s: Source) => savedSource(s) && !keptSaved.has(accountOf(s) ?? "");
+  /**
+   * A question's statement units in what's saved, with their noun; none when a line of it may have
+   * been misread, as its units on the statement are unknown.
+   */
+  const questionUnits = (item: FundItem) => {
+    const saving = sourcesOf(item.key).filter(savingSource);
+    if (saving.some((s) => s.misread?.some((h) => holdingKey(h) === item.key))) return undefined;
+    return unitWords(item, saving.flatMap((s) => s.holdings.filter((h) => holdingKey(h) === item.key))
+      .reduce((total, h) => format(add(dec(total), dec(h.units))), "0"));
+  };
 
   // Holdings that need an answer: on the statement with units or a misread line, in a folio, demat
   // account or PRAN that's saved, and with no asset confirmed.
@@ -1090,7 +1103,7 @@ export function HoldingsImport({
     const words = sameDateWords(account, holdings.date);
     // Holdings still waiting for an answer to which fund they are.
     const waitingHere = holdings.sources.filter((s) => accountOf(s) === plan.accountId)
-      .flatMap((s) => s.holdings.filter((h) => !choiceOf(holdingKey(h))).map((h) => ({ name: h.name, units: h.units })));
+      .flatMap((s) => s.holdings.filter((h) => !choiceOf(holdingKey(h))).map((h) => ({ name: h.name, units: h.units, noun: countedAs(h.kind) })));
     return {
       id: `same|${plan.accountId}`,
       accountId: plan.accountId,
@@ -2112,8 +2125,7 @@ export function HoldingsImport({
                       key={item.key}
                       item={item}
                       label={labelOf.get(item.key)!}
-                      units={unitWords(item, sourcesOf(item.key).filter(savingSource).flatMap((s) => s.holdings.filter((h) => holdingKey(h) === item.key))
-                        .reduce((total, h) => format(add(dec(total), dec(h.units))), "0"))}
+                      units={questionUnits(item)}
                       search={searches.get(item.key)}
                       searches={searches}
                       base={ids.picker(item.key)}
@@ -2215,7 +2227,7 @@ export function HoldingsImport({
                   <span className="font-medium">{position.name}</span>
                   <span className="text-muted-foreground">
                     {" "}
-                    · {units(position.existing!.units)} units in {accountName(plan.accountId)}
+                    · {quantity(countedIn(position), position.existing!.units)} in {accountName(plan.accountId)}
                   </span>
                 </span>
                 {position.notes.map((note, i) => (

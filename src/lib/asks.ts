@@ -1,9 +1,9 @@
 import { cmp, dec } from "../cas/decimal.ts";
-import { type AccountPlan, assetName, assetNames, type Choices, included, type PlannedPosition, snapshotOf, type Source, titleOf } from "../cas/holdings.ts";
+import { type AccountPlan, assetName, assetNames, type Choices, countedIn, included, type PlannedPosition, snapshotOf, type Source, titleOf } from "../cas/holdings.ts";
 import { fundRef } from "../cas/plan.ts";
 import { nameNumber } from "./name-number.ts";
 import { plural } from "./plural.ts";
-import { longDate, movements, ordinal, shortDate, units } from "./review-format.ts";
+import { type Counted, figure, longDate, movements, ordinal, quantity, shortDate } from "./review-format.ts";
 
 // What the Review screen's rare questions say: a plain heading, at most one line of evidence, the safe
 // answer first, and what each answer did, for its line once answered and for the bar.
@@ -106,17 +106,18 @@ export function holdingAskWords(
 ): AskWords {
   const ask = position.ask!;
   const own = name(position);
-  const held = position.existing ? units(position.existing.units) : "";
+  // The account's units, counted as their holding is: "100 shares", "512.300 units".
+  const held = position.existing ? quantity(countedIn(position), position.existing.units) : "";
   if (ask.kind === "missing") {
     const zero = `Set it to zero on ${shortDate(plan.date)}`;
     return {
       title: `${own} isn't on this statement`,
-      line: `${account} holds ${held} units of it, from an earlier import of ${titles(position.removable!)}.`,
-      main: `Keep ${held} units`,
+      line: `${account} holds ${held} of it, from an earlier import of ${titles(position.removable!)}.`,
+      main: `Keep ${held}`,
       other: zero,
       why: MISSING_WHY,
-      receipt: (keep) => (keep ? `${own}: ${held} units kept in ${account}` : `${own}: set to zero in ${account} on ${shortDate(plan.date)}`),
-      done: (keep) => (keep ? `${own} kept at ${held} units` : `${own} set to zero`),
+      receipt: (keep) => (keep ? `${own}: ${held} kept in ${account}` : `${own}: set to zero in ${account} on ${shortDate(plan.date)}`),
+      done: (keep) => (keep ? `${own} kept at ${held}` : `${own} set to zero`),
     };
   }
   if (ask.kind === "moved") {
@@ -125,7 +126,7 @@ export function holdingAskWords(
     const one = moved.length === 1 && position.removable!.length === 1;
     return {
       title: `${titles(moved)} now ${moved.length === 1 ? "goes" : "go"} to ${list(accounts)}`,
-      line: `${account} holds ${held} units of ${own} that ${one ? thisOne(moved[0]) : `earlier imports of ${titles(position.removable!)}`} added.`,
+      line: `${account} holds ${held} of ${own} that ${one ? thisOne(moved[0]) : `earlier imports of ${titles(position.removable!)}`} added.`,
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
       caution: `Remove them only if all of them came from ${one ? thisOne(moved[0]) : titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
@@ -138,12 +139,12 @@ export function holdingAskWords(
     const as = row === position ? "" : ` as ${assetName(position)}`;
     return {
       title: `${name(row)} is already tracked in ${list(ask.tracked.map((a) => a.name))}`,
-      line: `${account} also holds ${held} units of it${as}, from an earlier import of ${titles(position.removable!)}.`,
+      line: `${account} also holds ${held} of it${as}, from an earlier import of ${titles(position.removable!)}.`,
       main: `Keep them in ${account}`,
       other: `Remove them from ${account}`,
       caution: `Remove them only if all of them came from ${titles(position.removable!)}: ${IMPORTS_DONT_RECORD}.`,
-      receipt: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${account}`,
-      done: (keep) => `${name(row)}: ${held} units ${keep ? "kept in" : "removed from"} ${account}`,
+      receipt: (keep) => `${name(row)}: ${held} ${keep ? "kept in" : "removed from"} ${account}`,
+      done: (keep) => `${name(row)}: ${held} ${keep ? "kept in" : "removed from"} ${account}`,
     };
   }
   // A statement row that would replace an asset an earlier import added it as. The answers go by
@@ -170,6 +171,7 @@ export function holdingAskWords(
 export interface Waiting {
   name: string;
   units: string;
+  noun: Counted;
 }
 
 /**
@@ -201,14 +203,15 @@ export function sameDateChanges(plan: AccountPlan, choices: Choices, name: (p: P
     const p = statement ?? missing ?? positions[0];
     const before = positions.find((p) => p.existing)?.existing;
     const after = saved.get(key);
+    const noun = countedIn(p);
     if (after === undefined) {
-      if (before) lines.push(`${name(p)}: ${units(before.units)} units now, ${missing ? "set to zero" : "removed"}`);
-    } else if (!before) lines.push(`${name(p)}: added, ${units(after)} units`);
-    else if (missing && !statement) lines.push(`${name(p)}: ${units(before.units)} units now, not on this statement`);
-    else if (cmp(dec(before.units), dec(after)) !== 0) lines.push(`${name(p)}: ${units(before.units)} units now, ${units(after)} on this statement`);
+      if (before) lines.push(`${name(p)}: ${quantity(noun, before.units)} now, ${missing ? "set to zero" : "removed"}`);
+    } else if (!before) lines.push(`${name(p)}: added, ${quantity(noun, after)}`);
+    else if (missing && !statement) lines.push(`${name(p)}: ${quantity(noun, before.units)} now, not on this statement`);
+    else if (cmp(dec(before.units), dec(after)) !== 0) lines.push(`${name(p)}: ${quantity(noun, before.units)} now, ${figure(noun, after)} on this statement`);
     else same++;
   }
-  for (const w of waiting) lines.push(`${w.name}: ${units(w.units)} units on this statement, still to be matched`);
+  for (const w of waiting) lines.push(`${w.name}: ${quantity(w.noun, w.units)} on this statement, still to be matched`);
   if (same) lines.push(`${lines.length ? plural(same, "other holding") : plural(same, "holding")}: same units`);
   return lines;
 }
