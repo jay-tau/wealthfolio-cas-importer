@@ -873,8 +873,9 @@ test("a question whose units are unknown, as a line of it may have been misread,
     misread: [{ kind: "fund", name: "Fictiva Liquid Fund - Direct Plan - Growth", isin: "INFZ90K01LQ6", rta: null, rtaCode: null, units: "1000", price: "0", value: "25000", cost: null }],
   }] };
   const [item] = components.holdingItems(holdings);
-  const card = text("QuestionCard", { item, label: item.name, search: idle, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} });
-  assert.ok(card.includes("On your statement: Fictiva Liquid Fund - Direct Plan - Growth · Direct plan · Growth · a line may have been misread, so the import leaves its holding as it is "), card);
+  const where = "a line may have been misread, so the import leaves its holding as it is";
+  const card = text("QuestionCard", { item, label: item.name, where, search: idle, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} });
+  assert.ok(card.includes(`On your statement: Fictiva Liquid Fund - Direct Plan - Growth · Direct plan · Growth · ${where} `), card);
   assert.ok(!card.includes("units"), card);
 });
 

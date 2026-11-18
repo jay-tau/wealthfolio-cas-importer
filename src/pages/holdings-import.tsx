@@ -141,33 +141,25 @@ async function refsOf(profileOf: Profiles, holdings: Holding[]) {
 
 const NOUNS: Record<HoldingKind, FundItem["noun"]> = { fund: "fund", share: "share", bond: "bond", nps: "NPS scheme" };
 
+/** A folio's, demat account's or PRAN's lines on the statement: with units, printed zeros and misread. */
+const linesOf = (s: Source) => [...s.holdings, ...(s.zero ?? []), ...(s.misread ?? [])];
+
 /**
  * The statement's holdings, one entry each however many folios, demat accounts or PRANs hold it.
- * Misread lines are asked about too, to hold their asset back; printed zeros are counted and listed
- * as not included, but never asked about.
+ * Misread lines are asked about too, to hold their asset back; printed zeros are listed as not
+ * included, but never asked about.
  */
 export function holdingItems(holdings: Holdings): FundItem[] {
-  const items = new Map<string, FundItem & { count: number; misread: boolean }>();
-  for (const [h, line] of holdings.sources.flatMap((s) => [
-    ...s.holdings.map((h) => [h, "units"] as const),
-    ...(s.zero ?? []).map((h) => [h, "zero"] as const),
-    ...(s.misread ?? []).map((h) => [h, "misread"] as const),
-  ])) {
+  const items = new Map<string, FundItem>();
+  for (const h of holdings.sources.flatMap(linesOf)) {
     const key = holdingKey(h);
-    const item = items.get(key) ??
-      { key, isin: h.isin, name: h.name, cut: h.cut, noun: NOUNS[h.kind], statementAsset: statementAsset(h), count: 0, misread: false };
-    item.count++;
-    item.misread ||= line === "misread";
-    items.set(key, item);
+    if (!items.has(key)) items.set(key, { key, isin: h.isin, name: h.name, cut: h.cut, noun: NOUNS[h.kind], statementAsset: statementAsset(h) });
   }
-  return [...items.values()].map(({ count, misread, ...item }) => ({
-    ...item,
-    where: [
-      count > 1 && `in ${count} folios, demat accounts or PRANs`,
-      misread && "a line may have been misread, so the import leaves its holding as it is",
-    ].filter(Boolean).join(" · ") || undefined,
-  }));
+  return [...items.values()];
 }
+
+/** What a holding's question calls the places the statement lists it in, when they're of one kind. */
+const PLACES: Record<Source["kind"], string> = { folio: "folios", demat: "demat accounts", nps: "PRANs" };
 
 const text = (value: number | string) => String(value);
 
@@ -583,14 +575,25 @@ export function HoldingsImport({
   const keptSaved = new Set((prepared?.plans ?? []).filter((plan) => replacesSnapshot(plan) && sameDate.get(plan.accountId) === true).map((p) => p.accountId));
   const savingSource = (s: Source) => savedSource(s) && !keptSaved.has(accountOf(s) ?? "");
   /**
-   * A question's statement units in what's saved, with their noun; none when a line of it may have
-   * been misread, as its units on the statement are unknown.
+   * A holding's units on the statement in what's saved, and, when the statement lists it in more than
+   * one folio, demat account or PRAN, how many of them those units are in: "10 shares", "in 1 of 2
+   * demat accounts". Printed zeros and misread lines count among the places it's listed in, but give
+   * no units. With a misread line in what's saved, its units are unknown, so there's neither.
    */
-  const questionUnits = (item: FundItem) => {
-    const saving = sourcesOf(item.key).filter(savingSource);
-    if (saving.some((s) => s.misread?.some((h) => holdingKey(h) === item.key))) return undefined;
-    return unitWords(item, saving.flatMap((s) => s.holdings.filter((h) => holdingKey(h) === item.key))
-      .reduce((total, h) => format(add(dec(total), dec(h.units))), "0"));
+  const onStatement = (item: FundItem) => {
+    const listed = holdings.sources.filter((s) => linesOf(s).some((h) => holdingKey(h) === item.key));
+    const lines = (s: Source) => s.holdings.filter((h) => holdingKey(h) === item.key);
+    const misread = (s: Source) => !!s.misread?.some((h) => holdingKey(h) === item.key);
+    const known = !listed.some((s) => savingSource(s) && misread(s));
+    const saving = listed.filter((s) => savingSource(s) && lines(s).length > 0);
+    const places = new Set(listed.map((s) => s.kind)).size === 1 ? PLACES[listed[0].kind] : "places on this statement";
+    return {
+      units: known ? unitWords(item, saving.flatMap(lines).reduce((total, h) => format(add(dec(total), dec(h.units))), "0")) : undefined,
+      where: [
+        known && listed.length > 1 && `in ${saving.length < listed.length ? `${saving.length} of ` : ""}${listed.length} ${places}`,
+        listed.some(misread) && "a line may have been misread, so the import leaves its holding as it is",
+      ].filter(Boolean).join(" · ") || undefined,
+    };
   };
 
   // Holdings that need an answer: on the statement with units or a misread line, in a folio, demat
@@ -2207,7 +2210,7 @@ export function HoldingsImport({
                       key={item.key}
                       item={item}
                       label={labelOf.get(item.key)!}
-                      units={questionUnits(item)}
+                      {...onStatement(item)}
                       search={searches.get(item.key)}
                       searches={searches}
                       base={ids.picker(item.key)}

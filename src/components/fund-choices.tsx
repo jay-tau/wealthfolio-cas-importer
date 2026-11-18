@@ -59,8 +59,6 @@ export interface FundItem {
   /** The name can end partway through a word, as a CDSL demat account cuts a long one short. */
   cut?: boolean;
   noun: "fund" | "share" | "bond" | "NPS scheme";
-  /** Where else the statement lists it, e.g. "in 2 folios". */
-  where?: string;
   /** The asset priced by hand from statements, offered when no search result fits. */
   statementAsset?: ChosenFund;
   /**

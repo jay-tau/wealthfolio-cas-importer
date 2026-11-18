@@ -714,6 +714,116 @@ test("moving part of an aggregate discards its old total purchase cost", async (
   assert.equal(find(run, "ReadyTable").rows.find((row) => row.accountId === "A").cost, undefined);
 });
 
+/** An open question's "On your statement:" line after the holding's name: its units, then where they are. */
+const onStatement = (run) => {
+  const card = nodes(run.tree).find((node) => node.type?.name === "QuestionCard");
+  const line = card && nodes(card.type(card.props)).find((node) => node.type === "p" && textOf(node).startsWith("On your statement:"));
+  return line && textOf(line).slice(`On your statement: ${card.props.item.name} · `.length);
+};
+const MISREAD = "a line may have been misread, so the import leaves its holding as it is";
+
+for (const [kind, places, h, two, one] of [
+  ["demat", "demat accounts", holding("ISINX"), "20 shares", "10 shares"],
+  ["folio", "folios", { ...holding("INFZ90A01017"), kind: "fund" }, "20.000 units", "10.000 units"],
+  ["nps", "PRANs", { ...holding(null), kind: "nps", name: "Example NPS scheme", code: "SM001001" }, "20.000 units", "10.000 units"],
+]) {
+  test(`a holding's question counts the ${places} its units come from`, async () => {
+    const x = { ...source("X", [h]), kind };
+    const y = { ...source("Y", [h]), kind };
+    const { run } = setup([x, y], false);
+    await run.flush();
+    assert.equal(onStatement(run), `${two} · in 2 ${places}`);
+    find(run, "SaveTo").onChange(sourceKey(y), LEFT_OUT);
+    await run.flush();
+    assert.equal(onStatement(run), `${one} · in 1 of 2 ${places}`);
+    find(run, "SaveTo").onChange(sourceKey(x), LEFT_OUT);
+    await run.flush();
+    assert.equal(find(run, "QuestionCard"), undefined, "with nothing of it saved, it isn't asked about");
+  });
+}
+
+test("a holding's question counts a place once however many lines it has there, and gives no count for one place", async () => {
+  const x = source("X", [holding("ISINX"), holding("ISINX")]);
+  const y = source("Y", [holding("ISINX")]);
+  let { run } = setup([x, y], false);
+  await run.flush();
+  assert.equal(onStatement(run), "30 shares · in 2 demat accounts");
+  find(run, "SaveTo").onChange(sourceKey(y), LEFT_OUT);
+  await run.flush();
+  assert.equal(onStatement(run), "20 shares · in 1 of 2 demat accounts");
+  run.dispose();
+  ({ run } = setup([x], false));
+  await run.flush();
+  assert.equal(onStatement(run), "20 shares");
+});
+
+test("a holding's question doesn't count an account whose saved holdings are kept", async () => {
+  const x = source("X", [holding("ISINX")]);
+  const y = source("Y", [holding("ISINX")]);
+  const { run, props } = sameDate([x, y], [["ISINX", "10"]]);
+  props.accountChoices[sourceKey(y)] = "B";
+  delete props.fundChoices[holdingKey(holding("ISINX"))];
+  await run.flush();
+  assert.equal(onStatement(run), "20 shares · in 2 demat accounts");
+  find(run, "AskCard").main.onClick();
+  await run.flush();
+  assert.equal(find(run, "AskAnswered").text, "A: kept the holdings already saved for 31 Mar 2025");
+  assert.equal(onStatement(run), "10 shares · in 1 of 2 demat accounts");
+  find(run, "SaveTo").onChange(sourceKey(y), LEFT_OUT);
+  await run.flush();
+  assert.equal(find(run, "QuestionCard"), undefined, "with nothing of it saved, it isn't asked about");
+});
+
+test("printed-zero and misread lines count among a holding's places but give no units, and a misread line being saved leaves neither units nor a count", async () => {
+  const fund = { ...holding("INFZ90A01017"), kind: "fund" };
+  const x = { ...source("X", [fund]), kind: "folio" };
+  const zero = { ...source("Zero", []), kind: "folio", zero: [{ ...fund, units: "0", value: "0" }] };
+  let { run } = setup([x, zero], false);
+  await run.flush();
+  assert.equal(onStatement(run), "10.000 units · in 1 of 2 folios");
+  find(run, "SaveTo").onChange(sourceKey(x), LEFT_OUT);
+  await run.flush();
+  assert.equal(find(run, "QuestionCard"), undefined, "a printed zero alone isn't asked about");
+  run.dispose();
+
+  const misread = { ...source("Misread", []), kind: "folio", misread: [{ ...fund, units: "0", value: "35799.22" }] };
+  ({ run } = setup([x, misread], false));
+  await run.flush();
+  // A misread line being saved makes the units unknown, and so the places they're in.
+  assert.equal(onStatement(run), MISREAD);
+  find(run, "SaveTo").onChange(sourceKey(misread), LEFT_OUT);
+  await run.flush();
+  assert.equal(onStatement(run), `10.000 units · in 1 of 2 folios · ${MISREAD}`);
+  find(run, "SaveTo").onChange(sourceKey(misread), "A");
+  find(run, "SaveTo").onChange(sourceKey(x), LEFT_OUT);
+  await run.flush();
+  assert.equal(onStatement(run), MISREAD, "its asset is still needed to leave its holding as it is");
+  run.dispose();
+
+  ({ run } = setup([{ ...misread, misread: [fund, fund] }], false));
+  await run.flush();
+  assert.equal(onStatement(run), MISREAD);
+});
+
+test("a holding's question counts places of different kinds as places on the statement", async () => {
+  const fund = { ...holding("INFZ90A01017"), kind: "fund" };
+  const x = source("X", [fund]);
+  const y = { ...source("Y", [fund]), kind: "folio" };
+  const misread = { ...source("Misread", []), kind: "folio", misread: [{ ...fund, units: "0", value: "35799.22" }] };
+  let { run } = setup([x, y, misread], false);
+  await run.flush();
+  find(run, "SaveTo").onChange(sourceKey(misread), LEFT_OUT);
+  await run.flush();
+  assert.equal(onStatement(run), `20.000 units · in 2 of 3 places on this statement · ${MISREAD}`);
+  find(run, "SaveTo").onChange(sourceKey(y), LEFT_OUT);
+  await run.flush();
+  assert.equal(onStatement(run), `10.000 units · in 1 of 3 places on this statement · ${MISREAD}`);
+  run.dispose();
+  ({ run } = setup([x, y], false));
+  await run.flush();
+  assert.equal(onStatement(run), "20.000 units · in 2 places on this statement");
+});
+
 test("Don't save drops an unanswered typed-search draft", async () => {
   const x = source("X", [holding("ISINX")]);
   const { run } = setup([x], false);
@@ -3138,7 +3248,8 @@ test("a question about a fund whose line may have been misread gives no units, a
     await run.flush();
     const card = find(run, "QuestionCard");
     assert.equal(card.units, units, sources.map((s) => s.id).join());
-    assert.equal(card.item.where?.includes("a line may have been misread") ?? false, units === undefined);
+    // Nor does it count the places its units are in.
+    assert.equal(card.where, units === undefined ? MISREAD : undefined);
     run.dispose();
   }
   for (const keep of [false, true]) {
@@ -3153,6 +3264,7 @@ test("a question about a fund whose line may have been misread gives no units, a
       await run.flush();
     }
     assert.equal(find(run, "QuestionCard").units, "40.000 units", keep ? "misread source's account kept" : "misread source not saved");
+    assert.equal(find(run, "QuestionCard").where, `in 1 of 2 folios · ${MISREAD}`);
     run.dispose();
   }
 });

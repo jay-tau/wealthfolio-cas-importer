@@ -478,6 +478,15 @@ Review screen shows, in this order:
   the statement's, and one quoted in another currency than rupees says so.
   **None of these: use the price on the statement** prices it from statements (below), and **Skip
   this holding** leaves it out. An answered question becomes one line with **Change answer**.
+  A card's units are those of the folios, demat accounts and PRANs being saved, and a holding the
+  statement lists in more than one says how many of them they're in, each counted once: "10 shares ·
+  in 1 of 2 demat accounts" when the other is set to "Don't save" or goes to an account whose
+  holdings already saved for the statement's date you keep, "in 2 demat accounts" when both are
+  saved, and "in 1 of 2 places on this statement" when they're of different kinds. A line printed
+  with zero units, or that may have been misread (below), counts as a place but gives no units. When
+  a place being saved has a line of it that may have been misread, its units are unknown, so the card
+  gives neither units nor a count: "On your statement: Fictiva Liquid Fund · a line may have been
+  misread, so the import leaves its holding as it is". It's still asked about.
 
   The decisions only some imports need come up here too, a card each, only when the case happens:
   holdings already saved for the statement's date (asked first, per account), a holding the
