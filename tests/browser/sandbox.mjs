@@ -213,7 +213,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // touch screen's pointer, in Chromium, whose pointer can change in an open page, every one keeps them.
     // `includes`: links that must be among those measured at some width, by their text. Then the frame gets
     // its size back.
-    const ALONE = /^(Use another file|Details( · \d+ warnings?)?|Hide details|See every transaction|See the holdings in .+ after saving|Save part of it to another account|Why\?|Why am I asked\?|Show this statement's holdings|Forget saved password)$/;
+    const ALONE = /^(Use another file|Details( · \d+ warnings?)?|Hide details|See every transaction|See the holdings in .+ after saving|Save part of it to another account|Why\?|Why am I asked\?|Show this statement's holdings|Use your saved password|Forget saved password)$/;
     const linksKeepTheirLine = async (what, includes, widths = [360, 800]) => {
       const inFrame = tab.frames()[1];
       const before = await tab.evaluate(() => document.querySelector("iframe").getAttribute("style"));
@@ -608,15 +608,85 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await linksKeepTheirLine("The form, with a saved password", ["Use a different password"]);
     await ringsWhole("The form, with a saved password");
     assert.equal(await passwordBox.count(), 0);
-    await frame.getByRole("button", { name: "Use a different password" }).press("Enter");
+    const differentPassword = frame.getByRole("button", { name: "Use a different password", exact: true });
+    const savedPassword = frame.getByRole("button", { name: "Use your saved password", exact: true });
+    const forgetButton = frame.getByRole("button", { name: "Forget saved password", exact: true });
+    const formStatus = frame.locator("[id$='-reading'][role='status']");
+    await differentPassword.press("Enter");
     await focused(passwordBox, "Use a different password");
     assert.equal(await remember.getAttribute("aria-checked"), "false");
     assert.equal(await frame.getByRole("checkbox", { name: "Remember this password (replaces the saved one)" }).count(), 1);
     await scrollsOnlyWhereMeant("The form, replacing the saved password");
-    await frame.getByRole("button", { name: "Forget saved password" }).click();
+    await linksKeepTheirLine("The form, replacing the saved password", ["Use your saved password", "Forget saved password"]);
+    await ringsWhole("The form, replacing the saved password");
+    // Use your saved password goes back to it, and Use a different password, in its place, takes the
+    // focus. The field keeps what was typed in it.
+    await passwordBox.fill("typed-before");
+    await savedPassword.press("Enter");
+    await frame.getByText("Using your saved password", { exact: true }).waitFor();
+    await focused(differentPassword, "Use your saved password");
+    assert.equal(await passwordBox.count(), 0);
+    await differentPassword.press("Enter");
+    await focused(passwordBox, "Use a different password, again");
+    assert.equal(await passwordBox.inputValue(), "typed-before");
+    await passwordBox.fill("");
+    // Forgetting can fail: the saved password, its controls and the focus stay, and Wealthfolio says so.
+    await hosted(() => { window.host.failForget = true; });
+    await forgetButton.press("Enter");
+    await tab.frames()[1].waitForFunction(() => window.host.toasts.length);
+    assert.deepEqual(await hosted(() => window.host.toasts), ["Couldn't forget the saved password."]);
+    await focused(forgetButton, "Forget saved password, failed");
+    assert.equal(await savedPassword.count(), 1);
+    assert.deepEqual((await host()).secrets, [["statement-password", "saved-password"]]);
+    assert.equal(await formStatus.textContent(), "");
+    await hosted(() => {
+      window.host.failForget = false;
+      window.host.toasts = [];
+    });
+    // Once it's forgotten, the status line says so. A focus moved while it was being forgotten stays
+    // where it was moved, in the frame or outside it.
+    await fileInput.setInputFiles("tests/fixtures/made-up-cas-no-password.pdf");
+    assert.equal(await readButton.isDisabled(), false);
+    const savedAgain = async () => {
+      await hosted(() => {
+        window.host.secrets.set("statement-password", "saved-password");
+        window.host.reopen();
+      });
+      await differentPassword.click();
+      await forgetButton.waitFor();
+    };
+    for (const moved of ["file", "outside"]) {
+      if (moved === "outside") await savedAgain();
+      await pause("forget");
+      await forgetButton.press("Enter");
+      await waiting();
+      assert.equal(await readButton.isDisabled(), true, "a read must wait for the deletion's announcement");
+      await savedPassword.press("Enter");
+      await focused(differentPassword, "Use your saved password while forgetting");
+      assert.equal(await readButton.isDisabled(), true);
+      await differentPassword.press("Enter");
+      await focused(passwordBox, "Use a different password while forgetting");
+      await passwordBox.press("Enter");
+      assert.equal(await formStatus.textContent(), "", "Enter must wait too");
+      if (moved === "file") await fileInput.focus();
+      else await clickOutside();
+      await resume();
+      await forgetButton.waitFor({ state: "detached" });
+      if (moved === "file") await focused(fileInput, "Forget saved password, focus moved to the file");
+      else await stayedOutside("Forget saved password, focus moved outside");
+      assert.equal(await formStatus.textContent(), "Saved password forgotten.", moved);
+      assert.deepEqual((await host()).secrets, [], moved);
+      assert.equal(await readButton.isDisabled(), moved === "outside", "the file stays chosen across deletion");
+    }
+    // Otherwise, the password field takes the focus that Forget saved password had.
+    await savedAgain();
+    await forgetButton.press("Enter");
+    await forgetButton.waitFor({ state: "detached" });
+    await focused(passwordBox, "Forget saved password");
+    assert.equal(await formStatus.textContent(), "Saved password forgotten.");
     // Unstyled here, so the checkbox has no size: it's attached, not visible.
     await frame.getByRole("checkbox", { name: "Remember this password", exact: true }).waitFor({ state: "attached" });
-    assert.equal(await frame.getByRole("button", { name: "Forget saved password" }).count(), 0);
+    assert.equal(await savedPassword.count(), 0);
     assert.deepEqual((await host()).secrets, []);
     await scrollsOnlyWhereMeant("The form, without a saved password");
     // A statement without a password reads with the box left empty, so a file is all Read statement
@@ -740,15 +810,16 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.locator("#cas-file:disabled").waitFor();
     assert.equal(await frame.locator("#cas-password").isDisabled(), true);
     await frame.getByText("Reading the statement…", { exact: true }).waitFor();
-    // A wrong password is said under its field, tied to it, and the focus goes back to it. The file stays.
+    // A PDF with a password, read with its field empty, says so under the field, tied to it, and the
+    // focus goes back to it. The file stays.
     const wrongPassword = frame.locator("[id$='-password-error']");
     await wrongPassword.waitFor({ timeout: 180_000 });
-    assert.equal(await wrongPassword.textContent(), "That password didn't open the PDF. Check it and try again.");
+    assert.equal(await wrongPassword.textContent(), "This PDF has a password. Type it and try again.");
     await focused(passwordBox, "Read statement, wrong password");
     assert.equal(await passwordBox.getAttribute("aria-invalid"), "true");
     assert.ok((await passwordBox.getAttribute("aria-describedby")).split(" ").includes(await wrongPassword.getAttribute("id")));
     assert.equal(await fileInput.evaluate((input) => input.files[0]?.name), "made-up-cas.pdf");
-    const passwordStatus = frame.locator("[id$='-reading'][role='status']");
+    const passwordStatus = formStatus;
     assert.equal(await passwordStatus.textContent(), "", "the field's description already reads the password error");
     await ringsWhole("The form, after a wrong password");
     // A password failure still says what went wrong when the user moved focus outside while reading.
@@ -766,8 +837,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.releasePasswordRead(); delete window.releasePasswordRead; });
     await wrongPassword.waitFor({ timeout: 180_000 });
     await stayedOutside("Read statement, wrong password after focus moved");
-    assert.equal(await passwordStatus.textContent(), "That password didn't open the PDF. Check it and try again.");
-    assert.equal(await frame.getByRole("status").filter({ hasText: "That password didn't open the PDF. Check it and try again." }).count(), 1);
+    assert.equal(await passwordStatus.textContent(), "This PDF has a password. Type it and try again.");
+    assert.equal(await frame.getByRole("status").filter({ hasText: "This PDF has a password. Type it and try again." }).count(), 1);
     await frame.locator("#cas-password").fill("ABCDE1234F");
     assert.equal(await wrongPassword.count(), 0, "typing clears it");
     assert.equal(await passwordStatus.textContent(), "");
@@ -1170,6 +1241,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await usePassword("not-the-password");
     await readButton.press("Enter");
     await wrongPassword.waitFor({ timeout: 180_000 });
+    // A password typed that doesn't open it says so.
+    assert.equal(await wrongPassword.textContent(), "That password didn't open the PDF. Check it and try again.");
     assert.equal(await finished.count(), 0, "a wrong password");
     await readStatement();
     await finish();
@@ -4944,6 +5017,38 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await passwordBox.press("Enter");
     await transactionsHeading.waitFor({ timeout: 180_000 });
     assert.deepEqual((await host()).secrets, [["statement-password", "an-old-password"]], "not replaced unless asked");
+    await leaveDetailed();
+    // For the next statement, Use your saved password goes back to it, and Use a different password,
+    // in its place, takes the focus. made-up-cas-no-password.pdf opens with any password, so the read
+    // shows which one it was given.
+    const readWithSaved = async (what) => {
+      await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas-no-password.pdf");
+      await savedPassword.press("Enter");
+      await frame.getByText("Using your saved password", { exact: true }).waitFor();
+      await focused(differentPassword, what);
+      await readButton.press("Enter");
+      await transactionsHeading.waitFor({ timeout: 180_000 });
+      assert.equal(await hosted(() => window.host.passwords.at(-1)), "an-old-password", what);
+      await leaveDetailed();
+    };
+    assert.equal(await passwordBox.inputValue(), "ABCDE1234F", "the field keeps the password typed");
+    await readWithSaved("Use your saved password, after it didn't open another PDF");
+    // So it does after Use a different password, which shows the password typed before.
+    await differentPassword.press("Enter");
+    await focused(passwordBox, "Use a different password, after the saved one was used again");
+    assert.equal(await passwordBox.inputValue(), "ABCDE1234F", "the field keeps the password typed");
+    await readWithSaved("Use your saved password, after Use a different password");
+    // When the saved password doesn't open a PDF again, the file and the password typed before stay.
+    await frame.locator("#cas-file").setInputFiles("tests/fixtures/made-up-cas.pdf");
+    await readButton.press("Enter");
+    await staleSaved.waitFor({ timeout: 180_000 });
+    await focused(passwordBox, "Read statement, saved password stale again");
+    assert.equal(await passwordBox.inputValue(), "ABCDE1234F");
+    assert.equal(await fileInput.evaluate((input) => input.files[0]?.name), "made-up-cas.pdf");
+    await passwordBox.press("Enter");
+    await transactionsHeading.waitFor({ timeout: 180_000 });
+    assert.equal(await hosted(() => window.host.passwords.at(-1)), "ABCDE1234F");
+    assert.deepEqual((await host()).secrets, [["statement-password", "an-old-password"]]);
     await leaveDetailed();
   } catch (error) {
     failed = true;
