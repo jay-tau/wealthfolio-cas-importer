@@ -812,7 +812,11 @@ requests go to its log file. When Wealthfolio rejects rows, its reasons stay vis
   add-on knows why, such as a fund's asset that was deleted or whose symbol changed in Wealthfolio, a
   line says what to change.
 - **After saving**, each account says what went in and what didn't, with **Try again** for work it can
-  retry. Rows Wealthfolio rejected keep their reasons.
+  retry. Rows Wealthfolio rejected keep their reasons, a line for each transaction, named as the
+  Review screen names it, with its amount and account: "Purchase of Fictiva Liquid Fund on 5 May
+  2023, ₹24,998.75, in Mutual funds: The fund could not be created". When its rows were rejected
+  for different reasons, each is listed under it with its account ("The transfer out of Savings:
+  …"). Rows Wealthfolio skipped that the preview didn't expect are listed the same way.
   A price or a fund's statement details that weren't saved have **Retry saving the price** and
   **Retry saving the details**; import history that wasn't saved, which the next import uses to know
   which holdings a statement added, has **Try again**. A bank entry that wasn't linked names its
@@ -820,7 +824,10 @@ requests go to its log file. When Wealthfolio rejects rows, its reasons stay vis
   the fund account's transfer are in Wealthfolio; the bank entry of 5 Jan 2026 wasn't linked."), and
   **Try again**, named for the entry and its transaction, goes on from there, never adding the
   transfer twice. "Saved, but the units couldn't be checked in Wealthfolio" has **Check again**; units
-  that differ list each fund with both numbers and a way to open its account.
+  that differ list each fund by its name on the Review screen, with both numbers and a way to open
+  its account. On an unfinished result, **Use another file** first asks "Leave this
+  unfinished import and choose another file?", with **Stay** focused: leaving gives up any available
+  retries and the answers they need, and what's already saved stays in Wealthfolio.
 
 ## What the add-on keeps
 

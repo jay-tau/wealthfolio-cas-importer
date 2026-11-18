@@ -902,7 +902,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       const another = frame.getByRole("button", { name: "Use another file", exact: true });
       if (!(await another.count())) return;
       await another.click();
-      const discard = frame.getByRole("button", { name: "Discard and choose another file" });
+      // "Leave and choose another file" for an unfinished result.
+      const discard = frame.getByRole("button", { name: /^(Discard|Leave) and choose another file$/ });
       if (await discard.count()) await discard.click();
       await transactionsHeading.waitFor({ state: "detached" });
     };
@@ -1360,7 +1361,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await importButton.click();
     await imported(1);
     // Its units now differ from the statement's, as the review said.
-    assert.match(await unitsCheck(), /^Checked in Wealthfolio: units differ for 1 of 1 fund\. .+: Wealthfolio has 11\.359 units, the statement says 8\.053\. Open Mutual funds$/);
+    // The fund goes by its name on the Review screen.
+    assert.match(await unitsCheck(), /^Checked in Wealthfolio: units differ for 1 of 1 fund\. Fund INFZ90K01LQ6: Wealthfolio has 11\.359 units, the statement says 8\.053\. Open Mutual funds$/);
     const forced = await hosted(() => window.host.activities.filter((a) => a.date.startsWith("2024-06-20")).map((a) => [a.activityType, a.assetSymbol]));
     assert.deepEqual(forced, [["BUY", "INFZ90K01LQ6"], ["BUY", "INFZ90K01LQ6"], ["DEPOSIT", ""]]);
 
@@ -1383,6 +1385,17 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText(/Their transactions may lack/).count(), 0);
     await frame.getByText(/The fund could not be created/).waitFor();
     await stayedOutside("Import 13 transactions");
+    // Leaving this unfinished result asks first, saying what leaving gives up, with Stay the main choice.
+    const leaveQuestion = frame.getByText("Leave this unfinished import and choose another file?", { exact: true });
+    await frame.getByRole("button", { name: "Use another file", exact: true }).click();
+    await leaveQuestion.waitFor();
+    await frame.getByText("Leaving gives up any retries available here and the answers they need. What's already saved stays in Wealthfolio.", { exact: true }).waitFor();
+    await frame.getByRole("button", { name: "Leave and choose another file", exact: true }).waitFor();
+    assert.equal(await frame.getByRole("button", { name: /Keep reviewing|Discard/ }).count(), 0);
+    await focused(frame.getByRole("button", { name: "Stay", exact: true }), "Use another file");
+    await frame.getByRole("button", { name: "Stay", exact: true }).press("Enter");
+    await leaveQuestion.waitFor({ state: "detached" });
+    await importTitle.waitFor();
     assert.equal(await frame.getByRole("button", { name: "Try again: Mutual funds", exact: true }).count(), 0, "only the refused transaction remains");
     await hosted(() => { window.host.rejectLine = undefined; window.host.failSettings = false; });
     const savedRows = await hosted(() => window.host.activities);
@@ -1547,6 +1560,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await frame.getByText(skippedLink, { exact: true }).waitFor();
         await dSaid.getByText(new RegExp(`${literal(skippedLink)}$`)).waitFor();
       }
+      // The row's own line names its transaction too, with its amount and account, and why when rejected.
+      await frame.getByText(new RegExp(`^Purchase of Fund INFZ90K01LQ6 on 5 May 2023, ₹[\\d,]+(\\.\\d\\d)?, in Mutual funds${
+        outcome === "rejectLine" ? ": The fund could not be created\\.$" : "$"}`)).waitFor();
       const unchanged = await hosted(() => ({
         bank: window.host.activities.find((a) => a.id === "bank-neft"),
         fundRows: window.host.activities.filter((a) => a.accountId === "account-1" && a.date.startsWith("2023-05-05")),
@@ -2431,7 +2447,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const leaveReview = async () => {
       if (!(await anotherFile.count())) return;
       await anotherFile.click();
-      const discard = frame.getByRole("button", { name: "Discard and choose another file" });
+      // "Leave and choose another file" for an unfinished result.
+      const discard = frame.getByRole("button", { name: /^(Discard|Leave) and choose another file$/ });
       if (await discard.count()) await discard.click();
       await reviewHeading.waitFor({ state: "detached" });
     };

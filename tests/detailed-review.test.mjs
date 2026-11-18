@@ -1624,6 +1624,94 @@ test("equal linked purchases say which they are when their chosen bank entries a
     "is no longer in Wealthfolio, so the transaction now comes with a new transfer out."));
 });
 
+/** The import result's list items as shown, each with the items of a list inside it as its own. */
+function resultItems(run) {
+  const html = markup(nodes(run.tree).find((node) => node.type?.name === "ImportResult"));
+  const items = [];
+  const open = [];
+  for (const m of html.matchAll(/<(\/?)(li|ul)\b[^>]*>|<[^>]*>|([^<]+)/g)) {
+    if (!m[2]) {
+      // Text, or another tag, which keeps the words on either side apart.
+      for (const item of open) item.text += m[3] ?? " ";
+    } else if (m[2] === "li" && !m[1]) {
+      const item = { text: "", rows: [] };
+      (open.at(-1)?.rows ?? items).push(item);
+      open.push(item);
+    } else if (m[2] === "li") open.pop();
+  }
+  const clean = (item) => ({ text: item.text.replace(/\s+/g, " ").trim(), rows: item.rows.map((row) => clean(row).text) });
+  return items.map(clean).map(({ text, rows }) => {
+    // The item's own words, without those of its rows.
+    const own = rows.reduce((t, row) => t.replace(row, ""), text).replace(/\s+/g, " ").trim();
+    return rows.length ? [own, rows] : [own];
+  });
+}
+
+test("rows Wealthfolio rejected or skipped name each transaction as the Review screen does, grouping its rows", async () => {
+  const { run, api, data, imported } = setup({ entries: [], remembered: withSavings(), change: equalInTwoFolios });
+  const [first, second] = data.folios.map((f) => f.folio);
+  // The first try refuses the first folio's first purchase and the second folio's withdrawal; the
+  // second, without them, skips the first folio's second purchase's transfer as a duplicate.
+  api.activities.import = async (rows) => {
+    imported.push(rows);
+    const purchases = [];
+    for (const row of rows) {
+      if (row.activityType === "BUY") purchases.push([]);
+      purchases.at(-1).push(row);
+    }
+    const answers = imported.length === 1
+      ? rows.map((r) => r === purchases[0][0] ? { ...r, isValid: false, errors: { symbol: ["The fund could not be created"] } }
+        : r === purchases[2][2] ? { ...r, isValid: false, errors: { general: ["Made-up bank refusal."] } } : { ...r })
+      : rows.map((r) => r === purchases[0][1] ? { ...r, duplicateOfId: "earlier-transfer" } : { ...r });
+    const success = imported.length > 1;
+    return { activities: answers, summary: { success, total: rows.length, imported: success ? rows.length - 1 : 0, duplicates: 0, assetsCreated: 0 } };
+  };
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 2);
+  assert.deepEqual(imported.map((rows) => rows.map((r) => r.activityType)), [
+    ["BUY", "TRANSFER_IN", "TRANSFER_OUT", "BUY", "TRANSFER_IN", "TRANSFER_OUT", "BUY", "TRANSFER_IN", "TRANSFER_OUT"],
+    ["BUY", "TRANSFER_IN", "TRANSFER_OUT"],
+  ]);
+  const another = "Another row of this transaction was rejected, so none of it was imported.";
+  const skippedLine = `Purchase (2 of 2) of Fictiva Liquid Fund, folio ${first} on 5 May 2023, ₹24,998.75: the transfer into Mutual funds`;
+  const items = resultItems(run);
+  assert.deepEqual(items.filter(([text]) => text.startsWith("Purchase")), [
+    [`Purchase (1 of 2) of Fictiva Liquid Fund, folio ${first} on 5 May 2023, ₹24,998.75:`, [
+      "The purchase in Mutual funds: The fund could not be created",
+      `The transfer into Mutual funds and the transfer out of Savings: ${another}`,
+    ]],
+    [`Purchase of Fictiva Liquid Fund, folio ${second} on 5 May 2023, ₹24,998.75:`, [
+      `The purchase in Mutual funds and the transfer into Mutual funds: ${another}`,
+      "The transfer out of Savings: Made-up bank refusal.",
+    ]],
+    [skippedLine],
+  ]);
+  // The first two under Wealthfolio rejected rows, the last under the skipped rows.
+  const shown = markup(nodes(run.tree).find((node) => node.type?.name === "ImportResult")).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+  const at = (words) => shown.indexOf(words);
+  assert.ok(at("Wealthfolio rejected rows") >= 0 && at("Wealthfolio rejected rows") < at("Purchase (1 of 2)"), shown);
+  assert.ok(at("Wealthfolio skipped rows the preview didn't expect") > at("Made-up bank refusal."), shown);
+  assert.ok(at("Wealthfolio skipped rows the preview didn't expect") < at(skippedLine), shown);
+  assert.ok(!/2023-05-05|24998|INFZ90K01LQ6|Direct Plan/.test(shown), shown);
+});
+
+test("units that differ after an import name each fund as the Review screen does", async () => {
+  const { run } = setup({ entries: [] });
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  const result = find(run, "ImportResult");
+  // The made-up host keeps nothing imported, so every fund checked differs.
+  assert.ok(Array.isArray(result.closing) && result.closing.length > 1);
+  const units = resultItems(run).map(([text]) => text).filter((text) => text.includes(": Wealthfolio has "));
+  assert.equal(units.length, result.closing.length);
+  assert.deepEqual(units.map((text) => text.split(":")[0]),
+    result.closing.map(({ schemes: [s] }) => s.scheme.split(" - ")[0]));
+  assert.ok(units.every((text) => !text.includes("Direct Plan") && !text.includes("Regular Plan")), units.join("\n"));
+});
+
 test("equal possible duplicates in two folios name their folio, not a number", async () => {
   const { run, api, data } = setup({ entries: [], change(data) {
     const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
@@ -3829,6 +3917,13 @@ for (const message of ["Duplicate activity", "", "Network unavailable"]) {
     assert.ok(Array.isArray(result.closing));
     assert.ok(!result.closing.some((f) => f.schemes.some((s) => s.scheme.startsWith("Testbridge"))), "a fund with found transactions isn't checked");
     assert.doesNotMatch(textOf(run.tree), /Nothing more was imported/);
+    // Only the found transaction remains: leaving still asks, without promising it can be retried here.
+    assert.ok(result.outcomes.every((a) => !a.retryable));
+    find(run, "ReviewHeader").onDiscard();
+    await run.flush();
+    const question = markup(nodes(run.tree).find((n) => n.type?.name === "ReviewHeader"));
+    assert.ok(question.includes("Leaving gives up any retries available here and the answers they need. What's already saved stays in Wealthfolio."), question);
+    assert.ok(question.includes("Stay") && question.includes("Leave and choose another file"), question);
   });
 }
 
