@@ -32,18 +32,25 @@ function entries(zip) {
   return list;
 }
 
+// Paths Wealthfolio's validated_addon_archive_path refuses: an empty name, a drive prefix (C:), a leading /,
+// a bare . or a leading ./ (Rust's Path::components keeps a . only at the start) and a .. segment.
+// Wealthfolio reads a backslash as a slash first; refusing it is stricter, as the packager writes /.
+function unsafePath(name) {
+  const segments = name.split("/");
+  return name.includes("\\") || /^[A-Za-z]:/.test(name) || ["", "."].includes(segments[0]) || segments.includes("..");
+}
+
 const all = entries(zip);
-// Wealthfolio skips directories and source maps, and limits the rest.
-const files = all.filter(({ name }) => !name.endsWith("/") && !name.endsWith(".map"));
+// Wealthfolio skips directories, checks the path of everything else, then skips source maps and limits the rest.
+const nonDirectories = all.filter(({ name }) => !name.endsWith("/"));
+const files = nonDirectories.filter(({ name }) => !name.endsWith(".map"));
 const total = files.reduce((sum, { size }) => sum + size, 0);
 const largest = files.reduce((a, b) => (b.size > a.size ? b : a));
 const problems = [];
 if (zip.length > LIMITS.compressed) problems.push(`the zip is ${zip.length} bytes, over ${LIMITS.compressed}`);
 if (all.length > LIMITS.entries) problems.push(`${all.length} entries, over ${LIMITS.entries}`);
-for (const { name, size } of files) {
-  if (size > LIMITS.file) problems.push(`${name} is ${size} bytes, over ${LIMITS.file}`);
-  if (name.includes("\\") || name.startsWith("/") || name.split("/").includes("..")) problems.push(`${name}: unsafe path`);
-}
+for (const { name } of nonDirectories) if (unsafePath(name)) problems.push(`${name || "(empty name)"}: unsafe path`);
+for (const { name, size } of files) if (size > LIMITS.file) problems.push(`${name} is ${size} bytes, over ${LIMITS.file}`);
 if (total > LIMITS.total) problems.push(`${total} bytes uncompressed, over ${LIMITS.total}`);
 // Wealthfolio takes any entry named manifest.json for the add-on manifest.
 const manifests = files.filter(({ name }) => name === "manifest.json" || name.endsWith("/manifest.json"));

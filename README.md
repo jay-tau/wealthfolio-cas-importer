@@ -890,6 +890,13 @@ pnpm bundle           # dist/wealthfolio-cas-importer-<version>.zip, checked aga
 
 The tests load the TypeScript sources directly, so they need Node 22.18 or newer.
 
+`pnpm bundle` ends with `pnpm check:package`, which checks Wealthfolio's package limits: at most
+50 MiB and 256 entries, and 5 MiB per file and 25 MiB uncompressed in total, not counting directories
+and source maps (`.map`) for the last two limits. It also requires one `manifest.json`, at the root,
+whose `main` is in the zip, and refuses every non-directory path Wealthfolio refuses, source maps
+included: an empty name, a drive prefix such as `C:`, a leading `/` or `./`, a bare `.` or a `..`
+segment. It also refuses any backslash, which Wealthfolio reads as `/`; the packager writes `/`.
+
 `pnpm test:browser` runs the parser and the import page inside a copy of Wealthfolio's sandbox
 (sandboxed iframe, the add-on content security policy) in Playwright's Chromium and Firefox, against a
 fake host; pass `webkit` to add WebKit.

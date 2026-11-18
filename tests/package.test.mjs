@@ -133,13 +133,29 @@ test("rejects a zip over 50 MiB, counting source maps", async () => {
 });
 
 test("rejects unsafe paths and a second manifest.json", async () => {
-  // Paths Wealthfolio refuses. Since 3.12.0 it reads a backslash as a slash, so ..\up.js is ../up.js.
-  const unsafe = ["/root.js", "../up.js", "dist/../../up.js", "..\\up.js"];
-  assert.deepEqual(await check([...addon("addon.js", "addon.js"), ...unsafe.map((name) => [name, "void 0;"])]), {
-    status: 1, stderr: unsafe.map((name) => `  ${name}: unsafe path\n`).join(""),
-  });
+  // Paths Wealthfolio refuses, source maps included: it checks every path that isn't a directory's before it
+  // skips source maps. Since 3.12.0 it reads a backslash as a slash, so ..\up.js is ../up.js.
+  const unsafe = [
+    "/root.js", "../up.js", "dist/../../up.js", "..\\up.js", "", "C:x.js", "C:/x.js", ".", "./x.js",
+    "../x.js.map", "/x.js.map", "C:x.js.map", "./x.js.map",
+    // Wealthfolio installs this as dist/x.js; check-package refuses every backslash.
+    "dist\\x.js",
+  ];
+  for (const name of unsafe) {
+    assert.deepEqual(await check([...addon("addon.js", "addon.js"), [name, "void 0;"]]), {
+      status: 1, stderr: `  ${name || "(empty name)"}: unsafe path\n`,
+    }, JSON.stringify(name));
+  }
   assert.deepEqual(await check([...addon("addon.js", "addon.js"), ["dist/manifest.json", "{}"]]), {
     status: 1, stderr: "  expected only the root manifest.json, found manifest.json, dist/manifest.json\n",
+  });
+});
+
+test("passes paths Wealthfolio accepts", async () => {
+  // Rust's Path::components drops a . that isn't at the start, and .. is unsafe only as a whole segment.
+  const safe = ["dist/a..b.js", "a/./b.js", "dist/addon.js.map"];
+  assert.deepEqual(await check([...addon("addon.js", "addon.js"), ...safe.map((name) => [name, "void 0;"])]), {
+    status: 0, stderr: "",
   });
 });
 
