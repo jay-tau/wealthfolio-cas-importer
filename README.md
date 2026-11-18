@@ -709,8 +709,10 @@ the later snapshot's prices.
 When Wealthfolio has no account a statement can go to, **Save to** proposes one and preselects it:
 "New: Mutual funds" for a detailed statement or a CAMS or KFintech summary statement, and "New: CDSL
 Demat" or "New: NSDL Demat" for a depository statement. A family's detailed statement proposes one
-for each investor, the second and later named for them ("New: Mutual funds (B. Investor)"), and a
-folio printed without a PAN gets one too. Each folio, demat account and NPS account under **Save part
+for each investor, the second and later named for them ("New: Mutual funds (B. Investor)"), or for
+the last four characters of their PAN when the statement prints no names ("New: Mutual funds (PAN
+ending 678K)"). Wealthfolio keeps account names, so this fallback uses only the PAN's end. A folio
+printed without a PAN gets one too. Each folio, demat account and NPS account under **Save part
 of it to another account** can go to a new account of its own, named after it ("New: Fictiva Mutual
 Fund folio 7712045", "New: Testbridge Securities demat"); a bank account is always one Wealthfolio
 has. A name another account has, in any case and even archived, gets a number ("Mutual funds 2"),

@@ -328,6 +328,7 @@ export function DetailedImport({
         found.push({
           key: folioKey(folio),
           name: folio.name?.trim() || data.investor_info.name?.trim() || "This investor",
+          who: "",
           title: `${folioName(folio)} (no PAN printed)`,
           folios: [folio],
           pan: false,
@@ -337,13 +338,21 @@ export function DetailedImport({
       const key = panKey(folio.PAN);
       const box = found.find((b) => b.key === key);
       if (box) box.folios.push(folio);
-      else found.push({ key, name: folio.name?.trim() || "", title: "", folios: [folio], pan: true });
+      else found.push({ key, name: folio.name?.trim() || "", who: "", title: "", folios: [folio], pan: true });
     }
     const pans = found.filter((b) => b.pan);
     for (const box of pans) {
-      box.name ||= pans.length === 1 ? data.investor_info.name?.trim() || "This investor" : `PAN ${box.folios[0].PAN}`;
+      // One of several PANs printed without a name goes by its PAN on the screen, and its new account
+      // by the PAN's end: Wealthfolio keeps account names, so don't copy a whole short PAN either.
+      const pan = box.folios[0].PAN!.trim();
+      if (!box.name && pans.length > 1) {
+        box.name = `PAN ${pan}`;
+        box.who = pan.length > 4 ? `PAN ending ${pan.slice(-4)}` : "This investor";
+      }
+      box.name ||= data.investor_info.name?.trim() || "This investor";
       box.name = box.name.replace(/\s+/g, " ");
     }
+    for (const box of found) box.who ||= box.name;
     for (const box of pans) {
       const same = pans.filter((b) => b.name === box.name).length > 1;
       box.title = `${box.name}${same ? ` (PAN ${box.folios[0].PAN})` : ""}'s funds`;
@@ -355,15 +364,15 @@ export function DetailedImport({
   const boxBankKeys = new Set(boxes.map((b) => bankKey(b.key)));
 
   // A new account each funds' select offers, created when the transactions are imported: "Mutual
-  // funds" for the first box, with its investor's name for the others, and each of a PAN's folios
-  // its own, named after it.
+  // funds" for the first box, with its investor's name, or its PAN's end, for the others, and each
+  // of a PAN's folios its own, named after it.
   const [renamed, setRenamed] = useState<Record<string, string>>({});
   const [renaming, setRenaming] = useState<Renaming | null>(null);
   // Names an import tried and couldn't create, kept while the created accounts take theirs.
   const tried = useRef<Record<string, string>>({});
   const proposalNames = proposedNames(
     [
-      ...boxes.map((box, i) => ({ key: box.key, base: "Mutual funds", who: i ? box.name : undefined })),
+      ...boxes.map((box, i) => ({ key: box.key, base: "Mutual funds", who: i ? box.who : undefined })),
       ...boxes.filter((b) => b.pan).flatMap((b) => b.folios.map((f) => ({ key: folioKey(f), base: folioName(f) }))),
     ],
     allAccounts.flatMap((a) => [a.name, labels.get(a.id)!.text]),

@@ -2812,6 +2812,78 @@ test("generated account names leave existing account labels free", async () => {
   assert.equal(box.proposed(investor.key).name, "Mutual funds (USD) 2");
 });
 
+test("a family statement without holder names names a later PAN's new account by the PAN's end, never the whole PAN", async () => {
+  const refuse = new Set(["Mutual funds (PAN ending 678K)"]);
+  const { run, asked } = withNewAccounts({ refuse, change(data) {
+    for (const folio of data.folios) folio.name = null;
+    data.folios[1].PAN = "FGHIJ5678K";
+    return data;
+  } });
+  await run.flush();
+  const { boxes, proposed } = saveTo(run);
+  // The screen shows the whole PAN: nothing saves it.
+  assert.deepEqual(boxes.map((b) => b.title), ["PAN ABCDE1234F's funds", "PAN FGHIJ5678K's funds"]);
+  const names = [...boxes.map((b) => b.key), ...boxes.flatMap((b) => b.folios).map(choices.folioKey)].map((key) => proposed(key).name);
+  assert.deepEqual(names.slice(0, 2), ["Mutual funds", "Mutual funds (PAN ending 678K)"]);
+  const key = boxes[1].key;
+  saveTo(run).newLine(key, boxes[1].title).props.onRename();
+  await run.flush();
+  assert.equal(saveTo(run).newLine(key, boxes[1].title).props.editing.draft, names[1]);
+  saveTo(run).newLine(key, boxes[1].title).props.onCancel();
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Mutual funds (PAN ending 678K)"]);
+  assert.equal(find(run, "ImportResult").outcomes.find((a) => a.key === proposedId(key)).name, names[1]);
+  refuse.clear();
+  find(run, "ImportResult").onRetryAccount(proposedId(key));
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Mutual funds (PAN ending 678K)", "Mutual funds (PAN ending 678K)"]);
+  for (const name of [...names, ...asked.map((a) => a.name)]) assert.doesNotMatch(name, /[A-Z]{5}\d{4}[A-Z]/i);
+});
+
+for (const { label, investors, expected } of [
+  { label: "a single unnamed PAN", investors: [["ABCDE1234F", null]], expected: ["Mutual funds"] },
+  { label: "mixed names and outer PAN whitespace", investors: [["ABCDE1234F", " A.  Investor "], [" \tFGHIJ5678K\n", " \t "]], expected: ["Mutual funds", "Mutual funds (PAN ending 678K)"] },
+  { label: "a printed name with whitespace", investors: [["ABCDE1234F", null], ["FGHIJ5678K", " B.  Investor\n"]], expected: ["Mutual funds", "Mutual funds (B. Investor)"] },
+  { label: "equal PAN endings", investors: [["ABCDE1234F", null], ["FGHIJ5678K", null], ["KLMNO5678K", null]], expected: ["Mutual funds", "Mutual funds (PAN ending 678K)", "Mutual funds (PAN ending 678K) 2"] },
+  { label: "a no-PAN folio before a PAN", investors: [[null, " A.  Investor "], ["FGHIJ5678K", null]], expected: ["Mutual funds", `Mutual funds (${fixture.investor_info.name})`] },
+  { label: "an odd PAN", investors: [["ABCDE1234F", null], ["???-5678K", null]], expected: ["Mutual funds", "Mutual funds (PAN ending 678K)"] },
+]) {
+  test(`box account proposals handle ${label}`, async () => {
+    const { run } = withNewAccounts({ change(data) {
+      const folios = data.folios;
+      data.folios = investors.map(([PAN, name], i) => ({ ...structuredClone(folios[i % folios.length]), folio: `771204${i}`, PAN, name }));
+      return data;
+    } });
+    await run.flush();
+    const { boxes, proposed } = saveTo(run);
+    assert.deepEqual(boxes.map((b) => proposed(b.key).name), expected);
+  });
+}
+
+for (const pan of ["K7", "678K", "   "]) {
+  test(`a nameless later investor with a short or blank PAN ${JSON.stringify(pan)} gets a generic account name`, async () => {
+    const { run, asked } = withNewAccounts({ change(data) {
+      for (const folio of data.folios) folio.name = null;
+      data.folios[1].PAN = pan;
+      return data;
+    } });
+    await run.flush();
+    const { boxes, proposed, newLine } = saveTo(run);
+    const key = boxes[1].key;
+    assert.equal(proposed(key).name, "Mutual funds (This investor)");
+    newLine(key, boxes[1].title).props.onRename();
+    await run.flush();
+    assert.equal(saveTo(run).newLine(key, boxes[1].title).props.editing.draft, "Mutual funds (This investor)");
+    saveTo(run).newLine(key, boxes[1].title).props.onCancel();
+    await run.flush();
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    assert.deepEqual(asked.map((a) => a.name), ["Mutual funds", "Mutual funds (This investor)"]);
+  });
+}
+
 test("a created account stops being offered as new after an import exception, and the main button reuses it", async () => {
   const { run, api, keys, asked, imported } = withNewAccounts();
   const send = api.activities.import;
