@@ -297,6 +297,56 @@ describe("bank entries", () => {
     assert.equal(describes(null, "Fictiva Mutual Fund"), undefined);
   });
 
+  /** Descriptions that have a fund house's word but name a bank, a place or another company. */
+  const notTheHouse = [
+    ["IMPS/P2A/618412345678/R KUMAR/BANK OF BARODA", "Baroda BNP Paribas Mutual Fund"],
+    ["NACH BAJAJ FINANCE LTD EMI", "Bajaj Finserv Mutual Fund"],
+    ["POS 4321 DMART NAVI MUMBAI", "Navi Mutual Fund"],
+    ["UPI TATA PLAY RECHARGE", "Tata Mutual Fund"],
+    ["NEFT TATA CAPITAL LOAN EMI", "WhiteOak Capital Mutual Fund"],
+    ["NEFT JM FINANCIAL SERVICES", "JM Financial Mutual Fund"],
+  ];
+
+  test("a bank, a place or another company named with a fund house's word doesn't name the fund house", () => {
+    for (const [description, amc] of notTheHouse) assert.equal(describes(description, amc), undefined, description);
+    for (const [description, amc] of [
+      // Another company of the same group, or of the house's shared word, with no loan or service word.
+      ["UPI TATA PLAY", "Tata Mutual Fund"], ["NEFT TATA CAPITAL", "Tata Mutual Fund"], ["NEFT TATA CAPITAL", "WhiteOak Capital Mutual Fund"],
+      ["NACH BAJAJ FINANCE", "Bajaj Finserv Mutual Fund"], ["NACH NAVI FINSERV", "Navi Mutual Fund"], ["NACH NAVI FINSERV", "Bajaj Finserv Mutual Fund"],
+      ["NEFT ADITYA BIRLA CAPITAL", "Aditya Birla Sun Life Mutual Fund"], ["NACH HDFC LIFE", "Aditya Birla Sun Life Mutual Fund"],
+      ["SUN PHARMA DIVIDEND", "Aditya Birla Sun Life Mutual Fund"], ["UPI ANGEL ONE", "360 ONE Mutual Fund"],
+      ["NEFT FINANCIAL SERVICES", "JM Financial Mutual Fund"], ["NEFT CAPITAL", "WhiteOak Capital Mutual Fund"],
+      ["NEFT JMFINANCIAL SERVICES", "JM Financial Mutual Fund"],
+      // A lender's loan or EMI, or a recharge, of a company named like the fund house.
+      ["NACH SUNDARAM FINANCE LTD EMI", "Sundaram Mutual Fund"], ["NACH SHRIRAM FINANCE", "Shriram Mutual Fund"],
+      ["NACH MAHINDRA FINANCE EMI", "Mahindra Manulife Mutual Fund"], ["NACH LIC HOUSING FINANCE", "LIC Mutual Fund"],
+      ["NACH HDFC LOAN", "HDFC Mutual Fund"], ["UPI JIO RECHARGE", "Jio BlackRock Mutual Fund"],
+      // A bank or a place, before or after the house's words.
+      ["NEFT BANK OF BARODA", "Baroda BNP Paribas Mutual Fund"], ["NEFT BARODA BANK", "Baroda BNP Paribas Mutual Fund"],
+      ["UPI NAVI MUMBAI MUNICIPAL CORP", "Navi Mutual Fund"],
+    ]) {
+      assert.equal(describes(description, amc), undefined, `${description}, ${amc}`);
+    }
+    // With MF, they still mention mutual funds.
+    assert.equal(describes("NACH BAJAJ FINANCE MF", "Bajaj Finserv Mutual Fund"), "funds");
+    assert.equal(describes("POS NAVI MUMBAI MF", "Navi Mutual Fund"), "funds");
+    for (const [description, amc] of [
+      ["ACH D- BARODA BNP PARIBAS MF", "Baroda BNP Paribas Mutual Fund"], ["NACH BAJAJ FINSERV MF SIP", "Bajaj Finserv Mutual Fund"],
+      ["NAVI MF", "Navi Mutual Fund"], ["UPI NAVI", "Navi Mutual Fund"], ["NACH TATA MF SIP", "Tata Mutual Fund"], ["NEFT TATA", "Tata Mutual Fund"],
+      ["NEFT WHITEOAK CAPITAL", "WhiteOak Capital Mutual Fund"], ["ACH WHITEOAKCAPITALMF", "WhiteOak Capital Mutual Fund"],
+      ["NACH JM FINANCIAL MF", "JM Financial Mutual Fund"], ["NACH JM FINANCIAL", "JM Financial Mutual Fund"], ["JMFINANCIALMF SIP", "JM Financial Mutual Fund"],
+      ["NACH BAJAJ FINSERV", "Bajaj Finserv Mutual Fund"], ["NACH SUN LIFE SIP", "Aditya Birla Sun Life Mutual Fund"],
+      ["UPI 360 ONE", "360 ONE Mutual Fund"], ["NACH BNP PARIBAS", "Baroda BNP Paribas Mutual Fund"],
+      // Scheme names can contain words of other companies without naming those companies.
+      ["NACH MIRAE ASSET BANKING AND FINANCIAL SERVICES FUND", "Mirae Asset Mutual Fund"],
+      ["NEFT NIPPON INDIA BANKING AND FINANCIAL SERVICES FUND IDCW", "Nippon India Mutual Fund"],
+      ["NEFT HDFC CAPITAL BUILDER VALUE FUND IDCW", "HDFC Mutual Fund"],
+      ["NEFT TATA CAPITAL PROTECTION ORIENTED FUND", "Tata Mutual Fund"],
+    ]) {
+      assert.equal(describes(description, amc), "house", `${description}, ${amc}`);
+    }
+  });
+
   const data = statement(folio("F1", [
     scheme("A", [
       ...sip("2023-04-10", "4999.75", "103.088", "48.5000"),
@@ -333,6 +383,30 @@ describe("bank entries", () => {
       const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts, amcOf: () => `${house} Mutual Fund` });
       assert.deepEqual(pairs.map((p) => [p.exact, p.days, p.otherEntries, p.otherTransactions, p.splits, p.strong, p.reason]),
         [[true, 0, 0, 0, false, false, "Same day, but it doesn't name a fund house: check it"]], description);
+    }
+  });
+
+  test("a bank, a place or another company named with a fund house's word starts unticked, and is still offered", () => {
+    const pairFor = (description, amc) => {
+      const entries = [entry("named-alike", "WITHDRAWAL", "5000.00", "2023-04-10", description)];
+      const { plan } = planFor(data, { existing: entries, bank: BANK });
+      const facts = new Map([["named-alike", { converts: true, inSpending: true, spending: { splitCategories: 0, kinds: [] }, synced: false }]]);
+      const pairs = bankPairs({ transactions: plan, matches: bankMatches(plan, entries, new Set()), existing: entries, linked: new Set(), facts, amcOf: () => amc });
+      return pairs.map((p) => [p.entry.id, p.exact, p.days, p.otherEntries, p.otherTransactions, p.splits, p.said, p.strong, p.reason]);
+    };
+    for (const [description, amc] of notTheHouse) {
+      assert.deepEqual(pairFor(description, amc),
+        [["named-alike", true, 0, 0, 0, false, undefined, false, "Same day, but it doesn't name a fund house: check it"]], description);
+    }
+    // The same pair naming the fund house starts ticked.
+    for (const [description, amc] of [
+      ["ACH D- BARODA BNP PARIBAS MF", "Baroda BNP Paribas Mutual Fund"], ["NACH BAJAJ FINSERV MF SIP", "Bajaj Finserv Mutual Fund"],
+      ["NAVI MF", "Navi Mutual Fund"], ["NEFT WHITEOAK CAPITAL", "WhiteOak Capital Mutual Fund"], ["NACH JM FINANCIAL MF", "JM Financial Mutual Fund"],
+      ["NACH MIRAE ASSET BANKING AND FINANCIAL SERVICES FUND", "Mirae Asset Mutual Fund"],
+      ["NEFT HDFC CAPITAL BUILDER VALUE FUND IDCW", "HDFC Mutual Fund"],
+      ["NEFT TATA CAPITAL PROTECTION ORIENTED FUND", "Tata Mutual Fund"],
+    ]) {
+      assert.deepEqual(pairFor(description, amc), [["named-alike", true, 0, 0, 0, false, "house", true, "Same day · names the fund house"]], description);
     }
   });
 

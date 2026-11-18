@@ -284,8 +284,12 @@ yet linked) within 7 days, for the transaction's amount to the paisa, with or wi
 STT or TDS, each entry offered once, to the closest transaction. A pair starts ticked only when the
 evidence is strong: it's the only entry for that transaction and the only transaction for that entry,
 it's at most a day apart, and the entry's description names the fund house or says MF or mutual
-fund. Its reason says what was found ("Same day · names the fund house"); every other pair says what
-to check ("6 days apart, and it doesn't name a fund house: check it", "2 entries match: check it").
+fund. A bank, place or other company named with a word of the fund house's name doesn't name it:
+"BANK OF BARODA" for Baroda BNP Paribas, "NAVI MUMBAI" for Navi, "BAJAJ FINANCE LTD EMI" for Bajaj
+Finserv, "HDFC LIFE" for HDFC. Nor does a word many companies share, such as Capital, without the
+rest of the name: "TATA CAPITAL" for WhiteOak Capital. A ticked pair's reason says what was found
+("Same day · names the fund house"); every other pair says what to check ("6 days apart, and it
+doesn't name a fund house: check it", "2 entries match: check it").
 A fund's equal transactions are told apart as on the possible duplicates' cards: "Fictiva Liquid Fund,
 folio 7712045" and "Purchase (1 of 2) · 3 Jul 2026 · ₹5,000, from Savings".
 **Link 4 selected** uses the ticked entries; **Create new transfers instead** uses none. Either way,
