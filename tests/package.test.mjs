@@ -7,10 +7,11 @@ import { dirname, join, resolve } from "node:path";
 import { after, test } from "node:test";
 import { crc32, deflateRawSync, inflateRawSync } from "node:zlib";
 
-function archive(main, file, method) {
+// A zip of [name, contents] entries, each stored (method 0) or deflated (method 8).
+function archive(entries, method = 0) {
   const local = [], central = [];
   let offset = 0;
-  for (const [name, text] of [["manifest.json", JSON.stringify({ main })], [file, "void 0;"]]) {
+  for (const [name, text] of entries) {
     const filename = Buffer.from(name), contents = Buffer.from(text);
     const compressed = method === 8 ? deflateRawSync(contents) : contents;
     const header = Buffer.alloc(30), entry = Buffer.alloc(46);
@@ -30,12 +31,15 @@ function archive(main, file, method) {
   }
   const directory = Buffer.concat(central), end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50);
-  end.writeUInt16LE(2, 8);
-  end.writeUInt16LE(2, 10);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
   end.writeUInt32LE(directory.length, 12);
   end.writeUInt32LE(offset, 16);
   return Buffer.concat([...local, directory, end]);
 }
+
+// A manifest.json naming `main`, and one file.
+const addon = (main, file) => [["manifest.json", JSON.stringify({ main })], [file, "void 0;"]];
 
 const temporary = await mkdtemp(join(tmpdir(), "cas-package-"));
 after(() => rm(temporary, { recursive: true, force: true }));
@@ -64,16 +68,80 @@ const ADDON = {
 for (const method of [0, 8]) {
   test(`checks the archived manifest with compression ${method}`, async () => {
     const path = join(temporary, `main-${method}.zip`);
-    await writeFile(path, archive("other.js", "other.js", method));
+    await writeFile(path, archive(addon("other.js", "other.js"), method));
     const valid = spawnSync(process.execPath, ["scripts/check-package.mjs", path], { encoding: "utf8" });
     assert.equal(valid.status, 0, valid.stderr);
 
-    await writeFile(path, archive("missing.js", "dist/addon.js", method));
+    await writeFile(path, archive(addon("missing.js", "dist/addon.js"), method));
     const invalid = spawnSync(process.execPath, ["scripts/check-package.mjs", path], { encoding: "utf8" });
     assert.equal(invalid.status, 1, invalid.stdout);
     assert.match(invalid.stderr, /main, missing\.js, is missing/);
   });
 }
+
+// Wealthfolio's limits (check-package.mjs): 50 MiB for the zip and 256 entries, and 5 MiB per file and
+// 25 MiB uncompressed in total, which leave out directories and source maps.
+const MiB = 1024 * 1024;
+
+// Runs check-package on a zip of `entries`, and returns its exit status and what it printed as problems.
+async function check(entries, method = 0) {
+  const path = join(temporary, "limits.zip");
+  await writeFile(path, archive(entries, method));
+  const { status, stderr } = spawnSync(process.execPath, ["scripts/check-package.mjs", path], { encoding: "utf8" });
+  return { status, stderr };
+}
+
+test("rejects more than 256 entries, counting directories and source maps", async () => {
+  const entries = (count) => [
+    ...addon("addon.js", "addon.js"), ["addon.js.map", "{}"],
+    ...Array.from({ length: count - 3 }, (_, i) => [`${i}/`, ""]),
+  ];
+  assert.deepEqual(await check(entries(256)), { status: 0, stderr: "" });
+  assert.deepEqual(await check(entries(257)), { status: 1, stderr: "  257 entries, over 256\n" });
+});
+
+test("rejects a file over 5 MiB", async () => {
+  const entries = (size) => [...addon("addon.js", "addon.js"), ["big.whl", Buffer.alloc(size)]];
+  assert.deepEqual(await check(entries(5 * MiB), 8), { status: 0, stderr: "" });
+  assert.deepEqual(await check(entries(5 * MiB + 1), 8), {
+    status: 1, stderr: "  big.whl is 5242881 bytes, over 5242880\n",
+  });
+});
+
+test("rejects more than 25 MiB uncompressed", async () => {
+  // Files of up to 5 MiB that make up `total` with manifest.json and addon.js.
+  const entries = (total) => {
+    const list = addon("addon.js", "addon.js");
+    let left = total - list.reduce((sum, [, text]) => sum + Buffer.byteLength(text), 0);
+    for (let i = 0; left > 0; i++, left -= 5 * MiB) list.push([`${i}.whl`, Buffer.alloc(Math.min(left, 5 * MiB))]);
+    return list;
+  };
+  assert.deepEqual(await check(entries(25 * MiB), 8), { status: 0, stderr: "" });
+  assert.deepEqual(await check(entries(25 * MiB + 1), 8), {
+    status: 1, stderr: "  26214401 bytes uncompressed, over 26214400\n",
+  });
+});
+
+test("rejects a zip over 50 MiB, counting source maps", async () => {
+  // A stored source map fills the zip: it's left out of the per-file and uncompressed limits.
+  const entries = (size) => [...addon("addon.js", "addon.js"), ["addon.js.map", Buffer.alloc(size)]];
+  const rest = archive(entries(0)).length;
+  assert.deepEqual(await check(entries(50 * MiB - rest)), { status: 0, stderr: "" });
+  assert.deepEqual(await check(entries(50 * MiB + 1 - rest)), {
+    status: 1, stderr: "  the zip is 52428801 bytes, over 52428800\n",
+  });
+});
+
+test("rejects unsafe paths and a second manifest.json", async () => {
+  // Paths Wealthfolio refuses. Since 3.12.0 it reads a backslash as a slash, so ..\up.js is ../up.js.
+  const unsafe = ["/root.js", "../up.js", "dist/../../up.js", "..\\up.js"];
+  assert.deepEqual(await check([...addon("addon.js", "addon.js"), ...unsafe.map((name) => [name, "void 0;"])]), {
+    status: 1, stderr: unsafe.map((name) => `  ${name}: unsafe path\n`).join(""),
+  });
+  assert.deepEqual(await check([...addon("addon.js", "addon.js"), ["dist/manifest.json", "{}"]]), {
+    status: 1, stderr: "  expected only the root manifest.json, found manifest.json, dist/manifest.json\n",
+  });
+});
 
 test("labels the add-on AGPL-3.0-or-later in package.json and manifest.json", async () => {
   for (const file of ["package.json", "manifest.json"]) {
