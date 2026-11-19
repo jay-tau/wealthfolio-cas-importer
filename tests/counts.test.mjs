@@ -1154,8 +1154,11 @@ test("units that differ name each fund as the Review screen does, by its label t
 
 test("the import result names each bank entry the add-on changed, and says how far a failed one got", () => {
   const transaction = { transaction: { activity: { date: "2023-05-05", activityType: "BUY" }, scheme: "Fictiva Liquid Fund - Direct Plan - Growth" } };
+  // Two purchases of the fund on that day, each its own activity with its own line number, as mapStatement gives them.
+  const [first, second] = [1, 2].map((lineNumber) =>
+    ({ transaction: { ...transaction.transaction, activity: { ...transaction.transaction.activity, lineNumber } } }));
   // The fund goes by its name on the Review screen, and the bank entry's amount and day as its review card gives them.
-  const fundName = (t) => (t === transaction ? "Fictiva Liquid Fund" : "?");
+  const fundName = (t) => ([transaction, first, second].includes(t) ? "Fictiva Liquid Fund" : "?");
   const bankRow = (id, activityType, comment) =>
     ({ id, accountId: "bank-1", activityType, amount: "25000.00", date: "2023-05-04T00:00:00+00:00", comment });
   const links = [
@@ -1185,7 +1188,7 @@ test("the import result names each bank entry the add-on changed, and says how f
   assert.ok(!failedAt("exists").includes("Try again"));
   assert.ok(!failedAt("exists").includes("wasn't added"));
   // A transaction Wealthfolio now has all or part of, saved elsewhere while an import ran, says what to do, with its bank entry if one was chosen.
-  const found = importResult({ found: [{ transaction }, { transaction, entryDay: "2023-05-04" }], fundName });
+  const found = importResult({ found: [{ transaction: first }, { transaction: second, entryDay: "2023-05-04" }], fundName });
   assert.ok(found.includes(
     " ✗ Purchase of Fictiva Liquid Fund on 5 May 2023: Wealthfolio now has all or part of it, saved elsewhere while the import ran, so it wasn't imported again. Check it in Wealthfolio, then read the statement again to import anything missing. " +
       "✗ Purchase of Fictiva Liquid Fund on 5 May 2023: Wealthfolio now has all or part of it, saved elsewhere while the import ran, so it wasn't imported again, nor linked with the bank entry of 4 May 2023. Check it in Wealthfolio, then read the statement again to import anything missing. ",
