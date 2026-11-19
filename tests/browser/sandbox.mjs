@@ -2536,8 +2536,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       await box.waitFor({ state: "detached" });
     };
     const priced = "Priced by hand: saving also saves the statement's price as its price on this date.";
-    // With more than five ready rows for one account, only the first three, those missing a cost and
-    // those just changed show until Show all.
+    // With more than five ready rows for one account, only the first three, those with something to
+    // check, such as a missing cost, and those just changed show until Show all.
     const showAll = frame.getByRole("button", { name: /^Show all \d+$/ });
     const showAllRows = async () => {
       if (await showAll.count()) await showAll.click();
@@ -2750,7 +2750,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
 
     // Use another file asks first once something's changed, and Keep reviewing is the main choice.
     await answer("PLACEHOLDER PHARMA LIMITED", "skip");
-    // The Bond's cost comes from its face value, so it's among the rows Show all shows.
+    // The Bond's cost comes from its face value, and its note only says that saving also saves the
+    // statement's price, so it's among the rows Show all shows.
     assert.equal(await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").count(), 0);
     const shownBefore = await readyRows.count();
     const more = Number((await frame.getByText(/^\(\d+ more, nothing to check\)$/).textContent()).match(/\d+/)[0]);

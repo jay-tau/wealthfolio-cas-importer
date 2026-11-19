@@ -120,11 +120,14 @@ function RowHead({ ctx, row, handlers }: { ctx: AddonContext; row: FundRow; hand
 
 const before = (row: FundRow) => (row.group.before ? `${row.group.before} imported before` : "");
 
+/** Something to check on the row: a note, or a plan, option or currency warning. */
+const toCheck = (row: FundRow) => !!row.note || fundPlanWarnings(row).length > 0 || !!otherCurrency(row.fund.quoteCcy);
+
 /**
  * Every fund with transactions to import, with its price source, new transactions and units after
  * the import: a table from the `sm` width, a stacked list below it. Grouped by whose funds go to which
  * account when there's more than one. With more than five rows, only the first three,
- * rows whose units won't match and rows just changed show until Show all.
+ * rows with something to check and rows just changed show until Show all.
  */
 export function FundsReadyTable({
   ctx,
@@ -146,7 +149,7 @@ export function FundsReadyTable({
   const titles = [...new Set(rows.map((r) => r.groupTitle))];
   const grouped = titles.length > 1;
   const open = (row: FundRow) => handlers.changing === row.id;
-  const visible = showAll || rows.length <= 5 ? rows : rows.filter((row, i) => i < 3 || row.note || row.touched || open(row));
+  const visible = showAll || rows.length <= 5 ? rows : rows.filter((row, i) => i < 3 || toCheck(row) || row.touched || open(row));
   const more = rows.length - visible.length;
   const groups = grouped
     ? titles.map((title) => ({ title, rows: visible.filter((r) => r.groupTitle === title) }))
