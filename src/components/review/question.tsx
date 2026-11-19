@@ -255,7 +255,7 @@ export function QuestionCard({
   item,
   label,
   units,
-  where = item.where,
+  where,
   search,
   searches,
   base,
@@ -270,7 +270,7 @@ export function QuestionCard({
   skip?: string;
   /** The statement's units, already grouped, with their noun: "1,000.000 units", "40 shares". None when they're unknown. */
   units?: string;
-  /** Where the statement lists those units, when it's more than one place: the item's by default. */
+  /** More about those units, after them: where the statement lists them, when that's more than one place, "in 2 folios". */
   where?: string;
   search: ItemSearch;
   searches: HoldingSearches;
