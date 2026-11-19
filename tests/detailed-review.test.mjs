@@ -90,17 +90,18 @@ function controller(props) {
     useSyncExternalStore(subscribe, snapshot, fallback) { return fallback(); },
   };
   return {
+    render() {
+      dirty = false;
+      cursor = 0;
+      globalThis.reviewHooks = hooks;
+      tree = DetailedImport(props);
+    },
     async flush() {
       for (let i = 0; i < 40; i++) {
-        if (dirty) {
-          dirty = false;
-          cursor = 0;
-          globalThis.reviewHooks = hooks;
-          tree = DetailedImport(props);
-          const pending = effects;
-          effects = [];
-          pending.forEach((fn) => fn());
-        }
+        if (dirty) this.render();
+        const pending = effects;
+        effects = [];
+        pending.forEach((fn) => fn());
         await new Promise((resolve) => setImmediate(resolve));
       }
       assert.equal(dirty, false, "the controller settled");
@@ -2151,7 +2152,7 @@ test("an old duplicate answer cannot force a row already imported into a newly c
   assert.ok(imported[0].every((r) => r.sourceRecordId !== purchase.sourceRecordId));
 });
 
-for (const changed of ["account", "fund", "host"]) {
+for (const changed of ["account", "fund", "matched activity"]) {
   test(`possible duplicates need fresh answers after the ${changed} changes`, async () => {
     const { run, props, api, keys } = setup({ entries: [] });
     api.activities.checkImport = async (rows) => rows.map((r) => r.symbol?.startsWith("INFZ90K01LQ6") && r.activityType === "BUY"
@@ -2160,7 +2161,11 @@ for (const changed of ["account", "fund", "host"]) {
     for (const card of askCards(run)) card.other.onClick();
     await run.flush();
     assert.equal(askAnswers(run).length, 2);
-    const checked = api.activities.checkImport;
+    const before = api.activities.checkImport;
+    // Opened again, Wealthfolio's check flags other activities.
+    const checked = changed === "matched activity"
+      ? async (rows) => (await before(rows)).map((r) => (r.duplicateOfId ? { ...r, duplicateOfId: `${r.duplicateOfId}-another` } : r))
+      : before;
     let finish;
     api.activities.checkImport = (rows) => new Promise((resolve) => { finish = async () => resolve(await checked(rows)); });
     if (changed === "account") saveTo(run).onChange(keys.pan, "other");
@@ -2187,6 +2192,217 @@ for (const changed of ["account", "fund", "host"]) {
     assert.equal(find(run, "TransactionsSummary").breakdown.duplicates, 2);
   });
 }
+
+/** Opens a ready fund's Change, by its symbol, and returns its panel and row. */
+async function openChange(run, symbol) {
+  const row = find(run, "FundsReadyTable").rows.find((r) => r.fund.symbol === symbol);
+  find(run, "FundsReadyTable").handlers.onChange(row);
+  await run.flush();
+  return { panel: find(run, "FundsReadyTable").handlers.changePanel(row), row };
+}
+/** Uses another listing for a ready fund through its Change. */
+async function changeListing(run, symbol) {
+  const { panel, row } = await openChange(run, symbol);
+  nodes(panel).find((node) => node.type?.name === "Picker").props.onUse({ ...row.fund, symbol: `${symbol}-NEW` });
+}
+const corporateBond = (props) => choices.fundKey(props.data.folios[1].schemes.find((s) => s.scheme.includes("Corporate Bond")));
+// Each change, what it needs before the review starts, and which answered questions it opens again.
+// Fictiva Liquid Fund and Fictiva Balanced Advantage Fund are in folio 91234567, Testbridge's funds in 1040012345.
+const ANSWER_CHANGES = {
+  "confirming another fund": {
+    start: ({ props }) => delete props.fundChoices[corporateBond(props)],
+    act: ({ run }) => find(run, "QuestionCard").onAnswer({ fund: {
+      symbol: "INFZ91T01CB6", exchangeMic: "XBOM", quoteCcy: "INR", name: "Corporate Bond", instrumentType: "MUTUALFUND", providerId: "YAHOO",
+    } }),
+    reopens: [],
+  },
+  "AMFI confirming another fund": {
+    start: ({ props }) => delete props.fundChoices[corporateBond(props)],
+    act: ({ run, props, api }) => {
+      const name = props.data.folios[1].schemes.find((s) => s.scheme.includes("Corporate Bond")).scheme;
+      api.market.searchTicker = async () => [{ symbol: "123456", longName: name, currency: "INR", quoteType: "MUTUALFUND", providerId: "AMFI" }];
+      run.update({ amfi: { status: "on", searches: 1 } });
+    },
+    reopens: [],
+  },
+  "another listing for another fund": { act: ({ run }) => changeListing(run, "TONDG"), reopens: [] },
+  "Skip this fund for another fund": {
+    act: async ({ run }) => {
+      const { panel } = await openChange(run, "TONDG");
+      nodes(panel).find((node) => node.props?.["aria-label"]?.startsWith("Skip this fund:")).props.onClick();
+    },
+    reopens: [],
+  },
+  "opening Change alone": { act: ({ run }) => openChange(run, "TONDG"), reopens: [] },
+  "another folio's account": { act: ({ run, keys }) => saveTo(run).onChange(keys.testbridge, "other"), reopens: [] },
+  "another folio not imported": { act: ({ run, keys }) => saveTo(run).onChange(keys.testbridge, choices.LEFT_OUT), reopens: [] },
+  "another folio's bank account": { act: ({ run, keys }) => saveTo(run).onChange(choices.bankKey(keys.testbridge), "bank"), reopens: [] },
+  "opening the page again": { act: ({ run }) => run.update({ visit: {} }), reopens: [] },
+  "a bank entry changed at Import": {
+    remembered: () => ({ [choices.panKey("ABCDE1234F")]: "mf", [choices.bankKey(choices.panKey("ABCDE1234F"))]: "bank" }),
+    entries: ENTRIES,
+    act: async ({ run, keys, activities, imported }) => {
+      checksUnder(run, choices.bankKey(keys.pan))[0].onLink();
+      await run.flush();
+      const index = activities.findIndex((a) => a.id === "dividend");
+      activities[index] = { ...activities[index], amount: "1" };
+      find(run, "Footer").action.onClick();
+      await run.flush();
+      assert.equal(imported.length, 0);
+      assert.match(textOf(run.tree), /Nothing was imported: bank entries you chose changed/);
+    },
+    reopens: [],
+  },
+  "its own folio's account": { act: ({ run, keys }) => saveTo(run).onChange(keys.fictiva, "other"), reopens: ["Balanced", "purchase", "switch in"] },
+  // A switch in has no bank side, so its rows stay as they were.
+  "its own folio's bank account": { act: ({ run, keys }) => saveTo(run).onChange(choices.bankKey(keys.fictiva), "bank"), reopens: ["Balanced", "purchase"] },
+  "the duplicates' own fund": { act: ({ run }) => changeListing(run, "INFZ90K01LQ6"), reopens: ["purchase", "switch in"] },
+  "the unbalanced fund's own fund": { act: ({ run }) => changeListing(run, "INFZ90K01BA1"), reopens: ["Balanced"] },
+  "Wealthfolio's activity matching one duplicate": {
+    act: ({ run, api }) => {
+      const checked = api.activities.checkImport;
+      api.activities.checkImport = async (rows) => (await checked(rows)).map((r) => (r.duplicateOfId && r.date === "2023-05-05" ? { ...r, duplicateOfId: "another" } : r));
+      run.update({ visit: {} });
+    },
+    reopens: ["purchase"],
+  },
+};
+for (const [change, { start, act, reopens, remembered, entries = [] }] of Object.entries(ANSWER_CHANGES)) {
+  test(`answered possible duplicates and "don't add up" questions open again only for their own evidence: ${change}`, async () => {
+    const review = setup({ entries, remembered: remembered?.(), change(data) {
+      const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));
+      scheme.close = String(Number(scheme.close_calculated) + 1);
+      return data;
+    } });
+    const { run, api } = review;
+    api.activities.checkImport = async (rows) => rows.map((r) => r.symbol?.startsWith("INFZ90K01LQ6") && r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+    start?.(review);
+    await run.flush();
+    const card = (part) => askCards(run).find((c) => c.title.includes(part));
+    card("don't add up").other.onClick();
+    await run.flush();
+    card("This purchase").main.onClick();
+    await run.flush();
+    card("This switch in").other.onClick();
+    await run.flush();
+    const answered = askAnswers(run).map((a) => a.text);
+    assert.equal(answered.length, 3);
+    assert.deepEqual(askCards(run), []);
+    await act(review);
+    await run.flush();
+    if (change === "AMFI confirming another fund") {
+      assert.equal(find(run, "QuestionCard"), undefined);
+      const matched = find(run, "FundsReadyTable").rows.find((r) => r.fund.symbol === "123456");
+      assert.equal(matched?.by, "auto");
+      assert.equal(matched?.fund.providerId, "AMFI");
+      assert.ok(matched.items.some((i) => i.key === corporateBond(review.props)));
+    }
+    const titles = askCards(run).map((c) => c.title);
+    assert.deepEqual(reopens.map((part) => titles.filter((t) => t.includes(part)).length), reopens.map(() => 1), titles.join(" | "));
+    assert.equal(titles.length, reopens.length, titles.join(" | "));
+    assert.ok(askCards(run).every((c) => !c.disabled));
+    const kept = answered.filter((text) => !reopens.some((part) => text.includes(part)));
+    assert.deepEqual(askAnswers(run).map((a) => a.text), kept);
+    const b = find(run, "TransactionsSummary").breakdown;
+    assert.equal(b.importedDuplicates, kept.some((t) => t.includes("switch in")) ? 1 : 0);
+    assert.equal(b.skippedDuplicates, kept.some((t) => t.includes("purchase")) ? 1 : 0);
+  });
+}
+
+test("answers a plan dropped for their folio's other account don't come back with its account", async () => {
+  const { run, api, keys } = setup({ entries: [], change(data) {
+    const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));
+    scheme.close = String(Number(scheme.close_calculated) + 1);
+    return data;
+  } });
+  api.activities.checkImport = async (rows) => rows.map((r) => r.symbol === "INFZ90K01LQ6" && r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.deepEqual([askAnswers(run).length, askCards(run).length], [3, 0]);
+  saveTo(run).onChange(keys.pan, "other");
+  await run.flush();
+  assert.deepEqual([askAnswers(run).length, askCards(run).length], [0, 3]);
+  saveTo(run).onChange(keys.pan, "mf");
+  await run.flush();
+  assert.deepEqual([askAnswers(run).length, askCards(run).length], [0, 3]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+});
+
+for (const state of ["pending", "failed"]) {
+  test(`answers count again when their folio's account changes back before a plan shows the change (${state})`, async () => {
+    const { run, api, keys, imported } = setup({ entries: [], change(data) {
+      const scheme = data.folios[0].schemes.find((s) => s.scheme.includes("Balanced"));
+      scheme.close = String(Number(scheme.close_calculated) + 1);
+      return data;
+    } });
+    api.activities.checkImport = async (rows) => rows.map((r) => r.symbol === "INFZ90K01LQ6" && r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+    await run.flush();
+    const card = (part) => askCards(run).find((c) => c.title.includes(part));
+    card("don't add up").other.onClick();
+    await run.flush();
+    card("This purchase").main.onClick();
+    await run.flush();
+    card("This switch in").other.onClick();
+    await run.flush();
+    const answered = askAnswers(run).map((a) => a.text);
+    assert.equal(answered.length, 3);
+    let reject;
+    const check = api.activities.checkImport;
+    api.activities.checkImport = () => new Promise((resolve, fail) => { reject = fail; });
+    saveTo(run).onChange(keys.fictiva, "other");
+    // On other evidence, before and after effects, no answer shows or counts.
+    const away = () => {
+      assert.deepEqual([askCards(run).length, askAnswers(run).length], [0, 0]);
+      assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced, []);
+      assert.equal(find(run, "TransactionsSummary"), undefined);
+      assert.equal(find(run, "Footer").action.disabled, true);
+    };
+    run.render();
+    away();
+    await run.flush();
+    away();
+    if (state === "failed") {
+      reject(new Error("made-up plan failure"));
+      await run.flush();
+      away();
+      assert.match(footer(run)[0], /We couldn't work out/);
+    }
+    api.activities.checkImport = check;
+    saveTo(run).onChange(keys.fictiva, "mf");
+    // Back to what they were given for, which no plan showed changed, the answers count again.
+    run.render();
+    assert.deepEqual(askAnswers(run).map((a) => a.text), answered);
+    await run.flush();
+    assert.deepEqual(askAnswers(run).map((a) => a.text), answered);
+    assert.deepEqual(askCards(run), []);
+    const b = find(run, "TransactionsSummary").breakdown;
+    assert.deepEqual([b.duplicates, b.skippedDuplicates, b.importedDuplicates, b.unbalanced], [0, 1, 1, 0]);
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    const rows = imported.flat();
+    assert.deepEqual(rows.filter((r) => r.symbol === "INFZ90K01LQ6" && r.activityType === "BUY").map((r) => r.date.slice(0, 10)), ["2024-06-20"]);
+    assert.ok(rows.some((r) => r.symbol === "INFZ90K01BA1"));
+  });
+}
+
+test("confirming Testbridge Corporate Bond Fund keeps the issue's two skipped duplicates, and the bar offers to import", async () => {
+  const review = setup({ entries: [] });
+  const { run, props, api } = review;
+  delete props.fundChoices[corporateBond(props)];
+  api.activities.checkImport = async (rows) => rows.map((r) => r.symbol === "INFZ90K01LQ6" && r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
+  await run.flush();
+  for (const card of askCards(run)) card.main.onClick();
+  await run.flush();
+  ANSWER_CHANGES["confirming another fund"].act(review);
+  await run.flush();
+  assert.equal(footer(run)[0], "Import 11 transactions for 4 funds into Mutual funds.");
+  assert.ok(footer(run).some((line) => line.includes("2 possible duplicates skipped by your answer")));
+});
 
 test("a duplicate bank entry names the bank account in its question and evidence", async () => {
   const { run, api, keys } = setup({ entries: [entry("bank-match", "WITHDRAWAL", "25001.15", "2023-05-05", null)] });
