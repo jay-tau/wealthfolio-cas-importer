@@ -1,7 +1,7 @@
 import type { ActivityCharge, ActivityImport, ActivityType } from "@wealthfolio/addon-sdk";
 import { hasSegregatedMarker, readableName } from "../lib/fund-name.ts";
 import { plural } from "../lib/plural.ts";
-import { rupees } from "../lib/review-format.ts";
+import { quantity as quantityText, rupees } from "../lib/review-format.ts";
 import { sha256 } from "../lib/sha256.ts";
 import { abs, add, cmp, dec, type Dec, format, isZero, mul, neg, step, sub } from "./decimal.ts";
 import { fundRef } from "./plan.ts";
@@ -125,6 +125,8 @@ const HALF = dec("0.5");
 const ZERO = dec("0");
 /** An amount in a message as the Review screen writes rupees: "₹1,02,310.50". What's imported keeps every decimal. */
 const shown = (amount: Dec) => rupees(format(amount));
+/** Units in a message as the Review screen writes them: "1,000.000 units". What's imported keeps them as printed. */
+const shownUnits = (units: string) => quantityText("unit", units);
 /** casparser's tolerance when it checks the rows against the printed unit balances. */
 const UNIT_TOLERANCE = dec("0.005");
 
@@ -644,7 +646,7 @@ function giftRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"]
       isExternal: true,
     },
     note: differs
-      ? `The statement's ${shown(printed)} differs from ${quantity} units × NAV ${row.nav} by more than the units' rounding. It's imported at NAV ${row.nav}.`
+      ? `The statement's ${shown(printed)} differs from ${shownUnits(quantity)} × NAV ${row.nav} by more than the units' rounding. It's imported at NAV ${row.nav}.`
       : undefined,
   };
 }
@@ -974,7 +976,7 @@ function buildRows(entry: Entry, target: SchemeTarget): NonNullable<Entry["rows"
   const matches = [value, charged].some((amount) => cmp(abs(sub(printed, amount)), tolerance) <= 0);
   const note = matches
     ? undefined
-    : `The statement's ${shown(printed)} differs from ${quantity} units × NAV ${row.nav}${isZero(charges) ? "" : `, with or without the ${names},`} by more than the units' rounding. It's imported at ${shown(final)} using the printed units and NAV.`;
+    : `The statement's ${shown(printed)} differs from ${shownUnits(quantity)} × NAV ${row.nav}${isZero(charges) ? "" : `, with or without the ${names},`} by more than the units' rounding. It's imported at ${shown(final)} using the printed units and NAV.`;
   const trade = { ...base, ...asset, ...tax, quantity, unitPrice: row.nav };
   if (kind === "reinvest") {
     // Wealthfolio splits this into dividend income, which takes the tax, and a purchase of `value`.

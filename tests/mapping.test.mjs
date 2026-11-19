@@ -294,6 +294,45 @@ describe("amounts and charges", () => {
     }
   });
 
+  test("a caveat writes units as the Review screen does, and the units compared and imported keep every place", () => {
+    const purchase = (printed, units, nav) => [tx("2024-01-10", "PURCHASE", printed, units, nav)];
+    const NOTE = "by more than the units' rounding. It's imported at";
+    for (const [rows, row, caveat] of [
+      // Thousands, grouped: 1000.000 × 10 = 10000.
+      [
+        purchase("12000.00", "1000.000", "10.0000"), ["BUY", "", "1000.000", "10000", "", "DEPOSIT"],
+        `The statement's ₹12,000 differs from 1,000.000 units × NAV 10.0000 ${NOTE} ₹10,000 using the printed units and NAV.`,
+      ],
+      // Half of 0.001 units at ₹10 plus a paisa is ₹0.015, so ₹10,000.01 matches.
+      [purchase("10000.01", "1000.000", "10.0000"), ["BUY", "", "1000.000", "10000", "", "DEPOSIT"], undefined],
+      // Lakhs, padded to three decimals: 125000.5 × 10 = 1250005.
+      [
+        purchase("1300000.00", "125000.5", "10.0000"), ["BUY", "", "125000.5", "1250005", "", "DEPOSIT"],
+        `The statement's ₹13,00,000 differs from 1,25,000.500 units × NAV 10.0000 ${NOTE} ₹12,50,005 using the printed units and NAV.`,
+      ],
+      // The printed tenth of a unit allows ₹0.50 plus a paisa, so ₹12,50,005.51 still matches.
+      [purchase("1250005.51", "125000.5", "10.0000"), ["BUY", "", "125000.5", "1250005", "", "DEPOSIT"], undefined],
+      // A fourth decimal kept: 1000.0005 × 10.1234 = 10123.4050617.
+      [
+        purchase("12000.00", "1000.0005", "10.1234"), ["BUY", "", "1000.0005", "10123.4050617", "", "DEPOSIT"],
+        `The statement's ₹12,000 differs from 1,000.0005 units × NAV 10.1234 ${NOTE} ₹10,123.41 using the printed units and NAV.`,
+      ],
+      // Half of 0.0001 units at ₹10.1234 plus a paisa is ₹0.01050617, so ₹10,123.41 matches.
+      [purchase("10123.41", "1000.0005", "10.1234"), ["BUY", "", "1000.0005", "10123.4050617", "", "DEPOSIT"], undefined],
+      // A redemption's units without their sign: 10000.000 × 10 - 1 = 99999.
+      [
+        [tx("2024-01-10", "REDEMPTION", "-90000.00", "-10000.000", "10.0000"), charge("2024-01-10", "STT_TAX", "1.00")],
+        ["SELL", "", "10000.000", "99999", "1", "WITHDRAWAL"],
+        `The statement's ₹90,000 differs from 10,000.000 units × NAV 10.0000, with or without the ₹1 STT, ${NOTE} ₹99,999 using the printed units and NAV.`,
+      ],
+    ]) {
+      const mapping = map(statement(scheme("A", rows)));
+      assert.deepEqual(summary(mapping), { rows: [row], warnings: caveat ? [caveat] : [] }, rows[0].amount);
+      assert.deepEqual(mapping.transactions.map(({ activity }) => activity.unitPrice), [rows[0].nav]);
+      assert.deepEqual(mapping.warnings.map((w) => w.leftOut), caveat ? [false] : []);
+    }
+  });
+
   test("the cross-check includes a paisa and accepts the exact tolerance", () => {
     for (const [printed, caveat] of [["1000.015", false], ["1000.0151", true], ["1001.015", false], ["1001.0151", true]]) {
       const mapping = map(statement(scheme("A", [
@@ -1105,11 +1144,33 @@ describe("gifts", () => {
     for (const [amount, shown] of [["50001", "₹50,001"], ["0", "₹0"]]) {
       const off = map(statement(scheme("A", [giftIn({ amount })])));
       assert.deepEqual(messages(off), [
-        ["F1", false, `${RECEIVED} The statement's ${shown} differs from 1000.000 units × NAV 50.0000 by more than the units' rounding. It's imported at NAV 50.0000.`],
+        ["F1", false, `${RECEIVED} The statement's ${shown} differs from 1,000.000 units × NAV 50.0000 by more than the units' rounding. It's imported at NAV 50.0000.`],
       ]);
     }
     for (const amount of ["50000.03", null]) {
       assert.deepEqual(messages(map(statement(scheme("A", [giftIn({ amount })])))), [["F1", false, RECEIVED]], String(amount));
+    }
+  });
+
+  test("a gift's caveat writes units as the Review screen does, and the units compared and imported keep every place", () => {
+    for (const [units, amount, caveat] of [
+      // Lakhs: 125000.000 × 50 = 6250000.
+      ["125000.000", "6000000.00", "The statement's ₹60,00,000 differs from 1,25,000.000 units × NAV 50.0000"],
+      // Padded to three decimals: 1000.5 × 50 = 50025. Half a tenth of a unit at ₹50 is ₹2.50, so ₹50,027.51 matches.
+      ["1000.5", "50000.00", "The statement's ₹50,000 differs from 1,000.500 units × NAV 50.0000"],
+      ["1000.5", "50027.51", undefined],
+      // A fourth decimal kept: 1000.0005 × 50 = 50000.025. Half of 0.0001 units at ₹50 plus a paisa is ₹0.0125.
+      ["1000.0005", "50001.00", "The statement's ₹50,001 differs from 1,000.0005 units × NAV 50.0000"],
+      ["1000.0005", "50000.03", undefined],
+    ]) {
+      const mapping = map(statement(scheme("A", [giftIn({ units, amount })])));
+      assert.deepEqual(
+        mapping.transactions.map(({ activity: a }) => [a.activityType, a.quantity, a.unitPrice, a.isExternal]),
+        [["TRANSFER_IN", units, "50.0000", true]],
+        amount,
+      );
+      const note = caveat && ` ${caveat} by more than the units' rounding. It's imported at NAV 50.0000.`;
+      assert.deepEqual(messages(mapping), [["F1", false, `${RECEIVED}${note ?? ""}`]], amount);
     }
   });
 
