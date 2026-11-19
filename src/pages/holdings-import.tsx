@@ -87,6 +87,7 @@ import { type AskWords, answerNames, holdingAskWords, list, sameDateChanges, sam
 import { explanation, Explained } from "../lib/explained";
 import { nextOpen, type QuestionStop } from "../lib/focus";
 import { fundName, readableName } from "../lib/fund-name";
+import { errorSentence } from "../lib/host-errors";
 import { instrumentType } from "../lib/instrument-type";
 import { accountLabels } from "../lib/account-labels";
 import { nameNumber } from "../lib/name-number";
@@ -133,7 +134,7 @@ async function refsOf(profileOf: Profiles, holdings: Holding[]) {
     try {
       asset = await profileOf(instrument.id);
     } catch (e) {
-      throw new Error(`Couldn't read the Wealthfolio profile of ${instrument.name || instrument.symbol}: ${String(e)}. Try again.`);
+      throw new Error(`Couldn't read the Wealthfolio profile of ${instrument.name || instrument.symbol}: ${errorSentence(e)} Try again.`);
     }
     return [instrument.id, fundRef(asset.instrumentSymbol || instrument.symbol, asset.instrumentExchangeMic)] as const;
   })));

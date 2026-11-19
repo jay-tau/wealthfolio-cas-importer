@@ -1261,6 +1261,20 @@ for (const failedRead of ["activities", "profile"]) {
   });
 }
 
+for (const [message, ended, end] of [["nope", "nope.", "no final punctuation"], ["nope.", "nope.", "a period"], ["nope?", "nope?", "a question mark"], ["nope!", "nope!", "an exclamation mark"]]) {
+  test(`a held asset's failed profile read, with ${end}, is logged with one sentence end before "Try again."`, async () => {
+    const { run, api, logged } = setup([source("X", [holding("ISINX")])]);
+    api.portfolio.getHoldings = async (id) => id !== "B" ? [] : [{
+      holdingType: "security", quantity: "10", localCurrency: "INR", instrument: { id: "held", symbol: "HELD", name: "Made-up held fund", quoteMode: "MARKET" },
+    }];
+    api.assets.getProfile = async () => { throw new Error(message); };
+    await run.flush();
+    assert.equal(find(run, "Footer").lines.map(textOf)[0], "We couldn't work out what will be saved. Nothing was saved.");
+    // Wealthfolio's text stays as String() gives it, with the `Error: ` prefix.
+    assert.deepEqual(logged, [`Couldn't work out what will be saved: Error: Couldn't read the Wealthfolio profile of Made-up held fund: Error: ${ended} Try again.`]);
+  });
+}
+
 test("an empty or failed button search returns focus to its field unless the user moved it", async () => {
   for (const failed of [false, true]) for (const moved of [false, true]) {
     const { run, api } = setup([source("X", [holding("ISINX")])], false);

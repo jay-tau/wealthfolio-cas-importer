@@ -6,3 +6,12 @@
  */
 export const isDuplicateActivity = (error: unknown) =>
   typeof error === "object" && error !== null && (error as { code?: unknown }).code === "DUPLICATE_ACTIVITY";
+
+/**
+ * `String(error)` as a sentence that more text follows: with a final period, unless it already
+ * ends with `.`, `?` or `!`.
+ */
+export const errorSentence = (error: unknown) => {
+  const text = String(error);
+  return /[.?!]$/.test(text) ? text : `${text}.`;
+};

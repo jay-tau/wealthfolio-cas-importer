@@ -1394,6 +1394,25 @@ describe("bank account", () => {
     }
   });
 
+  test("a Wealthfolio error ends its sentence with its own final punctuation, or a period, before what to do", async () => {
+    const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
+    const withdrawal = bankRow("WITHDRAWAL", "5000.00", "2023-04-08");
+    const working = { create: async () => ({ id: "fund-leg" }), update: async () => {}, linkTransfer: async () => {} };
+    const failing = (step, error) => ({ ...working, [step]: async () => { throw error; } });
+    for (const [message, ended] of [["nope", "nope."], ["nope.", "nope."], ["nope?", "nope?"], ["nope!", "nope!"]]) {
+      const duplicate = Object.assign(new Error(message), { code: "DUPLICATE_ACTIVITY" });
+      const failures = [failing("create", duplicate), failing("create", new Error(message)), failing("update", new Error(message)), failing("linkTransfer", new Error(message))];
+      const results = await Promise.all(failures.map((api) => linkBankRow(api, t, withdrawal, "UTC")));
+      // Wealthfolio's text stays as String() gives it, with the `Error: ` prefix.
+      assert.deepEqual(results.map((r) => r.error), [
+        `Wealthfolio refused the fund account's transfer as a duplicate: Error: ${ended} It may already have one for the bank's row on 2023-04-08: check the transfers and link the two in Wealthfolio.`,
+        `Couldn't add the fund account's transfer: Error: ${ended} The trade is in Wealthfolio without its cash.`,
+        `Added the fund account's transfer, but couldn't change the bank's row on 2023-04-08 into a transfer: Error: ${ended} Change it and link the two in Wealthfolio.`,
+        `Added the fund account's transfer, but couldn't link it with the bank's row on 2023-04-08: Error: ${ended} Link the two in Wealthfolio.`,
+      ]);
+    }
+  });
+
   test("a check after a refused import finds a transaction saved meanwhile; one imported anyway only by an activity its plan didn't see", () => {
     const [t] = banked(statement(scheme("A", sip("2023-04-10"))));
     const rows = importRows([t], () => false);
