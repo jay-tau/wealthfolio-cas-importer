@@ -1370,6 +1370,68 @@ test("equal possible duplicates are numbered in a folio whose number another fun
     ["Purchase · Testbridge Liquid Fund", "Purchase (1 of 2) · Fictiva Liquid Fund", "Purchase (2 of 2) · Fictiva Liquid Fund"]);
 });
 
+/**
+ * The made-up Liquid Fund's purchase in Fictiva's folio, and in Testbridge's folio of the same number
+ * a purchase of another fund printed with the Liquid Fund's name; `twinChosen` chooses it as
+ * Testbridge Liquid Fund. With `unbalanced`, Fictiva's Balanced Advantage Fund, whose rows don't add
+ * up, is in Fictiva's folio too.
+ */
+const twinHouses = (unbalanced = false) => (d) => {
+  const [fictiva, testbridge] = d.folios;
+  const balanced = fictiva.schemes.find((s) => s.scheme.includes("Balanced"));
+  balanced.close = String(Number(balanced.close_calculated) + 1);
+  const [liquid] = onePurchase(d).folios[0].schemes;
+  const twin = { ...structuredClone(liquid), isin: "INFZ91T01LQ2", rta_code: "TLQDG" };
+  d.folios = [{ ...fictiva, schemes: unbalanced ? [liquid, balanced] : [liquid] }, { ...testbridge, folio: fictiva.folio, schemes: [twin] }];
+  return d;
+};
+/** `twinHouses`' Liquid Fund and the other fund printed with its name, the latter chosen as Testbridge Liquid Fund. */
+function twinChosen({ props, data }) {
+  const [liquid, twin] = data.folios.map((f) => f.schemes[0]);
+  assert.equal(data.folios[0].folio, data.folios[1].folio);
+  assert.equal(liquid.scheme, twin.scheme);
+  props.fundChoices[choices.fundKey(twin)].fund.name = "Testbridge Liquid Fund - Direct Plan - Growth";
+  return [liquid, twin];
+}
+
+test("possible duplicates in two fund houses' folios of one number and one printed fund name name their own funds", async () => {
+  const context = setup({ entries: [], change: twinHouses(true) });
+  const { run, api } = context;
+  const symbols = twinChosen(context).map((s) => s.isin);
+  const flagged = (rows) => rows.map((r) => r.activityType === "BUY" && symbols.includes(r.symbol) ? { ...r, duplicateOfId: "previous" } : r);
+  api.activities.checkImport = async (rows) => flagged(rows);
+  await run.flush();
+  const funds = ["Fictiva Liquid Fund", "Testbridge Liquid Fund"];
+  const purchase = "purchase of ₹24,998.75 on 5 May 2023";
+  /** Each open possible duplicate's fund on its statement line, and its buttons' names. */
+  const shown = () => askCards(run).filter((c) => c.title.startsWith("This purchase")).map((c) => [
+    textOf(c.children).match(/^On this statement: [^·]+ · Purchase · ([^·]+) · /)?.[1], c.main.name, c.other.name,
+  ]);
+  const named = (fund) => [fund, `Skip this transaction: ${fund}, ${purchase}`, `Import it as another purchase: ${fund}, ${purchase}`];
+  assert.deepEqual(shown(), funds.map(named));
+  // While an answer works the plan out again, the cards from the plan before name the same funds.
+  let finish;
+  api.activities.checkImport = (rows) => new Promise((resolve) => { finish = () => resolve(flagged(rows)); });
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.deepEqual(shown(), funds.map(named));
+  askCards(run).at(-1).other.onClick();
+  await run.flush();
+  assert.deepEqual(shown(), [named(funds[0])]);
+  const testbridge = `₹24,998.75 purchase of ${funds[1]} on 5 May 2023: imported as another purchase`;
+  assert.deepEqual(askAnswers(run).map((a) => a.text).slice(1), [testbridge]);
+  finish();
+  await run.flush();
+  assert.deepEqual(shown(), [named(funds[0])]);
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  assert.deepEqual(askAnswers(run).map((a) => a.text), [
+    "Fictiva Balanced Advantage Fund: imported with the difference", `₹24,998.75 purchase of ${funds[0]} on 5 May 2023: skipped`, testbridge,
+  ]);
+  // As Ready to import names the one imported.
+  assert.deepEqual(find(run, "FundsReadyTable").rows.map((r) => r.name).filter((name) => name.includes("Liquid")), [funds[1]]);
+});
+
 /** `equalPurchases()`, with the same purchase once more in a second folio, 222222222. */
 const equalInTwoFolios = (d) => {
   equalPurchases()(d);
@@ -1581,14 +1643,10 @@ test("equal possible duplicates' bank pairs and table rows keep their statement 
 });
 
 /**
- * `equalInTwoFolios`' purchases, each linked with one of the equal withdrawals from Savings, which
- * isn't in Spending, with Wealthfolio's writes made up: adding a fund account's transfer fails while
- * `failing.create` is set. With `skipFirst`, Wealthfolio's check calls every purchase a possible
- * duplicate, and the first folio's first is skipped and the others imported anyway.
+ * Makes up Wealthfolio's writes for linking bank entries in Savings, which isn't in Spending: adding
+ * a fund account's transfer fails while the returned `failing.create` is set.
  */
-async function equalLinks({ skipFirst = false } = {}) {
-  const context = setup({ entries: structuredClone(EQUAL_WITHDRAWALS), remembered: withSavings(), change: equalInTwoFolios });
-  const { run, api, keys, activities } = context;
+function linkWrites({ api, activities }) {
   const getAll = api.activities.getAll;
   api.activities.getAll = async (id) => (await getAll(id)).map((row) => ({ ...row }));
   const failing = { create: false };
@@ -1601,6 +1659,30 @@ async function equalLinks({ skipFirst = false } = {}) {
   api.activities.update = async (row) => void Object.assign(activities.find((a) => a.id === row.id), row);
   api.activities.linkTransfer = async () => {};
   api.spending.unassignCategory = async () => {};
+  return failing;
+}
+/** Ticks every pair of the PAN's bank check, links them, and returns how many it ticked. */
+async function linkEvery({ run, keys }) {
+  const check = () => checksUnder(run, choices.bankKey(keys.pan))[0];
+  for (const { key } of check().check.pairs) {
+    check().onTick(key, true);
+    await run.flush();
+  }
+  const ticked = check().ticked.size;
+  check().onLink();
+  await run.flush();
+  return ticked;
+}
+
+/**
+ * `equalInTwoFolios`' purchases, each linked with one of the equal withdrawals from Savings, with
+ * `linkWrites`' writes. With `skipFirst`, Wealthfolio's check calls every purchase a possible
+ * duplicate, and the first folio's first is skipped and the others imported anyway.
+ */
+async function equalLinks({ skipFirst = false } = {}) {
+  const context = setup({ entries: structuredClone(EQUAL_WITHDRAWALS), remembered: withSavings(), change: equalInTwoFolios });
+  const { run, api } = context;
+  const failing = linkWrites(context);
   if (skipFirst) api.activities.checkImport = async (rows) => rows.map((r) => r.activityType === "BUY" ? { ...r, duplicateOfId: "previous" } : r);
   await run.flush();
   if (skipFirst) {
@@ -1609,14 +1691,7 @@ async function equalLinks({ skipFirst = false } = {}) {
     anyway.forEach((card) => card.other.onClick());
     await run.flush();
   }
-  const check = () => checksUnder(run, choices.bankKey(keys.pan))[0];
-  for (const { key } of check().check.pairs) {
-    check().onTick(key, true);
-    await run.flush();
-  }
-  assert.equal(check().ticked.size, skipFirst ? 2 : 3);
-  check().onLink();
-  await run.flush();
+  assert.equal(await linkEvery(context), skipFirst ? 2 : 3);
   return { ...context, failing };
 }
 /** The import result as shown: its lines' text, and its buttons' accessible names. */
@@ -1786,6 +1861,107 @@ test("units that differ after an import name each fund as the Review screen does
   assert.deepEqual(units.map((text) => text.split(":")[0]),
     result.closing.map(({ schemes: [s] }) => s.scheme.split(" - ")[0]));
   assert.ok(units.every((text) => !text.includes("Direct Plan") && !text.includes("Regular Plan")), units.join("\n"));
+});
+
+/**
+ * `twinHouses`' purchases, each with its fund house's withdrawal from Savings, `linkWrites`' writes,
+ * and the PAN's funds going to a new account, Mutual funds 2, which Wealthfolio creates on importing.
+ */
+async function twinLinks() {
+  const context = setup({
+    entries: [entry("neft-fictiva", "WITHDRAWAL", "24998.75", "2023-05-05", "NEFT FICTIVA MF"), entry("neft-testbridge", "WITHDRAWAL", "24998.75", "2023-05-05", "NEFT TESTBRIDGE MF")],
+    remembered: { [choices.bankKey(choices.panKey("ABCDE1234F"))]: "bank" },
+    change: twinHouses(),
+  });
+  twinChosen(context);
+  const { run, api, props, keys } = context;
+  const failing = linkWrites(context);
+  api.accounts.create = async (payload) => ({ id: "created-1", ...payload, isArchived: false, group: null });
+  props.onCreated = (made) => run.update({ accounts: [...props.accounts, ...made], allAccounts: [...props.allAccounts, ...made] });
+  await run.flush();
+  saveTo(run).onChange(keys.pan, proposedId(keys.pan));
+  await run.flush();
+  return { ...context, failing };
+}
+
+test("two fund houses' purchases in folios of one number and one printed fund name are named as their own in bank pairs and the import result", async () => {
+  const context = await twinLinks();
+  const { run, keys, failing } = context;
+  const funds = ["Fictiva Liquid Fund", "Testbridge Liquid Fund"];
+  // Each pair names its own fund, beside its own fund house's entry.
+  const [check, ...more] = checkNodes(run, choices.bankKey(keys.pan));
+  assert.equal(more.length, 0);
+  assert.deepEqual(shownPairs(check).map((p) => [p.fund, p.name.match(/Savings: (NEFT \w+ MF)/)[1]]), [[funds[0], "NEFT FICTIVA MF"], [funds[1], "NEFT TESTBRIDGE MF"]]);
+  assert.equal(await linkEvery(context), 2);
+  failing.create = true;
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  // Imported into the account created for them, so the result has copies of the transactions.
+  assert.deepEqual(find(run, "ImportResult").outcomes.map((a) => [a.accountId, a.isNew, a.state]), [["created-1", true, "imported"]]);
+  const purchases = funds.map((fund) => `purchase of ${fund} on 5 May 2023`);
+  const title = (purchase) => `P${purchase.slice(1)}`;
+  const unlinked = "The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of 5 May 2023 wasn't linked.";
+  const failed = shownResult(run);
+  assert.deepEqual(failed.lines.filter((line) => line.startsWith("✗ Purchase")), purchases.map((p) =>
+    `✗ ${title(p)}: ${unlinked} Try again : link the bank entry of 5 May 2023 with the ${p}`));
+  assert.deepEqual(failed.buttons.filter((name) => name.startsWith("Try again")), purchases.map((p) => `Try again: link the bank entry of 5 May 2023 with the ${p}`));
+  const notice = await announced(run);
+  for (const p of purchases) assert.ok(notice.includes(`${title(p)}: ${unlinked} Try again to link the bank entry.`), notice);
+  failing.create = false;
+  for (const i of [0, 1]) {
+    const result = find(run, "ImportResult");
+    result.onRetryLink(result.links[i]);
+    await run.flush();
+  }
+  assert.deepEqual(find(run, "ImportResult").links.map((l) => l.stage), [undefined, undefined]);
+  assert.deepEqual(shownResult(run).lines.filter((line) => line.startsWith("The withdrawal")), ["FICTIVA", "TESTBRIDGE"].map((house, i) =>
+    `The withdrawal of ₹24,998.75 on 5 May 2023 in Savings (NEFT ${house} MF), for the ${purchases[i]}: Any split it had across spending categories was deleted.`));
+});
+
+test("two fund houses' purchases in folios of one number and one printed fund name are named as their own when their chosen bank entries are gone before Import", async () => {
+  const context = await twinLinks();
+  const { run, activities, imported } = context;
+  assert.equal(await linkEvery(context), 2);
+  // Deleted in Wealthfolio after the review.
+  activities.splice(0, activities.length, ...activities.filter((a) => a.accountId !== "bank"));
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 0);
+  const lines = nodes(run.tree).filter((node) => node.type === "li").map(textOf).filter((line) => line.includes(", chosen for "));
+  assert.deepEqual(lines, [["FICTIVA", "Fictiva"], ["TESTBRIDGE", "Testbridge"]].map(([house, fund]) =>
+    `The withdrawal of ₹24,998.75 on 5 May 2023 in Savings (NEFT ${house} MF), chosen for the purchase of ${fund} Liquid Fund on 5 May 2023, ` +
+    "is no longer in Wealthfolio, so the transaction now comes with a new transfer out."));
+});
+
+test("rows Wealthfolio rejected or skipped name their own fund house's fund when two folios share a number and a printed fund name", async () => {
+  const context = setup({ entries: [], remembered: withSavings(), change: twinHouses() });
+  twinChosen(context);
+  const { run, api, imported } = context;
+  // The first try refuses Testbridge's purchase; the second, without it, skips Fictiva's transfer in
+  // as a duplicate.
+  api.activities.import = async (rows) => {
+    imported.push(rows);
+    const purchases = [];
+    for (const row of rows) {
+      if (row.activityType === "BUY") purchases.push([]);
+      purchases.at(-1).push(row);
+    }
+    const first = imported.length === 1;
+    const answers = rows.map((r) => first && r === purchases[1][0] ? { ...r, isValid: false, errors: { symbol: ["The fund could not be created"] } }
+      : !first && r === purchases[0][1] ? { ...r, duplicateOfId: "earlier-transfer" } : { ...r });
+    return { activities: answers, summary: { success: !first, total: rows.length, imported: first ? 0 : rows.length - 1, duplicates: 0, assetsCreated: 0 } };
+  };
+  await run.flush();
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 2);
+  assert.deepEqual(resultItems(run).filter(([text]) => text.startsWith("Purchase")), [
+    ["Purchase of Testbridge Liquid Fund on 5 May 2023, ₹24,998.75:", [
+      "The purchase in Mutual funds: The fund could not be created",
+      "The transfer into Mutual funds and the transfer out of Savings: Another row of this transaction was rejected, so none of it was imported.",
+    ]],
+    ["Purchase of Fictiva Liquid Fund on 5 May 2023, ₹24,998.75: the transfer into Mutual funds"],
+  ]);
 });
 
 test("equal possible duplicates in two folios name their folio, not a number", async () => {

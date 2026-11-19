@@ -1043,17 +1043,19 @@ export function DetailedImport({
     }
   };
   /**
-   * The name a transaction's fund goes by on the Review screen, as its fund's question and rows give
-   * it, found by its folio and scheme, so a plan worked out again since still has it.
+   * A transaction's or warning's scheme, found by its fund house, folio and scheme, so a plan worked
+   * out again since still has it: another fund house's folio can have its number and a scheme printed
+   * with the same name.
    */
+  const schemeOf = ({ amc, folio, scheme: name }: { amc: string; folio: string; scheme: string }) =>
+    data.folios.flatMap((f) => (f.amc === amc && f.folio === folio ? f.schemes : [])).find((s) => s.scheme === name);
+  /** The name a transaction's fund goes by on the Review screen, as its fund's question and rows give it. */
   const transactionFund = (t: PlannedTransaction) => {
-    const { folio, scheme: name } = t.transaction;
-    const scheme = data.folios.flatMap((f) => (f.folio === folio ? f.schemes : [])).find((s) => s.scheme === name);
-    return scheme ? fundNameOf(fundKey(scheme)) : name;
+    const scheme = schemeOf(t.transaction);
+    return scheme ? fundNameOf(fundKey(scheme)) : t.transaction.scheme;
   };
   const unbalancedFunds = (shown?.mapping.warnings ?? []).filter((w) => w.unbalanced).map((w) => {
-    // In its own fund house's folio: another fund house's folio can have its number.
-    const scheme = data.folios.flatMap((f) => (f.amc === w.amc && f.folio === w.folio ? f.schemes : [])).find((s) => s.scheme === w.scheme);
+    const scheme = schemeOf(w);
     return { warning: w, scheme, fund: scheme ? fundNameOf(fundKey(scheme)) : w.scheme };
   });
   const unbalancedAsks: Ask[] = unbalancedFunds.map(({ warning: w, scheme, fund }) => {
