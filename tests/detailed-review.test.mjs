@@ -623,7 +623,7 @@ test("a remembered bank account that tracks holdings asks again, and the import 
   await run.flush();
   const bank = choices.bankKey(keys.pan);
   assert.equal(saveTo(run).values[bank], null);
-  assert.deepEqual(saveTo(run).ignored[bank], { name: "Demat" });
+  assert.deepEqual(saveTo(run).ignored[bank], { ids: ["demat"], name: "Demat" });
   assert.deepEqual(footer(run), ["1 question left: the account choice before importing."]);
   assert.equal(find(run, "Footer").action.disabled, true);
   saveTo(run).onChange(bank, "bank");
@@ -3057,7 +3057,7 @@ test("a new profile proposes Mutual funds, creates it on importing, checks its r
   assert.deepEqual(box.proposed(keys.pan), { id: proposedId(keys.pan), name: "Mutual funds" });
   assert.equal(box.values[choices.folioKey(find(run, "SaveToDetailed").boxes[0].folios[0])], "");
   const line = box.newLine(keys.pan, "ANANYA R TESTWALA's funds");
-  assert.equal(textOfLine(line.type(line.props)), "New · Wealthfolio account, created when you save · Rename");
+  assert.equal(textOfLine(line.type(line.props)), "New · Wealthfolio account, created when you import · Rename");
   assert.match(footer(run)[0], /^Create the Wealthfolio account Mutual funds and import \d+ transactions for \d+ funds into it\.$/);
   const action = find(run, "Footer").action;
   assert.match(action.label, /^Create account and import \d+ transactions$/);

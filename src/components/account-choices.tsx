@@ -7,9 +7,10 @@ import { LinkButton } from "./review/parts";
  * A remembered account that can't be chosen now: its name, unless Wealthfolio no longer lists it,
  * and whether it's hidden or archived there. Without either state, it tracks the wrong thing. With
  * `under`, a folio's different choices under its fund house's names: each choice as the screen names
- * it, with the name.
+ * it, with the name. `ids` are the accounts its line names.
  */
 export interface Ignored {
+  ids?: string[];
   name?: string;
   state?: string;
   under?: { name: string; choice: string }[];
@@ -32,11 +33,23 @@ export function ChooseAgain({ ignored, mode }: { ignored: Ignored | undefined; m
 }
 
 /**
- * Under Save to's heading when its lists number an account: where the number comes from, and how to
- * do without it. Said once, with the first such label as its example. Its `id` describes the selects.
+ * Under Save to's heading when the Review screen names a numbered account, in Save to's lists or
+ * elsewhere (`named`, by ID): where the number comes from, and how to do without it. Said once, with
+ * the first such label as its example, the lists' first. Its `id` describes the selects when they
+ * list one.
  */
-export function NumberedNote({ id, accounts, labels }: { id: string; accounts: Account[]; labels: ReadonlyMap<string, AccountLabel> }) {
-  const example = accounts.map((a) => labels.get(a.id)).find((l) => l?.numbered);
+export function NumberedNote({
+  id,
+  accounts,
+  named,
+  labels,
+}: {
+  id: string;
+  accounts: Account[];
+  named: readonly string[];
+  labels: ReadonlyMap<string, AccountLabel>;
+}) {
+  const example = [...accounts.map((a) => a.id), ...named].map((a) => labels.get(a)).find((l) => l?.numbered);
   if (!example) return null;
   return (
     <p id={id} className="text-muted-foreground text-sm">
@@ -46,7 +59,7 @@ export function NumberedNote({ id, accounts, labels }: { id: string; accounts: A
   );
 }
 
-/** Whether Save to's lists number an account, so its note describes them. */
+/** Whether Save to's lists number an account, so its note describes the selects. */
 export const numbers = (accounts: Account[], labels: ReadonlyMap<string, AccountLabel>) => accounts.some((a) => labels.get(a.id)?.numbered);
 
 const SAME_AS_PAN = "same-as-pan";
@@ -147,6 +160,7 @@ export interface Renaming {
 export function NewAccountLine({
   proposed,
   label,
+  created,
   ids,
   editing,
   onRename,
@@ -157,6 +171,8 @@ export function NewAccountLine({
   proposed: Proposed;
   /** What the account is for, for screen readers: "A. Investor's holdings". */
   label: string;
+  /** What creates it: saving the holdings, or importing transactions into it. */
+  created: "save" | "import";
   ids: { rename: string; field: string };
   editing?: Renaming;
   onRename: () => void;
@@ -167,7 +183,7 @@ export function NewAccountLine({
   if (!editing) {
     return (
       <p className="text-muted-foreground w-full text-sm">
-        New · Wealthfolio account, created when you save ·{" "}
+        New · Wealthfolio account, created when you {created} ·{" "}
         <LinkButton id={ids.rename} type="button" aria-label={`Rename the new account ${proposed.name}: ${label}`} onClick={onRename}>
           Rename
         </LinkButton>

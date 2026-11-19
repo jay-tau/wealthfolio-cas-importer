@@ -254,6 +254,8 @@ ISIN whose search found no AMFI result, with **Open Market data settings** and, 
 **I've added AMFI: check**. When AMFI turns on, those questions are searched again and answer
 themselves where AMFI's scheme is certain (below); answers already given stay. The screen then says
 how many funds AMFI matched and how many questions remain, and the focus goes to the next one.
+What a check found, on the form or the Review screen, shows only until a statement is read or its
+review is left, even when the check answers later.
 
 When a statement is read, or a check finds AMFI on and the funds are searched again, a fund without
 a remembered choice is confirmed without a click, and saved as **Use this fund** saves it, when the
@@ -468,11 +470,11 @@ Review screen shows, in this order:
   everywhere else on the screen (see [Accounts with the same name](#accounts-with-the-same-name)).
 - **Questions for you**: each holding with no confirmed asset, as one card with what the statement
   prints, why it's asked, its results, and **Search by fund code** (**Search by ISIN** for shares and
-  bonds). A share's results on the two Indian exchanges are named as **National Stock Exchange (NSE)**
-  and **Bombay Stock Exchange (BSE)**. With exactly one result, that result has its own confirmation
-  button (**Use this fund** for a fund, **Use this listing** for shares); with more, pick one and
-  confirm it. Each fund result says whether its plan and option match the statement's, and one quoted
-  in another currency than rupees says so.
+  bonds, **Search by name** for NPS schemes). A share's results on the two Indian exchanges are named
+  as **National Stock Exchange (NSE)** and **Bombay Stock Exchange (BSE)**. With exactly one result,
+  that result has its own confirmation button (**Use this fund** for a fund, **Use this listing** for
+  shares); with more, pick one and confirm it. Each fund result says whether its plan and option match
+  the statement's, and one quoted in another currency than rupees says so.
   **None of these: use the price on the statement** prices it from statements (below), and **Skip
   this holding** leaves it out. An answered question becomes one line with **Change answer**.
 
@@ -803,11 +805,12 @@ group ("Funds (Family group)") or what it tracks ("Funds (tracks transactions)")
 that no other account of that name has, in that order. **Save to**'s lists add the rest: "Funds
 (ending 4821) · INR · Family group". When nothing tells one apart, it's numbered by its place among
 the accounts of that name under **Settings → Accounts**, hidden and archived ones counted ("Funds
-(account 2)"), and a line under **Save to** says so, and that different names in Wealthfolio tell
-them apart. No label reads like another account's name. The question cards and their answered lines,
-the bar, **Ready to save** or **Ready to import**, **Not included**, the holdings after saving (each
-preview headed "Holdings in Funds (ending 4821) on 31 Mar 2026 after saving") and the result name the
-account the same way, and so do the controls' accessible names.
+(account 2)"), and whenever the screen names such an account, in **Save to**'s lists or elsewhere,
+a line under **Save to** says so, and that different names in Wealthfolio tell them apart. No label
+reads like another account's name. The question cards and their answered lines, the bar, **Ready to
+save** or **Ready to import**, **Not included**, the holdings after saving (each preview headed
+"Holdings in Funds (ending 4821) on 31 Mar 2026 after saving") and the result name the account the same
+way, and so do the controls' accessible names.
 
 ## Troubleshooting
 

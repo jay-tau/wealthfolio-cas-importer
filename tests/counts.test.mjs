@@ -449,7 +449,7 @@ test("Rename distinguishes equal new account names by the investor or source the
   const labels = ["A. Investor's funds", "B. Investor's funds"];
   const markup = renderToStaticMarkup(createElement("div", null, ...labels.map((label, i) =>
     createElement(components.NewAccountLine, {
-      key: i, proposed: { id: `new-account:${i}`, name: "Family funds" }, label,
+      key: i, proposed: { id: `new-account:${i}`, name: "Family funds" }, label, created: "import",
       ids: { rename: `rename-${i}`, field: `field-${i}` }, onRename() {}, onDraft() {}, onSave() {}, onCancel() {},
     })))).replaceAll("&#x27;", "'");
   const names = [...markup.matchAll(/aria-label="(Rename[^"]+)"/g)].map((match) => match[1]);
@@ -500,7 +500,7 @@ test("Save to says where an account's number comes from when nothing else tells 
   const targets = ["a", "b"].map((id) => ({ id, name: "Funds", currency: "INR", trackingMode: "HOLDINGS" }));
   const props = (accounts) => ({
     investorName: "A. Investor", investorKey: "pan", sources: [], targets: accounts, labels: accountLabels(accounts), proposed: () => undefined, newLine: () => null,
-    values: { pan: "b" }, ignored: {}, remembered: true, open: false, onOpen() {}, onChange() {}, partId: "save-to",
+    values: { pan: "b" }, ignored: {}, named: [], remembered: true, open: false, onOpen() {}, onChange() {}, partId: "save-to",
   });
   const note = "A number after a name, as in Funds (account 1), is the account's place among the accounts of that name in Wealthfolio under Settings → Accounts, counting hidden and archived ones. Giving them different names in Wealthfolio tells them apart.";
   const shown = text("SaveTo", props(targets));
@@ -513,9 +513,83 @@ test("Save to says where an account's number comes from when nothing else tells 
   assert.ok(!renderToStaticMarkup(createElement(components.SaveTo, props(numbered))).includes("aria-describedby"));
 });
 
+// #292: the note was said only when Save to's lists numbered an account.
+test("Save to's note says what a number means whenever the Review screen names a numbered account, not only in its lists", async () => {
+  const { accountLabels } = await server.ssrLoadModule("/src/lib/account-labels.ts");
+  // Two accounts named Mutual funds that only their place tells apart, both tracking transactions, and Demat tracking holdings.
+  const all = [
+    { id: "mf1", name: "Mutual funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false },
+    { id: "mf2", name: "Mutual funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false },
+    { id: "demat", name: "Demat", currency: "INR", trackingMode: "HOLDINGS", isActive: true, isArchived: false },
+  ];
+  const labels = accountLabels(all);
+  const note = (example) => `A number after a name, as in ${example}, is the account's place among the accounts of that name in Wealthfolio under Settings → Accounts, counting hidden and archived ones. Giving them different names in Wealthfolio tells them apart.`;
+  const describes = (name, props) => /aria-describedby="[^"]*save-to-numbered/.test(renderToStaticMarkup(createElement(components[name], props)));
+  const holdings = (extra) => ({
+    investorName: "A. Investor", investorKey: "pan", sources: [], targets: [all[2]], labels, proposed: () => undefined, newLine: () => null,
+    values: { pan: "demat" }, ignored: {}, named: [], remembered: true, open: false, onOpen() {}, onChange() {}, partId: "save-to", ...extra,
+  });
+  // Save to lists only Demat, and the screen names no other account: no note.
+  assert.ok(!text("SaveTo", holdings()).includes("A number after a name"));
+  // The screen names Mutual funds (account 1) as holding a fund: the note says what its number means, but
+  // the selects, which list no numbered account, aren't described by it.
+  const named = text("SaveTo", holdings({ named: ["mf1"] }));
+  assert.ok(named.includes(note("Mutual funds (account 1)")), named);
+  assert.equal(describes("SaveTo", holdings({ named: ["mf1"] })), false);
+  // A remembered account that tracks transactions is named in Save to's own line.
+  const ignored = text("SaveTo", holdings({ values: { pan: null }, ignored: { pan: { ids: ["mf2"], name: "Mutual funds (account 2)" } } }));
+  assert.ok(ignored.includes("Chosen before: Mutual funds (account 2), which doesn't track holdings."), ignored);
+  assert.ok(ignored.includes(note("Mutual funds (account 2)")), ignored);
+  // Accounts told apart otherwise need no note, wherever they're named.
+  const told = accountLabels(all.map((a, i) => ({ ...a, accountNumber: `00${i}` })));
+  assert.ok(!text("SaveTo", holdings({ labels: told, named: ["mf1"] })).includes("A number after a name"));
+
+  // The detailed screen: two hidden accounts named Old funds that only their place tells apart, the second remembered.
+  const funds = { id: "funds", name: "Funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false };
+  const hidden = [funds, ...["old1", "old2"].map((id) => ({ id, name: "Old funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: false, isArchived: false }))];
+  const box = { key: "pan", name: "A. Investor", title: "A. Investor's funds", pan: false, folios: [] };
+  const detailed = (ignoredAccounts) => ({
+    boxes: [box], targets: [funds], labels: accountLabels(hidden), proposed: () => undefined, newLine: () => null,
+    values: { pan: null, "bank-pan": "" }, ignored: ignoredAccounts, conflicts: new Set(), remembered: "none", open: {}, onOpen() {}, onChange() {},
+    checks: () => null, partId: "save-to",
+  });
+  assert.ok(!text("SaveToDetailed", detailed({})).includes("A number after a name"));
+  const old = { pan: { ids: ["old2"], name: "Old funds (account 2)", state: "hidden" } };
+  const shown = text("SaveToDetailed", detailed(old));
+  assert.ok(shown.includes("Chosen before: Old funds (account 2), which is hidden in Wealthfolio, so choose again."), shown);
+  assert.ok(shown.includes(note("Old funds (account 2)")), shown);
+  assert.equal(describes("SaveToDetailed", detailed(old)), false, "the selects list no numbered account");
+  // So is one chosen under another of its fund house's names.
+  const under = { pan: { ids: ["funds", "old1"], under: [{ name: "Bandhan Mutual Fund", choice: "Funds" }, { name: "IDFC Mutual Fund", choice: "Old funds (account 1) (hidden in Wealthfolio)" }] } };
+  const renamed = text("SaveToDetailed", detailed(under));
+  assert.ok(renamed.includes("Chosen before under this fund house's names: Funds for Bandhan Mutual Fund and Old funds (account 1) (hidden in Wealthfolio) for IDFC Mutual Fund"), renamed);
+  assert.ok(renamed.includes(note("Old funds (account 1)")), renamed);
+});
+
 /** A search state with nothing searched yet, and searches that do nothing, for rendering a question. */
 const idle = { text: "" };
 const searches = { get: () => idle, retry() {}, search() {}, setText() {}, pick() {}, settle() {}, interact() {} };
+
+// #292: an NPS scheme is searched by name, so a search that finds nothing asked to check a code it hasn't got.
+test("a typed search that finds nothing says to check the name for an NPS scheme and the code for the others", () => {
+  const nps = { kind: "nps", name: "SBI Pension Fund Scheme E - Tier I", isin: null, rta: null, rtaCode: null, code: "NPS-SBI-E-I", units: "10", price: "2", value: "20", cost: null };
+  const fund = { kind: "fund", name: "Fictiva Flexi Cap Fund - Direct Plan - Growth", isin: "INFZ90A01017", rta: null, rtaCode: null, units: "10", price: "2", value: "20", cost: null };
+  const holdings = { date: "2025-03-31", sources: [
+    { id: "nps|1", kind: "nps", label: "NPS", holdings: [nps] },
+    { id: "folio|1", kind: "folio", label: "Folio", holdings: [fund] },
+  ] };
+  const said = components.holdingItems(holdings).map((item, i) => {
+    const search = { text: "SBI Scheme E", typed: { status: "done", text: "SBI Scheme E", results: [] } };
+    const props = { item, label: item.name, units: "10 units", search, searches, base: `q${i}`, amfiOn: false, headingId: `h${i}`, onAnswer() {} };
+    const words = components.nothingFound(item, "SBI Scheme E");
+    assert.ok(text("QuestionCard", props).includes(words), item.noun);
+    return [item.noun, words];
+  });
+  assert.deepEqual(said, [
+    ["NPS scheme", "Nothing found for “SBI Scheme E”. Check the name."],
+    ["fund", "Nothing found for “SBI Scheme E”. Check the code."],
+  ]);
+});
 
 test("controls distinguish equal holding names", () => {
   const share = (isin) => ({ kind: "share", name: "Example Share", isin, rta: null, rtaCode: null, units: "10", price: "2", value: "20", cost: null });
@@ -1136,7 +1210,8 @@ test("the detailed Review screen's heading names the period, statement, investor
   // With no account that tracks transactions, Save to proposes a new one, created on import.
   assert.ok(!shown.includes("No account"), shown);
   assert.ok(shown.includes(" ANANYA R TESTWALA's funds New: Mutual funds "), shown);
-  assert.ok(shown.includes(" New · Wealthfolio account, created when you save · Rename "), shown);
+  assert.ok(shown.includes(" New · Wealthfolio account, created when you import · Rename "), shown);
+  assert.ok(!shown.includes("created when you save"), shown);
   const accounts = [{ id: "mf", name: "Mutual funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false }];
   const one = text("DetailedImport", detailedReview(cams, { accounts, allAccounts: accounts }));
   assert.ok(one.includes(" ANANYA R TESTWALA's funds "));

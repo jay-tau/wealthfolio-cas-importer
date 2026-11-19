@@ -22,9 +22,14 @@ export interface AmfiCheck extends Amfi {
   checking: boolean;
   /** Market data settings were opened from the add-on, so the user can say AMFI was added there. */
   settingsOpened: boolean;
-  /** What "I've added AMFI: check" found, while it still holds. */
+  /** What "I've added AMFI: check" found, while it still holds, until the screen moves on. */
   outcome: string;
   check: () => void;
+  /**
+   * Forgets what the check found, as the screen moves on: a statement is read, or its review is left.
+   * A check still waiting for its answer then updates only AMFI's status.
+   */
+  clear: () => void;
   dismiss: () => void;
   openSettings: () => void;
   banner: RefCallback<HTMLElement>;
@@ -112,6 +117,11 @@ export function useAmfiCheck(api: AddonContext["api"], opened: unknown): AmfiChe
     settingsOpened,
     outcome: outcome === state.status ? OUTCOMES[outcome] : "",
     check: () => void check(true),
+    clear: () => {
+      asked.current = false;
+      setChecking(false);
+      setOutcome(null);
+    },
     dismiss: () => {
       focus.expect("next");
       setOutcome(null);

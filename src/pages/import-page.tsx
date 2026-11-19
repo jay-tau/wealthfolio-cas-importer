@@ -85,7 +85,7 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
       // Empty goes with the PAN or the statement.
       if (!allAccounts || !id || key in accountChoices) return [];
       const account = allAccounts.find((a) => a.id === id);
-      return [[key, account ? { name: labels?.get(account.id)?.text ?? account.name, state: stateOf(account) } : {}]];
+      return [[key, account ? { ids: [account.id], name: labels?.get(account.id)?.text ?? account.name, state: stateOf(account) } : {}]];
     }),
   );
   // A folio's choices that differ under its fund house's names are ignored too, and the user chooses again.
@@ -98,7 +98,10 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     return `${labels?.get(account.id)?.text ?? account.name}${state ? ` (${state} in Wealthfolio)` : ""}`;
   };
   for (const [key, { found }] of Object.entries(renamed.current)) {
-    if (found) unavailable[key] = { under: found.map(({ name, value }) => ({ name, choice: choiceName(value) })) };
+    if (found) {
+      const ids = found.flatMap(({ value }) => (allAccounts?.some((a) => a.id === value) ? [value] : []));
+      unavailable[key] = { ids, under: found.map(({ name, value }) => ({ name, choice: choiceName(value) })) };
+    }
   }
   // Where a choice was found under a fund house's former name, by key.
   const formerNames = Object.fromEntries(Object.entries(renamed.current).flatMap(([key, { from }]) => (from ? [[key, from]] : [])));
@@ -162,6 +165,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     setStatement(full);
     setFileName(name);
     setReads((n) => n + 1);
+    // What a check found before this statement isn't news about it.
+    amfi.clear();
   };
 
   const chooseAccount = (key: string, id: string) => {
@@ -201,6 +206,8 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
     clear();
     setResets((n) => n + 1);
     setNotice(said ?? "");
+    // Nor is what a check found during the review news about what it ended with.
+    amfi.clear();
     // A focus moved while the form returns stays where the user put it.
     setTimeout(() => {
       if (focusDropped()) document.getElementById("cas-file")?.focus();

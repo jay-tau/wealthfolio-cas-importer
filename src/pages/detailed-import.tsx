@@ -69,7 +69,7 @@ import { ReviewHeader } from "../components/review/header";
 import { StatementWarnings } from "../components/review/statement-warnings";
 import { SearchDown } from "../components/review/trouble";
 import { Disclosure, LinkButton, shownName, useWide, WrapButton } from "../components/review/parts";
-import { AnsweredLine, answerWords, Picker, pickerIds, QuestionCard } from "../components/review/question";
+import { AnsweredLine, answerWords, nothingFound, Picker, pickerIds, QuestionCard } from "../components/review/question";
 import { folioName, type FundsBox, SaveToDetailed } from "../components/review/save-to-detailed";
 import { useHoldingSearches } from "../components/review/search";
 import { bankKey, type ChosenFund, folioKey, fundKey, LEFT_OUT, NO_BANK, panKey } from "../lib/choices";
@@ -398,7 +398,7 @@ export function DetailedImport({
     ...Object.fromEntries(
       Object.entries(accountChoices).flatMap(([key, value]) => {
         const found = accounts.find((a) => a.id === value && a.trackingMode === "HOLDINGS");
-        return found ? [[key, { name: labels.get(found.id)?.text ?? found.name }]] : [];
+        return found ? [[key, { ids: [found.id], name: labels.get(found.id)?.text ?? found.name }]] : [];
       }),
     ),
   };
@@ -535,7 +535,7 @@ export function DetailedImport({
       const picker = pickerIds(changingRef.current === key ? id(`picker-change-${key}`) : id(`picker-${key}`));
       if ("error" in outcome || !outcome.found) {
         focusSoon(picker.field, false, outcome.origin);
-        return announce("error" in outcome ? "The search didn't work." : `Nothing found for “${outcome.text}”. Check the code.`);
+        return announce("error" in outcome ? "The search didn't work." : nothingFound(itemOf.get(key)!, outcome.text));
       }
       if (outcome.total === 1) {
         focusSoon(picker.single, false, outcome.origin);
@@ -1589,6 +1589,7 @@ export function DetailedImport({
     <NewAccountLine
       proposed={proposed(key)}
       label={label}
+      created="import"
       ids={renameIds(key)}
       editing={renaming?.key === key ? renaming : undefined}
       onRename={() => {

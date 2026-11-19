@@ -44,13 +44,16 @@ function why(item: FundItem, auto: AutoSearch | undefined, amfiOn: boolean) {
   return results.length === 1 ? `Found${where} by the ISIN printed for it.` : `Several results${where} fit the ISIN printed for it.`;
 }
 
-/** The search box's label and hint. */
+/** The search box's label and hint, and what to check when a typed search finds nothing. */
 const fieldWords = (item: FundItem) =>
   item.noun === "fund"
-    ? { label: "Search by fund code", hint: "ISIN or AMFI scheme code, on the fund's factsheet or the fund house's website." }
+    ? { label: "Search by fund code", hint: "ISIN or AMFI scheme code, on the fund's factsheet or the fund house's website.", check: "Check the code." }
     : item.noun === "NPS scheme"
-      ? { label: "Search by name", hint: "The scheme's name as its fund manager gives it." }
-      : { label: "Search by ISIN", hint: "The 12-character code on your broker's contract note." };
+      ? { label: "Search by name", hint: "The scheme's name as its fund manager gives it.", check: "Check the name." }
+      : { label: "Search by ISIN", hint: "The 12-character code on your broker's contract note.", check: "Check the code." };
+
+/** What a typed search that found nothing says, on its card and aloud. */
+export const nothingFound = (item: FundItem, text: string) => `Nothing found for “${text}”. ${fieldWords(item).check}`;
 
 /** The consequence of using the statement's price, tied to the button that does it. */
 export const STATEMENT_PRICE = "With the price on the statement, its price changes only when you import a statement, not with the market.";
@@ -188,7 +191,7 @@ export function Picker({
         </div>
         {(typedNone || typedFailed) && (
           <p className="text-destructive flex flex-wrap items-center gap-2 text-sm">
-            <span id={`${own}-error`}>{typedFailed ? "The search didn't work." : `Nothing found for “${typed!.text}”. Check the code.`}</span>
+            <span id={`${own}-error`}>{typedFailed ? "The search didn't work." : nothingFound(item, typed!.text)}</span>
             {typedFailed && (
               <Button type="button" variant="outline" size="sm" onClick={() => searches.search(item)}>
                 Try again<span className="sr-only">: the search for {label}</span>
