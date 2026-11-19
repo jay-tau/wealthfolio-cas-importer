@@ -76,8 +76,10 @@ export const pickedFund = (search: ItemSearch) => shown(search).find(([id]) => i
  * Searches for the holdings that need a choice, each by itself, and keeps what they found. The
  * Review screen's automatic search for a holding goes by its printed ISIN, and by its name when that
  * finds nothing or none is printed; it can confirm a fund without a click (`certain`). The user's own
- * searches go by what they type. Only the printed ISIN, the name from the statement and what the user
- * types are sent to market-data providers.
+ * searches go by what they type. This hook's searches send market-data providers only the printed
+ * ISIN, the name from the statement and what the user types. Outside this hook, the holdings import
+ * also searches by an asset's symbol while working out what to save (`prepare` in
+ * `holdings-import.tsx`).
  */
 export function useHoldingSearches(
   ctx: AddonContext,

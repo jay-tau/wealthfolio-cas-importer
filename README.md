@@ -9,9 +9,14 @@ parsed on the device. A detailed statement from CAMS or KFintech is imported as 
 summary statement from CAMS or KFintech, or a statement from NSDL or CDSL, the depositories, is
 imported as holdings (see [Summary and depository statements](#summary-and-depository-statements)).
 
-Detailed imports have been checked in Wealthfolio's desktop app on Linux (3.11.0, 3.12.0 and
-3.13.0) and Windows (3.11.0), and in its web app (3.12.0, in Chromium); they haven't been tried on
-macOS.
+The add-on needs Wealthfolio 3.13.0 or newer (see [Install](#install)). For Wealthfolio 3.12.0, use
+v2.2.0 from [Releases](https://github.com/jay-tau/wealthfolio-cas-importer/releases), and for
+3.11.0, v1.2.0. v3.0.0, v3.1.0 and v3.2.0 were each checked in Wealthfolio 3.13.0's desktop app on
+Linux and Windows ([v3.0.0](https://github.com/jay-tau/wealthfolio-cas-importer/issues/195),
+[v3.1.0](https://github.com/jay-tau/wealthfolio-cas-importer/issues/218),
+[v3.2.0](https://github.com/jay-tau/wealthfolio-cas-importer/issues/229)); none of them has been
+tried in its web app or on macOS. Earlier releases were checked in the desktop app on Linux (3.11.0
+and 3.12.0) and Windows (3.11.0 and 3.12.0), and in the web app (3.12.0, in Chromium).
 
 To import, choose or drop the PDF under **Add your statement** and enter its password, if it has
 one; with a password saved, the add-on uses it until you choose **Use a different password** or it
@@ -898,8 +903,11 @@ These hashes keep PANs and folio numbers out of casual view; they don't make the
 PANs are few enough to brute-force. The activities' metadata has the folio numbers as printed.
 
 Searches send the printed ISIN, the name from the statement when the ISIN finds
-nothing or none is printed, or what you type, to Wealthfolio's market-data providers. The
-PDF, its password and your PAN never leave Wealthfolio.
+nothing or none is printed, or what you type, to Wealthfolio's market-data providers. Working out
+what a summary or depository statement saves also searches by the symbol of each asset priced from
+statements or by hand whose Wealthfolio asset ID the add-on doesn't know, such as an ISIN,
+`MF-KFINTECH-TONDG` or `NPS-SBI-E-TIER-I`, and Wealthfolio sends that search to its providers too.
+The PDF, its password and your PAN never leave Wealthfolio.
 
 ## Install
 
@@ -954,9 +962,10 @@ included: an empty name, a drive prefix such as `C:`, a leading `/` or `./`, a b
 segment. It also refuses any backslash, which Wealthfolio reads as `/`; the packager writes `/`.
 
 `pnpm test:browser` runs the parser and the import page inside a copy of Wealthfolio's sandbox
-(sandboxed iframe, the add-on content security policy) in Playwright's Chromium and Firefox, against a
-fake host; pass `webkit` to add WebKit.
-Install the browsers first with `pnpm exec playwright-core install chromium firefox`.
+(sandboxed iframe, the add-on content security policy) in Playwright's browsers, against a fake
+host. Name the browsers to run (default `chromium firefox`; CI runs `chromium firefox webkit`), and
+install them first with `pnpm exec playwright-core install chromium firefox`, adding `webkit` to
+run WebKit.
 
 The statements in `tests/fixtures/` are made up. `make_cas.py` (detailed), `make_summary_cas.py`,
 `make_nsdl_cas.py` and `make_cdsl_cas.py` write them (they need `reportlab` and `pikepdf`); their
