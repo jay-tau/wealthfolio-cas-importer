@@ -4745,7 +4745,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await readHoldings();
     const liquidFolio = "Fictiva Mutual Fund account (folio 91234567 / 12)";
     await frame.getByText(
-      `${liquidName}, ${liquidFolio}: It has no units but a value of ₹35,799.22, so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.`,
+      `${liquidName}, ${liquidFolio}: It has no units but a value of ₹35,799.22, so the line may have been misread. Check it against the PDF.`,
       { exact: true },
     ).waitFor();
     await skipOthersThanLiquid(balancedFund);

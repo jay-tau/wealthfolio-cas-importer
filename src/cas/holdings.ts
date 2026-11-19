@@ -276,7 +276,7 @@ function readSummary(data: CasData): Holdings {
       };
       const why = misread(holding);
       if (why) {
-        leftOut.push({ source: label, name: holding.name, reason: `${why}, so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.` });
+        leftOut.push({ source: label, name: holding.name, reason: `${why}, so the line may have been misread. Check it against the PDF.` });
         (source.misread ??= []).push(holding);
       } else if (withUnits(leftOut, label, source, holding)) source.holdings.push(holding);
     }

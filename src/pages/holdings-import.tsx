@@ -579,21 +579,30 @@ export function HoldingsImport({
    * A holding's units on the statement in what's saved, and, when the statement lists it in more than
    * one folio, demat account or PRAN, how many of them those units are in: "10 shares", "in 1 of 2
    * demat accounts". Printed zeros and misread lines count among the places it's listed in, but give
-   * no units. With a misread line in what's saved, its units are unknown, so there's neither.
+   * no units. With a misread line in what's saved, its units are unknown, so there's neither: it says
+   * instead that each account the line goes to keeps its holding as it is, or doesn't get one.
    */
   const onStatement = (item: FundItem) => {
     const listed = holdings.sources.filter((s) => linesOf(s).some((h) => holdingKey(h) === item.key));
     const lines = (s: Source) => s.holdings.filter((h) => holdingKey(h) === item.key);
     const misread = (s: Source) => !!s.misread?.some((h) => holdingKey(h) === item.key);
     const known = !listed.some((s) => savingSource(s) && misread(s));
+    if (!known) {
+      // Those accounts are named when another saved place of the holding goes elsewhere, once each is chosen.
+      const to = new Set(listed.filter(savingSource).map(accountOf));
+      const held = [...new Set(listed.filter((s) => savingSource(s) && misread(s)).map(accountOf))];
+      const names = held.includes(undefined) || held.length === to.size ? undefined : list(held.map((accountId) => accountName(accountId!)));
+      return {
+        where: !names ? "a line may have been misread, so the import leaves its holding as it is, or doesn't add one"
+          : held.length > 1 ? `lines going to ${names} may have been misread, so ${names} keep their holdings as they are, or don't get one`
+          : `a line going to ${names} may have been misread, so ${names} keeps its holding as it is, or doesn't get one`,
+      };
+    }
     const saving = listed.filter((s) => savingSource(s) && lines(s).length > 0);
     const places = new Set(listed.map((s) => s.kind)).size === 1 ? PLACES[listed[0].kind] : "places on this statement";
     return {
-      units: known ? unitWords(item, saving.flatMap(lines).reduce((total, h) => format(add(dec(total), dec(h.units))), "0")) : undefined,
-      where: [
-        known && listed.length > 1 && `in ${saving.length < listed.length ? `${saving.length} of ` : ""}${listed.length} ${places}`,
-        listed.some(misread) && "a line may have been misread, so the import leaves its holding as it is",
-      ].filter(Boolean).join(" · ") || undefined,
+      units: unitWords(item, saving.flatMap(lines).reduce((total, h) => format(add(dec(total), dec(h.units))), "0")),
+      where: listed.length > 1 ? `in ${saving.length < listed.length ? `${saving.length} of ` : ""}${listed.length} ${places}` : undefined,
     };
   };
 

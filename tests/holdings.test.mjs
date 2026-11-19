@@ -2908,7 +2908,7 @@ const MISREAD = ["INFZ90K01LQ6", "INFZ90K01BA1", "INFZ91T01CB6"];
 
 test("a summary line whose units × NAV don't give its value is left out as possibly misread", async () => {
   const holdings = readHoldings(await misreadSummary());
-  const tail = ", so the line may have been misread. Check it against the PDF. The import leaves this holding as it is.";
+  const tail = ", so the line may have been misread. Check it against the PDF.";
   assert.deepEqual(holdings.leftOut, [
     {
       source: "Fictiva Mutual Fund, folio 91234567 / 12", name: "Fictiva Liquid Fund - Direct Plan - Growth 1",
