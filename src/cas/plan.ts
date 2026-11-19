@@ -1,6 +1,6 @@
 import type { ActivityDetails, ActivityImport, ActivityType, AddonContext } from "@wealthfolio/addon-sdk";
 import { Explained } from "../lib/explained.ts";
-import { isDuplicateActivity } from "../lib/host-errors.ts";
+import { errorSentence, isDuplicateActivity } from "../lib/host-errors.ts";
 import { grouped, quantity } from "../lib/review-format.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, neg } from "./decimal.ts";
 import type { FundAsset, MappedTransaction, Mapping } from "./mapping.ts";
@@ -678,14 +678,14 @@ export async function linkBankRow(
       // still matches this cash isn't known, so nothing more is added, changed or linked.
       if (isDuplicateActivity(e)) {
         return {
-          error: `Wealthfolio refused the fund account's transfer as a duplicate: ${String(e)}. It may already have one for the bank's row ${when}: check the transfers and link the two in Wealthfolio.`,
+          error: `Wealthfolio refused the fund account's transfer as a duplicate: ${errorSentence(e)} It may already have one for the bank's row ${when}: check the transfers and link the two in Wealthfolio.`,
           stage: "exists",
           converted: false,
           linked: false,
         };
       }
       return {
-        error: `Couldn't add the fund account's transfer: ${String(e)}. The trade is in Wealthfolio without its cash.`,
+        error: `Couldn't add the fund account's transfer: ${errorSentence(e)} The trade is in Wealthfolio without its cash.`,
         stage: "transfer",
         converted: false,
         linked: false,
@@ -707,7 +707,7 @@ export async function linkBankRow(
       });
     } catch (e) {
       return {
-        error: `Added the fund account's transfer, but couldn't change the bank's row ${when} into a transfer: ${String(e)}. Change it and link the two in Wealthfolio.`,
+        error: `Added the fund account's transfer, but couldn't change the bank's row ${when} into a transfer: ${errorSentence(e)} Change it and link the two in Wealthfolio.`,
         stage: "convert",
         fundId,
         converted: false,
@@ -719,7 +719,7 @@ export async function linkBankRow(
     await activities.linkTransfer(bankRow.id, fundId);
   } catch (e) {
     return {
-      error: `Added the fund account's transfer, but couldn't link it with the bank's row ${when}: ${String(e)}. Link the two in Wealthfolio.`,
+      error: `Added the fund account's transfer, but couldn't link it with the bank's row ${when}: ${errorSentence(e)} Link the two in Wealthfolio.`,
       stage: "link",
       fundId,
       converted,
