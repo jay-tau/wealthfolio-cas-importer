@@ -490,8 +490,12 @@ Review screen shows, in this order:
   saved, and "in 1 of 2 places on this statement" when they're of different kinds. A line printed
   with zero units, or that may have been misread (below), counts as a place but gives no units. When
   a place being saved has a line of it that may have been misread, its units are unknown, so the card
-  gives neither units nor a count: "On your statement: Fictiva Liquid Fund · a line may have been
-  misread, so the import leaves its holding as it is". It's still asked about.
+  gives neither units nor a count, and says what that line does instead: "On your statement: Fictiva
+  Liquid Fund · a line may have been misread, so the import leaves its holding as it is, or doesn't
+  add one". It's still asked about. When the holding's other saved places go to another account, the
+  card names the accounts such lines go to: "a line going to Mutual funds may have been misread, so
+  Mutual funds keeps its holding as it is, or doesn't get one". A line set to "Don't save", or going
+  to an account whose holdings already saved for the statement's date you keep, isn't mentioned.
 
   The decisions only some imports need come up here too, a card each, only when the case happens:
   holdings already saved for the statement's date (asked first, per account), a holding the
@@ -592,8 +596,9 @@ units. casparser 1.4.1 reads a cell it can't read, such as "N.A.", as 0, and on 
 amount of ₹1 crore or more without its leading digit, without a warning. Check such a line against the
 PDF. You still confirm its asset, so the import can leave that fund's holding in the folio's account
 as it is: its units, cost and price, and what earlier imports added. Without such a holding, the
-fund isn't added, even from another folio's line. Its units on the statement are unknown, so it isn't
-compared with an account that tracks transactions.
+fund isn't added, even from another folio's line. This holds in the account the line's folio goes to;
+another account gets the fund's units from the folios that go to it. Its units on the statement are
+unknown, so it isn't compared with an account that tracks transactions.
 
 A folio's fund that a Wealthfolio account tracking transactions already holds, most likely from a
 detailed statement, is listed under **Already tracked in Mutual funds** and not saved, so it isn't

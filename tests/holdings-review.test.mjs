@@ -720,7 +720,8 @@ const onStatement = (run) => {
   const line = card && nodes(card.type(card.props)).find((node) => node.type === "p" && textOf(node).startsWith("On your statement:"));
   return line && textOf(line).slice(`On your statement: ${card.props.item.name} · `.length);
 };
-const MISREAD = "a line may have been misread, so the import leaves its holding as it is";
+/** A misread line's warning when every account the holding's saved places go to gets one. */
+const MISREAD = "a line may have been misread, so the import leaves its holding as it is, or doesn't add one";
 
 for (const [kind, places, h, two, one] of [
   ["demat", "demat accounts", holding("ISINX"), "20 shares", "10 shares"],
@@ -793,7 +794,7 @@ test("printed-zero and misread lines count among a holding's places but give no 
   assert.equal(onStatement(run), MISREAD);
   find(run, "SaveTo").onChange(sourceKey(misread), LEFT_OUT);
   await run.flush();
-  assert.equal(onStatement(run), `10.000 units · in 1 of 2 folios · ${MISREAD}`);
+  assert.equal(onStatement(run), "10.000 units · in 1 of 2 folios");
   find(run, "SaveTo").onChange(sourceKey(misread), "A");
   find(run, "SaveTo").onChange(sourceKey(x), LEFT_OUT);
   await run.flush();
@@ -814,15 +815,139 @@ test("a holding's question counts places of different kinds as places on the sta
   await run.flush();
   find(run, "SaveTo").onChange(sourceKey(misread), LEFT_OUT);
   await run.flush();
-  assert.equal(onStatement(run), `20.000 units · in 2 of 3 places on this statement · ${MISREAD}`);
+  assert.equal(onStatement(run), "20.000 units · in 2 of 3 places on this statement");
   find(run, "SaveTo").onChange(sourceKey(y), LEFT_OUT);
   await run.flush();
-  assert.equal(onStatement(run), `10.000 units · in 1 of 3 places on this statement · ${MISREAD}`);
+  assert.equal(onStatement(run), "10.000 units · in 1 of 3 places on this statement");
   run.dispose();
   ({ run } = setup([x, y], false));
   await run.flush();
   assert.equal(onStatement(run), "20.000 units · in 2 places on this statement");
 });
+
+const LIQUID = { isin: "INFZ90K01LQ6", name: "Fictiva Liquid Fund - Direct Plan - Growth" };
+/**
+ * A made-up summary statement's Fictiva Liquid Fund, as the reader leaves it: 10 units in folio
+ * 7712045, and a line in folio 91234567 / 12 that may have been misread, with a value but no units.
+ * Everything goes to A, and no fund is confirmed. An account in `held` has an earlier snapshot with the fund.
+ */
+async function liquidMisread({ held = [] } = {}) {
+  const data = JSON.parse(await readFile("tests/fixtures/made-up-summary-cams.json", "utf8"));
+  const [folio] = data.folios;
+  const liquid = folio.schemes.find((s) => s.isin === LIQUID.isin);
+  data.folios = [
+    { ...folio, folio: "7712045", schemes: [{ ...liquid, close: "10.000", valuation: { ...liquid.valuation, value: "29114.52" } }] },
+    { ...folio, schemes: [{ ...liquid, close: "0" }] },
+  ];
+  const { readHoldings } = await server.ssrLoadModule("/src/cas/holdings.ts");
+  const holdings = readHoldings(data);
+  const { run, props, api } = setup(holdings.sources, false);
+  Object.assign(props, { holdings, statement: data, accountChoices: { [investorKey(holdings.investor)]: "A" } });
+  api.snapshots.getAll = async (id) => (held.includes(id) ? [{ snapshotDate: "2025-02-28", source: "MANUAL" }] : []);
+  const read = new Set();
+  api.snapshots.getByDate = async (id) => (read.add(id), held.includes(id)
+    ? [{ holdingType: "security", quantity: "12.296", costBasis: null, localCurrency: "INR", instrument: { id: `asset-${LIQUID.isin}`, name: LIQUID.name, symbol: LIQUID.isin, quoteMode: "MARKET" } }]
+    : []);
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+  const saved = [];
+  api.snapshots.save = async (accountId, positions) => saved.push([accountId, positions.map((p) => [p.assetId ?? p.symbol, p.quantity])]);
+  api.storage.set = async () => {};
+  api.query = { invalidateQueries() {} };
+  const [units, misread] = holdings.sources;
+  const saveTo = async (source, to) => {
+    find(run, "SaveTo").onChange(sourceKey(source), to);
+    await run.flush();
+  };
+  /** The question's line after the fund's plan and option, and the misread line's reason under Not included. */
+  const shown = () => {
+    const line = onStatement(run);
+    assert.ok(line.startsWith("Direct plan · Growth · "), line);
+    assert.deepEqual(find(run, "NotIncluded").lines, [{
+      name: LIQUID.name, where: "Fictiva Mutual Fund account (folio 91234567 / 12)",
+      reason: "It has no units but a value of ₹35,799.22, so the line may have been misread. Check it against the PDF.",
+    }]);
+    return line.slice("Direct plan · Growth · ".length);
+  };
+  return { run, props, api, saved, read, units, misread, saveTo, shown };
+}
+const goingTo = (account) => `a line going to ${account} may have been misread, so ${account} keeps its holding as it is, or doesn't get one`;
+
+test("a misread line's warning on a holding's question names the accounts that line goes to, if the holding's other saved places go elsewhere", async () => {
+  const { run, units, misread, saveTo, shown } = await liquidMisread();
+  await run.flush();
+  assert.equal(shown(), MISREAD, "both folios go to A");
+  await saveTo(misread, LEFT_OUT);
+  assert.equal(shown(), "10.000 units · in 1 of 2 folios", "a line that isn't saved warns of nothing");
+  await saveTo(misread, "");
+  assert.equal(shown(), MISREAD, "saved again, to A");
+  await saveTo(misread, "B");
+  assert.equal(shown(), goingTo("B"));
+  await saveTo(units, "B");
+  assert.equal(shown(), MISREAD, "both folios go to B");
+  await saveTo(units, LEFT_OUT);
+  assert.equal(shown(), MISREAD, "only the misread line is saved");
+});
+
+test("a misread line's warning names no account while its folio's account is still to choose", async () => {
+  const { run, props, misread, units, saveTo, shown } = await liquidMisread();
+  props.accountChoices = { [sourceKey(units)]: "A" };
+  await run.flush();
+  assert.ok(find(run, "SaveTo"));
+  assert.equal(shown(), MISREAD);
+  await saveTo(misread, "B");
+  assert.equal(shown(), goingTo("B"));
+});
+
+test("a misread line's warning names every account such lines go to", async () => {
+  const fund = { ...holding("INFZ90A01017"), kind: "fund" };
+  const folio = (id, more) => ({ ...source(id, []), kind: "folio", ...more });
+  const x = folio("X", { holdings: [fund] });
+  const [m, n] = ["M", "N"].map((id) => folio(id, { misread: [{ ...fund, units: "0", value: "35799.22" }] }));
+  const { run, props } = setup([x, m, n], false);
+  props.accounts.push({ id: "C", name: "C", trackingMode: "HOLDINGS", isActive: true, isArchived: false });
+  Object.assign(props.accountChoices, { [sourceKey(x)]: "C", [sourceKey(n)]: "B" });
+  await run.flush();
+  assert.equal(onStatement(run), "lines going to A and B may have been misread, so A and B keep their holdings as they are, or don't get one");
+});
+
+test("a misread line's warning leaves out an account whose holdings saved for the date are kept, and is back once they're replaced", async () => {
+  const { run, api, units, misread, saveTo, shown } = await liquidMisread();
+  api.snapshots.getAll = async (id) => (id === "A" ? [{ snapshotDate: "2025-03-31", source: "MANUAL" }] : []);
+  await run.flush();
+  // The misread line goes to A, and the fund's units to B.
+  await saveTo(units, "B");
+  assert.equal(shown(), goingTo("A"));
+  assert.equal(find(run, "AskCard").title, "A already has holdings saved for 31 Mar 2025");
+  find(run, "AskCard").main.onClick();
+  await run.flush();
+  assert.equal(shown(), "10.000 units · in 1 of 2 folios");
+  find(run, "AskAnswered").onChange();
+  await run.flush();
+  find(run, "AskCard").other.onClick();
+  await run.flush();
+  assert.equal(find(run, "AskAnswered").text, "A: replaced the holdings saved for 31 Mar 2025 with this statement");
+  assert.equal(shown(), goingTo("A"));
+});
+
+for (const to of ["B", "A"]) {
+  for (const held of [false, true]) {
+    test(`a misread line going to ${to === "A" ? "the same account as" : "another account than"} the fund's units, ${held ? "which has" : "without"} a holding of it, changes only the question's words`, async () => {
+      const { run, saved, read, misread, saveTo, shown } = await liquidMisread({ held: held ? [to] : [] });
+      await run.flush();
+      if (to === "B") await saveTo(misread, "B");
+      assert.equal(shown(), to === "B" ? goingTo("B") : MISREAD);
+      find(run, "QuestionCard").onAnswer({ fund: { symbol: LIQUID.isin, exchangeMic: "XBOM", quoteCcy: "INR", name: LIQUID.name, instrumentType: "MUTUALFUND", providerId: "YAHOO" } });
+      await run.flush();
+      assert.equal(read.has(to), held, "its account's earlier snapshot is read");
+      // A saves the 10 units of the folio with none misread; where a misread line goes, a holding of the fund stays and none is added.
+      const rows = find(run, "ReadyTable")?.rows.map((row) => [row.accountId, row.position.units]);
+      assert.deepEqual(rows, to === "B" ? [["A", "10"]] : undefined);
+      find(run, "Footer").action.onClick();
+      await run.flush();
+      assert.deepEqual(saved, to === "B" ? [["A", [[LIQUID.isin, "10"]]]] : []);
+    });
+  }
+}
 
 test("Don't save drops an unanswered typed-search draft", async () => {
   const x = source("X", [holding("ISINX")]);
@@ -3278,7 +3403,7 @@ test("a question about a fund whose line may have been misread gives no units, a
       await run.flush();
     }
     assert.equal(find(run, "QuestionCard").units, "40.000 units", keep ? "misread source's account kept" : "misread source not saved");
-    assert.equal(find(run, "QuestionCard").where, `in 1 of 2 folios · ${MISREAD}`);
+    assert.equal(find(run, "QuestionCard").where, "in 1 of 2 folios");
     run.dispose();
   }
 });
