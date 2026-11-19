@@ -413,6 +413,9 @@ export function DetailedImport({
   const [matched, setMatched] = useState<Record<string, ChosenFund>>({});
   const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
   const [touched, setTouched] = useState<ReadonlySet<string>>(new Set());
+  // Funds whose question was answered in this review: only their answers are listed under Questions
+  // for you, whatever their row's Change picks later. Change on another fund's row is a change there.
+  const [fromQuestion, setFromQuestion] = useState<ReadonlySet<string>>(new Set());
   // Answers to the rare questions: skip (true) or import a possible duplicate, by its transaction's
   // key, and skip or import a fund whose rows don't add up, by its folio's scheme, with what it was
   // answered for.
@@ -1429,6 +1432,7 @@ export function DetailedImport({
   };
   const answer = (key: string, choice: FundChoice) => {
     setAnswers((all) => ({ ...all, [key]: choice }));
+    setFromQuestion((all) => new Set(all).add(key));
     setHandled((all) => new Set(all).add(key));
     setTouched((all) => new Set(all).add(key));
     searches.settle(key);
@@ -1553,6 +1557,7 @@ export function DetailedImport({
     const dropped = items.filter((item) => foliosOf(item.key).every((f) => folioState(f, after) === "out")).map((i) => i.key);
     if (dropped.length) {
       setAnswers((all) => Object.fromEntries(Object.entries(all).filter(([k]) => !dropped.includes(k))));
+      setFromQuestion((all) => new Set([...all].filter((k) => !dropped.includes(k))));
       for (const k of dropped) searches.settle(k);
       if (editor && dropped.includes(editor.itemKey)) closeEditor();
     }
@@ -2231,7 +2236,7 @@ export function DetailedImport({
     const auto = searches.get(key).auto;
     return item.isin && auto?.status === "done" && !auto.amfi;
   }).length;
-  const answeredKeys = items.filter((item) => item.key in answers && answers[item.key] && foliosOf(item.key).some(included)).map((i) => i.key);
+  const answeredKeys = items.filter((item) => fromQuestion.has(item.key) && answers[item.key] && foliosOf(item.key).some(included)).map((i) => i.key);
   const anyQuestions = questionKeys.length > 0 || answeredKeys.length > 0 || asks.length > 0;
   const openCount = openKeys.length + openAsks.length;
   const answeredCount = answeredKeys.length + asks.length - openAsks.length;
@@ -2584,7 +2589,7 @@ export function DetailedImport({
       )}
       <NotIncludedDetailed
         earlier={earlier}
-        skipped={skipped.map((item) => labelOf.get(item.key)!)}
+        skipped={skipped.map((item) => ({ key: item.key, name: labelOf.get(item.key)! }))}
         unbalanced={skippedUnbalanced}
         notImported={notImported.map((f) => `${folioName(f)} (${plural(f.schemes.length, "fund")})`)}
         duplicates={skippedDuplicates}

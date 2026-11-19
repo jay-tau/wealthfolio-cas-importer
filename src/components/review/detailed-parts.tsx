@@ -163,7 +163,7 @@ export function NotIncludedDetailed({
   changePanel,
 }: {
   earlier: EarlierFund[];
-  skipped: string[];
+  skipped: { key: string; name: string }[];
   /** Folios set to Don't import, by name. */
   notImported: string[];
   /**
@@ -226,9 +226,17 @@ export function NotIncludedDetailed({
         </div>
       ))}
       {skipped.length > 0 && (
-        <p className="text-sm">
-          <span className="font-semibold">Skipped ({skipped.length})</span>: {list(skipped)}, by your answer.
-        </p>
+        <div className="grid gap-1 text-sm">
+          <p><span className="font-semibold">Skipped ({skipped.length})</span>, by your answer:</p>
+          {skipped.map((fund) => (
+            <p key={fund.key}>
+              {fund.name} ·{" "}
+              <LinkButton type="button" aria-label={`Change: ${fund.name}, skipped`} onClick={() => onReopen(fund.key)}>
+                Change
+              </LinkButton>
+            </p>
+          ))}
+        </div>
       )}
       {notImported.length > 0 && (
         <p className="text-sm">

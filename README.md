@@ -136,10 +136,11 @@ the statement is read, one Review screen shows, in this order:
   this account before 1 Apr 2023, so 50.000 to add"), how many too many, with its transactions to
   check, or that a split or option expiry there keeps its units from being counted, with that to
   check instead, and that a new account they go to won't be created when nothing ready to import
-  goes into it (see [New accounts](#new-accounts)); funds you skipped; folios set to "Don't
-  import"; funds you skipped because their rows don't add up, with **Change**, which opens that
-  question again; each fund's possible duplicates you skipped ("Fictiva Liquid Fund: 3 possible
-  duplicates skipped by your answer."); and transactions left out, each with why.
+  goes into it (see [New accounts](#new-accounts)); funds you skipped, with **Change**, which asks
+  about the fund again; folios set to "Don't import"; funds you skipped because their rows don't
+  add up, with **Change**, which opens that question again; each fund's possible duplicates you
+  skipped ("Fictiva Liquid Fund: 3 possible duplicates skipped by your answer."); and transactions
+  left out, each with why.
 - **Transactions in this statement**: how many there are, and what happens to each: to import,
   imported before, possible duplicates waiting for your answer or skipped or imported by it, waiting
   for your answers or for earlier purchases, in skipped funds or folios not imported, or left out,
@@ -499,9 +500,9 @@ Review screen shows, in this order:
 - **Kept as they are**: holdings the account keeps as it has them, with a note to check them, such as
   one that a folio the statement doesn't list added (below).
 - **Not included in this save**: funds already tracked from transactions in another account
-  (below), holdings you skipped, holdings of what's set to "Don't save", statement rows left out so
-  that units aren't counted twice, with why and **Change**, and lines with no units or that may be
-  misread, each with why.
+  (below), holdings you skipped, with **Change**, holdings of what's set to "Don't save", statement
+  rows left out so that units aren't counted twice, with why and **Change**, and lines with no units
+  or that may be misread, each with why.
 - A bar that stays at the bottom: what's left before saving, or what will be saved ("Update
   **Demat** to 31 Jul 2026 with 10 holdings from this statement. Its other holdings and cash stay.",
   or "Create the Wealthfolio account **CDSL Demat** and save 10 holdings on 31 Jul 2026." for a new
