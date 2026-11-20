@@ -17,6 +17,7 @@ import {
   type ExistingSnapshot,
   FUND_SYMBOL,
   type HoldingKind,
+  gapLine,
   type Holdings,
   importedRefs,
   included,
@@ -2117,10 +2118,13 @@ export function HoldingsImport({
         )}
       </div>
       <StatementWarnings
-        lines={warningLines(statement.parse_warnings, {
-          statement: isDepository(statement) ? undefined : statement,
-          nameOf: (key) => (itemOf.has(key) ? shownName(itemOf.get(key)!, fundOf(key)) : undefined),
-        })}
+        lines={[
+          ...warningLines(statement.parse_warnings, {
+            statement: isDepository(statement) ? undefined : statement,
+            nameOf: (key) => (itemOf.has(key) ? shownName(itemOf.get(key)!, fundOf(key)) : undefined),
+          }),
+          ...(holdings.gaps ?? []).map(gapLine),
+        ]}
         before="saving"
       />
       <SaveTo

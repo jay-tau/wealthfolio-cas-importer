@@ -1,6 +1,12 @@
 """Write a MADE-UP CDSL Consolidated Account Statement (CAS) PDF.
 
-Usage: python make_cdsl_cas.py out.pdf
+Usage: python make_cdsl_cas.py out.pdf [--dropped]
+
+--dropped (made-up-cdsl-dropped.pdf) adds two funds to the mutual fund
+folios that casparser 1.4.1 leaves out without a warning (casparser#163),
+while the roster's value for the folios still counts them: one whose ISIN
+wraps across two lines at a U+0002 soft hyphen in the units table, and one
+printed there with no ISIN.
 
 Everything in the statement is invented: investor, PANs (ABCDE1234F, the
 PDF's user password, and a joint holder's ABCDE5678K; the fourth letter D is
@@ -239,6 +245,8 @@ class MFFolio:
     ter: Decimal = D(0)
     commission: Decimal = D(0)
     ret: Decimal = D(0)
+    # How the units table prints the ISIN: "whole", "wrapped" over two lines at U+0002, or "blank".
+    isin_cell: str = "whole"
 
     @property
     def value(self) -> Decimal:
@@ -372,6 +380,23 @@ MF_FOLIOS = [
         "TGLDG", "Testbridge Mutual Fund", "Testbridge Gilt Fund - Direct Plan - Growth",
         isin("INFZ91T01GL"), "1040012345", "DIRECT", "KFINTECH", "",
         D("455.120"), D("55.1287"), None,
+    ),
+]
+
+# --dropped: two more funds that casparser 1.4.1 leaves out of the units table without a warning
+# (casparser#163). Their values stay in the account's summary total, so the funds read fall short.
+DROPPED_FOLIOS = [
+    # A long name, and its ISIN wrapped across two lines at a soft hyphen that pdfium reads as U+0002.
+    MFFolio(
+        "FLDDG", "Fictiva Mutual Fund", "Fictiva Long Duration Placeholder Opportunities Fund - Direct Plan - Growth",
+        isin("INFZ90K01LD"), "91234567/12", "DIRECT", "CAMS", "UCCZ900005",
+        D("1215.640"), D("18.2307"), D("20000.00"), ter=D("0.48"), ret=D("10.81"), isin_cell="wrapped",
+    ),
+    # No ISIN printed in the units table; the scheme code, folio and numbers are.
+    MFFolio(
+        "TSTDG", "Testbridge Mutual Fund", "Testbridge Short Term Fund - Direct Plan - Growth",
+        isin("INFZ91T01SD"), "1040012345", "DIRECT", "KFINTECH", "UCCZ900006",
+        D("812.400"), D("31.5520"), D("24000.00"), ter=D("0.39"), ret=D("6.80"), isin_cell="blank",
     ),
 ]
 
@@ -639,7 +664,12 @@ def mf_units(L: Doc):
         name = wrap(f"{f.code} - {f.scheme}", FONT, MSIZE, M_NAME_W)
         for k, line in enumerate(name):
             L.text(M_NAME, L.y - 7 * k, line, FONT, MSIZE)
-        L.text(M_ISIN, L.y, f.isin, FONT, MSIZE)
+        if f.isin_cell == "wrapped":
+            assert len(name) > 1, f.code
+            L.text(M_ISIN, L.y, f"{f.isin[:10]}{STX}", FONT, MSIZE)
+            L.text(M_ISIN, L.y - 7, f.isin[10:], FONT, MSIZE)
+        elif f.isin_cell == "whole":
+            L.text(M_ISIN, L.y, f.isin, FONT, MSIZE)
         L.text(M_FOLIO, L.y, f.folio, FONT, MSIZE, max_w=M_ARN - M_FOLIO - 4)
         L.text(M_ARN, L.y, f.arn, FONT, MSIZE, max_w=M_RIGHT[0] - 32 - M_ARN)
         cells = [inr(f.units, 3), inr(f.nav, 4), None, inr(f.value)]
@@ -731,8 +761,13 @@ def render(L: Doc) -> bytes:
 
 
 def main(argv: List[str]) -> None:
-    if len(argv) != 1:
-        raise SystemExit("usage: python make_cdsl_cas.py out.pdf")
+    args = [a for a in argv if not a.startswith("--")]
+    flags = {a for a in argv if a.startswith("--")}
+    if len(args) != 1 or flags - {"--dropped"}:
+        raise SystemExit("usage: python make_cdsl_cas.py out.pdf [--dropped]")
+    if "--dropped" in flags:
+        # Between the folios' other funds, as a real statement lists them.
+        MF_FOLIOS[1:1] = DROPPED_FOLIOS
     L = Doc()
     cover(L)
     roster(L)
@@ -750,10 +785,10 @@ def main(argv: List[str]) -> None:
             page.Contents.write(content.replace(b"\\244", b"\\002"))
         assert written == sum(s.count(STX) for ops in L.pages for *_, s, _font, _size in ops), written
         pdf.save(
-            argv[0],
+            args[0],
             encryption=pikepdf.Encryption(owner=OWNER_PASSWORD, user=PAN, R=6, aes=True),
         )
-    print("wrote", argv[0])
+    print("wrote", args[0])
 
 
 if __name__ == "__main__":

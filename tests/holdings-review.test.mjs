@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { after, afterEach, before, test } from "node:test";
+import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { proposedId } from "../src/lib/new-accounts.ts";
 
@@ -871,6 +872,84 @@ async function liquidMisread({ held = [] } = {}) {
   return { run, props, api, saved, read, units, misread, saveTo, shown };
 }
 const goingTo = (account) => `a line going to ${account} may have been misread, so ${account} keeps its holding as it is, or doesn't get one`;
+
+/**
+ * The made-up CDSL statement's mutual fund folios, all going to A: `name` is made-up-cdsl, or
+ * made-up-cdsl-dropped, two of whose funds casparser doesn't read. A's snapshot of 28 Feb 2026 holds
+ * one of those, from an earlier import of its folio. Without `gaps`, the screen gets no account gaps.
+ */
+async function cdslFolios(name, { gaps = true } = {}) {
+  const data = JSON.parse(await readFile(`tests/fixtures/${name}.json`, "utf8"));
+  data.accounts = data.accounts.filter((a) => a.type === "Mutual Fund Folios");
+  data.nps = null;
+  const { readHoldings } = await server.ssrLoadModule("/src/cas/holdings.ts");
+  const holdings = readHoldings(data);
+  if (!gaps) holdings.gaps = [];
+  const { run, props, api } = setup(holdings.sources);
+  Object.assign(props, { holdings, statement: data, accountChoices: { [investorKey(holdings.investor)]: "A" } });
+  const isin = "INFZ90K01LD4";
+  const instrument = { id: `asset-${isin}`, symbol: isin, name: "Fictiva Long Duration Placeholder Opportunities Fund - Direct Plan - Growth", quoteMode: "MARKET" };
+  api.snapshots.getAll = async (id) => (id === "A" ? [{ snapshotDate: "2026-02-28", source: "MANUAL" }] : []);
+  api.snapshots.getByDate = async (id) => (id === "A" ? [{ holdingType: "security", quantity: "1215.64", costBasis: null, localCurrency: "INR", instrument }] : []);
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id.replace(/^asset-/, ""), instrumentExchangeMic: "XBOM" });
+  const stored = new Map();
+  api.storage.get = async (key) => stored.get(key) ?? null;
+  api.storage.set = async (key, value) => stored.set(key, value);
+  const { saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  await saveImported(api.storage, holdings.sources[0], "A", "2026-02-28", { [`${isin}@XBOM`]: [isin] });
+  const saved = [];
+  api.snapshots.save = async (accountId, positions, cash, date) => { saved.push([accountId, positions.map((p) => [p.assetId ?? p.symbol, p.quantity]), date]); };
+  api.query = { invalidateQueries() {} };
+  return { run, props, holdings, saved };
+}
+const statementWarnings = (run) => find(run, "StatementWarnings").lines.map((line) => line.text);
+const DROPPED_GAP = "Mutual fund folios: the statement's summary value was read as ₹3,67,206.37, but the holdings found add up to ₹3,19,411.56, ₹47,794.81 less. Check the PDF for missing or misread holdings, including types this add-on can't read.";
+
+for (const answer of ["Keep 1,215.640 units", "Set it to zero on 31 Mar"]) {
+  test(`an account's gap shows on Review and the missing fund's ${answer} answer still saves the same snapshot (#338)`, async () => {
+    const outcomes = [];
+    for (const gaps of [true, false]) {
+      const { run, saved } = await cdslFolios("made-up-cdsl-dropped", { gaps });
+      await run.flush();
+      const parts = nodes(run.tree);
+      const warning = parts.find((node) => node.type?.name === "StatementWarnings");
+      assert.ok(parts.indexOf(warning) < parts.findIndex((node) => node.type?.name === "SaveTo"));
+      const markup = renderToStaticMarkup(warning).replaceAll("&#x27;", "'");
+      assert.equal(markup.includes("Check these against the PDF before saving"), gaps);
+      assert.equal(markup.includes(DROPPED_GAP), gaps);
+      const card = find(run, "AskCard");
+      const asked = [card.title, card.main.label, card.other.label, card.why.text];
+      const button = [card.main, card.other].find((b) => b.label === answer);
+      assert.ok(button, answer);
+      button.onClick();
+      await settle(run);
+      const footer = footerText(run);
+      find(run, "Footer").action.onClick();
+      await settle(run);
+      outcomes.push({ asked, footer, saved });
+    }
+    const positions = [
+      ["INFZ90K01FC8", "2104.518"], ["INFZ90K01MC4", "640.25"], ["INFZ91T01CB6", "9512.207"], ["INFZ91T01GL6", "455.12"],
+    ];
+    if (answer.startsWith("Keep")) positions.unshift(["asset-INFZ90K01LD4", "1215.64"]);
+    assert.deepEqual(outcomes[0].saved, [["A", positions, "2026-03-31"]]);
+    assert.deepEqual(outcomes[0], outcomes[1]);
+  });
+}
+
+test("leaving funds or a folio out of the save neither adds an account's gap nor hides one (#338)", async () => {
+  for (const [name, expected] of [["made-up-cdsl", []], ["made-up-cdsl-dropped", [DROPPED_GAP]]]) {
+    const { run, props, holdings } = await cdslFolios(name);
+    const [first, second] = holdings.sources;
+    props.fundChoices[holdingKey(first.holdings[0])] = { leftOut: true };
+    await run.flush();
+    assert.deepEqual(statementWarnings(run), expected, name);
+    find(run, "SaveTo").onChange(sourceKey(second), LEFT_OUT);
+    await run.flush();
+    assert.equal(find(run, "SaveTo").values[sourceKey(second)], LEFT_OUT);
+    assert.deepEqual(statementWarnings(run), expected, name);
+  }
+});
 
 test("a misread line's warning on a holding's question names the accounts that line goes to, if the holding's other saved places go elsewhere", async () => {
   const { run, units, misread, saveTo, shown } = await liquidMisread();

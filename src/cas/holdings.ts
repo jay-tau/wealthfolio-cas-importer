@@ -1,11 +1,12 @@
 import type { ActivityDetails, MonetaryValue, SnapshotHoldingInput, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { Explained } from "../lib/explained.ts";
 import { mayBeCut, readableName } from "../lib/fund-name.ts";
-import { type Counted, counts, exchangeOf, figure, longDate, quantity, rupees } from "../lib/review-format.ts";
+import type { WarningLine } from "../lib/parse-warnings.ts";
+import { type Counted, counts, exchangeOf, figure, grouped, longDate, quantity, rupees } from "../lib/review-format.ts";
 import { abs, add, cmp, dec, type Dec, div, format, isZero, mul, step, sub } from "./decimal.ts";
 import type { FundAsset } from "./mapping.ts";
 import { countUnits, fundRef, localDay, sameUnits, statementDay } from "./plan.ts";
-import { type CasData, type CasScheme, type DepositoryData, isDepository, type Statement } from "./types.ts";
+import { type CasData, type CasScheme, type DematAccount, type DepositoryData, isDepository, type Statement } from "./types.ts";
 
 // A summary or NSDL/CDSL statement's holdings → the snapshots saved to Wealthfolio accounts that
 // track holdings. Wealthfolio's snapshot is the account's whole state on its date, so each one
@@ -76,6 +77,21 @@ export interface LeftOutLine {
   reason: string;
 }
 
+/**
+ * An NSDL or CDSL statement's account whose holdings, as read, don't add up to the value its summary
+ * prints for it: a holding may be missing or misread, or be of a kind casparser doesn't read.
+ */
+export interface AccountGap {
+  /** The account as the Review screen names it: "FICTIVA SECURITIES LIMITED demat account", "Mutual fund folios". */
+  account: string;
+  /** The account's value on the statement's summary. */
+  printed: string;
+  /** What the holdings read from it add up to, before any is left out. */
+  read: string;
+  /** No holding was read from it. */
+  empty: boolean;
+}
+
 export interface Holdings {
   /** The statement's date, `2025-03-31`. */
   date: string;
@@ -83,6 +99,8 @@ export interface Holdings {
   investor: string;
   sources: Source[];
   leftOut: LeftOutLine[];
+  /** A depository statement's accounts whose holdings don't add up to their printed values. */
+  gaps?: AccountGap[];
 }
 
 const positive = (value: string | null | undefined) => value != null && value !== "" && dec(value).n > 0n;
@@ -117,6 +135,50 @@ function misread(h: StatementHolding) {
   const tolerance = add(add(mul(nav, halfUnit), mul(add(units, halfUnit), halfNav)), PAISA);
   if (cmp(abs(sub(mul(units, nav), dec(h.value || "0"))), tolerance) <= 0) return undefined;
   return `Its value of ${rupees(h.value || "0")} differs from ${quantity("unit", h.units)} × NAV ${h.price} by more than the units' and NAV's rounding`;
+}
+
+function accountAmount(value: string): Dec {
+  // Bound powers of ten before doing arithmetic on values read from the PDF.
+  if (typeof value !== "string" || value.length > 64 || Math.abs(Number(value.split(/[eE]/)[1] ?? 0)) > 64) {
+    throw new Error("Invalid account amount");
+  }
+  return dec(value);
+}
+
+/**
+ * How the holdings read from a depository statement's account compare with the value its summary
+ * prints for it. The summary may add up values from before the rows were rounded, so allow half
+ * the last place of each amount, with a minimum of half a paisa. Bare zero gets half a paisa
+ * because casparser uses it for missing or unreadable values. Allow the sum of those rounding
+ * errors. Skip the check if any parsed amount is invalid or out of range.
+ */
+function accountGap(account: DematAccount, name: string): AccountGap | undefined {
+  try {
+    const printed = accountAmount(account.balance);
+    const amounts = [...account.equities, ...account.mutual_funds, ...account.bonds].map((h) => accountAmount(h.value));
+    const read = amounts.reduce(add, dec("0"));
+    const tolerance = [printed, ...amounts].reduce((sum, a) => {
+      const places = isZero(a) && a.scale === 0 ? 2 : Math.min(a.scale, 2);
+      return add(sum, mul(HALF, step(places)));
+    }, dec("0"));
+    if (cmp(abs(sub(printed, read)), tolerance) <= 0) return undefined;
+    return { account: name, printed: format(printed), read: format(read), empty: !amounts.length };
+  } catch {
+    return undefined;
+  }
+}
+
+/** An account's gap in the Review screen's words, with what to do. */
+export function gapLine(gap: AccountGap): WarningLine {
+  const short = sub(dec(gap.printed), dec(gap.read));
+  const amount = (value: string) => /\.\d{3}/.test(value) ? `₹${grouped(value)}` : rupees(value);
+  const difference = `${amount(format(abs(short)))} ${short.n > 0n ? "less" : "more"}`;
+  const found = gap.empty
+    ? `no holdings were found (${amount(gap.read)}, ${difference})`
+    : `the holdings found add up to ${amount(gap.read)}, ${difference}`;
+  return {
+    text: `${gap.account}: the statement's summary value was read as ${amount(gap.printed)}, but ${found}. Check the PDF for missing or misread holdings, including types this add-on can't read.`,
+  };
 }
 
 /** Keep both identities: a later summary can omit an ISIN that was printed before. */
@@ -305,9 +367,12 @@ function readDepository(data: DepositoryData): Holdings {
     details: printed({ name: f.name, isin: f.isin }),
   });
   let dematNumber = 0;
+  // Each account and the source that names it on the Review screen: none for the folios, which split up.
+  const accounts: [DematAccount, Source?][] = [];
 
   for (const account of data.accounts) {
     if (account.type === "Mutual Fund Folios") {
+      accounts.push([account]);
       const folios = new Map<string, { source: Source; funds: StatementHolding[] }>();
       const lines: [Source, StatementHolding][] = [];
       for (const f of account.mutual_funds) {
@@ -332,6 +397,7 @@ function readDepository(data: DepositoryData): Holdings {
       id: `demat|${account.dp_id ?? ""}|${account.client_id ?? ""}`, kind: "demat", label, holdings: [],
       title: readableName(account.name ?? "") ? `${readableName(account.name)} demat account` : label,
     };
+    accounts.push([account, source]);
     // Only a CDSL statement's own demat accounts are known to print the fund house first, and to cut
     // a long name short.
     const cdsl = data.file_type === "CDSL" && account.type === "CDSL Demat Account";
@@ -384,6 +450,7 @@ function readDepository(data: DepositoryData): Holdings {
   for (const source of demats) {
     if (demats.filter((other) => other.title === source.title).length > 1) source.title = `${source.title} (${source.label})`;
   }
+  const gaps = accounts.flatMap(([account, source]) => accountGap(account, source?.title ?? "Mutual fund folios") ?? []);
   const owner = data.accounts.flatMap((a) => a.owners)[0];
   const investor = (owner?.PAN || data.investor_info.name).trim().toUpperCase();
   if (data.nps) {
@@ -417,6 +484,7 @@ function readDepository(data: DepositoryData): Holdings {
     investor,
     sources,
     leftOut,
+    gaps,
   };
 }
 
