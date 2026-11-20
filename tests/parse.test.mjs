@@ -89,6 +89,20 @@ for (const name of ["made-up-summary-cams", "made-up-summary-kfintech", "made-up
   });
 }
 
+// casparser#163. Once casparser reads these funds, update the expected parser output and the Review
+// tests that use it for the account-total warning (#338).
+test("drops a CDSL fund whose ISIN wraps at U+0002, and one printed without an ISIN, without a warning", async () => {
+  const { pdf, expected } = await fixture("made-up-cdsl-dropped");
+  const data = JSON.parse(parse(pdf, PASSWORD));
+  assert.deepEqual(data, expected);
+  assert.deepEqual(data.parse_warnings, []);
+  // The units table's six funds read as made-up-cdsl's four, but the summary still counts all six.
+  const folios = (statement) => statement.accounts.find((a) => a.type === "Mutual Fund Folios");
+  const control = (await fixture("made-up-cdsl")).expected;
+  assert.deepEqual(folios(data).mutual_funds, folios(control).mutual_funds);
+  assert.deepEqual([folios(control).balance, folios(data).balance], ["319411.56", "367206.37"]);
+});
+
 test("rejects a wrong password", async () => {
   const { pdf } = await fixture("made-up-cas");
   assert.throws(() => parse(pdf, "WRONGPASS1"), { type: "IncorrectPasswordError" });

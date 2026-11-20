@@ -464,7 +464,18 @@ Review screen shows, in this order:
   questions** when a card asks about something other than which fund a holding is.
 - **Check these against the PDF before saving**, when casparser couldn't read part of the statement
   cleanly, as on the detailed Review screen: for example, an NSDL fund line whose NAV and value it
-  couldn't read, so the line's largest amount was taken as its value.
+  couldn't read, so the line's largest amount was taken as its value. On an NSDL or CDSL statement,
+  this section also shows when the holdings read for a demat account or for mutual fund folios held
+  outside demat don't add up to the value read from the summary page. It gives the summary value, the
+  holdings total and the difference, even when no holdings were found. Check the PDF for missing or
+  misread holdings, including types the add-on can't read. For example, casparser 1.4.1 can leave
+  out a CDSL fund without a warning if its ISIN wraps onto a second line or isn't printed
+  ([casparser#163](https://github.com/codereverser/casparser/issues/163)).
+
+  To allow for rounding, the check adds up half the last decimal place of each value, including the
+  summary value, with a minimum of half a paisa each. A zero without decimal places gets half a
+  paisa because casparser can use it when a value is missing or unreadable. The check counts every
+  holding read, including those you leave out when saving.
 - **Save to**: one Wealthfolio account that tracks holdings for all of the investor's holdings, or
   "Don't save them". The one chosen last time is preselected. Under **Save part of it to another
   account**, each folio, demat account and National Pension System (NPS) account can go to another

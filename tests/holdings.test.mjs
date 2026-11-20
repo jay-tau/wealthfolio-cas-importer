@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { dec, div, format, mul } from "../src/cas/decimal.ts";
+import { add, dec, div, format, mul, sub } from "../src/cas/decimal.ts";
 import {
   assetDetails,
   assetName,
@@ -9,6 +9,7 @@ import {
   changesNothing,
   checkUnits,
   existingCost,
+  gapLine,
   importedRefs,
   included,
   keepsDetails,
@@ -212,6 +213,152 @@ test("reads a CDSL statement and its NPS schemes, and leaves out holdings withou
     holdings.sources[2].holdings.map((h) => h.cost),
     ["100000", null],
   );
+});
+
+// Each NSDL or CDSL account's holdings against the value the statement's summary prints for it (#338).
+const ACCOUNTS = {
+  "made-up-nsdl": ["FICTIVA SECURITIES PRIVATE LIMITED demat account", "TESTBRIDGE BROKING LIMITED demat account", "Mutual fund folios"],
+  "made-up-cdsl": ["FICTIVA SECURITIES LIMITED demat account", "Mutual fund folios", "TESTBRIDGE CAPITAL SERVICES PRIVATE LIMITED demat account"],
+};
+const CHECK_PDF = "Check the PDF for missing or misread holdings, including types this add-on can't read.";
+
+test("finds no gap in statements whose accounts add up, in either format and for every kind of account", async () => {
+  for (const name of Object.keys(ACCOUNTS)) {
+    const data = await fixture(name);
+    assert.deepEqual(data.accounts.map((a) => a.type).sort(), ["CDSL Demat Account", "Mutual Fund Folios", "NSDL Demat Account"], name);
+    // A holding without units is left out, but its zero value still counts.
+    assert.deepEqual(readHoldings(data).gaps, [], name);
+  }
+  assert.equal(readHoldings(await fixture("made-up-cdsl")).leftOut.length, 1);
+  // A summary statement has no account values to check.
+  assert.equal(readHoldings(await fixture("made-up-summary-cams")).gaps, undefined);
+});
+
+test("the gap check counts a raw holding with a value even if its units leave it out of the save", async () => {
+  const data = await fixture("made-up-cdsl");
+  const [demat] = data.accounts;
+  const share = demat.equities.find((e) => e.value === "0.00");
+  share.value = "100.00";
+  demat.balance = format(add(dec(demat.balance), dec(share.value)));
+  const holdings = readHoldings(data);
+  assert.equal(holdings.leftOut.length, 1);
+  assert.deepEqual(holdings.gaps, []);
+});
+
+test("finds the gap a missing or misread share, fund or bond leaves in its account, in either format", async () => {
+  let checked = 0;
+  for (const [name, accounts] of Object.entries(ACCOUNTS)) {
+    const statement = await fixture(name);
+    statement.accounts.forEach((account, i) => {
+      for (const list of ["equities", "mutual_funds", "bonds"]) {
+        if (!account[list].length) continue;
+        const printed = format(dec(account.balance));
+        const value = dec(account[list][0].value);
+        const left = structuredClone(statement);
+        left.accounts[i][list].shift();
+        const read = format(sub(dec(account.balance), value));
+        assert.deepEqual(readHoldings(left).gaps, [{ account: accounts[i], printed, read, empty: false }], `${name} ${accounts[i]} ${list}`);
+        const misread = structuredClone(statement);
+        misread.accounts[i][list][0].value = format(add(value, dec("1")));
+        const [gap] = readHoldings(misread).gaps;
+        assert.deepEqual(gap, { account: accounts[i], printed, read: format(add(dec(account.balance), dec("1"))), empty: false });
+        assert.match(gapLine(gap).text, /, ₹1 more\. /);
+        checked++;
+      }
+    });
+  }
+  // Shares, funds and bonds in NSDL and CDSL demat accounts, and funds in folios, in both formats.
+  assert.equal(checked, 11);
+});
+
+test("words an account's gap with the summary's value, the holdings' and the difference", async () => {
+  const data = await fixture("made-up-cdsl");
+  const folios = data.accounts[1];
+  folios.mutual_funds.splice(1, 1);
+  const holdings = readHoldings(data);
+  assert.deepEqual(holdings.gaps, [{ account: "Mutual fund folios", printed: "319411.56", read: "215628.63", empty: false }]);
+  assert.deepEqual(holdings.gaps.map(gapLine), [{
+    text: `Mutual fund folios: the statement's summary value was read as ₹3,19,411.56, but the holdings found add up to ₹2,15,628.63, ₹1,03,782.93 less. ${CHECK_PDF}`,
+  }]);
+});
+
+test("finds each account's gap even when they cancel out over the statement", async () => {
+  const data = await fixture("made-up-cdsl");
+  const [demat, folios] = data.accounts;
+  demat.equities[0].value = format(add(dec(demat.equities[0].value), dec("100")));
+  folios.mutual_funds[0].value = format(sub(dec(folios.mutual_funds[0].value), dec("100")));
+  assert.deepEqual(readHoldings(data).gaps.map(gapLine).map((l) => l.text), [
+    `FICTIVA SECURITIES LIMITED demat account: the statement's summary value was read as ₹5,46,150.95, but the holdings found add up to ₹5,46,250.95, ₹100 more. ${CHECK_PDF}`,
+    `Mutual fund folios: the statement's summary value was read as ₹3,19,411.56, but the holdings found add up to ₹3,19,311.56, ₹100 less. ${CHECK_PDF}`,
+  ]);
+});
+
+test("names gaps for two demat accounts at the same broker as Save to does", async () => {
+  const data = await fixture("made-up-nsdl");
+  const [first, second] = data.accounts;
+  for (const account of [first, second]) {
+    account.name = "FICTIVA SECURITIES LIMITED";
+    Object.assign(account, { balance: "100.00", equities: [], mutual_funds: [], bonds: [] });
+  }
+  const holdings = readHoldings(data);
+  const titles = holdings.sources.filter((s) => s.kind === "demat").map((s) => s.title);
+  assert.deepEqual(holdings.gaps.map((g) => g.account), titles);
+  assert.equal(new Set(holdings.gaps.map((g) => gapLine(g).text)).size, 2);
+});
+
+test("finds an account with a value on the summary but no holdings read, and its source stays empty", async () => {
+  const data = await fixture("made-up-nsdl");
+  Object.assign(data.accounts[1], { equities: [], mutual_funds: [], bonds: [] });
+  // A demat account with nothing in it and no value adds up.
+  Object.assign(data.accounts[0], { balance: "0.00", equities: [], mutual_funds: [], bonds: [] });
+  const holdings = readHoldings(data);
+  assert.deepEqual(holdings.gaps, [{ account: "TESTBRIDGE BROKING LIMITED demat account", printed: "908967.76", read: "0", empty: true }]);
+  assert.deepEqual(holdings.gaps.map(gapLine), [{
+    text: `TESTBRIDGE BROKING LIMITED demat account: the statement's summary value was read as ₹9,08,967.76, but no holdings were found (₹0, ₹9,08,967.76 less). ${CHECK_PDF}`,
+  }]);
+  assert.deepEqual(holdings.sources.filter((s) => s.kind === "demat").map((s) => s.holdings.length), [0, 0]);
+});
+
+test("allows for the summary's and each holding's rounding: half its last place, at least half a paisa", () => {
+  const share = (value, i) => ({ name: `SHARE ${i}`, isin: `INEZ9000000${i}`, num_shares: "1", price: value, value, symbol: null, exchange: null });
+  const gaps = (balance, values, name = "FICTIVA SECURITIES LIMITED") => readHoldings({
+    file_type: "NSDL", statement_period: { from: "01-Mar-2025", to: "31-Mar-2025" }, investor_info: { name: "TEST" }, nps: null, parse_warnings: [],
+    accounts: [{ name, type: "NSDL Demat Account", dp_id: "IN1", client_id: "1", folios: values.length, balance, owners: [], equities: values.map(share), mutual_funds: [], bonds: [] }],
+  }).gaps.map((g) => [g.printed, g.read]);
+  // The summary and two values in paise: ±₹0.015.
+  for (const balance of ["100.015", "99.985"]) assert.deepEqual(gaps(balance, ["50.00", "50.00"]), [], balance);
+  for (const balance of ["100.016", "99.984"]) assert.deepEqual(gaps(balance, ["50.00", "50.00"]), [[balance, "100"]], balance);
+  // A value with more places than paise still counts half a paisa; one in whole rupees, half a rupee.
+  assert.deepEqual(gaps("100.00", ["50.0000", "50.0149"]), []);
+  assert.deepEqual(gaps("100.00", ["50.0000", "50.0151"]), [["100", "100.0151"]]);
+  assert.deepEqual(gaps("100.00", ["50", "50.51"]), []);
+  assert.deepEqual(gaps("100.00", ["50", "50.52"]), [["100", "100.52"]]);
+  // casparser can emit "0" for a dash or an unreadable cell, with no printed precision.
+  assert.deepEqual(gaps("100.03", ["100.00", "0"]), [["100.03", "100"]]);
+  assert.deepEqual(gaps("100.03", ["100.00", "0.0"]), []);
+  // An amount that isn't a number leaves the account unchecked.
+  assert.deepEqual(gaps(null, ["50.00"]), []);
+  assert.deepEqual(gaps("100.00", ["50.00", "?"]), []);
+});
+
+test("checks ordinary decimal exponents without expanding an out-of-range amount", async () => {
+  const data = await fixture("made-up-cdsl");
+  const [demat] = data.accounts;
+  demat.balance = "1E-5";
+  assert.equal(readHoldings(data).gaps[0].printed, "0.00001");
+  for (const balance of ["1E-100", "1E+100", "1".repeat(65)]) {
+    demat.balance = balance;
+    assert.deepEqual(readHoldings(data).gaps, [], balance);
+  }
+});
+
+test("shows the exact figures when a gap includes fractions of a paisa", async () => {
+  const data = await fixture("made-up-cdsl");
+  const [demat] = data.accounts;
+  Object.assign(demat, { balance: "100.00", equities: [{ ...demat.equities[0], value: "99.985" }], mutual_funds: [], bonds: [] });
+  assert.deepEqual(readHoldings(data).gaps.map(gapLine), [{
+    text: `FICTIVA SECURITIES LIMITED demat account: the statement's summary value was read as ₹100, but the holdings found add up to ₹99.985, ₹0.015 less. ${CHECK_PDF}`,
+  }]);
 });
 
 test("tells apart two fund houses' depository folios with the same number, or without one, by their first fund", async () => {
