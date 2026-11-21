@@ -187,6 +187,15 @@ const host = {
   // Wealthfolio's timezone setting. Rows the add-on imports are stored at UTC midnight, on their day there too.
   timezone: "Asia/Kolkata",
   failSettings: false,
+  // What the browser test prints when a step fails (#252), kept apart from the records above: the
+  // last 80 timestamped entries for host calls that returned a promise or threw, the calls not
+  // answered yet, and each snapshot save's account, date, and when it was sent and answered,
+  // or its error.
+  diagnostics: {
+    calls: [] as string[],
+    inflight: new Set<string>(),
+    saves: [] as { account: string; date: string; sentAt: string; doneAt?: string; error?: string }[],
+  },
 };
 declare global {
   interface Window {
@@ -866,6 +875,55 @@ const api = {
     },
   },
 };
+
+// Logs the add-on's calls to the host in `host.diagnostics`. A call that neither returns a promise
+// nor throws, such as one to the logger, isn't logged.
+{
+  const { calls, inflight, saves } = host.diagnostics;
+  const now = () => performance.now().toFixed(0);
+  const note = (line: string) => {
+    calls.push(`${now()} ${line}`);
+    if (calls.length > 80) calls.shift();
+  };
+  let count = 0;
+  for (const [area, methods] of Object.entries(api as Record<string, Record<string, unknown>>)) {
+    for (const [name, method] of Object.entries(methods)) {
+      if (typeof method !== "function") continue;
+      const label = `${area}.${name}`;
+      methods[name] = function (this: unknown, ...args: unknown[]) {
+        const call = `${label}#${++count}`;
+        const save: (typeof saves)[number] | undefined =
+          label === "snapshots.save" ? { account: String(args[0]), date: String(args[3]), sentAt: now() } : undefined;
+        if (save) saves.push(save);
+        let result: unknown;
+        try {
+          result = method.apply(this, args);
+        } catch (error) {
+          note(`${call} threw ${String(error).slice(0, 80)}`);
+          if (save) save.error = String(error);
+          throw error;
+        }
+        if (!(result instanceof Promise)) return result;
+        inflight.add(call);
+        note(`${call} sent`);
+        // Keep the promise the add-on awaits, as with unanswered() above.
+        void result.then(
+          () => {
+            inflight.delete(call);
+            note(`${call} returned`);
+            if (save) save.doneAt = now();
+          },
+          (error) => {
+            inflight.delete(call);
+            note(`${call} rejected ${String(error).slice(0, 80)}`);
+            if (save) Object.assign(save, { doneAt: now(), error: String(error) });
+          },
+        );
+        return result;
+      };
+    }
+  }
+}
 
 window.addEventListener("message", async ({ data }) => {
   const assets = {
