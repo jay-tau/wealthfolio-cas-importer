@@ -67,29 +67,105 @@ const pages = {
   "no-csp": page(srcdoc("")),
 };
 
+// For a failed step's dump (#252): logs, in the add-on's frame document, its last 200 input events
+// and changes to buttons' disabled and aria-busy attributes, at performance.now() times. "(disabled)"
+// is the target's own flag. Playwright installs this before scripts in each new frame document.
+// Rendering the add-on again keeps the document and the log.
+const watchInput = () => {
+  if (window === window.top || window.inputLog) return;
+  const log = (window.inputLog = []);
+  const push = (line) => {
+    log.push(`${performance.now().toFixed(0)} ${line}`);
+    if (log.length > 200) log.shift();
+  };
+  const name = (t) => (t && t.nodeType === 1 ? `${t.tagName}${t.id ? "#" + t.id : ""}[${(t.getAttribute("aria-label") || t.textContent || "").trim().slice(0, 50)}]` : String(t));
+  for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "keydown", "focusin"]) {
+    document.addEventListener(type, (e) => push(`${type} ${name(e.target)}${e.target?.disabled ? " (disabled)" : ""}`), true);
+  }
+  new MutationObserver((records) => {
+    for (const r of records) {
+      if (r.target.tagName === "BUTTON") push(`attr ${r.attributeName}=${r.target.getAttribute(r.attributeName)} ${name(r.target)}`);
+    }
+  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["disabled", "aria-busy"] });
+};
+
+// Gives up on a diagnostic read after 10 s, as a stalled renderer may never answer (#246).
+const within = (promise) => {
+  let timer;
+  const late = new Promise((resolve) => { timer = setTimeout(resolve, 10_000, "no answer within 10 s"); });
+  return Promise.race([promise.catch((error) => `failed: ${String(error?.message ?? error).split("\n")[0]}`), late])
+    .finally(() => clearTimeout(timer));
+};
+
+const frameState = async (addonFrame) => {
+  const state = await addonFrame.evaluate(() => {
+    const bar = document.querySelector("div.sticky.bottom-0");
+    const reviewStatus = document.querySelector("[role=status][id$='-status']");
+    const fieldset = document.querySelector("fieldset");
+    const formFieldset = reviewStatus ? null : fieldset?.querySelector("fieldset");
+    const active = document.activeElement;
+    const host = window.host;
+    const diagnostics = host?.diagnostics;
+    return {
+      now: performance.now().toFixed(0),
+      bar: bar ? bar.innerText.replace(/\s+/g, " ").slice(0, 400) : null,
+      barButtons: [...(bar?.querySelectorAll("button") ?? [])].map((b) =>
+        `${b.textContent.trim().slice(0, 40)}${b.disabled ? " (disabled)" : ""}${b.getAttribute("aria-busy") === "true" ? " (busy)" : ""}`),
+      status: (reviewStatus ?? document.querySelector("[role=status][id$='-reading']"))?.textContent,
+      fieldsetDisabled: fieldset ? fieldset.disabled || !!formFieldset?.disabled : null,
+      active: active && (active === document.body ? "<body>" : active.outerHTML.slice(0, 160)),
+      hasFocus: document.hasFocus(),
+      scrollY: window.scrollY,
+      host: host ? { pause: host.pause, resume: !!host.resume, pending: !!host.pending, activities: host.activities.length } : null,
+      // The last snapshot saves: when each was sent and answered (doneAt), or its error.
+      saves: diagnostics?.saves.slice(-6),
+      inflight: diagnostics && [...diagnostics.inflight],
+      calls: diagnostics?.calls,
+      events: window.inputLog ?? null,
+    };
+  });
+  return JSON.stringify(state, null, 1);
+};
+
+const reportState = async (tab, url, errors) => {
+  // A failed navigation may have left the previous page open.
+  const addonFrame = tab.url() === url ? tab.frames()[1] : undefined;
+  // A failed wait may have left an alert, such as a parser error.
+  const [alerts, state] = addonFrame ? await Promise.all([
+    within(tab.frameLocator("iframe").getByRole("alert").allTextContents()),
+    within(frameState(addonFrame)),
+  ]) : ["unavailable", `unavailable: no add-on frame at ${url}`];
+  console.log("  Alerts:", alerts, "Console errors:", errors.slice(-10));
+  console.log("  State (#252):", state);
+};
+
 const expected = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
 const engines = { chromium, firefox, webkit };
+const sandboxUrl = "http://sandbox.test/";
+const noCspUrl = `${sandboxUrl}no-csp`;
 let failed = false;
 for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium", "firefox"]) {
   const browser = await engines[name].launch();
+  const engine = `${name} ${browser.version()}`;
   const tab = await browser.newPage();
   tab.setDefaultTimeout(30_000);
+  await tab.addInitScript(watchInput);
   const violations = [];
   const errors = [];
   tab.on("console", (message) => {
     if (/Content.Security.Policy|Refused/i.test(message.text())) violations.push(message.text());
     if (message.type() === "error") errors.push(message.text());
   });
-  await tab.route("http://sandbox.test/**", async (route) => {
+  await tab.route(`${sandboxUrl}**`, async (route) => {
     const path = new URL(route.request().url()).pathname.slice(1);
     if (Object.hasOwn(pages, path)) return route.fulfill({ contentType: "text/html; charset=utf-8", body: pages[path] });
     return route.fulfill({ body: await readFile(path) });
   });
-  await tab.goto("http://sandbox.test/");
-  await tab.waitForFunction(() => window.result, null, { timeout: 180_000 });
-  const { data, ...result } = await tab.evaluate(() => window.result);
-  console.log(`${name} ${browser.version()}`, result);
   try {
+    await tab.goto(sandboxUrl);
+    await tab.waitForFunction(() => window.result, null, { timeout: 180_000 });
+    const { data, ...result } = await tab.evaluate(() => window.result);
+    console.log(engine, result);
     assert.equal(result.wrongPassword, "password");
     assert.deepEqual(data, expected);
     const frame = tab.frameLocator("iframe");
@@ -2418,13 +2494,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
     };
     // A stalled page can leave a bare call log (#246), so check response times first.
-    // Each diagnostic step gives up after 10 s.
     const settleDetails = async () => {
-      const within = (promise) => {
-        let timer;
-        const late = new Promise((resolve) => { timer = setTimeout(resolve, 10_000, "no answer within 10 s"); });
-        return Promise.race([promise.catch((error) => `failed: ${error.message.split("\n")[0]}`), late]).finally(() => clearTimeout(timer));
-      };
       const timed = (evaluate) => {
         const start = Date.now();
         return within(evaluate(() => true).then(() => `answered in ${Date.now() - start} ms`));
@@ -4558,7 +4628,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       "INFZ91T01CB6", true, "0P0000TBCB", "XBOM",
     ]);
     await leaveDetailed();
-    await hosted((state) => Object.assign(window.host, { ...state, storage: new Map(state.storage) }), beforeDetailedCopy);
+    await hosted((state) => {
+      Object.assign(window.host, { ...state, storage: new Map(state.storage) });
+    }, beforeDetailedCopy);
     await hosted(() => {
       window.host.summaryWithoutIsin = [];
       window.host.emptySearchQueries = [];
@@ -4925,7 +4997,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // from one to the other waits whole while the receiving account isn't created; Try again creates it
     // and imports both sides together, which Wealthfolio links.
     await freshProfile();
-    await hosted(() => Object.assign(window.host, { gifts: true, otherInvestorFolio: "93456789", failCreate: ["Mutual funds (BHAVYA R TESTWALA)"] }));
+    await hosted(() => {
+      Object.assign(window.host, { gifts: true, otherInvestorFolio: "93456789", failCreate: ["Mutual funds (BHAVYA R TESTWALA)"] });
+    });
     await readStatement();
     await answerFunds();
     assert.equal((await fundsSelect().textContent()).trim(), "New: Mutual funds");
@@ -4962,9 +5036,11 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await imported();
     assert.deepEqual((await rememberedIds()).sort(), ["created-1", "created-3"]);
     assert.deepEqual(await hosted(() => window.host.creates.map((c) => c.trackingMode)), ["TRANSACTIONS", "TRANSACTIONS", "TRANSACTIONS"]);
-    await hosted(() => Object.assign(window.host, { gifts: false, otherInvestorFolio: "" }));
+    await hosted(() => { Object.assign(window.host, { gifts: false, otherInvestorFolio: "" }); });
     await leaveDetailed();
-    await hosted((state) => Object.assign(window.host, { ...state, storage: new Map(state.storage), creates: [], failCreate: [] }), beforeNewAccounts);
+    await hosted((state) => {
+      Object.assign(window.host, { ...state, storage: new Map(state.storage), creates: [], failCreate: [] });
+    }, beforeNewAccounts);
     await hosted(() => { window.host.amfi = false; });
 
     await leaveReview();
@@ -5085,15 +5161,14 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
   } catch (error) {
     failed = true;
-    console.log(`  FAILED: ${error.stack}`);
-    // A wait for one message times out when the add-on shows another, such as a parser error.
-    const alerts = await tab.frameLocator("iframe").getByRole("alert").allTextContents().catch(() => []);
-    console.log("  Alerts:", alerts, "Console errors:", errors.slice(-10));
+    console.log(`  FAILED: ${engine} ${error.stack}`);
+    await reportState(tab, sandboxUrl, errors);
   }
   // Pyodide refuses a classic Worker when its importScripts("data:...") probe works, which the CSP
   // would otherwise be all that prevents.
+  errors.length = 0;
   try {
-    await tab.goto("http://sandbox.test/no-csp");
+    await tab.goto(noCspUrl);
     await tab.waitForFunction(() => window.result, null, { timeout: 180_000 });
     const { data, error } = await tab.evaluate(() => window.result);
     assert.equal(error, undefined);
@@ -5101,6 +5176,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
   } catch (error) {
     failed = true;
     console.log(`  FAILED without the CSP: ${error.stack}`);
+    await reportState(tab, noCspUrl, errors);
   }
   // Playwright passes on no CSP messages from a Chromium Worker; the run without the CSP covers it.
   if (violations.length) {
