@@ -91,12 +91,12 @@ const watchInput = () => {
   };
   const name = (t) => (t && t.nodeType === 1 ? `${t.tagName}${t.id ? "#" + t.id : ""}[${(t.getAttribute("aria-label") || t.textContent || "").trim().slice(0, 50)}]` : String(t));
   const at = (e) => (e.clientY === undefined ? "" : ` at ${Math.round(e.clientX)},${Math.round(e.clientY)}`);
-  const page = () => `scrollY=${Math.round(scrollY)} height=${document.documentElement.scrollHeight}`;
+  const layout = () => `scrollY=${Math.round(scrollY)} height=${document.documentElement.scrollHeight}`;
   for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "keydown", "focusin"]) {
-    document.addEventListener(type, (e) => push(`${type} ${name(e.target)}${e.target?.disabled ? " (disabled)" : ""}${at(e)} ${page()}`), true);
+    document.addEventListener(type, (e) => push(`${type} ${name(e.target)}${e.target?.disabled ? " (disabled)" : ""}${at(e)} ${layout()}`), true);
   }
   // Scroll events don't bubble, but reach the document's capture listeners, an inner scroller's included.
-  document.addEventListener("scroll", (e) => push(`scroll ${e.target === document ? "document" : name(e.target)} ${page()}`), { capture: true, passive: true });
+  document.addEventListener("scroll", (e) => push(`scroll ${e.target === document ? "document" : name(e.target)} ${layout()}`), { capture: true, passive: true });
   new MutationObserver((records) => {
     const statuses = new Set();
     for (const r of records) {
@@ -108,7 +108,7 @@ const watchInput = () => {
       const element = r.target.nodeType === 1 ? r.target : r.target.parentElement;
       if (element?.getAttribute("role") === "status") statuses.add(element);
     }
-    for (const element of statuses) push(`status ${name(element)} ${page()}`);
+    for (const element of statuses) push(`status ${name(element)} ${layout()}`);
   }).observe(document, { subtree: true, attributes: true, attributeFilter: ["disabled", "aria-busy"], childList: true, characterData: true });
 };
 
