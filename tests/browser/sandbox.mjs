@@ -32,7 +32,13 @@ const [bundle] = await build({
 });
 const script = bundle.output[0].code.replace(/<\/script/gi, "<\\/script");
 const hash = createHash("sha256").update(script).digest("base64");
-const srcdoc = (head) => `<!doctype html>${head}<script>${script}</script>`;
+// The frame gets none of Wealthfolio's CSS but Tailwind's sr-only rule for status regions, as Wealthfolio
+// has it. Without it, the Review screen's status paragraph takes up a line above the controls, and
+// announce() sets a 60 ms timer to refill it. In WebKit, the refill moved a pressed button down before
+// its release, so the click missed (#252). Other sr-only spans stay inline: positioned, they would be blocks,
+// and Playwright would put a space before them in accessible names.
+const statusCss = "[role=status].sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border-width:0}";
+const srcdoc = (head) => `<!doctype html>${head}<style>${statusCss}</style><script>${script}</script>`;
 const { output } = await build({
   configFile: false,
   logLevel: "silent",
@@ -68,9 +74,12 @@ const pages = {
   "no-csp": page(srcdoc("")),
 };
 
-// For a failed step's dump (#252): logs, in the add-on's frame document, its last 200 input events
-// and changes to buttons' disabled and aria-busy attributes, at performance.now() times. "(disabled)"
-// is the target's own flag. Playwright installs this before scripts in each new frame document.
+// For a failed step's dump (#252): logs, in the add-on's frame document, its last 200 input events,
+// scroll events, changes to buttons' disabled and aria-busy attributes and changes to status regions'
+// text, at performance.now() times. "(disabled)" is the target's own flag. Pointer and mouse events give
+// the pointer's place in the frame. Pointer presses and releases, scrolls and status changes also give
+// the document's scrollY and height, to help explain why a release hit a different target.
+// Playwright installs this before scripts in each new frame document.
 // Rendering the add-on again keeps the document and the log.
 const watchInput = () => {
   if (window === window.top || window.inputLog) return;
@@ -80,14 +89,29 @@ const watchInput = () => {
     if (log.length > 200) log.shift();
   };
   const name = (t) => (t && t.nodeType === 1 ? `${t.tagName}${t.id ? "#" + t.id : ""}[${(t.getAttribute("aria-label") || t.textContent || "").trim().slice(0, 50)}]` : String(t));
+  const at = (e) => (e.clientY === undefined ? "" : ` at ${Math.round(e.clientX)},${Math.round(e.clientY)}`);
+  const layout = () => `scrollY=${Math.round(scrollY)} height=${document.documentElement.scrollHeight}`;
   for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "keydown", "focusin"]) {
-    document.addEventListener(type, (e) => push(`${type} ${name(e.target)}${e.target?.disabled ? " (disabled)" : ""}`), true);
+    document.addEventListener(type, (e) => {
+      const geometry = type === "pointerdown" || type === "pointerup" ? ` ${layout()}` : "";
+      push(`${type} ${name(e.target)}${e.target?.disabled ? " (disabled)" : ""}${at(e)}${geometry}`);
+    }, true);
   }
+  // Capture element scroll events, which don't bubble.
+  document.addEventListener("scroll", (e) => push(`scroll ${e.target === document ? "document" : name(e.target)} ${layout()}`), { capture: true, passive: true });
   new MutationObserver((records) => {
+    const statuses = new Set();
     for (const r of records) {
-      if (r.target.tagName === "BUTTON") push(`attr ${r.attributeName}=${r.target.getAttribute(r.attributeName)} ${name(r.target)}`);
+      if (r.type === "attributes") {
+        if (r.target.tagName === "BUTTON") push(`attr ${r.attributeName}=${r.target.getAttribute(r.attributeName)} ${name(r.target)}`);
+        continue;
+      }
+      // The add-on renders status text as a direct child of each status region.
+      const element = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+      if (element?.getAttribute("role") === "status") statuses.add(element);
     }
-  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["disabled", "aria-busy"] });
+    for (const element of statuses) push(`status ${name(element)} ${layout()}`);
+  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["disabled", "aria-busy"], childList: true, characterData: true });
 };
 
 // Gives up on a diagnostic read after 10 s, as a stalled renderer may never answer (#246).
@@ -248,6 +272,8 @@ const runBrowser = async (browser, engine) => {
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           // Wealthfolio's Select needs its host CSS, which this harness does not load.
           if (node.parentElement.closest('[data-slot="select-trigger"]')) continue;
+          // A range's rects ignore the clipping on sr-only status text.
+          if (node.parentElement.closest("[role=status].sr-only")) continue;
           if (!node.nodeValue.trim()) continue;
           const range = document.createRange();
           range.selectNodeContents(node);
