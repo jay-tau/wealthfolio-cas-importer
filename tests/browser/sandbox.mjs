@@ -4098,7 +4098,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await choose("NPS account (PRAN XXXXXXXX9001)", "Demat (INR)");
         await ready(scheme).getByRole("button", { name: /^Change: / }).waitFor();
       } else {
+        // The bar still says the same about the search's failure until the read that opening the page
+        // again starts fails on the profile itself and the add-on shows that (#346).
+        const failures = await hosted(() => window.host.getProfileFailures);
         await revisit();
+        await frame.waitForFunction((n) => window.host.getProfileFailures > n, failures);
+        await settled();
+        await painted();
       }
       await cantWorkOut(unpriced).waitFor();
       assert.equal(await saveHoldings.isDisabled(), true);

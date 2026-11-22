@@ -146,6 +146,9 @@ const host = {
     scheme: (_isin: string) => ({}) as SymbolSearchResult,
   },
   failGetProfileIds: [] as string[],
+  // How many getProfile calls failed for `failGetProfileIds`, so a test can tell a new read's failure
+  // from an earlier one that left the same words on the page (#346).
+  getProfileFailures: 0,
   failProfileIds: [] as string[],
   failSnapshotAccounts: [] as string[],
   // Each account's snapshots by date, as saved.
@@ -597,7 +600,10 @@ const api = {
   },
   assets: {
     getProfile: async (id: string) => {
-      if (host.failGetProfileIds.includes(id)) throw new Error("Profile unavailable");
+      if (host.failGetProfileIds.includes(id)) {
+        host.getProfileFailures++;
+        throw new Error("Profile unavailable");
+      }
       // An activity's asset exists too, whether or not a holding lists it.
       const a = knownAssets().get(id) ?? (host.activities.some((x) => x.assetId === id) ? assetOf(id) : undefined);
       if (!a) throw new Error("Asset not found");
