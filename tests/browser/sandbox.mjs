@@ -32,9 +32,7 @@ const [bundle] = await build({
 });
 const script = bundle.output[0].code.replace(/<\/script/gi, "<\\/script");
 const hash = createHash("sha256").update(script).digest("base64");
-// TEMPORARY (#252): with SR_ONLY set, the frame gets Tailwind's sr-only rule, as Wealthfolio's CSS has it.
-const srOnly = process.env.SR_ONLY ? "<style>.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border-width:0}</style>" : "";
-const srcdoc = (head) => `<!doctype html>${head}${srOnly}<script>${script}</script>`;
+const srcdoc = (head) => `<!doctype html>${head}<script>${script}</script>`;
 const { output } = await build({
   configFile: false,
   logLevel: "silent",

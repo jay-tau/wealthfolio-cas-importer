@@ -90,10 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # TEMPORARY (#252): WebKit only, six jobs without and six with the sr-only rule.
-        browser: [webkit]
-        run: [1, 2, 3, 4, 5, 6]
-        sr: [plain, sronly]
+        browser: [chromium, firefox, webkit]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Playwright's image has Node 24, the browsers and the Ubuntu packages they need; downloading
@@ -114,5 +111,3 @@ jobs:
           key: runtime-${{ hashFiles('pnpm-lock.yaml', 'runtime.json', 'runtime-requirements.txt') }}
       - run: pnpm runtime
       - run: pnpm test:browser ${{ matrix.browser }}
-        env:
-          SR_ONLY: ${{ matrix.sr == 'sronly' && '1' || '' }}
