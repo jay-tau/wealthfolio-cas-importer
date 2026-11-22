@@ -16,6 +16,8 @@ import {
   type FundRefs,
   type FundUnits,
   giftEntries,
+  handEnteredReason,
+  type HandEntry,
   importRows,
   indexActivities,
   localDay,
@@ -1011,28 +1013,6 @@ export function DetailedImport({
     return choice && !("fund" in choice) && foliosOf(item.key).some(included);
   });
   const notImported = data.folios.filter((f) => folioAccount(f) === LEFT_OUT);
-  const leftOutFunds: LeftOutFund[] = (() => {
-    if (!counts) return [];
-    const byFund = new Map<string, Omit<LeftOutFund, "label" | "lines"> & { reasons: Map<string, string[]> }>();
-    for (const { row, reason } of counts.leftOut) {
-      const key = fundKey(row.scheme);
-      const fund = byFund.get(key) ?? {
-        key,
-        name: fundNameOf(key),
-        canChange: !!fundOf(key),
-        reasons: new Map(),
-      };
-      const when = `${longDate(row.row.date)} · ${readableName(row.row.description).trim() || row.row.type}`;
-      fund.reasons.set(reason, [...(fund.reasons.get(reason) ?? []), when]);
-      byFund.set(key, fund);
-    }
-    const funds = [...byFund.values()];
-    return funds.map(({ reasons, ...fund }, i) => ({
-      ...fund,
-      label: `${fund.name.trim()}${nameNumber(funds, i, "fund")}`,
-      lines: [...reasons].map(([reason, whens]) => ({ when: list(whens), reason })),
-    }));
-  })();
   // Each fund's possible duplicates skipped by an answer, counted as the bar counts them.
   const skippedDuplicates = (() => {
     const byFund = new Map<string, Set<PlannedTransaction>>();
@@ -1122,21 +1102,24 @@ export function DetailedImport({
   /**
    * A statement row's place among the rows of its fund and folio with the same movement, day and
    * amount, in the statement's order, which no answer changes; undefined when no other row is equal.
-   * Index each scheme's own rows once per statement: two fund houses' folios can share a number.
+   * A fund can have more than one section of a folio, and two fund houses' folios can share a number.
    * Each row also gets its folio, fund and equality key to tell when its fund has one in another folio.
    */
   const { places, equals } = useMemo(() => {
     const places = new Map<CasTransaction, { n: number; of: number }>();
     const equals = new Map<CasTransaction, { folio: string; fund: string; key: string }>();
-    for (const folio of data.folios) for (const scheme of folio.schemes) {
+    for (const folio of data.folios) {
       const groups = new Map<string, CasTransaction[]>();
-      const where = { folio: folio.folio, fund: fundKey(scheme) };
-      for (const row of scheme.transactions) {
-        const key = JSON.stringify([row.date, rowWord(row), amountOf(row)]);
-        const group = groups.get(key) ?? [];
-        group.push(row);
-        groups.set(key, group);
-        equals.set(row, { ...where, key });
+      for (const scheme of folio.schemes) {
+        const where = { folio: folio.folio, fund: fundKey(scheme) };
+        for (const row of scheme.transactions) {
+          const key = JSON.stringify([row.date, rowWord(row), amountOf(row)]);
+          const groupKey = JSON.stringify([where.fund, key]);
+          const group = groups.get(groupKey) ?? [];
+          group.push(row);
+          groups.set(groupKey, group);
+          equals.set(row, { ...where, key });
+        }
       }
       for (const group of groups.values()) {
         if (group.length > 1) group.forEach((row, i) => places.set(row, { n: i + 1, of: group.length }));
@@ -1161,6 +1144,43 @@ export function DetailedImport({
     }
     return folios;
   }, [equals, items, answers, matched, fundChoices]);
+  /**
+   * Each fund's transactions left out for a reason of their own, a line for each reason, with each
+   * row's place among equal ones. Those left out because Wealthfolio has the same activities, perhaps
+   * entered by hand, share a line by kind, statement day and activity IDs. A gift's two sides count
+   * once.
+   */
+  const leftOutFunds: LeftOutFund[] = (() => {
+    if (!counts) return [];
+    type Line = { whens: string[]; reason: string; entered?: HandEntry; transactions: Set<PlannedTransaction> };
+    const byFund = new Map<string, Omit<LeftOutFund, "label" | "lines"> & { reasons: Map<string, Line> }>();
+    for (const { row, reason } of counts.leftOut) {
+      const key = fundKey(row.scheme);
+      const fund = byFund.get(key) ?? {
+        key,
+        name: fundNameOf(key),
+        canChange: !!fundOf(key),
+        reasons: new Map(),
+      };
+      const t = row.transaction && planned.get(row.transaction);
+      const entered = t?.handEntry;
+      const by = JSON.stringify(entered ? [entered.kind, row.row.date, [...entered.ids].sort()] : [reason]);
+      const line = fund.reasons.get(by) ?? { whens: [], reason, entered, transactions: new Set() };
+      line.whens.push(`${longDate(row.row.date)} · ${readableName(row.row.description).trim() || row.row.type}${marker(placeOf(row.row))}`);
+      if (t?.handEntry) line.transactions.add(t);
+      fund.reasons.set(by, line);
+      byFund.set(key, fund);
+    }
+    const funds = [...byFund.values()];
+    return funds.map(({ reasons, ...fund }, i) => ({
+      ...fund,
+      label: `${fund.name.trim()}${nameNumber(funds, i, "fund")}`,
+      lines: [...reasons.values()].map(({ whens, reason, entered, transactions }) => ({
+        when: list(whens),
+        reason: entered ? handEnteredReason(entered, transactions.size) : reason,
+      })),
+    }));
+  })();
   /**
    * Whether a statement row's fund, as the screen names it, has a row with its movement, day and
    * amount in another folio, whatever the answers: then the row needs its folio named too.
