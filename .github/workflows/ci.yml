@@ -90,16 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # TEMPORARY (#346): six Chromium jobs, four WebKit and two Firefox.
-        browser: [chromium]
-        run: [1, 2, 3, 4, 5, 6]
-        include:
-          - { browser: webkit, run: 7 }
-          - { browser: webkit, run: 8 }
-          - { browser: webkit, run: 9 }
-          - { browser: webkit, run: 10 }
-          - { browser: firefox, run: 11 }
-          - { browser: firefox, run: 12 }
+        browser: [chromium, firefox, webkit]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Playwright's image has Node 24, the browsers and the Ubuntu packages they need; downloading
