@@ -58,6 +58,7 @@ import {
   linkWords,
   outcomeWords,
   staleText,
+  unitsDifferWords,
 } from "../components/preview";
 import { BankCheck, type BankCheckModel, checkReceipt, paid } from "../components/review/bank-check";
 import { AskAnswered, AskCard } from "../components/review/asks";
@@ -82,7 +83,7 @@ import { accountLabels } from "../lib/account-labels";
 import { nameNumber } from "../lib/name-number";
 import { isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames } from "../lib/new-accounts";
 import { warningLines } from "../lib/parse-warnings";
-import { plural } from "../lib/plural";
+import { bothOrAll, plural } from "../lib/plural";
 import { longDate, rupees, STATEMENT_WORDS, units } from "../lib/review-format";
 import { answerNames, type AskWords, bothRealWords, type LineFacts, placeWords } from "../lib/asks";
 import { type OpenQuestions, questionParts, questionsHeading, questionTotal } from "../lib/questions-left";
@@ -2120,7 +2121,7 @@ export function DetailedImport({
       announce(closing === "failed"
         ? "The units still couldn't be checked in Wealthfolio."
         : closing?.some((f) => !sameUnits(f))
-          ? `Checked in Wealthfolio: units differ for ${closing.filter((f) => !sameUnits(f)).length} of ${plural(closing.length, "fund")}.`
+          ? unitsDifferWords(closing.filter((f) => !sameUnits(f)).length, closing.length)
           : "Checked in Wealthfolio: units match the statement.");
     } finally {
       setBusy("");
@@ -2347,7 +2348,7 @@ export function DetailedImport({
       const counted = !linked
         ? `${created === 1 ? "it gets a new transfer" : `${created} get new transfers`}`
         : !created
-          ? `${linked === 1 ? "it uses an entry" : `all ${linked} use entries`} already there`
+          ? `${linked === 1 ? "it uses an entry" : `${bothOrAll(linked)} use entries`} already there`
           : `${linked} ${linked === 1 ? "uses an entry" : "use entries"} already there, ${created} ${created === 1 ? "gets a new transfer" : "get new transfers"}`;
       return `${flows}: ${counted}.`;
     });
@@ -2500,7 +2501,7 @@ export function DetailedImport({
               <span aria-hidden="true" className="text-success">
                 ✓
               </span>
-              <span>{answeredCount === 1 ? "Question answered." : `All ${answeredCount} questions answered.`}</span>
+              <span>{answeredCount === 1 ? "Question answered." : `${bothOrAll(answeredCount, true)} questions answered.`}</span>
               <Disclosure
                 id={id("show-answers")}
                 label={open.answers ? "Hide answers" : "Show answers"}

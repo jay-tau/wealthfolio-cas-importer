@@ -1,5 +1,6 @@
 import { Button } from "@wealthfolio/ui";
 import type { ReactNode } from "react";
+import { bothOrAll } from "../../lib/plural";
 import { units as grouped } from "../../lib/review-format";
 import { Disclosure, LinkButton } from "./parts";
 
@@ -111,7 +112,7 @@ function Tracked({
         ) : (
           matches > 0 && (
             <span className="text-success">
-              ✓ {matches === n ? (n === 1 ? "It matches" : `All ${n} match`) : `${matches} ${matches === 1 ? "matches" : "match"}`} this statement.
+              ✓ {matches === n ? (n === 1 ? "It matches" : `${bothOrAll(n, true)} match`) : `${matches} ${matches === 1 ? "matches" : "match"}`} this statement.
             </span>
           )
         )}

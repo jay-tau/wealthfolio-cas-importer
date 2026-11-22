@@ -2893,7 +2893,7 @@ test("Change on a Ready row answers no question, unless its fund was asked about
   find(run, "QuestionCard").onAnswer({ leftOut: true });
   await run.flush();
   assert.equal(heading(run), "Questions for you");
-  assert.ok(nodes(run.tree).some((n) => n.type === "span" && n.props.children === "All 2 questions answered."));
+  assert.ok(nodes(run.tree).some((n) => n.type === "span" && n.props.children === "Both questions answered."));
   assert.deepEqual(answered(run).map(([key]) => key), [keys["Corporate Bond"], keys.Overnight]);
 });
 
@@ -2986,6 +2986,39 @@ test("secondary Change controls for merged funds distinguish same-named accounts
   const labels = table.rows.map((r) => table.handlers.label(r, r.items[1]));
   assert.equal(new Set(labels).size, 2);
   assert.ok(labels.every((label) => /in Mutual funds \(account [12]\)$/.test(label)), labels.join("; "));
+});
+
+test("a payment check of two says both: in its answer, the announcement and the footer", async () => {
+  for (const linked of [true, false]) {
+    const { run, keys } = setup({
+      entries: [entry("first", "WITHDRAWAL", "1000", "2024-05-01", "FICTIVA MF"), entry("second", "WITHDRAWAL", "2000", "2024-05-05", "FICTIVA MF")],
+      remembered: { [choices.panKey("ABCDE1234F")]: "mf", [choices.bankKey(choices.panKey("ABCDE1234F"))]: "bank" },
+      change(data) {
+        const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+        const scheme = (date, amount) => ({ ...structuredClone(liquid), open: "0", close: "10", close_calculated: "10", transactions: [{
+          date, type: "PURCHASE", amount, units: "10", nav: String(Number(amount) / 10), balance: "10", description: "Purchase", dividend_rate: null, gift_folio: null,
+        }] });
+        const first = { ...data.folios[0], schemes: [scheme("2024-05-01", "1000")] };
+        data.folios = [first, { ...structuredClone(first), folio: "222222222", schemes: [scheme("2024-05-05", "2000")] }];
+        return data;
+      },
+    });
+    await run.flush();
+    let [check] = checksUnder(run, choices.bankKey(keys.pan));
+    assert.equal(check.ticked.size, 2);
+    if (linked) check.onLink();
+    else check.onNone();
+    await run.flush();
+    [check] = checksUnder(run, choices.bankKey(keys.pan));
+    assert.equal(check.answered, linked ? 2 : 0);
+    const receipt = linked ? "Both payments linked to entries already in Savings" : "Not linked: both payments get new transfers from Savings";
+    const answer = markup(nodes(saveTo(run).checks(choices.bankKey(keys.pan))).find((node) => node.type?.name === "BankCheck"));
+    assert.ok(answer.includes(`>${receipt}<`), answer);
+    assert.match(await announced(run), new RegExp(`^${receipt}\\. All questions answered\\.`));
+    const movements = linked ? "both use entries already there" : "2 get new transfers";
+    assert.ok(footer(run).includes(`ANANYA R TESTWALA's purchases transfer from Savings: ${movements}.`), footer(run).join("; "));
+    run.dispose();
+  }
 });
 
 test("starting bank ticks survive changed evidence with the same pairs, before and after linking", async () => {
@@ -4250,6 +4283,50 @@ test("units that couldn't be checked after importing say so, with Check again, a
   // A fund none of whose transactions were sent, such as one waiting for earlier purchases, isn't checked.
   assert.ok(!result.closing.some((f) => f.schemes.some((s) => s.scheme.includes("Flexi"))), result.closing.map((f) => f.schemes[0].scheme).join());
 });
+
+for (const { kept, zeroed = [], words } of [
+  { kept: ["Liquid"], words: "the fund" },
+  { kept: ["Liquid", "Overnight"], words: "both funds" },
+  { kept: ["Liquid", "Balanced", "Overnight"], words: "all 3 funds" },
+  { kept: ["Liquid", "Overnight"], zeroed: ["Overnight"], words: "1 of 2 funds" },
+]) {
+  test(`Check again says the import result's sentence when units differ for ${words}`, async () => {
+    const { run, api } = setup({ entries: [], change(data) {
+      for (const folio of data.folios) {
+        folio.schemes = folio.schemes.filter((s) => kept.some((name) => s.scheme.includes(name)));
+        // Bought and sold in full: nothing left, as in the made-up host, which keeps nothing imported.
+        for (const s of folio.schemes.filter((s) => zeroed.some((name) => s.scheme.includes(name)))) {
+          const [purchase] = s.transactions;
+          s.transactions = [purchase, { ...purchase, date: "2024-02-02", description: "Redemption", type: "REDEMPTION",
+            units: `-${purchase.units}`, amount: `-${purchase.amount}`, balance: "0.000" }];
+          s.close = s.close_calculated = "0";
+          s.valuation = { ...s.valuation, cost: "0", value: "0" };
+        }
+      }
+      data.folios = data.folios.filter((f) => f.schemes.length);
+      return data;
+    } });
+    await run.flush();
+    const getAll = api.activities.getAll;
+    let fail = true;
+    api.activities.getAll = async (accountId) => {
+      if (accountId && fail) throw new Error("made-up read failure");
+      return getAll(accountId);
+    };
+    find(run, "Footer").action.onClick();
+    await run.flush();
+    assert.equal(find(run, "ImportResult").closing, "failed");
+    fail = false;
+    find(run, "ImportResult").onCheckAgain();
+    await run.flush();
+    const { closing } = find(run, "ImportResult");
+    assert.equal(closing.length, kept.length);
+    const sentence = `Checked in Wealthfolio: units differ for ${words}.`;
+    assert.equal(await announced(run), sentence);
+    const shown = markup(nodes(run.tree).find((node) => node.type?.name === "ImportResult"));
+    assert.ok(shown.includes(`>${sentence}<`), shown);
+  });
+}
 
 test("an import Wealthfolio refuses outright keeps the review as it was, with Try again", async () => {
   const { run, api, imported, logged } = setup({ entries: [] });
