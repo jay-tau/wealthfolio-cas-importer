@@ -546,6 +546,7 @@ const runBrowser = async (browser, engine) => {
         { width: widths[0], theme: "light", rule: "main" },
       ];
       const inFrame = tab.frames()[1];
+      const webkit = browser.browserType().name() === "webkit";
       const before = await tab.evaluate(() => document.querySelector("iframe").getAttribute("style"));
       const focusedBefore = await inFrame.evaluateHandle(() => document.activeElement);
       const scrolledBefore = await inFrame.evaluate(() => [scrollX, scrollY]);
@@ -634,7 +635,10 @@ const runBrowser = async (browser, engine) => {
           for (let i = 0; ; i++) {
             assert.ok(i < 400, `${what}, ${pass}: Tab reaches the end of the page`);
             await tab.keyboard.press("Tab");
-            const found = await inFrame.evaluate(() => {
+            const found = await inFrame.evaluate(async (webkit) => {
+              // WebKit can scroll to the focused control on a zero-delay timer after Tab returns.
+              // This timer is scheduled later, so it runs after that scroll (#358).
+              if (webkit) await new Promise((resolve) => setTimeout(resolve));
               const control = document.activeElement;
               if (control.id === "rings-end") return null;
               // Wealthfolio's buttons transition everything over 200 ms, their ring too: measure its end.
@@ -687,7 +691,7 @@ const runBrowser = async (browser, engine) => {
                 return out.map((cut) => `${reached}: ${cut}`);
               });
               return { reached, cuts };
-            });
+            }, webkit);
             if (found === null) break;
             if (!reaches.has(pass)) reaches.set(pass, []);
             reaches.get(pass).push(found.reached);
