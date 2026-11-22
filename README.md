@@ -975,8 +975,8 @@ Older versions refuse to install it. Wealthfolio 3.12.0's desktop app shows no m
 
 Each release also carries the zip's SHA-256
 (`sha256sum -c wealthfolio-cas-importer-<version>.zip.sha256`).
-Releases that GitHub Actions built, v2.0.1 and earlier, also carry a build provenance attestation:
-`gh attestation verify wealthfolio-cas-importer-<version>.zip
+Releases that GitHub Actions built, up to v2.0.1 and from v3.3.0 on, also carry a build provenance
+attestation: `gh attestation verify wealthfolio-cas-importer-<version>.zip
 --repo jay-tau/wealthfolio-cas-importer`
 checks that the zip was built from this repository. v2.1.0, v2.2.0, v3.0.0, v3.1.0 and v3.2.0 were
 built and published without GitHub Actions, so they have none. The build is reproducible: in a fresh
@@ -1044,9 +1044,10 @@ its SHA-256, its build provenance and that CHANGELOG section as the notes; a `v<
 makes a pre-release. The release stops before CI if the tag, either version or the CHANGELOG
 doesn't match.
 
-For v2.1.0, v2.2.0, v3.0.0, v3.1.0 and v3.2.0, GitHub Actions is unavailable. Each zip is built
+For v2.1.0, v2.2.0, v3.0.0, v3.1.0 and v3.2.0, GitHub Actions was unavailable. Each zip was built
 with act from CI's `test` job on the merge commit, checked in Wealthfolio's Linux desktop app and
-published by hand, without a pre-release or build provenance attestation.
+published by hand, without a pre-release or build provenance attestation. From v3.3.0 on, GitHub
+Actions publishes the releases again, as above.
 
 ## License
 
