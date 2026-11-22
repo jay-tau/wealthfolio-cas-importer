@@ -1157,6 +1157,7 @@ const runBrowser = async (browser, engine) => {
       while (walk.nextNode()) texts.push(walk.currentNode.textContent);
       return texts.join(" ");
     })).replace(/\s+/g, " ").replace(/ ([.,:;])/g, "$1").trim();
+    const matchingUnits = /^✓ Checked in Wealthfolio: units match the statement for (?:the fund|both funds|all (?:[3-9]|[1-9]\d+) funds)\.$/;
     // The import result's title: how many of the transactions approved went in. `count` alone means
     // all of them; with no count, any title says they all went in.
     const importTitle = frame.locator("[id$='-result-title']");
@@ -1520,7 +1521,7 @@ const runBrowser = async (browser, engine) => {
     await imported(1);
     // Its units now differ from the statement's, as the review said.
     // The fund goes by its name on the Review screen.
-    assert.match(await unitsCheck(), /^Checked in Wealthfolio: units differ for 1 of 1 fund\. Fund INFZ90K01LQ6: Wealthfolio has 11\.359 units, the statement says 8\.053\. Open Mutual funds$/);
+    assert.match(await unitsCheck(), /^Checked in Wealthfolio: units differ for the fund\. Fund INFZ90K01LQ6: Wealthfolio has 11\.359 units, the statement says 8\.053\. Open Mutual funds$/);
     const forced = await hosted(() => window.host.activities.filter((a) => a.date.startsWith("2024-06-20")).map((a) => [a.activityType, a.assetSymbol]));
     assert.deepEqual(forced, [["BUY", "INFZ90K01LQ6"], ["BUY", "INFZ90K01LQ6"], ["DEPOSIT", ""]]);
 
@@ -2235,7 +2236,7 @@ const runBrowser = async (browser, engine) => {
     assert.match(conversions[0][3], /^cas-importer-merger:[0-9a-f]{64}$/);
     assert.equal(conversions[1][3], conversions[0][3]);
     // Both funds' units match, the old one's at zero.
-    assert.match(await unitsCheck(), /^✓ Checked in Wealthfolio: units match the statement for (the fund|all \d+ funds)\.$/);
+    assert.match(await unitsCheck(), matchingUnits);
     // Read again, it's in Wealthfolio, and can't be imported twice.
     await readStatement();
     await seeEvery();
@@ -2292,7 +2293,7 @@ const runBrowser = async (browser, engine) => {
       ["unset-1", "TRANSFER_IN", "INFZ90K01SF6", "20.000", "25.0000", null, null],
     ]);
     // The gifted and shared funds' units match in both accounts.
-    assert.match(await unitsCheck(), /^✓ Checked in Wealthfolio: units match the statement for (the fund|all \d+ funds)\.$/);
+    assert.match(await unitsCheck(), matchingUnits);
     // Read again, both are in Wealthfolio.
     await readStatement();
     await seeEvery();
@@ -2330,7 +2331,7 @@ const runBrowser = async (browser, engine) => {
     const segregatedSent = await hosted(() =>
       window.host.activities.filter((a) => a.assetSymbol === "INFZ90K01S17" && a.activityType === "BUY").map((a) => [a.quantity, a.unitPrice ?? null, a.amount]));
     assert.deepEqual(segregatedSent, [["3067.468", null, "0"], ["0.013", null, "0"]]);
-    assert.match(await unitsCheck(), /^✓ Checked in Wealthfolio: units match the statement for (the fund|all \d+ funds)\.$/);
+    assert.match(await unitsCheck(), matchingUnits);
     // Read again, the credits are in Wealthfolio.
     await readStatement();
     await seeEvery();

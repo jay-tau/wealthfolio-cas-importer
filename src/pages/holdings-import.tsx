@@ -94,7 +94,7 @@ import { accountLabels } from "../lib/account-labels";
 import { nameNumber } from "../lib/name-number";
 import { holdingsBase, isProposed, nameProblem, newAccount, proposalKey, proposedId, proposedNames, sourceBase } from "../lib/new-accounts";
 import { warningLines } from "../lib/parse-warnings";
-import { plural } from "../lib/plural";
+import { bothOrAll, plural } from "../lib/plural";
 import { type OpenQuestions, questionParts, questionsHeading, questionTotal } from "../lib/questions-left";
 import { longDate, parseCost, quantity, rupees, shortDate, units } from "../lib/review-format";
 import { sha256 } from "../lib/sha256";
@@ -2186,7 +2186,7 @@ export function HoldingsImport({
               <span aria-hidden="true" className="text-success">
                 ✓
               </span>
-              <span>{answeredCount === 1 ? "Question answered." : `All ${answeredCount} questions answered.`}</span>
+              <span>{answeredCount === 1 ? "Question answered." : `${bothOrAll(answeredCount, true)} questions answered.`}</span>
               <Disclosure
                 id={id("show-answers")}
                 label={open.answers ? "Hide answers" : "Show answers"}

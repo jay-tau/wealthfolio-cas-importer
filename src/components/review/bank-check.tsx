@@ -1,6 +1,7 @@
 import { Checkbox } from "@wealthfolio/ui";
 import { converts, type EntryFacts, entryNotes, OUTSIDE_SPENDING, outsideSpending } from "../../cas/bank-entries";
 import { type BankPair, MOVEMENT } from "../../cas/review";
+import { bothOrAll } from "../../lib/plural";
 import { longDate, rupees } from "../../lib/review-format";
 import { LinkButton, WrapButton } from "./parts";
 
@@ -64,12 +65,12 @@ export function checkReceipt(check: BankCheckModel, linked: number) {
     const dir = purchases && payouts ? "with" : purchases ? "from" : "to";
     return n === 1
       ? `Not linked: the ${noun[0]} gets a new transfer ${dir} ${check.bankName}`
-      : `Not linked: all ${n} ${noun[1]} get new transfers ${dir} ${check.bankName}`;
+      : `Not linked: ${bothOrAll(n)} ${noun[1]} get new transfers ${dir} ${check.bankName}`;
   }
   if (linked === n) {
     return n === 1
       ? `The ${noun[0]} is linked to an entry already in ${check.bankName}`
-      : `All ${n} ${noun[1]} linked to entries already in ${check.bankName}`;
+      : `${bothOrAll(n, true)} ${noun[1]} linked to entries already in ${check.bankName}`;
   }
   return `${linked} of ${n} ${noun[1]} linked to entries already in ${check.bankName}; the rest get new transfers`;
 }

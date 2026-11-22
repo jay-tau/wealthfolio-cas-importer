@@ -31,7 +31,7 @@ import {
   type Status,
 } from "../cas/plan";
 import { focusDropped } from "../lib/focus";
-import { plural } from "../lib/plural";
+import { every, plural } from "../lib/plural";
 import { longDate, rupees, units } from "../lib/review-format";
 import { otherCurrency } from "./fund-choices";
 
@@ -443,6 +443,10 @@ export function rowsLines(
 /** A rejected row's reasons, as Wealthfolio or the add-on gave them. */
 export const rejection = (a: ActivityImport) => Object.values(a.errors ?? {}).flat().join(" ");
 
+/** The unit mismatch sentence shared by the import result and the Check again announcement. */
+export const unitsDifferWords = (differ: number, total: number) =>
+  `Checked in Wealthfolio: units differ for ${differ === total ? every(total, "fund") : `${differ} of ${plural(total, "fund")}`}.`;
+
 /** ✓ or ✗ before a line: the words say it too, so it isn't read out. */
 const Mark = ({ ok }: { ok: boolean }) => (
   <span aria-hidden="true" className={ok ? "text-success" : "text-destructive"}>
@@ -601,9 +605,7 @@ export function ImportResult({
           <div id={ids.units} tabIndex={-1} className="grid gap-2">
             {differ.length ? (
               <>
-                <p className="text-warning">
-                  {`Checked in Wealthfolio: units differ for ${differ.length} of ${plural(closing.length, "fund")}.`}
-                </p>
+                <p className="text-warning">{unitsDifferWords(differ.length, closing.length)}</p>
                 <ul className="grid gap-2 ps-4">
                   {differ.map((f, i) => (
                     <li key={`${f.accountId} ${f.asset.symbol}`} className="flex flex-wrap items-center gap-x-2">
@@ -622,8 +624,7 @@ export function ImportResult({
               </>
             ) : (
               <p>
-                <Mark ok /> Checked in Wealthfolio: units match the statement for{" "}
-                {closing.length === 1 ? "the fund" : `all ${closing.length} funds`}.
+                <Mark ok /> Checked in Wealthfolio: units match the statement for {every(closing.length, "fund")}.
               </p>
             )}
           </div>

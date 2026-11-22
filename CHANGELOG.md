@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Say "both" for two in the import result's units check, payment check answers, the bar's bank summary, the comparison with accounts that track transactions, and the answered questions on both Review screens. A payment check uses the same wording in its answer, the **Change answer** button's accessible name and the announcement. When every fund's units differ, the import result and **Check again** say "units differ for the fund", "for both funds" or, for example, "for all 3 funds". Partial differences read as a count out of the total, as in "for 1 of 2 funds"
 
 ### Deprecated
 

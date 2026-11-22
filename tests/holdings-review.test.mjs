@@ -2819,7 +2819,7 @@ test("Change on a Ready row answers no question, unless its holding was asked ab
   find(run, "QuestionCard").onAnswer({ leftOut: true });
   await run.flush();
   assert.equal(heading(run), "Questions for you");
-  assert.ok(nodes(run.tree).some((n) => n.type === "span" && n.props.children === "All 2 questions answered."));
+  assert.ok(nodes(run.tree).some((n) => n.type === "span" && n.props.children === "Both questions answered."));
   assert.deepEqual(answered(run).map(([isin]) => isin), ["ISINB", "ISINC"]);
 });
 

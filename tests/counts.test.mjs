@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { createServer } from "vite";
 import { withoutClosed, withReadableNames } from "../src/cas/mapping.ts";
 import { dec } from "../src/cas/decimal.ts";
-import { plural } from "../src/lib/plural.ts";
+import { bothOrAll, every, plural } from "../src/lib/plural.ts";
 import { bankKey, folioKey } from "../src/lib/choices.ts";
 
 let server;
@@ -60,6 +60,17 @@ test("plural keeps a count of one singular", () => {
   assert.equal(plural(2, "folio"), "2 folios");
   assert.equal(plural(1, "activity", "activities"), "1 activity");
   assert.equal(plural(2, "activity", "activities"), "2 activities");
+});
+
+test("every one of two is both, of three or more all of them, and of one the one", () => {
+  assert.equal(bothOrAll(2), "both");
+  assert.equal(bothOrAll(3), "all 3");
+  assert.equal(bothOrAll(12), "all 12");
+  assert.equal(bothOrAll(2, true), "Both");
+  assert.equal(bothOrAll(3, true), "All 3");
+  assert.equal(every(1, "fund"), "the fund");
+  assert.equal(every(2, "fund"), "both funds");
+  assert.equal(every(3, "fund"), "all 3 funds");
 });
 
 test("the transactions in a statement count each part only when it isn't zero, one in the singular", () => {
@@ -124,8 +135,20 @@ test("bank questions describe payout-only and mixed transfers, then the answer's
   assert.ok(shown.includes("Sale · 5 Jan 2026 · ₹5,000, to Savings account"));
   assert.ok(shown.includes("Cash dividend · 5 Jan 2026 · ₹5,000, to Savings account"));
   assert.ok(shown.includes("Unlinked sales and cash dividends get new transfers to Savings account. If an entry above is that payout, the new transfer would count it twice."));
-  assert.equal(components.checkReceipt(payout.check, 0), "Not linked: all 2 payouts get new transfers to Savings account");
+  assert.equal(components.checkReceipt(payout.check, 0), "Not linked: both payouts get new transfers to Savings account");
   assert.equal(components.checkReceipt(payout.check, 1), "1 of 2 payouts linked to entries already in Savings account; the rest get new transfers");
+  assert.equal(components.checkReceipt(payout.check, 2), "Both payouts linked to entries already in Savings account");
+  // The answered line and its Change answer say it the same way.
+  const linkedBoth = renderToStaticMarkup(createElement(components.BankCheck, { ...payout, answered: 2 }));
+  assert.ok(linkedBoth.includes(">Both payouts linked to entries already in Savings account<"), linkedBoth);
+  assert.ok(linkedBoth.includes('aria-label="Change answer: Both payouts linked to entries already in Savings account, for A. Investor&#x27;s funds"'), linkedBoth);
+  const purchases = bankProps([bankPair("PURCHASE", "first"), bankPair("PURCHASE", "second")]);
+  assert.equal(components.checkReceipt(purchases.check, 0), "Not linked: both payments get new transfers from Savings account");
+  assert.equal(components.checkReceipt(purchases.check, 2), "Both payments linked to entries already in Savings account");
+  assert.ok(text("BankCheck", { ...purchases, answered: 0 }).includes("Not linked: both payments get new transfers from Savings account"));
+  const mixedTwo = bankProps([bankPair("PURCHASE", "purchase"), sale]);
+  assert.equal(components.checkReceipt(mixedTwo.check, 0), "Not linked: both payments and payouts get new transfers with Savings account");
+  assert.equal(components.checkReceipt(mixedTwo.check, 2), "Both payments and payouts linked to entries already in Savings account");
   const mixed = bankProps([bankPair("PURCHASE", "purchase"), sale, dividend]);
   const both = text("BankCheck", mixed);
   assert.ok(both.includes("3 entries already in Savings account look like these purchases and payouts"));
@@ -133,6 +156,11 @@ test("bank questions describe payout-only and mixed transfers, then the answer's
   assert.ok(both.includes("Unlinked purchases get new transfers from Savings account; unlinked sales and cash dividends get new transfers back to it. If an entry above is that payment or payout, the new transfer would count it twice."));
   assert.equal(components.checkReceipt(mixed.check, 1), "1 of 3 payments and payouts linked to entries already in Savings account; the rest get new transfers");
   assert.ok(text("BankCheck", { ...mixed, answered: 3 }).includes("All 3 payments and payouts linked to entries already in Savings account"));
+  assert.equal(components.checkReceipt(mixed.check, 0), "Not linked: all 3 payments and payouts get new transfers with Savings account");
+  // One still reads in the singular.
+  const one = bankProps([sale]);
+  assert.equal(components.checkReceipt(one.check, 0), "Not linked: the payout gets a new transfer to Savings account");
+  assert.equal(components.checkReceipt(one.check, 1), "The payout is linked to an entry already in Savings account");
 });
 
 test("bank actions and receipts name their investor even when two checks use the same bank", () => {
@@ -921,6 +949,31 @@ test("tracked fund actions distinguish equal names and comparison links name eac
   }
 });
 
+test("tracked funds that match this statement say so: it, both, all of them, or how many", () => {
+  const shown = (kinds) => text("NotIncluded", {
+    tracked: [{
+      accounts: "Mutual funds",
+      funds: kinds.map((kind, i) => ({
+        key: `fund${i}`, name: `Example Fund ${i}`, label: `Example Fund ${i}`, units: "20.000 units", canSave: true, included: false,
+        comparison: kind === "match"
+          ? { kind }
+          : { kind: "differ", theirs: "9.000 units", ours: "20.000", accountName: "Mutual funds", accounts: [{ id: "mf", name: "Mutual funds" }] },
+      })),
+    }],
+    counted: [], skipped: [], unsaved: [], defaulted: [], lines: [], open: {}, setOpen() {}, onSaveBoth() {}, onDontSave() {}, onReview() {}, partId: "not-included",
+  });
+  for (const [kinds, words] of [
+    [["match"], "It matches"],
+    [["match", "match"], "Both match"],
+    [["match", "match", "match"], "All 3 match"],
+    [["match", "differ"], "1 matches"],
+    [["match", "match", "differ"], "2 match"],
+  ]) {
+    const line = shown(kinds);
+    assert.ok(line.includes(` ✓ ${words} this statement. `), line);
+  }
+});
+
 test("separately compared funds keep their accounts' global labels in headings and links", () => {
   const groups = [2, 1].map((n) => {
     const name = `Funds, account ${n}`;
@@ -1116,8 +1169,19 @@ test("the import result's units check: couldn't run, every fund matching, or uni
   });
   const accountName = (id) => (id === "account-1" ? "Mutual funds" : "?");
   assert.match(importResult({ closing: [fund("A", "10", "10")], accountName }), / ✓ Checked in Wealthfolio: units match the statement for the fund\. $/);
-  assert.match(importResult({ closing: [fund("A", "10", "10"), fund("B", "5", "5")], accountName }), / for all 2 funds\. $/);
-  assert.match(importResult({ closing: [fund("A", "10", "9")], accountName }), /Checked in Wealthfolio: units differ for 1 of 1 fund\./);
+  assert.match(importResult({ closing: [fund("A", "10", "10"), fund("B", "5", "5")], accountName }), / ✓ Checked in Wealthfolio: units match the statement for both funds\. $/);
+  assert.match(importResult({ closing: [fund("A", "10", "10"), fund("B", "5", "5"), fund("C", "3", "3")], accountName }),
+    / ✓ Checked in Wealthfolio: units match the statement for all 3 funds\. $/);
+  // Every fund checked differs: the fund, both funds or all of them; some do: how many of how many.
+  for (const [closing, words] of [
+    [[fund("A", "10", "9")], "the fund"],
+    [[fund("A", "10", "9"), fund("B", "5", "4")], "both funds"],
+    [[fund("A", "10", "9"), fund("B", "5", "4"), fund("C", "3", undefined)], "all 3 funds"],
+    [[fund("A", "10", "10"), fund("B", "5", "4")], "1 of 2 funds"],
+  ]) {
+    const sentence = `Checked in Wealthfolio: units differ for ${words}.`;
+    assert.ok(importResult({ closing, accountName }).includes(` ${sentence} `), words);
+  }
   const differ = importResult({ closing: [fund("A", "10", "10"), fund("B", "1234.5", "1224.5"), fund("C", "3", undefined)], accountName });
   assert.ok(differ.includes(" Checked in Wealthfolio: units differ for 2 of 3 funds. " +
     "B: Wealthfolio has 1,224.500 units, the statement says 1,234.500. Open Mutual funds " +
