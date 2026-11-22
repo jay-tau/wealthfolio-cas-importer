@@ -224,10 +224,7 @@ const runBrowser = async (browser, engine) => {
     console.log(engine, result);
     assert.equal(result.wrongPassword, "password");
     assert.deepEqual(data, expected);
-    // The add-on's frame. Its document stays until the run without the CSP. Locators from
-    // tab.frameLocator("iframe") look for the iframe again on every call, which took about 115 ms a call in
-    // Chromium and 60 ms in Firefox, against under 2 ms from the frame itself (#346).
-    const frame = tab.frames()[1];
+    const frame = tab.frameLocator("iframe");
     const host = () => tab.frames()[1].evaluate(() => ({ secrets: [...window.host.secrets], storage: [...window.host.storage] }));
     const pause = (name) => tab.frames()[1].evaluate((name) => { window.host.pause = name; }, name);
     const waiting = () => tab.frames()[1].waitForFunction(() => window.host.resume);
@@ -4129,7 +4126,7 @@ const runBrowser = async (browser, engine) => {
         // again starts fails on the profile itself and the add-on shows that (#346).
         const failures = await hosted(() => window.host.getProfileFailures);
         await revisit();
-        await frame.waitForFunction((n) => window.host.getProfileFailures > n, failures);
+        await tab.frames()[1].waitForFunction((n) => window.host.getProfileFailures > n, failures);
         await settled();
         await painted();
       }
