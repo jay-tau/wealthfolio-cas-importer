@@ -85,7 +85,7 @@ test("the transactions in a statement count each part only when it isn't zero, o
     "1 possible duplicate, waiting for your answer",
     "6 in skipped funds",
     "3 in folios not imported",
-    "2 in funds whose rows don't add up, waiting for your answer",
+    "2 waiting for your answer about funds whose rows don't add up",
   ]);
   assert.deepEqual(parts({ duplicates: 2, leftOut: [reversal("REDEMPTION"), reversal("PURCHASE"), { kind: "row", reason: "x", row: { row: { type: "MISC" } } }] }), [
     "2 possible duplicates, waiting for your answer",
@@ -97,7 +97,7 @@ test("the transactions in a statement count each part only when it isn't zero, o
     "1 possible duplicate, imported by your answer",
     "2 possible duplicates, skipped by your answer",
     "1 possible duplicate, skipped",
-    "4 in funds whose rows don't add up, skipped by your answer",
+    "4 skipped by your answer about funds whose rows don't add up",
   ]);
   assert.deepEqual(parts({ leftOut: [{ kind: "row", reason: "x", row: { row: { type: "MISC" } } }] }), ["1 left out, listed under “Not included”"]);
   const summary = (b) => text("TransactionsSummary", { breakdown: { ...none, ...b }, range: "Apr 2019 to Jun 2026", partId: "t" });

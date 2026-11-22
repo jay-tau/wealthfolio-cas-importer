@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { describe, test } from "node:test";
 import { format } from "../src/cas/decimal.ts";
 import { mapStatement } from "../src/cas/mapping.ts";
-import { bankMatches, fundRef, fundRefs, indexActivities, planImport, RECORD_PREFIX, rowsOf } from "../src/cas/plan.ts";
+import { bankMatches, fundRef, fundRefs, importRows, indexActivities, planImport, RECORD_PREFIX, rowsOf } from "../src/cas/plan.ts";
 import { bankMovements, bankPairs, breakdown, describes, fundGroups, houseWords, plannedOf, rowUnits, sends, unitsDiffer } from "../src/cas/review.ts";
 
 const tx = (date, type, amount, units = null, nav = null, extra = {}) => ({
@@ -92,10 +92,22 @@ describe("row outcomes", () => {
     assert.equal(mapping.outcomes[0].transaction, mapping.transactions[0]);
   });
 
-  test("a fund whose rows don't add up leaves every row out for that, unless imported anyway", () => {
+  test("a fund whose rows don't add up holds back its transactions, unless imported anyway", () => {
     const data = statement(folio("F1", [scheme("A", [tx("2023-06-01", "PURCHASE", "1000", "10", "100")], { close: "12", close_calculated: "10" })]));
-    assert.deepEqual(planFor(data).mapping.outcomes.map((o) => o.leftOut?.kind), ["unbalanced"]);
-    assert.ok(planFor(data, { unbalanced: () => true }).mapping.outcomes[0].transaction);
+    const held = planFor(data);
+    assert.deepEqual(held.plan.map((t) => t.status), ["held"]);
+    assert.equal(held.mapping.outcomes[0].transaction, held.plan[0].transaction);
+    // Held back, its rows aren't checked or imported.
+    assert.deepEqual([rowsOf(held.mapping), importRows(held.plan, () => true)], [[], []]);
+    const { activity, cash } = held.plan[0].transaction;
+    const [matched] = planFor(data, { existing: [stored(activity), stored(cash)] }).plan;
+    assert.equal(matched.status, "existing");
+    assert.equal(sends(matched, () => true), false);
+    assert.deepEqual(importRows([matched], () => true), []);
+    assert.deepEqual(planFor(data, { unbalanced: () => true }).plan.map((t) => t.status), ["new"]);
+    const bank = [entry("bank-buy", "WITHDRAWAL", "1000", "2023-06-01")];
+    assert.equal(bankMatches(planFor(data, { bank: BANK }).plan, bank, new Set(), "UTC").size, 0);
+    assert.equal(bankMatches(planFor(data, { bank: BANK, unbalanced: () => true }).plan, bank, new Set(), "UTC").size, 1);
   });
 
   test("a merger's two rows share one transaction", () => {
@@ -217,7 +229,7 @@ describe("the statement's transactions", () => {
     assert.equal(Object.values(counts).slice(1).reduce((a, n) => a + n, 0) + leftOut.length, b.total);
     // Skipped by the answer, D's rows are counted as such.
     const answered = breakdown({
-      mapping, planned, sent: (t) => sends(t, () => false), why: () => "answers", unbalancedAnswer: (f, s) => (s.scheme === "D" ? false : undefined),
+      mapping, planned, sent: (t) => sends(t, () => false), why: () => "answers", skipsHeld: (t) => t.transaction.scheme === "D",
     });
     assert.deepEqual([answered.unbalanced, answered.skippedUnbalanced], [0, 1]);
   });

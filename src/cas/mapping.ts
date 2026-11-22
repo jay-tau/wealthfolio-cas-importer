@@ -73,6 +73,12 @@ export interface MappedTransaction {
   receiving?: { folio: string; scheme: string; rows: CasTransaction[]; activity: ActivityImport };
   /** Fields of `activity` whose values stand in for ones the statement doesn't give. */
   standIns?: (keyof ActivityImport)[];
+  /**
+   * The funds whose rows don't add up that hold it back, its own or a merger's or gift's other side's:
+   * it isn't checked or imported until the user chooses to import each with its difference.
+   * Wealthfolio may have it already.
+   */
+  held?: { folio: CasFolio; scheme: CasScheme }[];
 }
 
 export interface MappingWarning {
@@ -80,12 +86,17 @@ export interface MappingWarning {
   amc: string;
   folio: string;
   scheme: string;
+  /** The statement section, even when two sections of the same folio print the same name. */
+  section: CasScheme;
   /** Empty when the warning is about the whole scheme. */
   rows: CasTransaction[];
   message: string;
   /** False for a caveat on rows that are imported. */
   leftOut: boolean;
-  /** The scheme's rows don't add up to its closing balance; `SchemeTarget.importUnbalanced` imports them anyway. */
+  /**
+   * The scheme's rows don't add up to its closing balance. Its transactions are held back until
+   * `SchemeTarget.importUnbalanced` is set.
+   */
   unbalanced?: true;
   /** For `unbalanced`: the units the rows add up to, and the statement's closing units. */
   units?: { added: string; closing: string };
@@ -93,11 +104,11 @@ export interface MappingWarning {
 
 /**
  * Why a statement row isn't part of a transaction: its scheme has no account or fund (`unchosen`),
- * starts with units Wealthfolio doesn't have (`opening`), is left out as a whole for another reason
- * (`scheme`) or because its rows don't add up (`unbalanced`); it's a reversed row or its reversal
- * (`reversal`); or the row itself can't be imported (`row`).
+ * starts with units Wealthfolio doesn't have (`opening`) or is left out as a whole for another reason
+ * (`scheme`); it's a reversed row or its reversal (`reversal`); or the row itself can't be imported
+ * (`row`). A row of a fund whose rows don't add up is part of a `held` transaction.
  */
-export type LeftOutKind = "unchosen" | "opening" | "scheme" | "unbalanced" | "reversal" | "row";
+export type LeftOutKind = "unchosen" | "opening" | "scheme" | "reversal" | "row";
 
 /**
  * A statement row that records something, and what the import does with it: every row of the
@@ -128,7 +139,7 @@ const shown = (amount: Dec) => rupees(format(amount));
 /** Units in a message as the Review screen writes them: "1,000.000 units". What's imported keeps them as printed. */
 const shownUnits = (units: string) => quantityText("unit", units);
 /** casparser's tolerance when it checks the rows against the printed unit balances. */
-const UNIT_TOLERANCE = dec("0.005");
+export const UNIT_TOLERANCE = dec("0.005");
 
 type Kind = "buy" | "sell" | "payout" | "reinvest" | "gift" | "segregation";
 
@@ -178,7 +189,7 @@ interface Scheme {
   problem?: string;
   /** What `problem` is about. */
   problemKind?: "unchosen" | "opening" | "scheme";
-  /** How the rows miss the closing balance. Leaves out the scheme's rows unless `target.importUnbalanced`. */
+  /** How the rows miss the closing balance. Holds back the scheme's transactions unless `target.importUnbalanced`. */
   unbalanced?: string;
   /** The units the rows add up to, and the closing units, when they miss. */
   units?: { added: string; closing: string };
@@ -237,7 +248,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
       entry.rows = identify(rows, entry, ids.get(entry.scheme)![entry.index]);
     }
   }
-  const fails = (entry: Entry) => !!(entry.problem || entry.scheme.problem || heldBack(entry.scheme));
+  const fails = (entry: Entry) => !!(entry.problem || entry.scheme.problem);
   for (const scheme of schemes) {
     for (const entry of scheme.entries) {
       if (entry.partner && !fails(entry) && fails(entry.partner)) {
@@ -257,35 +268,30 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
     const { folio, scheme, problem, unbalanced, units, entries } = state;
     const where = { amc: folio.amc, folio: folio.folio, scheme: scheme.scheme };
     const warn = (rows: CasTransaction[], message: string, leftOut = true) =>
-      mapping.warnings.push({ ...where, rows, message, leftOut });
+      mapping.warnings.push({ ...where, section: scheme, rows, message, leftOut });
     if (problem) {
       warn([], problem);
       for (const entry of entries) if (!entry.attached) counted.push({ entry, leftOut: { kind: state.problemKind ?? "scheme", reason: problem } });
       continue;
     }
-    const held = heldBack(state);
     if (unbalanced) {
+      const held = heldBack(state);
       const message = held
         ? `${unbalanced} None of this fund's rows are imported unless you choose to import it with this difference: then check them against the PDF.`
         : `${unbalanced} Its rows are imported with this difference, as you chose: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`;
-      mapping.warnings.push({ ...where, rows: [], message, leftOut: held, unbalanced: true, units });
+      mapping.warnings.push({ ...where, section: scheme, rows: [], message, leftOut: held, unbalanced: true, units });
     }
     for (const entry of entries) {
       const rows = [entry.row, ...entry.charges];
       if (entry.attached) continue;
-      // A fund held back for rows that don't add up leaves out every row, for that reason.
-      const outcome = (leftOut?: RowOutcome["leftOut"]) => ({ entry, ...(held ? { leftOut: { kind: "unbalanced" as const, reason: unbalanced! } } : leftOut && { leftOut }) });
       if (entry.reverses) {
         const original = entry.reverses;
         const message = reversalMessage(original, input);
         warn([original.row, ...original.charges, ...rows], message);
-        counted.push({ ...outcome({ kind: "reversal", reason: message }), entry: original }, outcome({ kind: "reversal", reason: message }));
+        const leftOut = { kind: "reversal" as const, reason: message };
+        counted.push({ entry: original, leftOut }, { entry, leftOut });
       } else if (entry.reversedBy) {
         continue;
-      } else if (held) {
-        // A scheme left out still says how to correct earlier imports.
-        if (entry.problem && entry.row.type === "REVERSAL") warn(rows, entry.problem);
-        counted.push(outcome());
       } else if (entry.problem) {
         warn(rows, entry.problem);
         counted.push({ entry, leftOut: { kind: "row", reason: entry.problem } });
@@ -301,6 +307,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
           activity: number(leaving.activity),
           arriving: { scheme: into.scheme.scheme.scheme, rows: [into.row, ...into.charges], activity: number(arriving.activity) },
           earlier: leaving.earlier && arriving.earlier && [...leaving.earlier, ...arriving.earlier],
+          ...heldBy(entry, into),
         };
         mapping.transactions.push(transaction);
         made.set(entry, transaction).set(into, transaction);
@@ -319,6 +326,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
             rows: [into.row, ...into.charges],
             activity: number(into.rows!.activity),
           },
+          ...heldBy(entry, into),
         };
         mapping.transactions.push(transaction);
         made.set(entry, transaction).set(into, transaction);
@@ -332,6 +340,7 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
           cash: cash && number(cash),
           bank: bank && number(bank),
           ...(standIns && { standIns }),
+          ...heldBy(entry),
         };
         mapping.transactions.push(transaction);
         made.set(entry, transaction);
@@ -359,6 +368,12 @@ export function mapStatement(data: CasData, input: MappingInput): Mapping {
 /** The scheme's rows don't add up to its closing balance, and the user didn't choose to import them anyway. */
 const heldBack = (scheme: Scheme) => !!scheme.unbalanced && !scheme.target?.importUnbalanced;
 
+/** `MappedTransaction.held` for a transaction of these entries, a merger's or gift's two sides, when any is held back. */
+function heldBy(...entries: Entry[]): Pick<MappedTransaction, "held"> {
+  const held = entries.filter((entry) => heldBack(entry.scheme)).map(({ scheme: { folio, scheme } }) => ({ folio, scheme }));
+  return held.length ? { held } : {};
+}
+
 /** Event-only rows, such as a nominee registration, and payments that failed. */
 function recordsNothing(row: CasTransaction) {
   if (row.type === "MISC" && (row.amount === null || isZero(dec(row.amount)))) return true;
@@ -382,7 +397,8 @@ const skipped = (scheme: CasScheme, index: number) =>
 /**
  * Whether a scheme's rows don't add up to its closing balance: casparser's close_calculated, the
  * opening units plus every row's units, differs from the closing units by more than casparser's
- * tolerance. Such a fund is asked about on a detailed Review screen once its rows would be imported.
+ * tolerance. Such a fund is asked about on a detailed Review screen once its rows would be imported,
+ * unless Wealthfolio has every transaction of it already.
  */
 export const rowsMissClosing = (scheme: CasScheme) =>
   cmp(abs(sub(dec(scheme.close), dec(scheme.close_calculated))), UNIT_TOLERANCE) > 0;

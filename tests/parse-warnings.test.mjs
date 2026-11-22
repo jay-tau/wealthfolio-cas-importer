@@ -19,7 +19,9 @@ const inferred = (isin) => `MF holdings ${isin}: no closing nav/value pair; infe
 const FLEXI = "'Fictiva Flexi Cap Fund - Direct Plan - Growth' [FFCDG]";
 const flexiGap = balance(FLEXI, "2023-10-10", "TransactionType.PURCHASE_SIP", "1831.591", "1925.629", "-94.038");
 
-const scheme = (name, code, isin, close, calculated = close) => ({ scheme: name, rta_code: code, rta: "CAMS", isin, close, close_calculated: calculated });
+const scheme = (name, code, isin, close, calculated = close) => ({
+  scheme: name, rta_code: code, rta: "CAMS", isin, open: "0", close, close_calculated: calculated, transactions: [],
+});
 const flexi = scheme("Fictiva Flexi Cap Fund - Direct Plan - Growth", "FFCDG", "INFZ90K01FC8", "2892.104", "2798.066");
 const liquid = scheme("Fictiva Liquid Fund - Direct Plan - Growth", "FLQDG", "INFZ90K01LQ6", "8.053");
 const statement = { folios: [{ folio: "91234567 / 12", schemes: [flexi, liquid] }] };
@@ -184,4 +186,49 @@ test("a closing balance warning isn't repeated beside the question about its fun
   const escaped = flexiGap.replace("'Fictiva Flexi Cap", String.raw`'Fictiva\x02 Flexi Cap`);
   assert.equal(lines([flexiGap, flexiGap, escaped]).length, 1);
   assert.deepEqual(lines([]), []);
+});
+
+test("a fund whose rows don't add up that the screen doesn't ask about has its closing balance among the warnings, once (#348)", () => {
+  const flexiClosing = closing(FLEXI, "2798.0660", "2892.104", "-94.038");
+  const said = "Fictiva Flexi Cap Fund: its rows add up to 2,798.066 units, but the statement's closing balance is 2,892.104. A row may be missing or misread.";
+  const unasked = { asksUnbalanced: true, unasked: [flexi] };
+  // Without casparser's warning about it, the add-on's own, after casparser's.
+  assert.deepEqual(lines([flexiGap], unasked), [lines([flexiGap])[0], said]);
+  // With it, casparser's, figures written either way, and no other.
+  assert.deepEqual(lines([flexiClosing, flexiGap], unasked), [lines([flexiClosing])[0], lines([flexiGap])[0]]);
+  assert.equal(lines([flexiClosing], unasked).length, 1);
+  // In two folios, keep a warning about the other printed balance, not a second warning about this one.
+  const balanced = { ...flexi, close: "2701", close_calculated: "2701" };
+  const inTwoFolios = (scheme, other = balanced) => ({
+    asksUnbalanced: true, unasked: [scheme], statement: { folios: [{ schemes: [scheme] }, { schemes: [other] }] },
+  });
+  const otherFolio = closing(FLEXI, "2700", "2701", "-1");
+  const reset = closing(FLEXI, "2800", "2892.104", "-92.104");
+  const resynced = { ...flexi, transactions: [{ units: flexi.close_calculated, balance: "2800" }] };
+  assert.deepEqual(lines([reset, otherFolio], inTwoFolios(resynced)), [lines([otherFolio])[0], said]);
+  const samePrinted = { ...flexi, close_calculated: flexi.close, transactions: [{ units: flexi.close, balance: flexi.close }] };
+  assert.deepEqual(lines([reset], inTwoFolios(resynced, samePrinted)), [said]);
+  // Two folios could have produced the warning. Drop it only when both have their own closing line.
+  const another = { ...flexi, close_calculated: "2799.066", transactions: [{ units: "2799.066", balance: "2800" }] };
+  const threeFolios = {
+    asksUnbalanced: true, unasked: [{ ...resynced }, { ...another }],
+    statement: { folios: [{ schemes: [resynced] }, { schemes: [another] }, { schemes: [balanced] }] },
+  };
+  assert.deepEqual(lines([reset], threeFolios), [said, said.replace("2,798.066", "2,799.066")]);
+  assert.deepEqual(lines([reset], { ...threeFolios, unasked: [{ ...resynced }] }), [lines([reset])[0], said]);
+  const tiny = { ...flexi, close_calculated: "0.0000001" };
+  const exponential = closing(FLEXI, "1E-7", "2892.104", "-2892.1039999");
+  assert.deepEqual(lines([exponential], inTwoFolios(tiny)), lines([exponential]));
+  assert.deepEqual(lines([flexiClosing, closing(FLEXI, "2798.066", "2892.104", "-94.038")], unasked), lines([flexiClosing]));
+  // A screen that asks about every fund, or doesn't ask at all, has none of its own.
+  assert.deepEqual(lines([flexiGap], { asksUnbalanced: true }), lines([flexiGap]));
+  assert.deepEqual(lines([], { unasked: [flexi] }), []);
+});
+
+test("a parser closing warning with the same figures as a settled fund can come from another fund (#348)", () => {
+  const own = { ...flexi, scheme: "", close: "20", close_calculated: "11", transactions: [{ units: "11", balance: "20" }] };
+  const other = { ...liquid, scheme: "", rta_code: own.rta_code, rta: "KFINTECH", close: "20", close_calculated: "20", transactions: [{ units: "20", balance: "11" }] };
+  const parsed = closing("'' [FFCDG]", "11", "20", "-9");
+  const context = { asksUnbalanced: true, unasked: [own], statement: { folios: [{ schemes: [other] }, { schemes: [own] }] } };
+  assert.deepEqual(lines([parsed], context).map((line) => line.split(":")[0]).sort(), ["Fictiva Flexi Cap Fund", "Fictiva Liquid Fund"]);
 });

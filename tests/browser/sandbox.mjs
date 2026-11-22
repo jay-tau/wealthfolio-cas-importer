@@ -2379,7 +2379,8 @@ const runBrowser = async (browser, engine) => {
     await gapCard.getByText("They add up to 2,798.066 units; the statement says 2,892.104. A row may be missing or misread.", { exact: true }).waitFor();
     const skipFlexi = gapCard.getByRole("button", { name: "Skip this fund: Fund INFZ90K01FC8", exact: true });
     const importFlexi = gapCard.getByRole("button", { name: "Import with this difference: Fund INFZ90K01FC8", exact: true });
-    assert.match(await transactionParts(), /^13 to import · \d+ in funds whose rows don't add up, waiting for your answer$/);
+    // The stamp duty whose purchase was dropped is left out on its own (#348).
+    assert.equal(await transactionParts(), "13 to import · 25 waiting for your answer about funds whose rows don't add up · 1 left out, listed under “Not included”");
     await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
     assert.equal(await importButton.isDisabled(), true);
     await importFlexi.focus();
@@ -2407,7 +2408,7 @@ const runBrowser = async (browser, engine) => {
     await skipFlexi.click();
     await gapChange.waitFor();
     await dSettled();
-    assert.match(await transactionParts(), /^13 to import · \d+ in funds whose rows don't add up, skipped by your answer$/);
+    assert.equal(await transactionParts(), "13 to import · 25 skipped by your answer about funds whose rows don't add up · 1 left out, listed under “Not included”");
     await importButton.click();
     await imported(13);
     const afterGap = await hosted(() => window.host.activities);

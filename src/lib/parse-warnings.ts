@@ -1,4 +1,5 @@
-import { rowsMissClosing } from "../cas/mapping.ts";
+import { abs, add, cmp, dec, format, sub } from "../cas/decimal.ts";
+import { rowsMissClosing, UNIT_TOLERANCE } from "../cas/mapping.ts";
 import type { CasData, CasScheme } from "../cas/types.ts";
 import { fundKey, holdingKey } from "./choices.ts";
 import { fundName, readableName } from "./fund-name.ts";
@@ -105,20 +106,26 @@ export interface WarningContext {
    * casparser's warning about its closing balance isn't repeated.
    */
   asksUnbalanced?: boolean;
+  /**
+   * With `asksUnbalanced`, the statement's schemes whose rows don't add up that the screen doesn't ask
+   * about, as Wealthfolio has all their transactions: their closing balances are warned about, once.
+   */
+  unasked?: readonly CasScheme[];
 }
 
 /** The statement's schemes a warning names, by their readable name and scheme code. */
+const namesScheme = (ref: SchemeRef, scheme: CasScheme) =>
+  scheme.rta_code === ref.code && readableName(scheme.scheme) === readableName(ref.name);
+
 function schemesOf(statement: CasData | undefined, ref: SchemeRef): CasScheme[] {
-  const name = readableName(ref.name);
-  return (statement?.folios ?? []).flatMap((f) => f.schemes).filter((s) => s.rta_code === ref.code && readableName(s.scheme) === name);
+  return (statement?.folios ?? []).flatMap((f) => f.schemes).filter((s) => namesScheme(ref, s));
 }
 
 /**
  * A scheme as the Review screen names it; one it doesn't list, such as a closed scheme, by its
  * printed name as the screen shortens fund names, else by its scheme code.
  */
-function schemeName(ref: SchemeRef, context: WarningContext) {
-  const [scheme] = schemesOf(context.statement, ref);
+function schemeName(ref: SchemeRef, context: WarningContext, scheme = schemesOf(context.statement, ref)[0]) {
   const shown = scheme && context.nameOf(fundKey(scheme));
   if (shown) return shown;
   const printed = readableName(ref.name);
@@ -139,6 +146,10 @@ export interface WarningLine {
   message?: string;
 }
 
+const closingLine = (name: string, computed: string, printed: string): WarningLine => ({
+  text: `${name}: its rows add up to ${units(computed)} units, but the statement's closing balance is ${units(printed)}. ${MAY_BE_MISSING}`,
+});
+
 /** A warning in the Review screen's words. */
 export function warningLine(warning: ParseWarning, context: WarningContext): WarningLine {
   switch (warning.kind) {
@@ -150,9 +161,7 @@ export function warningLine(warning: ParseWarning, context: WarningContext): War
       };
     }
     case "closing":
-      return {
-        text: `${schemeName(warning.scheme, context)}: its rows add up to ${units(warning.computed)} units, but the statement's closing balance is ${units(warning.printed)}. ${MAY_BE_MISSING}`,
-      };
+      return closingLine(schemeName(warning.scheme, context), warning.computed, warning.printed);
     case "skipped": {
       const place = warning.page ? `on page ${warning.page}` : PLACES[warning.where ?? ""];
       const printed = readableName(warning.text);
@@ -169,21 +178,75 @@ export function warningLine(warning: ParseWarning, context: WarningContext): War
   }
 }
 
+/** Two figures that are the same number, as casparser and the statement print them. */
+function sameFigure(a: string, b: string) {
+  try {
+    return cmp(dec(a), dec(b)) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/** casparser's warning uses its running total after resetting it at printed discrepancies. */
+function parserClosing(scheme: CasScheme) {
+  let total = dec(scheme.open);
+  for (const row of scheme.transactions) {
+    if (row.units !== null) total = add(total, dec(row.units));
+    if (row.balance === null) continue;
+    const printed = dec(row.balance);
+    if (cmp(abs(sub(total, printed)), UNIT_TOLERANCE) > 0) total = printed;
+  }
+  return format(total);
+}
+
 /**
  * The statement's warnings in the Review screen's words, in casparser's order, each once. With
  * `asksUnbalanced`, a closing balance warning is left out when the screen asks about its fund:
- * when the statement's rows for every scheme it can name don't add up, the add-on's own check.
+ * when the statement's rows for every scheme it can name don't add up, the add-on's own check, and
+ * it isn't about an `unasked` scheme's closing balance. Each `unasked` scheme casparser doesn't warn
+ * about this way gets a closing balance warning of its own, after casparser's.
  */
 export function warningLines(warnings: readonly string[], context: WarningContext): WarningLine[] {
   const lines = new Map<string, WarningLine>();
+  const add = (line: WarningLine) => {
+    lines.set(`${line.text}\n${line.message ?? ""}`, line);
+  };
+  const unasked = context.asksUnbalanced ? context.unasked ?? [] : [];
+  const told = new Set<CasScheme>();
   for (const text of warnings) {
     const warning = readWarning(text);
     if (warning.kind === "closing" && context.asksUnbalanced) {
       const schemes = schemesOf(context.statement, warning.scheme);
+      const sameClosing = unasked.filter((s) => namesScheme(warning.scheme, s) && sameFigure(warning.printed, s.close));
+      const candidates = sameClosing.length
+        ? schemes.filter((s) => sameFigure(warning.printed, s.close) && sameFigure(warning.computed, parserClosing(s)))
+        : [];
+      const fromScheme = (scheme: CasScheme) =>
+        closingLine(schemeName(warning.scheme, context, scheme), warning.computed, warning.printed);
+      // A warning with the add-on's figures can come from a different folio's running total.
+      const sameBalance = sameClosing.filter((s) => sameFigure(warning.computed, s.close_calculated) &&
+        (!candidates.length || candidates.some((c) => c.transactions === s.transactions)));
+      for (const scheme of sameBalance) {
+        if (told.has(scheme)) continue;
+        told.add(scheme);
+        add(fromScheme(scheme));
+      }
       if (schemes.length && schemes.every(rowsMissClosing)) continue;
+      if (candidates.length) {
+        // Keep the parser's running total for each source without a closing line of its own.
+        for (const scheme of candidates) {
+          if (!sameClosing.some((s) => s.transactions === scheme.transactions)) add(fromScheme(scheme));
+        }
+        continue;
+      }
+      if (sameBalance.length) continue;
     }
-    const line = warningLine(warning, context);
-    lines.set(`${line.text}\n${line.message ?? ""}`, line);
+    add(warningLine(warning, context));
+  }
+  for (const scheme of unasked) {
+    if (told.has(scheme)) continue;
+    const ref = { name: scheme.scheme, code: scheme.rta_code };
+    add(closingLine(schemeName(ref, context, scheme), format(dec(scheme.close_calculated)), format(dec(scheme.close))));
   }
   return [...lines.values()];
 }

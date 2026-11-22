@@ -18,7 +18,8 @@ import type { CasData, CasFolio, CasScheme } from "./types.ts";
 // checkImport also missed a trade that an earlier import saved when that import created the
 // fund: the import keyed the trade by symbol and exchange, and checkImport keyed it by the
 // asset's ID. A merger's conversion rows also go by their direction and group, as Wealthfolio
-// 3.12.0's import key does.
+// 3.12.0's import key does. Transactions held back by a fund whose rows don't add up aren't checked,
+// and match only the activities the other transactions leave.
 
 export type Status =
   /** Every row is new. */
@@ -28,7 +29,9 @@ export type Status =
   /** Some row equals an activity Wealthfolio has, or Wealthfolio's check reports it as a duplicate. */
   | "duplicate"
   /** checkImport rejected a row. */
-  | "invalid";
+  | "invalid"
+  /** Held back by a fund whose rows don't add up (`MappedTransaction.held`), and Wealthfolio doesn't have it all. */
+  | "held";
 
 export interface PlannedRow {
   activity: ActivityImport;
@@ -62,11 +65,11 @@ const rowsOfTransaction = (t: MappedTransaction) =>
   [t.activity, t.cash, t.bank, t.arriving?.activity, t.receiving?.activity].filter((row) => row !== undefined);
 
 /**
- * The rows for checkImport and the import, in the order `planImport` reads its results. Each
- * transaction's transfers stay together, so Wealthfolio's import links each pair, not two
- * transactions' legs with the same day and amount.
+ * The rows for checkImport and the import, in the order `planImport` reads its results: those of
+ * every transaction that isn't held. Each transaction's transfers stay together, so Wealthfolio's
+ * import links each pair, not two transactions' legs with the same day and amount.
  */
-export const rowsOf = (mapping: Mapping) => mapping.transactions.flatMap(rowsOfTransaction);
+export const rowsOf = (mapping: Mapping) => mapping.transactions.flatMap((t) => (t.held ? [] : rowsOfTransaction(t)));
 
 /** An activity's date as Wealthfolio's key reads it: the UTC day. */
 export function day(date: Date | string | undefined) {
@@ -276,7 +279,11 @@ export function indexActivities(existing: ActivityDetails[], funds: FundRefs) {
 const messages = (record: Record<string, string[]> | undefined, skip?: string) =>
   Object.entries(record ?? {}).flatMap(([field, list]) => (field === skip ? [] : list));
 
-/** `checked` is checkImport's answer for `rowsOf(mapping)`. */
+/**
+ * `checked` is checkImport's answer for `rowsOf(mapping)`. Transactions that aren't held are planned
+ * first, so each keeps the activities it matches with the held ones left out; the held ones then
+ * match what's left, the same way.
+ */
 export function planImport(
   mapping: Mapping,
   existing: ActivityDetails[],
@@ -286,14 +293,41 @@ export function planImport(
   timeZone = "UTC",
 ): PlannedTransaction[] {
   const { index: available, records } = indexActivities(existing, funds);
-  const byId = new Map(existing.map((a) => [a.id, a]));
-  // Stored group rows can make a new conversion fail the whole import.
-  const groups = new Set(existing.flatMap((a) => groupOf(a) ?? []));
+  const matching: Matching = {
+    existing, checked, funds, timeZone, available, records,
+    byId: new Map(existing.map((a) => [a.id, a])),
+    // Stored group rows can make a new conversion fail the whole import.
+    groups: new Set(existing.flatMap((a) => groupOf(a) ?? [])),
+    likely: giftEntries(existing, funds, timeZone),
+  };
+  const plans = new Map<MappedTransaction, PlannedTransaction>();
+  for (const held of [false, true]) {
+    for (const t of planSome(mapping.transactions.filter((t) => !!t.held === held), matching)) plans.set(t.transaction, t);
+  }
+  return mapping.transactions.map((t) => plans.get(t)!);
+}
+
+/** What `planSome` matches transactions with, shared by each call: what one matches, the next doesn't. */
+interface Matching {
+  existing: ActivityDetails[];
+  checked: ActivityImport[];
+  funds: FundRefs;
+  timeZone: string;
+  available: Map<string, string[]>;
+  records: Map<string, string[]>;
+  byId: ReadonlyMap<string, ActivityDetails>;
+  groups: ReadonlySet<string>;
+  likely: ReturnType<typeof giftEntries>;
+}
+
+/** `planImport` for some of the mapping's transactions. */
+function planSome(transactions: MappedTransaction[], { existing, checked, funds, timeZone, available, records, byId, groups, likely }: Matching) {
   let position = 0;
-  const planned: PlannedTransaction[] = mapping.transactions.map((transaction) => {
+  const planned: PlannedTransaction[] = transactions.map((transaction) => {
     let tradeFound = false;
     const plan = (activity: ActivityImport, settled = false): PlannedRow => {
-      const result = checked[position++];
+      // A held transaction's rows aren't checked: it isn't imported as it is.
+      const result = transaction.held ? undefined : checked[position++];
       // A fund account's cash may have come in under the other type, from a v1 import or before a
       // bank account was chosen; the bank's side never does: its deposits and withdrawals are the
       // bank's own rows.
@@ -317,8 +351,9 @@ export function planImport(
         ...(result?.duplicateOfId && { duplicateOfId: result.duplicateOfId }),
         ...(result?.duplicateOfLineNumber !== undefined && { duplicateOfLineNumber: result.duplicateOfLineNumber }),
       };
-      if (!result) row.errors.push("Wealthfolio didn't check this row.");
-      else if (!result.isValid && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
+      if (!result) {
+        if (!transaction.held) row.errors.push("Wealthfolio didn't check this row.");
+      } else if (!result.isValid && row.errors.length === 0) row.errors.push("Wealthfolio can't import this row.");
       return row;
     };
     const rows = [plan(transaction.activity)];
@@ -394,7 +429,6 @@ export function planImport(
     // Sent alone, one side of a gift between two folios would be a transfer with no other side.
     if (t.transaction.receiving && t.rows.some((r) => r.existingId) && !t.rows.every((r) => r.existingId)) t.problem = PART_OF_GIFT;
   }
-  const likely = giftEntries(existing, funds, timeZone);
   for (const t of planned) {
     const { receiving } = t.transaction;
     // Both sides of a gift between two folios count as imported once Wealthfolio has linked them.
@@ -444,9 +478,11 @@ export function planImport(
       ? "invalid"
       : settled || completeEarlier(t)
         ? "existing"
-        : t.rows.some((r) => r.existingId || r.flagged)
-          ? "duplicate"
-          : "new";
+        : t.transaction.held
+          ? "held"
+          : t.rows.some((r) => r.existingId || r.flagged)
+            ? "duplicate"
+            : "new";
   }
   return planned;
 }
@@ -510,9 +546,10 @@ export function importRows(
   reuseBankRow: (t: PlannedTransaction) => boolean = () => false,
 ) {
   return plan.flatMap((t) => {
+    if (t.transaction.held) return [];
     const rows = t.transaction.bank && reuseBankRow(t) ? t.rows.filter((r) => r.activity === t.transaction.activity) : t.rows;
     if (t.status === "new") return rows.map((r) => r.activity);
-    if (t.status === "invalid" || t.transaction.arriving || !importAnyway(t)) return [];
+    if (t.status === "invalid" || t.status === "held" || t.transaction.arriving || !importAnyway(t)) return [];
     return rows.map((r) => ({ ...r.activity, forceImport: true }));
   });
 }
@@ -576,7 +613,7 @@ export const PAISA = (value: string) => format(div(abs(dec(value)), dec("1"), 2)
  */
 export function bankCandidates(t: PlannedTransaction, existing: ActivityDetails[], timeZone: string) {
   const { bank } = t.transaction;
-  if (!bank || t.status === "existing" || t.status === "invalid") return [];
+  if (!bank || t.status === "existing" || t.status === "invalid" || t.status === "held") return [];
   const paid = bank.activityType === "TRANSFER_OUT";
   const types: string[] = paid ? ["WITHDRAWAL", "TRANSFER_OUT"] : ["DEPOSIT", "TRANSFER_IN"];
   const amounts = bankAmounts(t);

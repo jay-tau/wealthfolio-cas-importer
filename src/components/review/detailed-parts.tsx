@@ -325,8 +325,8 @@ export function breakdownParts(b: Breakdown) {
     b.earlier && `${b.earlier} waiting for earlier purchases`,
     b.skipped && `${b.skipped} in skipped funds`,
     b.notImported && `${b.notImported} in folios not imported`,
-    b.unbalanced && `${b.unbalanced} in funds whose rows don't add up, waiting for your answer`,
-    b.skippedUnbalanced && `${b.skippedUnbalanced} in funds whose rows don't add up, skipped by your answer`,
+    b.unbalanced && `${b.unbalanced} waiting for your answer about funds whose rows don't add up`,
+    b.skippedUnbalanced && `${b.skippedUnbalanced} skipped by your answer about funds whose rows don't add up`,
     b.leftOut.length && leftOut,
   ].filter((part): part is string => !!part);
 }

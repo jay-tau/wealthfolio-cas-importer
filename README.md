@@ -36,14 +36,18 @@ the statement is read, one Review screen shows, in this order:
   questions: the account choice and 5 fund questions"), as does the bar; **Questions for you** counts
   its own cards, and while any of those are open beside them it's titled **Fund questions**, or
   **Other questions** when a card asks something else.
-- **Check these against the PDF before importing**, when casparser couldn't read part of the
-  statement cleanly: each of its warnings in plain words, naming the fund as the rest of the screen
-  does. A fund whose rows don't add up to a balance the statement prints ("Fictiva Flexi Cap Fund:
+- **Check these against the PDF before importing** shows warnings in plain words, naming each fund
+  as the rest of the screen does. For a fund whose rows don't add up to a balance the statement
+  prints, it shows the difference ("Fictiva Flexi Cap Fund:
   after the SIP purchase on 10 Oct 2023, its rows add up to 1,831.591 units, but the statement
   prints 1,925.629. A row may be missing or misread."). A closing balance isn't repeated here when
   the add-on's own sum finds that the fund's rows don't add up to it either: the fund's
-  "transactions don't add up" question needs an answer before any of its rows are imported. A fund
-  casparser couldn't read at all, with its page or where it was and the text printed there: its
+  "transactions don't add up" question gives it. When the add-on has at least one transaction it
+  can compare in that part of the folio and Wealthfolio already has them all, as after importing
+  the fund with its difference, there's no question. The closing balance is shown here once, even
+  when casparser warns about it too ("Fictiva Flexi Cap Fund: its rows add up to 2,798.066 units, but the statement's
+  closing balance is 2,892.104. A row may be missing or misread."). For a fund casparser couldn't
+  read at all, the warning gives its page or where it was and the text printed there. Its
   transactions aren't imported, so add them in Wealthfolio. Any other warning says "casparser found
   something it couldn't read cleanly", with casparser's message to copy and report.
 - **Save to**: one box per PAN, named by the investor ("A. Investor's funds"), with the Wealthfolio
@@ -89,8 +93,15 @@ the statement is read, one Review screen shows, in this order:
   same units can both be real."): **Skip this transaction** is the safe answer, and **Import it as
   another purchase** imports it. More than three go under one heading. A fund whose rows don't add up to its closing units ("Fictiva
   Credit Risk Fund's transactions don't add up. They add up to 1,204.500 units; the statement says
-  1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**. An
-  answer stays until what it was given for changes. A possible duplicate is asked again when its
+  1,250.000.") has **Skip this fund** as the safe answer, and **Import with this difference**. It
+  isn't asked when Wealthfolio has all the transactions the add-on can compare in that part of the
+  folio, provided there's at least one. Until you answer **Import with this difference**, the
+  remaining transactions that can be imported wait or are skipped by your answer. Only after that
+  answer can they be imported, asked about as possible duplicates or matched with bank entries.
+  Those Wealthfolio has count as imported before, even while the question is open and after **Skip
+  this fund**. The add-on looks for matches for the other transactions first, so those keep their
+  matches. Rows the add-on can't import keep their own reasons under **Not included**, as in any
+  fund. An answer stays until what it was given for changes. A possible duplicate is asked again when its
   rows change, as with another fund for it or another account for its folio, or when the activity
   Wealthfolio matched it with changes, such as one edited in Wealthfolio before the page is opened
   again; a fund whose rows don't add up, when its fund or its folio's account or bank account
@@ -98,9 +109,12 @@ the statement is read, one Review screen shows, in this order:
   an equal question is about another folio, each card names its folio in its heading, its buttons
   and its answered line ("This purchase in folio 7712045 may already be in Mutual funds"), and a
   possible duplicate's "On this statement:" line names its folio ("3 Jul 2026 · Purchase · Fictiva
-  Liquid Fund, folio 7712045 · …"). A fund whose rows don't add up is asked about for each folio, and
-  skipping it leaves out only that folio's rows, so whenever another folio that's imported lists a
-  fund named the same, its card names its folio in the same places ("Fictiva Credit Risk Fund's
+  Liquid Fund, folio 7712045 · …"). The question about rows that don't add up is for that part of
+  the folio. If the same fund is listed twice in one folio and both need an answer, each gets its
+  own question. Skipping one leaves out its remaining transactions. A merger or gift with another
+  fund on the statement is imported as a pair only after **Import with this difference** for each
+  side whose rows don't add up. When another folio being imported lists a fund named the same, the
+  card names its folio in the same places ("Fictiva Credit Risk Fund's
   transactions in folio 7712045 don't add up"), as do its summary in the bar and, once skipped, its
   line under **Not included**. When the statement lists more than one row of a fund in one folio with the
   same movement, day and amount, such as two SIPs of ₹5,000 on one day, each one is numbered by its
@@ -155,7 +169,8 @@ the statement is read, one Review screen shows, in this order:
   funds** and import 136 transactions for 8 funds into it." for a new account), which funds' units
   won't match the statement afterwards, how each bank account's movements go, and what your answers
   did ("1 possible duplicate skipped by your answer."), with **See every transaction**, which shows
-  each activity with its cash and status, and **Import 136 transactions** (**Create account and
+  each activity with its cash and status ("Not imported" for one that waits for, or was skipped by,
+  the answer about a fund whose rows don't add up, naming that fund), and **Import 136 transactions** (**Create account and
   import 136 transactions** with a new account), just **Import** while what will be imported is
   worked out or when it couldn't be. With nothing to import, it
   says why ("Nothing new: every transaction on this statement is already in Wealthfolio.", or
@@ -169,11 +184,9 @@ The plan is worked out again as you answer, from reads of Wealthfolio that are r
 the add-on's page again. After the import, the result compares each imported fund's units in
 Wealthfolio with the statement's closing balance. A fund the import adds to Wealthfolio gets the
 statement's name. When Wealthfolio then fetches the fund's profile, a name in it, such as a Yahoo
-listing's, replaces the statement's; a Yahoo listing without a name keeps it. A fund whose rows don't
-add up to its closing balance is asked about, and left out unless you answer **Import with this
-difference**; then check its rows against the PDF and add or correct the missing ones in Wealthfolio
-after importing. The result after importing reports its unit difference, as it does for another
-transaction you chose to import.
+listing's, replaces the statement's; a Yahoo listing without a name keeps it. When you choose
+**Import with this difference** and import transactions for that fund, the result shows any unit
+difference. Check its rows against the PDF and add or correct the missing ones in Wealthfolio.
 
 A purchase costs the statement's units × NAV plus stamp duty; a redemption pays units × NAV less
 STT and TDS. casparser says some older CAMS and KFintech layouts print no NAV column. casparser

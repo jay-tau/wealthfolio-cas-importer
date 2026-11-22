@@ -38,6 +38,7 @@ import {
   plannedOf,
   rowUnits,
   sends,
+  settledUnbalanced,
   unitsDiffer,
   type Waiting,
 } from "../cas/review";
@@ -190,8 +191,6 @@ export interface DetailedRemembered {
   funds: [string, FundChoice][];
 }
 
-/** A folio's scheme, as a mapping warning names it: by its fund house too, as two fund houses' folios can share a number. */
-const schemeKey = ({ amc, folio }: { amc: string; folio: string }, scheme: string) => JSON.stringify([amc, folio, scheme]);
 const REGISTRARS: Record<string, string> = { CAMS: "CAMS", KFINTECH: "KFintech" };
 const CANT_PLAN = "We couldn't work out what will be saved. Nothing was saved.";
 const list = (names: string[]) => (names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`);
@@ -588,17 +587,21 @@ export function DetailedImport({
   const asked = destinations.map(([state, account, bank]) => [state, [...created.current].find(([, a]) => a.id === account)?.[0] ?? account, bank]);
   // The destinations, funds and host reads that the rare questions' cards were worked out from.
   const questionSignature = JSON.stringify([generation, asked, items.map((item) => fundOf(item.key) ?? null)]);
+  // A folio can print the same scheme name twice. Each section gets its own answer.
+  const sectionKeys = new Map<CasScheme, string>(data.folios.flatMap((folio, i) => folio.schemes.map((scheme, j) => [scheme, `${i}:${j}`])));
+  const schemeKey = (scheme: CasScheme) => sectionKeys.get(scheme)!;
   // A "don't add up" answer belongs to its folio's account and bank account and to its fund, so
   // changing another folio or fund keeps it; it counts only while they're as it was given for. The
   // units it's about are the statement's. A possible duplicate's answer belongs to its rows and
   // Wealthfolio's, checked each time the plan is worked out.
   const unbalancedEvidence = new Map(data.folios.flatMap((folio, i) => folio.schemes.map((scheme) =>
-    [schemeKey(folio, scheme.scheme), JSON.stringify([asked[i], fundOf(fundKey(scheme)) ?? null])] as const)));
+    [schemeKey(scheme), JSON.stringify([asked[i], fundOf(fundKey(scheme)) ?? null])] as const)));
   const unbalancedAnswer = (key: string) => {
     const answer = unbalancedAnswers.get(key);
     return answer && answer.evidence === unbalancedEvidence.get(key) ? answer.skip : undefined;
   };
   const importsUnbalanced = (key: string) => unbalancedAnswer(key) === false;
+  const skipsHeld = (t: PlannedTransaction) => t.transaction.held?.some(({ scheme }) => unbalancedAnswer(schemeKey(scheme)) === true) ?? false;
   const [attempt, setAttempt] = useState(0);
   const signature = JSON.stringify([
     questionSignature,
@@ -665,7 +668,7 @@ export function DetailedImport({
     const mapping = mapStatement(data, {
       target: (folio, scheme) => {
         const t = target(folio, scheme);
-        return t && { ...t, openingCovered: covered.has(scheme), importUnbalanced: importsUnbalanced(schemeKey(folio, scheme.scheme)) };
+        return t && { ...t, openingCovered: covered.has(scheme), importUnbalanced: importsUnbalanced(schemeKey(scheme)) };
       },
       alreadyImported: indexActivities(existing, funds).has,
       entered: (row) => entered(row).length > 0,
@@ -835,7 +838,10 @@ export function DetailedImport({
     return !!pair && reusedKeys.has(pair.key);
   };
 
-  const blockedSchemes = new Set((current?.mapping.warnings ?? []).filter((w) => w.leftOut && w.rows.length === 0).map((w) => schemeKey(w, w.scheme)));
+  // Keep the last plan's questions and closing warnings together while an answer works out a new plan.
+  const shown = current ?? (prepared?.questionSignature === questionSignature ? prepared : null);
+  const settled = shown ? settledUnbalanced(shown.mapping, current ? planned : plannedOf(shown.plan)) : new Set<CasScheme>();
+  const blockedSchemes = new Set((current?.mapping.warnings ?? []).filter((w) => w.leftOut && w.rows.length === 0 && !settled.has(w.section)).map((w) => w.section));
   // Each fund in each account, with its transactions and units from the planned transactions.
   const groups = current
     ? fundGroups({ data, mapping: current.mapping, planned, sent: sentOf, target, existing: current.existing, funds: current.funds, timeZone: current.timeZone })
@@ -856,7 +862,9 @@ export function DetailedImport({
             : `Includes the ${group.forced} possible duplicates you chose.`
           : group.other
             ? `${plural(group.other, "transaction")} of this fund ${group.other === 1 ? "isn't" : "aren't"} imported now.`
-            : "Wealthfolio's other transactions of this fund differ from the statement.";
+            : group.schemes.some(({ scheme }) => settled.has(scheme))
+              ? "Check the closing balance warning against the PDF."
+              : "Wealthfolio's other transactions of this fund differ from the statement.";
       note = `After import: ${units(format(group.after!))} units · Statement: ${units(format(group.statement))}. ${why}`;
     }
     if (group.forced) {
@@ -908,7 +916,7 @@ export function DetailedImport({
   /** The funds a row's new transactions are for. */
   const linesOfRow = (row: FundRow) =>
     sentOutcomes.filter((o) => row.group.schemes.some((s) => s.scheme === o.scheme)).map((o) => lineOf(o.folio, o.scheme));
-  const nothingNew = groups.filter((g) => g.sent === 0 && g.other === 0 && !g.schemes.some(({ folio, scheme }) => blockedSchemes.has(schemeKey(folio, scheme.scheme))));
+  const nothingNew = groups.filter((g) => g.sent === 0 && g.other === 0 && !g.schemes.some(({ scheme }) => blockedSchemes.has(scheme)));
   const nothingNewKeys = [...new Set(nothingNew.flatMap((g) => g.schemes.map((s) => fundKey(s.scheme))))].filter((key) => !readyKeys.has(key));
   const nothingNewFunds = nothingNewKeys.map((key) => ({ key, name: fundNameOf(key) }));
   const autoCount = new Set(rows.filter((r) => r.by === "auto").map((r) => r.item.key)).size;
@@ -922,7 +930,7 @@ export function DetailedImport({
   const counts = current
     ? breakdown({
         mapping: current.mapping, planned, sent: sentOf, why, duplicate: duplicateState,
-        unbalancedAnswer: (folio, scheme) => (unbalancedAnswer(schemeKey(folio, scheme.scheme)) ? false : undefined),
+        skipsHeld,
       })
     : undefined;
   const earlier: EarlierFund[] = (() => {
@@ -1039,7 +1047,6 @@ export function DetailedImport({
 
   // The questions only some imports ask, from the plan as last worked out, so a card stays while an
   // answer works the plan out again: funds whose rows don't add up, then possible duplicates.
-  const shown = current ?? (prepared?.questionSignature === questionSignature ? prepared : null);
   const staleQuestions = shown?.questionSignature !== questionSignature;
   const shownById = new Map((shown?.existing ?? []).map((a) => [a.id, a]));
   const onDay = (date: Date | string | undefined) => {
@@ -1061,18 +1068,28 @@ export function DetailedImport({
     const scheme = schemeOf(t.transaction);
     return scheme ? fundNameOf(fundKey(scheme)) : t.transaction.scheme;
   };
-  const unbalancedFunds = (shown?.mapping.warnings ?? []).filter((w) => w.unbalanced).map((w) => {
-    const scheme = schemeOf(w);
-    return { warning: w, scheme, fund: scheme ? fundNameOf(fundKey(scheme)) : w.scheme };
-  });
+  // Reopening an accepted difference holds its transactions back before the next plan arrives.
+  const shownWarnings = shown?.mapping.warnings ?? [];
+  const reopened = new Set(shownWarnings.flatMap((w) =>
+    w.unbalanced && !w.leftOut && !importsUnbalanced(schemeKey(w.section)) ? [w.section] : [],
+  ));
+  // Match warnings using the names before Review substitutes an ISIN or scheme code.
+  const settledRows = new Set([...settled].flatMap((scheme) => reopened.has(scheme) ? [] : [scheme.transactions]));
+  const unasked = settledRows.size
+    ? statement.folios.flatMap((f) => f.schemes.filter((s) => settledRows.has(s.transactions)))
+    : [];
+  // Keep an accepted answer's Change button: accepting can change which folio matched an activity.
+  const unbalancedFunds = shownWarnings.flatMap((w) =>
+    w.unbalanced && (!settled.has(w.section) || !w.leftOut) ? [{ warning: w, scheme: w.section, fund: fundNameOf(fundKey(w.section)) }] : [],
+  );
   const unbalancedAsks: Ask[] = unbalancedFunds.map(({ warning: w, scheme, fund }) => {
-    const key = schemeKey(w, w.scheme);
-    // Skipping it leaves out only this folio's rows, so while another imported folio lists a fund the
-    // screen names the same, its heading, buttons, answered line, the bar and Not included name the folio.
+    const key = schemeKey(scheme);
+    // Name the folio in the question and receipt when another imported folio lists the same fund name.
     const twice = data.folios.some((f) => f.folio !== w.folio && included(f) && f.schemes.some((s) => fundNameOf(fundKey(s)) === fund));
     const added = units(w.units?.added ?? "");
     const closing = units(w.units?.closing ?? "");
     const which = twice ? `${fund}, folio ${w.folio}` : fund;
+    const already = settled.has(scheme);
     return {
       id: `unbalanced|${key}`,
       words: {
@@ -1080,11 +1097,11 @@ export function DetailedImport({
         line: `They add up to ${added} units; the statement says ${closing}. A row may be missing or misread.`,
         main: "Skip this fund",
         other: "Import with this difference",
-        receipt: (skip) => `${which}: ${skip ? "skipped" : "imported with the difference"}`,
-        done: (skip) => `${which} ${skip ? "skipped" : "imported with the difference"}, by your answer`,
+        receipt: (skip) => `${which}: ${skip ? "skipped" : already ? "difference accepted" : "imported with the difference"}`,
+        done: (skip) => !skip && already ? `Difference accepted for ${which}` : `${which} ${skip ? "skipped" : "imported with the difference"}, by your answer`,
       },
       target: which,
-      fundKey: scheme && fundKey(scheme),
+      fundKey: fundKey(scheme),
       folio: twice ? w.folio : undefined,
       answer: unbalancedAnswer(key),
       warn: importsUnbalanced(key),
@@ -1096,7 +1113,10 @@ export function DetailedImport({
       }),
     };
   });
-  const offered = (shown?.plan ?? []).filter(canImportAnyway);
+  const heldAgain = new Set(reopened.size ? shown!.mapping.outcomes.flatMap((o) =>
+    o.transaction && reopened.has(o.scheme) ? [o.transaction] : [],
+  ) : []);
+  const offered = (shown?.plan ?? []).filter((t) => canImportAnyway(t) && !heldAgain.has(t.transaction));
   const amountOf = (row: CasTransaction) => (row.amount ? rupees(format(abs(dec(row.amount)))) : undefined);
   const rowWord = (row: CasTransaction) => STATEMENT_WORDS[row.type] ?? row.type.toLowerCase();
   /**
@@ -1262,12 +1282,12 @@ export function DetailedImport({
     const outcomes = (current?.mapping.outcomes ?? []).filter((o) => box.folios.includes(o.folio) && fundKey(o.scheme) === key);
     if (readyLines.has(`${box.key}|${key}`)) return "ready";
     if ((questionKeys.includes(key) && schemes.some(({ folio }) => included(folio))) || schemes.some(({ folio }) => undecidedFolios.includes(folio)) ||
-      schemes.some(({ folio, scheme }) => openAsks.some((a) => a.id === `unbalanced|${schemeKey(folio, scheme.scheme)}`)) ||
+      schemes.some(({ scheme }) => openAsks.some((a) => a.id === `unbalanced|${schemeKey(scheme)}`)) ||
       outcomes.some((o) => {
         const t = o.transaction && planned.get(o.transaction);
-        return !!t && duplicateState(t) === "open";
+        return !!t && (duplicateState(t) === "open" || (t.status === "held" && !skipsHeld(t)));
       })) return "question";
-    if (schemes.every(({ folio, scheme }) => target(folio, scheme) && !blockedSchemes.has(schemeKey(folio, scheme.scheme))) && outcomes.every((o) => o.transaction && planned.get(o.transaction)?.status === "existing")) return "nothing";
+    if (schemes.every(({ folio, scheme }) => target(folio, scheme) && !blockedSchemes.has(scheme)) && outcomes.every((o) => o.transaction && planned.get(o.transaction)?.status === "existing")) return "nothing";
     return "out";
   };
   const states = lines.map(lineState);
@@ -2421,6 +2441,7 @@ export function DetailedImport({
           statement,
           nameOf: (key) => (itemOf.has(key) ? fundNameOf(key) : undefined),
           asksUnbalanced: true,
+          unasked,
         })}
         before="importing"
       />
