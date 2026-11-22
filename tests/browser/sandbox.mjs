@@ -722,7 +722,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await focused(fileInput, "Continue without it during password loading");
     // With a password saved, the form uses it and says so; its field is for another password.
     await frame.getByText("Using your saved password", { exact: true }).waitFor();
-    await frame.getByText("Deliberate failure (#346)").waitFor({ timeout: 3_000 });
     await scrollsOnlyWhereMeant("The form, with a saved password");
     await linksKeepTheirLine("The form, with a saved password", ["Use a different password"]);
     await ringsWhole("The form, with a saved password");
@@ -5297,7 +5296,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const { data, error } = await tab.evaluate(() => window.result);
     assert.equal(error, undefined);
     assert.deepEqual(data, expected);
-    await tab.frameLocator("iframe").getByText("Deliberate failure without the CSP (#346)").waitFor({ timeout: 3_000 });
   } catch (error) {
     failed = true;
     console.log(`  FAILED without the CSP: ${error.stack}`);
