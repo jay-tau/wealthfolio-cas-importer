@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Use the fund name shown on a detailed statement's Review screen in the accessible name of the **Change** button beside **Nothing new for …**, beside a fund with left-out transactions under **Not included in this import**, or beside a fund skipped because its transactions don't add up. For example, "Change: Fund INFZ90K01LQ6, nothing new" now matches "Nothing new for Fund INFZ90K01LQ6." The first two lists number funds with the same displayed name, as in "Change: Shared Listing Fund, fund 2, not included". A skipped fund keeps its question's number and names the folio when the line shows it, as in "Change: Liquid Listing Fund, folio 91234567 / 12, transactions don't add up". Before, these buttons named the fund as the statement prints it, such as "Change: Testbridge Overnight Fund - Direct Plan - Growth, nothing new" beside a line naming the fund's listing
 
 ### Security
 
