@@ -179,13 +179,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
   parts = [];
   checkTimes = new Map();
   part("Launching the browser");
-  // TEMPORARY (#346): Chromium variants for a timing comparison. Never merged.
-  const variants = {
-    "chromium-noisolate": ["chromium", { args: ["--disable-features=IsolateSandboxedIframes"] }],
-    "chromium-newheadless": ["chromium", { channel: "chromium" }],
-  };
-  const [engineName, options] = variants[name] ?? [name, {}];
-  const browser = await engines[engineName].launch(options);
+  const browser = await engines[name].launch();
   const engine = `${name} ${browser.version()}`;
   const tab = await browser.newPage();
   tab.setDefaultTimeout(30_000);
@@ -207,12 +201,6 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await tab.waitForFunction(() => window.result, null, { timeout: 180_000 });
     const { data, ...result } = await tab.evaluate(() => window.result);
     console.log(engine, result);
-    if (engineName === "chromium") {
-      const cdp = await browser.newBrowserCDPSession();
-      const { targetInfos } = await cdp.send("Target.getTargets");
-      console.log("Targets (#346):", targetInfos.map((t) => `${t.type} ${t.url.slice(0, 30)}`));
-      await cdp.detach();
-    }
     assert.equal(result.wrongPassword, "password");
     assert.deepEqual(data, expected);
     const frame = tab.frameLocator("iframe");

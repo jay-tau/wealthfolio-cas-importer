@@ -90,7 +90,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        browser: [chromium, firefox, webkit, chromium-noisolate, chromium-newheadless]
+        browser: [chromium, firefox, webkit]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Playwright's image has Node 24, the browsers and the Ubuntu packages they need; downloading
