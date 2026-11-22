@@ -2655,9 +2655,13 @@ const runBrowser = async (browser, engine) => {
     };
     // A price or set of details the save left, which the result lists with its retry.
     const unfinishedLines = frame.getByText(/^The (price of .+ wasn't saved|statement's details for .+ weren't saved)\.$/);
-    // The answer that replaces an account's holdings saved for the statement's date.
+    // The answer that replaces an account's holdings saved for the statement's date. While what will be
+    // saved is worked out again, such as after opening the page again, the Review screen disables its
+    // questions' buttons, and a click dispatched to a disabled button does nothing. Unlike click(),
+    // dispatchEvent() doesn't wait for a button to be enabled, so the answers dispatched to this one and
+    // the other questions' buttons below match only enabled ones (#346).
     const sameDay = (account, date = "31 Mar 2025") =>
-      frame.getByRole("button", { name: `Replace them with this statement: holdings in ${account} for ${date}`, exact: true });
+      frame.getByRole("button", { name: `Replace them with this statement: holdings in ${account} for ${date}`, exact: true, disabled: false });
     // The read-only snapshot an account gets, under the footer's See … after saving.
     const snapshotTable = async (account, date = "31 Mar 2025") => {
       const toggle = frame.getByRole("button", { name: `See the holdings in ${account} on ${date} after saving`, exact: true });
@@ -3611,7 +3615,7 @@ const runBrowser = async (browser, engine) => {
       const card = askCard(`Fictiva Balanced Advantage Fund is now matched to ${newName}`);
       await card.getByText(`Fund folios holds it as ${oldName} (${oldSymbol} · XBOM).`, { exact: true }).waitFor();
       const keep = card.getByRole("button", { name: `Keep ${oldName} for now: ${newName} in Fund folios`, exact: true });
-      const replace = card.getByRole("button", { name: `Replace ${oldName} with ${newName}: ${newName} in Fund folios`, exact: true });
+      const replace = card.getByRole("button", { name: `Replace ${oldName} with ${newName}: ${newName} in Fund folios`, exact: true, disabled: false });
       await keep.waitFor();
       // The safe answer says what it leaves, tied to it.
       const note = await keep.getAttribute("aria-describedby");
@@ -3678,7 +3682,7 @@ const runBrowser = async (browser, engine) => {
     // Asked as one card: its answers name the holding after their visible text, for screen readers.
     const flexiCard = askCard("Fund INFZ90K01FC8 is already tracked in Mutual funds");
     const keepFlexi = flexiCard.getByRole("button", { name: "Keep them in Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true });
-    const removeFlexi = flexiCard.getByRole("button", { name: "Remove them from Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true });
+    const removeFlexi = flexiCard.getByRole("button", { name: "Remove them from Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true, disabled: false });
     await flexiCard.getByText("Fund folios also holds 2,892.104 units of it, from an earlier import of Mutual fund folio 91234567/12.", { exact: true }).waitFor();
     // Removing says when to, tied to it: import records hold identifiers, not units.
     assert.equal(await frame.locator(`[id="${await removeFlexi.getAttribute("aria-describedby")}"]`).textContent(),
