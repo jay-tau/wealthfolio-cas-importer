@@ -1014,6 +1014,137 @@ test("a fund whose only questions are possible duplicates counts under questions
   assert.deepEqual(footer(run).slice(0, 2), ["Import 4 transactions for 1 fund into Mutual funds.", "3 possible duplicates skipped by your answer."]);
 });
 
+const segregatedFixture = JSON.parse(await readFile("tests/fixtures/made-up-cas-segregated.json", "utf8"));
+/**
+ * The review of the made-up statement with a segregated portfolio, each fund confirmed and going to
+ * Mutual funds, with `change` editing the statement first. `byHand` makes a purchase of the
+ * segregated fund in Mutual funds, as one entered by hand: ₹0 a unit, with a comment.
+ */
+function segregatedSetup({ entries = [], change = (data) => data } = {}) {
+  const review = setup({ entries, change: () => change(structuredClone(segregatedFixture)) });
+  const symbol = Object.values(review.props.fundChoices).find((c) => c.fund.name.includes("Segregated")).fund.symbol;
+  review.profiles["segregated-asset"] = { instrumentSymbol: symbol, instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+  const byHand = (id, quantity) => ({
+    id, accountId: "mf", activityType: "BUY", subtype: null, status: "POSTED", date: "2024-02-16T00:00:00Z", quantity, unitPrice: "0",
+    amount: "0", fee: null, tax: null, currency: "INR", needsReview: false, comment: "made-up copy", assetId: "segregated-asset",
+    assetSymbol: symbol, sourceRecordId: null,
+  });
+  return { ...review, byHand };
+}
+/** Not included's lines for transactions left out for a reason of their own: each fund's name, and its lines. */
+const leftOutLines = (run) => (find(run, "NotIncludedDetailed")?.leftOut ?? []).map((fund) => [fund.name, fund.lines.map((l) => `${l.when}: ${l.reason}`)]);
+const SEGREGATED = "Fictiva Credit Risk Fund Segregated Portfolio 1";
+const CREDIT = "16 Feb 2024 · Creation of units - Segregated Portfolio";
+const copyOf = (units) => `a purchase of ${units} units of this fund at ₹0 a unit ("made-up copy")`;
+const oneCreditByHand = (units) =>
+  `Wealthfolio has ${copyOf(units)} on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's how this credit was entered, keep the activity, or delete it and any cash that came with it and read the statement again to import this credit from the statement.`;
+
+test("equal credits left out for the same purchases entered by hand share one numbered line that counts them, and each table note says this credit (#353)", async () => {
+  const { run, activities, byHand } = segregatedSetup();
+  activities.push(byHand("copy-large", "3067.468"), byHand("copy-small", "0.013"));
+  await run.flush();
+  assert.deepEqual(leftOutLines(run), [
+    [SEGREGATED, [`${CREDIT} (1 of 2) and ${CREDIT} (2 of 2): Wealthfolio has ${copyOf("3,067.468")} and ${copyOf("0.013")} on this day, perhaps entered by hand, so these 2 credits of segregated units aren't imported. If that's how these credits were entered, keep the activities, or delete them and any cash that came with them and read the statement again to import these credits from the statement.`]],
+  ]);
+  // See every transaction names each credit by its place, and its own note says this credit.
+  const credits = (await shownTable(run)).filter((row) => row[1].includes("Segregated") && row[2].startsWith("purchase"));
+  assert.deepEqual(credits.map((row) => row[2]), ["purchase (1 of 2)", "purchase (2 of 2)"]);
+  for (const row of credits) assert.match(row.at(-1), /so this credit of segregated units isn't imported\./);
+});
+
+test("a credit left out after its equal one was imported keeps its statement number, alone on its line (#353)", async () => {
+  const first = segregatedSetup();
+  await first.run.flush();
+  await shownTable(first.run);
+  const [large] = find(first.run, "ActivityTable").plan.filter((t) => t.transaction.rows[0].type === "SEGREGATION").map((t) => t.transaction.activity);
+  first.run.dispose();
+  const { run, activities, byHand } = segregatedSetup();
+  activities.push({ ...stored(large, "mf", "imported-large", `addon:cas-importer:${large.sourceRecordId}`), assetId: "segregated-asset" }, byHand("copy-small", "0.013"));
+  await run.flush();
+  assert.deepEqual(leftOutLines(run), [[SEGREGATED, [`${CREDIT} (2 of 2): ${oneCreditByHand("0.013")}`]]]);
+  await shownTable(run);
+  assert.deepEqual(find(run, "ActivityTable").plan.filter((t) => t.transaction.rows[0].type === "SEGREGATION").map((t) => t.status), ["existing", "invalid"]);
+});
+
+test("credits left out on different days by the same edited purchase get a line each, unnumbered when no row equals them (#353)", async () => {
+  const { run, api, activities, byHand } = segregatedSetup({ change(data) {
+    data.folios[0].schemes[1].transactions[1].date = "2024-02-17";
+    return data;
+  } });
+  api.settings.get = async () => ({ timezone: "Asia/Kolkata" });
+  // The edited CSV purchase can match the 16th in UTC or the 17th in Wealthfolio.
+  activities.push({ ...byHand("edited-copy", "1.000"), date: "2024-02-16T20:30:00Z", sourceSystem: "CSV", isUserModified: true });
+  await run.flush();
+  const reason = oneCreditByHand("1.000");
+  assert.deepEqual(leftOutLines(run), [[SEGREGATED, [`${CREDIT}: ${reason}`, `17 Feb 2024 · Creation of units - Segregated Portfolio: ${reason}`]]]);
+});
+
+/** The fixture's two credits, each in its own balanced section. */
+const creditSections = (scheme) => scheme.transactions.slice(0, 2).map((row) => ({
+  ...scheme, close: row.units, close_calculated: row.units, transactions: [{ ...row, balance: row.units }],
+}));
+
+test("equal credits across sections of one folio use the same statement numbering in both Review views (#353)", async () => {
+  const { run, activities, byHand } = segregatedSetup({ change(data) {
+    const [main, scheme] = data.folios[0].schemes;
+    data.folios[0].schemes = [main, ...creditSections(scheme)];
+    return data;
+  } });
+  activities.push(byHand("combined", "3067.481"));
+  await run.flush();
+  const [fund] = find(run, "NotIncludedDetailed").leftOut;
+  assert.equal(fund.lines.length, 1);
+  assert.equal(fund.lines[0].when, `${CREDIT} (1 of 2) and ${CREDIT} (2 of 2)`);
+  const credits = (await shownTable(run)).filter((row) => row[1].includes("Segregated"));
+  assert.deepEqual(credits.map((row) => row[2]), ["purchase (1 of 2)", "purchase (2 of 2)"]);
+});
+
+test("same-day credits left out for different purchases with the same description get separate lines (#353)", async () => {
+  const { run, data, activities, byHand } = segregatedSetup({ change(data) {
+    const [folio] = data.folios;
+    const [main, scheme] = folio.schemes;
+    const [first, second] = creditSections(scheme);
+    folio.schemes = [main, first];
+    data.folios.push({ ...folio, folio: "22222222", schemes: [second] });
+    return data;
+  } });
+  activities.push(byHand("copy-mf", "1.000"), { ...byHand("copy-other", "1.000"), accountId: "other" });
+  await run.flush();
+  saveTo(run).onChange(choices.folioKey(data.folios[1]), "other");
+  await run.flush();
+  const line = `${CREDIT}: ${oneCreditByHand("1.000")}`;
+  assert.deepEqual(leftOutLines(run), [[SEGREGATED, [line, line]]]);
+});
+
+test("a paired gift left out for a transfer entered by hand counts once on its line (#353)", async () => {
+  const { run, data, props, profiles, activities } = setup({ entries: [], change(data) {
+    const base = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    const row = (date, type, amount, units, description, gift_folio = null) => ({
+      date, type, amount, units, nav: "50", balance: null, description, dividend_rate: null, gift_folio,
+    });
+    const receiving = { ...structuredClone(base), open: "0", close: "10", close_calculated: "10",
+      transactions: [row("2024-06-03", "GIFT_IN", "500", "10", "Gifting of units - From Folio No.33333333", "33333333")] };
+    const giving = { ...structuredClone(base), open: "0", close: "0", close_calculated: "0", transactions: [
+      row("2024-06-01", "PURCHASE", "500", "10", "Purchase"), row("2024-06-03", "GIFT_OUT", "-500", "-10", "Gifting of units-TO Folio No: 11111111", "11111111"),
+    ] };
+    data.folios = [{ ...data.folios[0], folio: "33333333", schemes: [giving] }, { ...data.folios[0], folio: "11111111", schemes: [receiving] }];
+    return data;
+  } });
+  const symbol = Object.values(props.fundChoices)[0].fund.symbol;
+  profiles.asset = { instrumentSymbol: symbol, instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+  activities.push({
+    id: "gift-by-hand", accountId: "other", activityType: "TRANSFER_IN", subtype: null, status: "POSTED", date: "2024-06-03T00:00:00Z",
+    quantity: "10", unitPrice: "40", amount: null, fee: null, tax: null, currency: "INR", needsReview: false,
+    comment: null, assetId: "asset", assetSymbol: symbol, sourceRecordId: null,
+  });
+  await run.flush();
+  saveTo(run).onChange(choices.folioKey(data.folios.find((f) => f.folio === "11111111")), "other");
+  await run.flush();
+  assert.deepEqual(leftOutLines(run), [["Fictiva Liquid Fund", [
+    "3 Jun 2024 · Gifting of units-TO Folio No: 11111111 and 3 Jun 2024 · Gifting of units - From Folio No.33333333: Wealthfolio has a transfer in of these units at ₹40 a unit on this day, perhaps entered by hand, so this gift isn't imported. If that's how this gift was entered, keep the activity, or delete it and any cash that came with it and read the statement again to import this gift from the statement.",
+  ]]]);
+});
+
 test("while the plan is worked out, or couldn't be, the import button gives no count", async () => {
   const { run, api, keys } = setup({ entries: [] });
   const check = api.activities.checkImport;

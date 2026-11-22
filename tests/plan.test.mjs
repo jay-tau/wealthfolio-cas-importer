@@ -15,6 +15,7 @@ import {
   fundRef,
   fundRefs,
   giftEntries,
+  handEnteredReason,
   importRows,
   indexActivities,
   linkBankRow,
@@ -755,8 +756,9 @@ describe("gifts", () => {
         assert.deepEqual(statuses(planned), ["invalid"], JSON.stringify(change));
         assert.equal(
           planned[0].problem,
-          `Wealthfolio has ${found} on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`,
+          `Wealthfolio has ${found} on this day, perhaps entered by hand, so this gift isn't imported. If that's how this gift was entered, keep the activity, or delete it and any cash that came with it and read the statement again to import this gift from the statement.`,
         );
+        assert.deepEqual(planned[0].handEntry, { kind: "gift", ids: [existing[0].id], names: found });
         const again = planGifts(data, existing);
         assert.deepEqual(statuses(again), ["invalid"]);
         assert.deepEqual(importRows(again, () => true), []);
@@ -773,6 +775,28 @@ describe("gifts", () => {
       { quantity: "11.000" },
     ]) {
       assert.deepEqual(statuses(planGifts(received, [{ ...stored(row), unitPrice: "40", ...change }])), ["new"], JSON.stringify(change));
+    }
+  });
+
+  test("the hand-entry reason counts the gifts left out and the activities that may be them", () => {
+    const [row] = importRows(planGifts(received), () => false);
+    const transfer = { ...stored(row), unitPrice: "40" };
+    const purchase = { ...stored(row), activityType: "BUY", amount: "500.0000" };
+    const [one] = planGifts(received, [transfer]);
+    const [two] = planGifts(received, [transfer, purchase]);
+    assert.deepEqual(two.handEntry, {
+      kind: "gift",
+      ids: [transfer.id, purchase.id],
+      names: "a transfer in of these units at ₹40 a unit and a purchase of these units at ₹50 a unit",
+    });
+    assert.equal(two.problem, handEnteredReason(two.handEntry));
+    for (const [entry, count, expected] of [
+      [one.handEntry, 1, "Wealthfolio has a transfer in of these units at ₹40 a unit on this day, perhaps entered by hand, so this gift isn't imported. If that's how this gift was entered, keep the activity, or delete it and any cash that came with it and read the statement again to import this gift from the statement."],
+      [one.handEntry, 2, "Wealthfolio has a transfer in of these units at ₹40 a unit on this day, perhaps entered by hand, so these 2 gifts aren't imported. If that's how these gifts were entered, keep the activity, or delete it and any cash that came with it and read the statement again to import these gifts from the statement."],
+      [two.handEntry, 1, "Wealthfolio has a transfer in of these units at ₹40 a unit and a purchase of these units at ₹50 a unit on this day, perhaps entered by hand, so this gift isn't imported. If that's how this gift was entered, keep the activities, or delete them and any cash that came with them and read the statement again to import this gift from the statement."],
+      [two.handEntry, 2, "Wealthfolio has a transfer in of these units at ₹40 a unit and a purchase of these units at ₹50 a unit on this day, perhaps entered by hand, so these 2 gifts aren't imported. If that's how these gifts were entered, keep the activities, or delete them and any cash that came with them and read the statement again to import these gifts from the statement."],
+    ]) {
+      assert.equal(handEnteredReason(entry, count), expected);
     }
   });
 
@@ -991,7 +1015,7 @@ describe("segregated portfolios", () => {
   );
   const segregation = (rows) => rows.filter((r) => r.symbol === "s");
   const handEntered = (found) =>
-    `Wealthfolio has ${found} on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's this credit, or the day's credits entered as one, keep it, or delete it and any cash that came with it and read the statement again to import the statement's.`;
+    `Wealthfolio has ${found} on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's how this credit was entered, keep the activity, or delete it and any cash that came with it and read the statement again to import this credit from the statement.`;
 
   test("each credit goes in alone, and a second read finds them, all or some", () => {
     const data = credited("99.987", "0.013");
@@ -1085,9 +1109,12 @@ describe("segregated portfolios", () => {
     // One credit imported before, and the rest entered by hand: the imported one stays found.
     const credits = credited("99.000", "0.987", "0.013");
     const sent = segregation(importRows(plan(credits), () => false));
-    const partly = plan(credits, [stored(sent[0]), { ...stored(sent[1]), quantity: "1.000" }]);
+    const entered = { ...stored(sent[1]), quantity: "1.000" };
+    const partly = plan(credits, [stored(sent[0]), entered]);
     assert.deepEqual(statuses(partly), ["new", "existing", "invalid", "invalid"]);
-    assert.equal(partly[2].problem, handEntered("a purchase of 1.000 units of this fund"));
+    assert.deepEqual(partly.slice(2).map((t) => t.problem), [handEntered("a purchase of 1.000 units of this fund"), handEntered("a purchase of 1.000 units of this fund")]);
+    assert.equal(partly[1].handEntry, undefined);
+    assert.deepEqual(partly.slice(2).map((t) => t.handEntry.ids), [[entered.id], [entered.id]]);
     // Another day, account, fund or direction isn't a credit of this day.
     for (const change of [
       { date: "2024-02-17T00:00:00+00:00" },
@@ -1096,6 +1123,31 @@ describe("segregated portfolios", () => {
       { activityType: "SELL" },
     ]) {
       assert.deepEqual(statuses(plan(data, [{ ...stored(row), unitPrice: "10", ...change }])), ["new", "new", "new"], JSON.stringify(change));
+    }
+  });
+  test("the hand-entry reason counts the credits left out and the activities that may be them", () => {
+    const data = credited("3067.468", "0.013");
+    const [first, second] = segregation(importRows(plan(data), () => false));
+    const copy = (row) => ({ ...stored(row), unitPrice: "0", comment: "made-up copy" });
+    const one = plan(data, [copy(second)]);
+    const both = [copy(second), copy(first)];
+    const two = plan(data, both);
+    assert.deepEqual(statuses(two), ["new", "invalid", "invalid"]);
+    for (const t of two.slice(1)) {
+      assert.deepEqual(t.handEntry, {
+        kind: "credit",
+        ids: both.map((a) => a.id),
+        names: 'a purchase of 0.013 units of this fund at ₹0 a unit ("made-up copy") and a purchase of 3,067.468 units of this fund at ₹0 a unit ("made-up copy")',
+      });
+      assert.equal(t.problem, handEnteredReason(t.handEntry));
+    }
+    for (const [entry, count, expected] of [
+      [one[1].handEntry, 1, 'Wealthfolio has a purchase of 0.013 units of this fund at ₹0 a unit ("made-up copy") on this day, perhaps entered by hand, so this credit of segregated units isn\'t imported. If that\'s how this credit was entered, keep the activity, or delete it and any cash that came with it and read the statement again to import this credit from the statement.'],
+      [one[1].handEntry, 2, 'Wealthfolio has a purchase of 0.013 units of this fund at ₹0 a unit ("made-up copy") on this day, perhaps entered by hand, so these 2 credits of segregated units aren\'t imported. If that\'s how these credits were entered, keep the activity, or delete it and any cash that came with it and read the statement again to import these credits from the statement.'],
+      [two[1].handEntry, 1, 'Wealthfolio has a purchase of 0.013 units of this fund at ₹0 a unit ("made-up copy") and a purchase of 3,067.468 units of this fund at ₹0 a unit ("made-up copy") on this day, perhaps entered by hand, so this credit of segregated units isn\'t imported. If that\'s how this credit was entered, keep the activities, or delete them and any cash that came with them and read the statement again to import this credit from the statement.'],
+      [two[1].handEntry, 2, 'Wealthfolio has a purchase of 0.013 units of this fund at ₹0 a unit ("made-up copy") and a purchase of 3,067.468 units of this fund at ₹0 a unit ("made-up copy") on this day, perhaps entered by hand, so these 2 credits of segregated units aren\'t imported. If that\'s how these credits were entered, keep the activities, or delete them and any cash that came with them and read the statement again to import these credits from the statement.'],
+    ]) {
+      assert.equal(handEnteredReason(entry, count), expected);
     }
   });
 });

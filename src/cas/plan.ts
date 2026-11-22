@@ -59,6 +59,17 @@ export interface PlannedTransaction {
   earlier?: PlannedRow[];
   /** Why the transaction can't be imported, besides its rows' errors. */
   problem?: string;
+  /** What `problem` names, when it's that Wealthfolio may have the transaction entered by hand. */
+  handEntry?: HandEntry;
+}
+
+/** Wealthfolio activities that may be a gift or a segregated portfolio's credit entered by hand. */
+export interface HandEntry {
+  kind: "credit" | "gift";
+  /** The activities' IDs, in the order `names` names them. */
+  ids: string[];
+  /** The activities, as the note names them: "a purchase of 3,067.468 units of this fund". */
+  names: string;
 }
 
 const rowsOfTransaction = (t: MappedTransaction) =>
@@ -469,7 +480,10 @@ function planSome(transactions: MappedTransaction[], { existing, checked, funds,
       // with an ID from the add-on is an import of a statement row, not an entry by hand.
       const found = likely(r.activity, segregation).filter((a) => !recordOf(a) &&
         (available.get(activityIdentity(a, funds)!)?.includes(a.id) || day(a.date) !== day(r.activity.date)));
-      if (found.length) t.problem ??= handEntered(found, segregation);
+      if (found.length && !t.problem) {
+        t.handEntry = handEntry(found, segregation);
+        t.problem = handEnteredReason(t.handEntry);
+      }
     }
   }
   for (const t of planned) {
@@ -498,19 +512,29 @@ const PART_OF_GIFT =
   "Wealthfolio has one side of this gift from an earlier import but not the other, so neither is imported: Wealthfolio links the two only when they're imported together. To import the gift, delete that side in Wealthfolio and read the statement again.";
 const UNLINKED_GIFT =
   "Wealthfolio has both sides of this gift, but they aren't linked to each other, so the receiving account doesn't have the giver's costs and purchase dates. Link the two transfers in Wealthfolio, or delete both and read the statement again.";
-const handEntered = (found: ActivityDetails[], segregation: boolean) => {
-  const names = found.map((a) => {
+const handEntry = (found: ActivityDetails[], segregation: boolean): HandEntry => ({
+  kind: segregation ? "credit" : "gift",
+  ids: found.map((a) => a.id),
+  names: found.map((a) => {
     const type = { BUY: "purchase", SELL: "sale", TRANSFER_IN: "transfer in", TRANSFER_OUT: "transfer out" }[a.activityType as string];
     const what = segregation ? `${a.quantity ? `${quantity("unit", amount(a.quantity))} of ` : ""}this fund` : "these units";
     // A price per unit, with all its decimals, as the statement's NAVs are written.
     const price = a.unitPrice ? ` at ₹${grouped(amount(a.unitPrice))} a unit` : "";
     return `a ${type} of ${what}${price}${a.comment?.trim() ? ` ("${a.comment.trim()}")` : ""}`;
-  }).join(" and ");
-  const fix = "keep it, or delete it and any cash that came with it and read the statement again to import the statement's.";
-  return segregation
-    ? `Wealthfolio has ${names} on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's this credit, or the day's credits entered as one, ${fix}`
-    : `Wealthfolio has ${names} on this day, perhaps entered by hand, so this gift isn't imported. If that's this gift, ${fix}`;
-};
+  }).join(" and "),
+});
+
+/** Why `count` statement transactions are left out for the same activities, perhaps entered by hand. */
+export function handEnteredReason({ kind, ids, names }: HandEntry, count = 1) {
+  const subject = count > 1 ? `these ${kind}s` : `this ${kind}`;
+  const outcome = count > 1
+    ? `these ${count} ${kind === "credit" ? "credits of segregated units" : "gifts"} aren't imported`
+    : `this ${kind === "credit" ? "credit of segregated units" : "gift"} isn't imported`;
+  const action = ids.length > 1
+    ? "keep the activities, or delete them and any cash that came with them and read the statement again"
+    : "keep the activity, or delete it and any cash that came with it and read the statement again";
+  return `Wealthfolio has ${names} on this day, perhaps entered by hand, so ${outcome}. If that's how ${subject} ${count > 1 ? "were" : "was"} entered, ${action} to import ${subject} from the statement.`;
+}
 
 /** Form edits preserve CSV origin but can change its date; untouched imports keep their UTC day. */
 const giftDay = (a: ActivityDetails, timeZone: string) =>
