@@ -34,8 +34,8 @@ const script = bundle.output[0].code.replace(/<\/script/gi, "<\\/script");
 const hash = createHash("sha256").update(script).digest("base64");
 // The frame gets none of Wealthfolio's CSS but Tailwind's sr-only rule for status regions, as Wealthfolio
 // has it. Without it, the Review screen's status paragraph takes up a line above the controls, and
-// announce() fills it 60 ms after clearing it: in WebKit, that moved a pressed button down before its
-// release, so the click missed (#252). Other sr-only spans stay inline: positioned, they would be blocks,
+// announce() sets a 60 ms timer to refill it. In WebKit, the refill moved a pressed button down before
+// its release, so the click missed (#252). Other sr-only spans stay inline: positioned, they would be blocks,
 // and Playwright would put a space before them in accessible names.
 const statusCss = "[role=status].sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border-width:0}";
 const srcdoc = (head) => `<!doctype html>${head}<style>${statusCss}</style><script>${script}</script>`;
@@ -78,8 +78,8 @@ const pages = {
 // scroll events, changes to buttons' disabled and aria-busy attributes and changes to status regions'
 // text, at performance.now() times. "(disabled)" is the target's own flag. Pointer and mouse events give
 // the pointer's place in the frame. Pointer presses and releases, scrolls and status changes also give
-// the document's scrollY and height, which show whether the page scrolled or its content moved between
-// a press and its release. Playwright installs this before scripts in each new frame document.
+// the document's scrollY and height, to help explain why a release hit a different target.
+// Playwright installs this before scripts in each new frame document.
 // Rendering the add-on again keeps the document and the log.
 const watchInput = () => {
   if (window === window.top || window.inputLog) return;
@@ -272,7 +272,7 @@ const runBrowser = async (browser, engine) => {
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           // Wealthfolio's Select needs its host CSS, which this harness does not load.
           if (node.parentElement.closest('[data-slot="select-trigger"]')) continue;
-          // sr-only status text runs on one line, clipped to a pixel; a range's rects ignore the clipping.
+          // A range's rects ignore the clipping on sr-only status text.
           if (node.parentElement.closest("[role=status].sr-only")) continue;
           if (!node.nodeValue.trim()) continue;
           const range = document.createRange();
