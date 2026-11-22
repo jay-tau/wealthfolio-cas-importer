@@ -68,10 +68,13 @@ const pages = {
   "no-csp": page(srcdoc("")),
 };
 
-// For a failed step's dump (#252): logs, in the add-on's frame document, its last 200 input events
-// and changes to buttons' disabled and aria-busy attributes, at performance.now() times. "(disabled)"
-// is the target's own flag. Playwright installs this before scripts in each new frame document.
-// Rendering the add-on again keeps the document and the log.
+// For a failed step's dump (#252): logs, in the add-on's frame document, its last 200 input events,
+// scroll events, changes to buttons' disabled and aria-busy attributes and changes to status regions'
+// text, at performance.now() times. "(disabled)" is the target's own flag. Pointer and mouse events give
+// the pointer's place in the frame (`at x,y`); they and the other lines give the document's scrollY and
+// height, so a press and a release on different targets show whether the page scrolled or its content
+// moved between them. Playwright installs this before scripts in each new frame document. Rendering the
+// add-on again keeps the document and the log.
 const watchInput = () => {
   if (window === window.top || window.inputLog) return;
   const log = (window.inputLog = []);
@@ -80,14 +83,26 @@ const watchInput = () => {
     if (log.length > 200) log.shift();
   };
   const name = (t) => (t && t.nodeType === 1 ? `${t.tagName}${t.id ? "#" + t.id : ""}[${(t.getAttribute("aria-label") || t.textContent || "").trim().slice(0, 50)}]` : String(t));
+  const at = (e) => (e.clientY === undefined ? "" : ` at ${Math.round(e.clientX)},${Math.round(e.clientY)}`);
+  const page = () => `scrollY=${Math.round(scrollY)} height=${document.documentElement.scrollHeight}`;
   for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "keydown", "focusin"]) {
-    document.addEventListener(type, (e) => push(`${type} ${name(e.target)}${e.target?.disabled ? " (disabled)" : ""}`), true);
+    document.addEventListener(type, (e) => push(`${type} ${name(e.target)}${e.target?.disabled ? " (disabled)" : ""}${at(e)} ${page()}`), true);
   }
+  // Scroll events don't bubble, but reach the document's capture listeners, an inner scroller's included.
+  document.addEventListener("scroll", (e) => push(`scroll ${e.target === document ? "document" : name(e.target)} ${page()}`), { capture: true, passive: true });
   new MutationObserver((records) => {
+    const statuses = new Set();
     for (const r of records) {
-      if (r.target.tagName === "BUTTON") push(`attr ${r.attributeName}=${r.target.getAttribute(r.attributeName)} ${name(r.target)}`);
+      if (r.type === "attributes") {
+        if (r.target.tagName === "BUTTON") push(`attr ${r.attributeName}=${r.target.getAttribute(r.attributeName)} ${name(r.target)}`);
+        continue;
+      }
+      // A status region's text is its own child, so only the changed node and its parent are looked at.
+      const element = r.target.nodeType === 1 ? r.target : r.target.parentElement;
+      if (element?.getAttribute("role") === "status") statuses.add(element);
     }
-  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["disabled", "aria-busy"] });
+    for (const element of statuses) push(`status ${name(element)} ${page()}`);
+  }).observe(document, { subtree: true, attributes: true, attributeFilter: ["disabled", "aria-busy"], childList: true, characterData: true });
 };
 
 // Gives up on a diagnostic read after 10 s, as a stalled renderer may never answer (#246).
