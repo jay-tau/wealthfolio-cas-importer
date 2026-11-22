@@ -203,6 +203,13 @@ const keys0 = () => ({ fictiva: choices.folioKey(fixture.folios[0]), testbridge:
 /** The rare questions' open cards, and their answered lines. */
 const askCards = (run) => nodes(run.tree).filter((node) => node.type?.name === "AskCard").map((node) => node.props);
 const askAnswers = (run) => nodes(run.tree).filter((node) => node.type?.name === "AskAnswered").map((node) => node.props);
+/** The Change buttons under Not included, by their accessible names, with their clicks. */
+const notIncludedChanges = (run) => {
+  const part = nodes(run.tree).find((node) => node.type?.name === "NotIncludedDetailed");
+  return nodes(part.type(part.props)).filter((node) => node.props?.["aria-label"]?.startsWith("Change:") && node.props.onClick)
+    .map((node) => ({ name: node.props["aria-label"], click: node.props.onClick }));
+};
+
 /** The bank checks shown under the bank choice with this key. */
 const checksUnder = (run, key) => nodes(saveTo(run).checks(key)).filter((node) => node.type?.name === "BankCheck").map((node) => node.props);
 
@@ -313,7 +320,7 @@ for (const differentNames of [false, true]) test(`the same unbalanced fund in tw
   assert.deepEqual(askAnswers(run).map((a) => [a.text, a.name]), names.map((name) => [name, name]));
   // Answered differently, it says which folio's was skipped.
   assert.deepEqual(skippedHere(), [`Fictiva Liquid Fund, folio ${data.folios[1].folio}`]);
-  assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced.map((f) => f.label.replace(/^Fictiva Liquid Fund\b.*?, folio /, "folio ")), [`folio ${data.folios[1].folio}`]);
+  assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced.map((f) => f.label), [`Fictiva Liquid Fund, folio ${data.folios[1].folio}`]);
 });
 
 /** The made-up Liquid Fund alone, in its own folio and in folio 7712045, of the same fund house and PAN. */
@@ -344,10 +351,29 @@ for (const other of ["imported", "not imported"]) test(`a fund whose rows don't 
   assert.ok(footer(run).some((line) => line.includes(`${which} skipped, by your answer`)), footer(run).join(" | "));
   const [line, ...more] = find(run, "NotIncludedDetailed").unbalanced;
   assert.deepEqual(more, []);
-  assert.equal(line.name, which);
-  assert.equal(line.label.endsWith(`, folio ${unbalanced.folio}`), named);
+  assert.deepEqual([line.name, line.label], [which, which]);
   // Skipping it leaves out only that folio's rows: the other folio's, when imported, are still ready.
   assert.equal(find(run, "FundsReadyTable")?.rows.some((row) => row.name === "Fictiva Liquid Fund") ?? false, named);
+});
+
+test("Change beside a skipped fund whose rows don't add up names its fund and folio as its line does (#349)", async () => {
+  const { run, props, data } = setup({ entries: [], change: liquidInTwoFolios(true) });
+  const [unbalanced] = data.folios;
+  // Its listing's name isn't the statement's.
+  props.fundChoices[choices.fundKey(unbalanced.schemes[0])].fund.name = "Liquid Listing Fund";
+  await run.flush();
+  const which = `Liquid Listing Fund, folio ${unbalanced.folio}`;
+  const [card] = askCards(run);
+  assert.equal(card.main.name, `Skip this fund: ${which}`);
+  card.main.onClick();
+  await run.flush();
+  assert.deepEqual(find(run, "NotIncludedDetailed").unbalanced.map((f) => f.name), [which]);
+  assert.deepEqual(notIncludedChanges(run).map((c) => c.name), [`Change: ${which}, transactions don't add up`]);
+  const focused = changeUnbalanced(run);
+  await run.flush();
+  const [again] = askCards(run);
+  assert.equal(again.title, `Liquid Listing Fund's transactions in folio ${unbalanced.folio} don't add up`);
+  assert.deepEqual(focused, [again.headingId]);
 });
 
 test("a fund's question counts only the folios its units come from", async () => {
@@ -424,35 +450,38 @@ test("a fund whose rows don't add up, in a folio whose number another fund house
   assert.deepEqual(askAnswers(run), []);
 });
 
-test("two fund houses' folios with one number and one printed fund name each keep their own answer on rows that don't add up", async () => {
-  const { run, api, data } = setup({ entries: [], change(d) {
+for (const differentNames of [false, true]) test(`two fund houses' folios with one number each keep their own answer on rows that don't add up (different printed names ${differentNames})`, async () => {
+  const { run, api, data, props } = setup({ entries: [], change(d) {
     const [fictiva, testbridge] = d.folios;
     const liquid = fictiva.schemes.find((s) => s.scheme.includes("Liquid"));
     liquid.close = String(Number(liquid.close_calculated) + 1);
-    // Testbridge's fund is printed with Fictiva's fund's name, but it's another fund.
+    // Testbridge's fund is distinct, even if it's printed with Fictiva's fund's name.
     const twin = { ...structuredClone(liquid), isin: "INFZ91T01LQ2", rta_code: "TLQDG" };
+    if (differentNames) twin.scheme = twin.scheme.replace("Fictiva", "Testbridge");
     d.folios = [{ ...fictiva, schemes: [liquid] }, { ...testbridge, folio: fictiva.folio, schemes: [twin] }];
     return d;
   } });
   const checked = checkedSymbols(api);
-  await run.flush();
   const [liquid, twin] = data.folios.map((f) => f.schemes[0]);
-  assert.equal(liquid.scheme, twin.scheme);
+  assert.equal(liquid.scheme !== twin.scheme, differentNames);
   assert.notEqual(choices.fundKey(liquid), choices.fundKey(twin));
+  // The numbers come from the questions even when the printed names differ.
+  for (const scheme of [liquid, twin]) props.fundChoices[choices.fundKey(scheme)].fund.name = "Shared Listing Fund";
+  await run.flush();
   let cards = askCards(run);
   assert.equal(cards.length, 2);
   assert.equal(new Set(cards.map((c) => c.headingId)).size, 2);
   // The screen names both funds and folios alike, so their buttons are numbered.
-  assert.deepEqual(cards.map((c) => c.main.name), ["Skip this fund: Fictiva Liquid Fund, fund 1", "Skip this fund: Fictiva Liquid Fund, fund 2"]);
+  assert.deepEqual(cards.map((c) => c.main.name), ["Skip this fund: Shared Listing Fund, fund 1", "Skip this fund: Shared Listing Fund, fund 2"]);
   // Skipping Fictiva's leaves Testbridge's open.
   cards[0].main.onClick();
   await run.flush();
   cards = askCards(run);
   assert.equal(cards.length, 1);
   assert.equal(askAnswers(run).length, 1);
-  // Not included lists the one skipped, numbered as its fund is elsewhere.
-  const skippedLine = () => find(run, "NotIncludedDetailed").unbalanced.map((f) => f.label);
-  assert.deepEqual(skippedLine(), [`${liquid.scheme}, fund 1`]);
+  // Not included lists the one skipped, numbered as its question is.
+  const skippedChanges = () => notIncludedChanges(run).map((c) => c.name);
+  assert.deepEqual(skippedChanges(), ["Change: Shared Listing Fund, fund 1, transactions don't add up"]);
   // Importing Testbridge's with the difference imports its rows only.
   cards[0].other.onClick();
   await run.flush();
@@ -462,8 +491,8 @@ test("two fund houses' folios with one number and one printed fund name each kee
   const b = find(run, "TransactionsSummary").breakdown;
   // Its rows, their stamp duty with them.
   assert.deepEqual([b.unbalanced, b.skippedUnbalanced], [0, liquid.transactions.filter((t) => t.type !== "STAMP_DUTY_TAX").length]);
-  assert.deepEqual(skippedLine(), [`${liquid.scheme}, fund 1`]);
-  // And the other way round.
+  assert.deepEqual(skippedChanges(), ["Change: Shared Listing Fund, fund 1, transactions don't add up"]);
+  // And the other way round: the one skipped is the second question, so it keeps its number 2.
   for (const answer of askAnswers(run)) answer.onChange();
   await run.flush();
   cards = askCards(run);
@@ -472,7 +501,7 @@ test("two fund houses' folios with one number and one printed fund name each kee
   await run.flush();
   assert.ok(checked.at(-1).has(liquid.isin));
   assert.ok(!checked.at(-1).has(twin.isin));
-  assert.deepEqual(skippedLine(), [`${twin.scheme}, fund 2`]);
+  assert.deepEqual(skippedChanges(), ["Change: Shared Listing Fund, fund 2, transactions don't add up"]);
 });
 
 test("a failed plan recovers with its accepted units difference", async () => {
@@ -2655,14 +2684,12 @@ test("a confirmed fund waiting only for earlier purchases can be changed", async
 
 /** Clicks the Change beside a fund skipped because its rows don't add up under Not included, by its folio's text. */
 const changeUnbalanced = (run, match = /./) => {
-  const part = nodes(run.tree).find((node) => node.type?.name === "NotIncludedDetailed");
-  const change = nodes(part.type(part.props)).find((node) =>
-    node.props?.["aria-label"]?.endsWith("transactions don't add up") && match.test(node.props["aria-label"]) && node.props.onClick);
+  const change = notIncludedChanges(run).find(({ name }) => name.endsWith("transactions don't add up") && match.test(name));
   assert.ok(change);
   document.activeElement = document.body;
   const focused = [];
   document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
-  change.props.onClick();
+  change.click();
   return focused;
 };
 
@@ -2743,10 +2770,51 @@ test("a fund with nothing new still has Change on its line", async () => {
   assert.equal(textOf(find(run, "Footer").narrow.brief), footer(run)[0]);
   assert.deepEqual(find(run, "Footer").narrow.more.map(textOf), footer(run).slice(1));
   const change = nodes(run.tree).find((node) => node.props?.["aria-label"]?.endsWith("nothing new") && node.props.onClick);
-  assert.ok(change);
+  // Named as its line names the fund, not by the statement's name.
+  assert.equal(change.props["aria-label"], "Change: Fictiva Liquid Fund, nothing new");
   change.props.onClick();
   await run.flush();
   assert.ok(find(run, "QuestionCard"));
+});
+
+test("Nothing new's Change names the fund its line names, numbered when two funds read the same (#349)", async () => {
+  // Liquid and Balanced Advantage, with no transactions and the units Wealthfolio has, each confirmed
+  // as a listing with one name that isn't the statement's.
+  const review = async () => {
+    const context = setup({ entries: [], change(data) {
+      const funds = data.folios[0].schemes.filter((s) => /Liquid|Balanced/.test(s.scheme));
+      for (const s of funds) Object.assign(s, { transactions: [], open: "10", close: "10", close_calculated: "10" });
+      data.folios = [{ ...data.folios[0], schemes: funds }];
+      return data;
+    } });
+    const { props, data, activities, profiles } = context;
+    for (const scheme of data.folios[0].schemes) {
+      props.fundChoices[choices.fundKey(scheme)].fund.name = "Shared Listing Fund";
+      profiles[`asset-${scheme.isin}`] = { instrumentSymbol: scheme.isin, instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+      activities.push({
+        id: `held-${scheme.isin}`, accountId: "mf", activityType: "BUY", subtype: null, status: "POSTED", date: "2023-03-01T00:00:00Z", quantity: "10",
+        unitPrice: "50", amount: "500", fee: null, tax: null, currency: "INR", needsReview: false, comment: null, assetId: `asset-${scheme.isin}`,
+        assetSymbol: scheme.isin, sourceRecordId: null,
+      });
+    }
+    await context.run.flush();
+    return context;
+  };
+  const changes = (run) => nodes(run.tree).filter((node) => node.props?.["aria-label"]?.endsWith("nothing new") && node.props.onClick);
+  // Each opens its own fund in a fresh review.
+  for (const i of [0, 1]) {
+    const { run, data } = await review();
+    const buttons = changes(run);
+    assert.deepEqual(textOf(run.tree).match(/Nothing new for [^.]*\./g), ["Nothing new for Shared Listing Fund.", "Nothing new for Shared Listing Fund."]);
+    assert.deepEqual(buttons.map((node) => node.props["aria-label"]), [
+      "Change: Shared Listing Fund, fund 1, nothing new",
+      "Change: Shared Listing Fund, fund 2, nothing new",
+    ]);
+    buttons[i].props.onClick();
+    await run.flush();
+    assert.equal(find(run, "QuestionCard").item.key, choices.fundKey(data.folios[0].schemes[i]));
+    run.dispose();
+  }
 });
 
 test("Change on a Ready row answers no question, unless its fund was asked about in this review (#291)", async () => {
@@ -3274,6 +3342,39 @@ test("a statement whose only fund waits for earlier purchases has nothing ready,
   assert.deepEqual([b.total, b.earlier, b.toImport], [26, 26, 0]);
   assert.deepEqual(footer(run).slice(0, 1), ["Nothing is ready to import. See the transactions left out or waiting above."]);
   assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("Change beside a fund with rows left out names the fund its line names, numbered when two funds read the same (#349)", async () => {
+  // Liquid and Balanced Advantage, each with a purchase and its reversal, which are left out, and
+  // each confirmed as a listing with one name that isn't the statement's.
+  const review = async () => {
+    const context = setup({ entries: [], change(data) {
+      const funds = data.folios[0].schemes.filter((s) => /Liquid|Balanced/.test(s.scheme));
+      for (const fund of funds) {
+        const row = (date, type, amount, units) => ({ ...fund.transactions[0], date, type, amount, units, description: type, balance: null });
+        fund.transactions.push(row("2024-02-01", "PURCHASE", "1000.00", "0.400"), row("2024-02-03", "REVERSAL", "-1000.00", "-0.400"));
+      }
+      data.folios = [{ ...data.folios[0], schemes: funds }];
+      return data;
+    } });
+    for (const scheme of context.data.folios[0].schemes) context.props.fundChoices[choices.fundKey(scheme)].fund.name = "Shared Listing Fund";
+    await context.run.flush();
+    return context;
+  };
+  const changes = (run) => notIncludedChanges(run).filter((c) => c.name.endsWith(", not included"));
+  // Each opens its own fund's change in a fresh review.
+  for (const i of [0, 1]) {
+    const { run, data } = await review();
+    const keys = data.folios[0].schemes.map((s) => choices.fundKey(s));
+    const buttons = changes(run);
+    assert.deepEqual(find(run, "NotIncludedDetailed").leftOut.map((f) => [f.key, f.name]), keys.map((key) => [key, "Shared Listing Fund"]));
+    assert.deepEqual(buttons.map((c) => c.name), ["Change: Shared Listing Fund, fund 1, not included", "Change: Shared Listing Fund, fund 2, not included"]);
+    buttons[i].click();
+    await run.flush();
+    const part = find(run, "NotIncludedDetailed");
+    assert.deepEqual(keys.map((k) => !!part.changePanel(k)), keys.map((k) => k === keys[i]));
+    run.dispose();
+  }
 });
 
 test("a repeated statement with a reversed purchase left out isn't called nothing new", async () => {

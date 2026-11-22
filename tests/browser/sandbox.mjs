@@ -1373,7 +1373,8 @@ const runBrowser = async (browser, engine) => {
     // A line for each fund with nothing new, with Change.
     const nothingNewLines = async () => (await frame.getByText(/^Nothing new for /).allTextContents()).map((text) => text.replace(/\s*Change$/, ""));
     assert.deepEqual(await nothingNewLines(), ["Fund INFZ90K01LQ6", "Fund INFZ90K01BA1", "Fund 0P0000TBCB", "Fund 0P0000TONF"].map((name) => `Nothing new for ${name}.`));
-    await frame.getByRole("button", { name: `Change: ${detailed.liquid}, nothing new`, exact: true }).waitFor();
+    // Its Change names the fund as its line does, by its listing's name (#349).
+    await frame.getByRole("button", { name: "Change: Fund INFZ90K01LQ6, nothing new", exact: true }).waitFor();
     assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
     await dFooter.getByText("Nothing is ready to import. See the transactions left out or waiting above.", { exact: true }).waitFor();
     const finished = frame.getByText("Finished: nothing from made-up-cas.pdf was imported.", { exact: true });
@@ -2392,7 +2393,7 @@ const runBrowser = async (browser, engine) => {
     await skipFlexi.click();
     await readyFund("Fund INFZ90K01FC8").waitFor({ state: "detached" });
     await notIncluded.getByText(/^Skipped because their transactions don't add up \(1\)/).waitFor();
-    const gapChange = notIncluded.getByRole("button", { name: /^Change: Fictiva Flexi Cap Fund - Direct Plan - Growth, transactions don't add up$/ });
+    const gapChange = notIncluded.getByRole("button", { name: "Change: Fund INFZ90K01FC8, transactions don't add up", exact: true });
     // Its Change there opens the same question again, the fund still confirmed (#282), and it's skipped again.
     await gapChange.focus();
     await tab.keyboard.press("Enter");

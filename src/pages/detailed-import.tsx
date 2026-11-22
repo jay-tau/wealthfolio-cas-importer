@@ -904,6 +904,7 @@ export function DetailedImport({
     sentOutcomes.filter((o) => row.group.schemes.some((s) => s.scheme === o.scheme)).map((o) => lineOf(o.folio, o.scheme));
   const nothingNew = groups.filter((g) => g.sent === 0 && g.other === 0 && !g.schemes.some(({ folio, scheme }) => blockedSchemes.has(schemeKey(folio, scheme.scheme))));
   const nothingNewKeys = [...new Set(nothingNew.flatMap((g) => g.schemes.map((s) => fundKey(s.scheme))))].filter((key) => !readyKeys.has(key));
+  const nothingNewFunds = nothingNewKeys.map((key) => ({ key, name: fundNameOf(key) }));
   const autoCount = new Set(rows.filter((r) => r.by === "auto").map((r) => r.item.key)).size;
 
   // What this import leaves out.
@@ -998,14 +999,12 @@ export function DetailedImport({
   const notImported = data.folios.filter((f) => folioAccount(f) === LEFT_OUT);
   const leftOutFunds: LeftOutFund[] = (() => {
     if (!counts) return [];
-    const byFund = new Map<string, LeftOutFund & { reasons: Map<string, string[]> }>();
+    const byFund = new Map<string, Omit<LeftOutFund, "label" | "lines"> & { reasons: Map<string, string[]> }>();
     for (const { row, reason } of counts.leftOut) {
       const key = fundKey(row.scheme);
       const fund = byFund.get(key) ?? {
         key,
-        name: shownName(itemOf.get(key)!, fundOf(key)),
-        label: labelOf.get(key)!,
-        lines: [],
+        name: fundNameOf(key),
         canChange: !!fundOf(key),
         reasons: new Map(),
       };
@@ -1013,8 +1012,10 @@ export function DetailedImport({
       fund.reasons.set(reason, [...(fund.reasons.get(reason) ?? []), when]);
       byFund.set(key, fund);
     }
-    return [...byFund.values()].map(({ reasons, ...fund }) => ({
+    const funds = [...byFund.values()];
+    return funds.map(({ reasons, ...fund }, i) => ({
       ...fund,
+      label: `${fund.name.trim()}${nameNumber(funds, i, "fund")}`,
       lines: [...reasons].map(([reason, whens]) => ({ when: list(whens), reason })),
     }));
   })();
@@ -1088,13 +1089,6 @@ export function DetailedImport({
         return next;
       }),
     };
-  });
-  // Under Not included, one line for each question skipped, its folio named where the fund's in two,
-  // as its card does. A line needs its fund, to name it.
-  const skippedUnbalanced = unbalancedAsks.flatMap(({ answer, fundKey: key, folio, id }) => {
-    if (answer !== true || !key) return [];
-    const inFolio = folio ? `, folio ${folio}` : "";
-    return [{ id, name: `${fundNameOf(key)}${inFolio}`, label: `${labelOf.get(key)!}${inFolio}` }];
   });
   const offered = (shown?.plan ?? []).filter(canImportAnyway);
   const amountOf = (row: CasTransaction) => (row.amount ? rupees(format(abs(dec(row.amount)))) : undefined);
@@ -1242,6 +1236,13 @@ export function DetailedImport({
   const targets0 = asks.map((a) => ({ name: a.target }));
   asks.forEach((a, i) => {
     a.target += nameNumber(targets0, i, a.id.startsWith("duplicate|") ? "transaction" : "fund");
+  });
+  // Under Not included, one line for each question skipped, its folio named where the fund's in two,
+  // as its card does. A line needs its fund, to name it. Its Change is named as its question's
+  // buttons are, so it keeps its question's number when the other question is answered otherwise.
+  const skippedUnbalanced = unbalancedAsks.flatMap(({ answer, fundKey: key, folio, id, target }) => {
+    if (answer !== true || !key) return [];
+    return [{ id, name: `${fundNameOf(key)}${folio ? `, folio ${folio}` : ""}`, label: target }];
   });
   // Change answer's names, numbered when two answered lines read the same.
   const answerNameOf = new Map(answerNames(asks.map((a) => a.answer === undefined ? undefined : a.words.receipt(a.answer))).map((n, i) => [asks[i].id, n]));
@@ -2582,9 +2583,12 @@ export function DetailedImport({
               handlers={handlers}
             />
           )}
-          {nothingNewKeys.map((key) => (
-            <p key={key} className="text-muted-foreground text-sm">
-              Nothing new for {fundNameOf(key)}. <LinkButton type="button" aria-label={`Change: ${labelOf.get(key)}, nothing new`} onClick={() => reopen(key)}>Change</LinkButton>
+          {nothingNewFunds.map((fund, i) => (
+            <p key={fund.key} className="text-muted-foreground text-sm">
+              Nothing new for {fund.name}.{" "}
+              <LinkButton type="button" aria-label={`Change: ${fund.name.trim()}${nameNumber(nothingNewFunds, i, "fund")}, nothing new`} onClick={() => reopen(fund.key)}>
+                Change
+              </LinkButton>
             </p>
           ))}
         </section>
