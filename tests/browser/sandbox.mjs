@@ -226,7 +226,10 @@ const runBrowser = async (browser, engine) => {
     console.log(engine, result);
     assert.equal(result.wrongPassword, "password");
     assert.deepEqual(data, expected);
-    const frame = tab.frameLocator("iframe");
+    // The add-on's frame. Its document stays until the run without the CSP. Locators from
+    // tab.frameLocator("iframe") look for the iframe again on every call, which took about 115 ms a call in
+    // Chromium and 60 ms in Firefox, against under 2 ms from the frame itself (#346).
+    const frame = tab.frames()[1];
     const host = () => tab.frames()[1].evaluate(() => ({ secrets: [...window.host.secrets], storage: [...window.host.storage] }));
     const pause = (name) => tab.frames()[1].evaluate((name) => { window.host.pause = name; }, name);
     const waiting = () => tab.frames()[1].waitForFunction(() => window.host.resume);
@@ -917,7 +920,8 @@ const runBrowser = async (browser, engine) => {
     await revisit();
     await tab.frames()[1].waitForFunction((n) => window.host.providerChecks > n, checks);
     assert.equal(await providerChecks(), checks + 1, "opened again, the page checks again");
-    assert.equal(await amfiOutcome.textContent(), "");
+    // The check starts within revisit(), but the outcome clears in a render after it (#346).
+    await amfiOutcome.waitForFunction((outcome) => outcome.textContent === "");
     assert.equal(await amfiBanner.count(), 0);
     // When the window gets the focus while AMFI isn't on, the add-on checks again by itself, and says
     // nothing when it's still off.
@@ -2589,6 +2593,14 @@ const runBrowser = async (browser, engine) => {
         throw error;
       }
     };
+    // Hold the new plan until the page drops the previous plan's output.
+    const revisitAndClear = async (previous) => {
+      await pause("holdings");
+      await revisit();
+      await waiting();
+      await previous.waitFor({ state: "detached" });
+      await resume();
+    };
     // A stalled page can leave a bare call log (#246), so check response times first.
     const settleDetails = async () => {
       const timed = (evaluate) => {
@@ -3245,8 +3257,7 @@ const runBrowser = async (browser, engine) => {
     await liquidReady.getByText(priced, { exact: true }).waitFor();
     await hosted(() => { window.host.pricingModes.INFZ90K01LQ6 = "MARKET"; });
     await revisit();
-    await settled();
-    await liquidReady.getByText(priced, { exact: true }).waitFor({ state: "detached" });
+    await liquidReady.filter({ hasNot: frame.getByText(priced, { exact: true }) }).waitFor();
     await frame.getByText("Skipped (1)", { exact: true }).waitFor();
     await frame.getByRole("button", { name: "Change: PLACEHOLDER PHARMA LIMITED, skipped", exact: true }).waitFor();
     await frame.getByText("Testbridge Corporate Bond Fund - Regular Plan - IDCW Payout. Their account in “Save to” is set to Don't save.", { exact: false }).waitFor();
@@ -3783,7 +3794,8 @@ const runBrowser = async (browser, engine) => {
     await why.click();
     await sold.getByText(/^A statement can leave out a fund you still hold, for example one that covers only some fund houses\. Set it to zero only if you no longer own any of its units/).waitFor();
     const powerReady = ready("FICTIVA POWER AND LIGHT LIMITED");
-    await powerReady.getByText(/^Purchase cost ₹1,85,175, from your earlier holdings · /).waitFor();
+    const earlierPowerCost = powerReady.getByText(/^Purchase cost ₹1,85,175, from your earlier holdings · /);
+    await earlierPowerCost.waitFor();
     assert.equal(await powerReady.count(), 1);
     assert.equal(await saveHoldings.isDisabled(), true);
     // Both accounts have a snapshot on this date; each answer names its account.
@@ -3828,10 +3840,9 @@ const runBrowser = async (browser, engine) => {
       window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90C01021";
       window.host.assets["asset-INEZ90A01017"].instrumentSymbol = null;
     });
-    await revisit();
-    await settled();
-    await ready("FICTIVA POWER AND LIGHT LIMITED").getByText(/^Purchase cost ₹1,85,175, from your earlier holdings · /).waitFor();
-    assert.equal(await ready("FICTIVA POWER AND LIGHT LIMITED").count(), 1);
+    await revisitAndClear(earlierPowerCost);
+    await earlierPowerCost.waitFor();
+    assert.equal(await powerReady.count(), 1);
     await hosted((choice) => {
       window.host.assets["asset-INEZ90A01017"].displayCode = "INEZ90A01017";
       delete window.host.assets["asset-INEZ90A01017"].instrumentSymbol;
@@ -3931,7 +3942,9 @@ const runBrowser = async (browser, engine) => {
     await sharesRow.getByText(priced, { exact: true }).waitFor();
     // A statement older than the account's latest snapshot saves history: the review and the footer say so.
     const laterNote = "This saves holdings history for 31 Mar 2025. The current holdings in Demat still come from its snapshot of 30 Apr 2025.";
-    await frame.getByRole("heading", { name: /^Ready to save/ }).locator("xpath=..").getByText(laterNote, { exact: true }).waitFor();
+    const readySection = frame.getByRole("region", { name: /^Ready to save/ });
+    const laterWarning = frame.getByText(laterNote, { exact: true });
+    await readySection.locator(laterWarning).waitFor();
     await footer.getByText(laterNote, { exact: true }).waitFor();
     // In a narrow frame the warning folds behind Details, which counts it (#238).
     await narrowBar(footer, saveHoldings, {
@@ -3946,15 +3959,14 @@ const runBrowser = async (browser, engine) => {
     const laterSnapshot = await snapshot("holdings-1", "2025-04-30");
     await hosted(() => { delete window.host.snapshots["holdings-1"]["2025-04-30"]; });
     await revisit();
-    await settled();
-    await sharesRow.getByText(priced, { exact: true }).waitFor();
+    await readySection.filter({ hasNot: laterWarning }).locator(sharesRow).getByText(priced, { exact: true }).waitFor();
     // A live mode change overrides the mode the search result supplied earlier.
     await hosted((later) => {
       window.host.snapshots["holdings-1"]["2025-04-30"] = later;
       window.host.pricingModes.INEZ90B01015 = "MARKET";
     }, laterSnapshot);
     await revisit();
-    await settled();
+    await readySection.locator(laterWarning).waitFor();
     await sharesRow.getByText(priced, { exact: true }).waitFor({ state: "hidden" });
     await setCost(sharesRow, "1000");
     await replaceBoth();
@@ -4108,12 +4120,10 @@ const runBrowser = async (browser, engine) => {
     });
     // A failed lookup cannot treat an unheld MARKET asset as a new manual-priced one. Opening the page
     // again reads Wealthfolio again.
-    // The bar says the plan couldn't be worked out, with the add-on's own reason when it has one.
-    const cantWorkOut = (why) => ({ waitFor: async () => {
-      await footer.getByText("We couldn't work out what will be saved. Nothing was saved.", { exact: true }).waitFor();
-      if (why) await footer.getByText(why).waitFor();
-    } });
-    const unpriced = /^Couldn't check how .+ is priced in Wealthfolio, which saving needs to keep its prices\.$/;
+    const priceError = frame.getByText(/^Couldn't check how .+ is priced in Wealthfolio, which saving needs to keep its prices\.$/);
+    const cantWorkOut = (withPriceReason = true) => footer
+      .filter(withPriceReason ? { has: priceError } : { hasNot: priceError })
+      .getByText("We couldn't work out what will be saved. Nothing was saved.", { exact: true });
     for (const failure of ["search", "profile"]) {
       await hosted((failure) => {
         window.host.failSearchQueries = failure === "search" ? ["NPS-TEST-E-TIER-I"] : [];
@@ -4129,12 +4139,10 @@ const runBrowser = async (browser, engine) => {
         // The bar still says the same about the search's failure until the read that opening the page
         // again starts fails on the profile itself and the add-on shows that (#346).
         const failures = await hosted(() => window.host.getProfileFailures);
-        await revisit();
-        await tab.frames()[1].waitForFunction((n) => window.host.getProfileFailures > n, failures);
-        await settled();
-        await painted();
+        await revisitAndClear(cantWorkOut());
+        await frame.waitForFunction((n) => window.host.getProfileFailures > n, failures);
       }
-      await cantWorkOut(unpriced).waitFor();
+      await cantWorkOut().waitFor();
       assert.equal(await saveHoldings.isDisabled(), true);
       assert.equal(await hosted(() => window.host.saves.length), saves);
       assert.equal(await hosted(() => window.host.pricingModes["NPS-TEST-E-TIER-I"]), "MARKET");
@@ -4188,7 +4196,7 @@ const runBrowser = async (browser, engine) => {
       const saves = await hosted(() => window.host.saves.length);
       await revisit();
       // The other account's holding can't be matched without its profile, so that stops it first.
-      await cantWorkOut(failure === "profile" ? undefined : unpriced).waitFor();
+      await cantWorkOut(failure !== "profile").waitFor();
       assert.equal(await saveHoldings.isDisabled(), true);
       assert.equal(await hosted(() => window.host.saves.length), saves);
       assert.equal(await hosted(() => window.host.quotes["pension-created-007"][0].notes), "Keep the other account's quote notes");
@@ -4227,7 +4235,7 @@ const runBrowser = async (browser, engine) => {
       window.host.failGetProfileIds = ["market-profile-011"];
     });
     await revisit();
-    await cantWorkOut(unpriced).waitFor();
+    await cantWorkOut().waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
     await hosted(() => { window.host.failGetProfileIds = []; });
     await revisit();
@@ -4986,7 +4994,7 @@ const runBrowser = async (browser, engine) => {
     }];
     await hosted(([code, quotes]) => { window.host.quotes[`asset-${code}`] = quotes; }, [summaryAmfi.symbol, liquidQuotes]);
     await revisit();
-    await settled();
+    await frame.getByText("Cash carried over from the snapshot of 31 Mar 2025: INR 25.", { exact: true }).waitFor();
     await sameDay("Fund folios").dispatchEvent("click");
     await zeroNotListed();
     await saveHoldings.click();
