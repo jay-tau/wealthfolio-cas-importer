@@ -32,7 +32,14 @@ const [bundle] = await build({
 });
 const script = bundle.output[0].code.replace(/<\/script/gi, "<\\/script");
 const hash = createHash("sha256").update(script).digest("base64");
-const srcdoc = (head) => `<!doctype html>${head}<script>${script}</script>`;
+// The frame loads none of Wealthfolio's CSS but this: Tailwind's sr-only rule, as Wealthfolio's CSS has it,
+// for status regions only. Without it, a status region takes up a line above the controls the test
+// clicks, and the Review screen's announce() refills it 60 ms after clearing it. In WebKit that moved
+// them down between a click's press and release, so the release missed the button (#252). Other
+// sr-only text stays in the page: positioned, a span becomes a block, and Playwright would put a space
+// before it in accessible names.
+const statusCss = "[role=status].sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border-width:0}";
+const srcdoc = (head) => `<!doctype html>${head}<style>${statusCss}</style><script>${script}</script>`;
 const { output } = await build({
   configFile: false,
   logLevel: "silent",
@@ -280,6 +287,8 @@ const runBrowser = async (browser, engine) => {
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
           // Wealthfolio's Select needs its host CSS, which this harness does not load.
           if (node.parentElement.closest('[data-slot="select-trigger"]')) continue;
+          // A hidden status region's text is on one line, clipped to a pixel, as in Wealthfolio.
+          if (node.parentElement.closest("[role=status].sr-only")) continue;
           if (!node.nodeValue.trim()) continue;
           const range = document.createRange();
           range.selectNodeContents(node);
