@@ -84,7 +84,13 @@ jobs:
             exit 1
           fi
 
+  # A job per browser, run side by side. One failing doesn't cancel the others, and CI fails if any
+  # of them does.
   browser:
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     # Playwright's image has Node 24, the browsers and the Ubuntu packages they need; downloading
@@ -104,4 +110,4 @@ jobs:
           path: .cache/runtime
           key: runtime-${{ hashFiles('pnpm-lock.yaml', 'runtime.json', 'runtime-requirements.txt') }}
       - run: pnpm runtime
-      - run: pnpm test:browser chromium firefox webkit
+      - run: pnpm test:browser ${{ matrix.browser }}

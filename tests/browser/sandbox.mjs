@@ -2,7 +2,8 @@
 // Wealthfolio's add-on CSP, starting its classic Worker from a blob URL. Then parses again
 // without the CSP.
 // Usage: pnpm runtime && node tests/browser/sandbox.mjs [chromium] [firefox] [webkit]
-// Name the browsers to run (default `chromium firefox`; CI runs `chromium firefox webkit`).
+// Name the browsers to run (default `chromium firefox`; CI runs `chromium`, `firefox` and `webkit`,
+// each in a job of its own).
 // Needs Playwright's browsers (`pnpm exec playwright-core install chromium firefox`, and `webkit`
 // to run WebKit).
 import assert from "node:assert/strict";
@@ -139,14 +140,46 @@ const reportState = async (tab, url, errors) => {
   console.log("  State (#252):", state);
 };
 
+// How long each part of a browser's run takes (#346), printed when the run ends. `part()` starts a
+// part, named after the comment under the call, that ends where the next one starts. `timed` adds up
+// a check's time over all its calls, the checks it calls included.
+const source = (await readFile(new URL(import.meta.url), "utf8")).split("\n");
+let parts;
+let checkTimes;
+const part = (name) => {
+  if (name === undefined) {
+    const caller = new Error().stack?.split("\n")[2];
+    const line = Number(caller?.match(/:(\d+):\d+\)?$/)?.[1]);
+    const comment = source[line]?.trim().match(/^\/\/ ?(.*)$/)?.[1];
+    name = comment ? `line ${line + 1}: ${comment.slice(0, 70)}` : "Unnamed part";
+  }
+  parts.push([name, performance.now()]);
+};
+const timed = (name, check) => async (...args) => {
+  const start = performance.now();
+  try {
+    return await check(...args);
+  } finally {
+    const [total, calls] = checkTimes.get(name) ?? [0, 0];
+    checkTimes.set(name, [total + performance.now() - start, calls + 1]);
+  }
+};
+const seconds = (ms) => `${(ms / 1000).toFixed(1).padStart(7)} s`;
+const reportTimes = (engine) => {
+  const end = performance.now();
+  const lines = [`${engine}: ${seconds(end - parts[0][1]).trim()} in all (#346)`];
+  parts.forEach(([name, start], i) => lines.push(`  ${seconds((parts[i + 1]?.[1] ?? end) - start)}  ${name}`));
+  for (const [name, [total, calls]] of checkTimes) lines.push(`  ${seconds(total)}  in ${name}, ${calls} calls`);
+  // Wait for the report to reach the pipe before process.exit().
+  return new Promise((resolve) => process.stdout.write(`${lines.join("\n")}\n`, resolve));
+};
+
 const expected = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
 const engines = { chromium, firefox, webkit };
 const sandboxUrl = "http://sandbox.test/";
 const noCspUrl = `${sandboxUrl}no-csp`;
 let failed = false;
-for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium", "firefox"]) {
-  const browser = await engines[name].launch();
-  const engine = `${name} ${browser.version()}`;
+const runBrowser = async (browser, engine) => {
   const tab = await browser.newPage();
   tab.setDefaultTimeout(30_000);
   await tab.addInitScript(watchInput);
@@ -162,6 +195,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     return route.fulfill({ body: await readFile(path) });
   });
   try {
+    part("The parser's first checks");
     await tab.goto(sandboxUrl);
     await tab.waitForFunction(() => window.result, null, { timeout: 180_000 });
     const { data, ...result } = await tab.evaluate(() => window.result);
@@ -207,7 +241,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
     };
     // A clipped parent can hide overflow without changing the document's scroll width.
-    const textFits = async (locator, what) => {
+    const textFits = timed("textFits", async (locator, what) => {
       const { width, rects } = await locator.evaluate((element) => {
         const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
         const rects = [];
@@ -224,8 +258,8 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       assert.ok(rects.length, `${what}: text is rendered`);
       const outside = rects.filter((r) => r.left < -1 || r.right > width + 1);
       assert.deepEqual(outside, [], `${what}: text stays inside ${width} px`);
-    };
-    const reviewFits = async (what) => {
+    });
+    const reviewFits = timed("reviewFits", async (what) => {
       const review = frame.locator("fieldset").first();
       await textFits(review, what);
       const { width, outside } = await review.evaluate((element) => {
@@ -237,12 +271,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         return { width, outside };
       });
       assert.deepEqual(outside, [], `${what}: add-on elements stay inside ${width} px`);
-    };
+    });
     // Up to 1,024 px wide, Wealthfolio's CSS makes every .flex and .grid scroll up and down when something
     // in it, such as a checkbox's touch area, reaches past its top or bottom. With that CSS loaded for
     // this check alone, at 1,024 px and at a phone's 360 by default, nothing scrolls but what's meant
     // to: a box with an overflow class of its own. The frame then gets its size back.
-    const scrollsOnlyWhereMeant = async (what, widths = [1024, 360]) => {
+    const scrollsOnlyWhereMeant = timed("scrollsOnlyWhereMeant", async (what, widths = [1024, 360]) => {
       const before = await tab.evaluate(() => document.querySelector("iframe").getAttribute("style"));
       try {
         for (const width of widths) {
@@ -283,7 +317,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         }, before);
         await tab.frames()[1].evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       }
-    };
+    });
     // Below 1,024 px Wealthfolio's Button is at least 44 px tall, link-styled ones too. With its CSS loaded
     // for this check alone, at a phone's 360 px, where the ready lists are stacked, and at 800 px by default,
     // each link-styled button showing in a line of text is no taller than its lines of text, so it keeps
@@ -292,7 +326,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // `includes`: links that must be among those measured at some width, by their text. Then the frame gets
     // its size back.
     const ALONE = /^(Use another file|Details( · \d+ warnings?)?|Hide details|See every transaction|See the holdings in .+ after saving|Save part of it to another account|Why\?|Why am I asked\?|Show this statement's holdings|Use your saved password|Forget saved password)$/;
-    const linksKeepTheirLine = async (what, includes, widths = [360, 800]) => {
+    const linksKeepTheirLine = timed("linksKeepTheirLine", async (what, includes, widths = [360, 800]) => {
       const inFrame = tab.frames()[1];
       const before = await tab.evaluate(() => document.querySelector("iframe").getAttribute("style"));
       const touch = browser.browserType().name() === "chromium" ? await tab.context().newCDPSession(tab) : null;
@@ -350,12 +384,12 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         }, before);
         await inFrame.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       }
-    };
+    });
     // Below Tailwind's `sm` width the bar keeps its brief line and its buttons, with Details at the end of
     // their row saying how many warnings it folds, and folds the rest (#238). Details unfolds it above
     // the buttons and Hide details folds it again, the focus staying on the toggle; the frame's scroll
     // padding follows the bar's height each way (WCAG 2.4.11). The frame is left at `width`, 900 px tall.
-    const narrowBar = async (bar, button, { width, brief, folded, warnings }) => {
+    const narrowBar = timed("narrowBar", async (bar, button, { width, brief, folded, warnings }) => {
       await tab.setViewportSize({ width: 1280, height: 1000 });
       await tab.evaluate((width) => {
         Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
@@ -466,7 +500,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await tab.frames()[1].evaluate(() => document.getElementById("narrow-bar-css")?.remove());
         await bar.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
       }
-    };
+    });
     // The same rule cuts what reaches past a .flex's or .grid's sides, and past its top and bottom where
     // it scrolls: a control's focus ring, 4 px outside it, and a checkbox's or radio's touch area, with
     // negative insets of 12 px sideways and 8 px vertically. With that CSS loaded for this check alone,
@@ -477,7 +511,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // shows may reach past the page's sides, and no text past the row that holds it, long unbroken text
     // included. Then the frame gets its size, scroll and focus back. Returns the controls Tab reached
     // in each pass.
-    const ringsWhole = async (what, { widths = [744, 1024, 1100], height = 900 } = {}) => {
+    const ringsWhole = timed("ringsWhole", async (what, { widths = [744, 1024, 1100], height = 900 } = {}) => {
       const passes = [
         ...widths.flatMap((width) => ["light", "dark"].map((theme) => ({ width, theme, rule: "3.13.0" }))),
         { width: widths[0], theme: "light", rule: "main" },
@@ -650,7 +684,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       }
       assert.deepEqual(cuts, [], `${what}: the page clips both ways and every focus ring and touch area is whole`);
       return reaches;
-    };
+    });
     // A click outside the add-on while the page is locked, such as on Wealthfolio's own menu, keeps
     // the focus there once the page is unlocked, as it would on Wealthfolio's own pages.
     const clickOutside = async () => {
@@ -672,6 +706,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Shows the same mounted page again, as when it's opened again in Wealthfolio.
     const revisit = () => hosted(() => window.host.revisit());
     const providerChecks = () => hosted(() => window.host.providerChecks);
+    part();
     // A slow secret load cannot override an editable Remember opt-out.
     await waiting();
     assert.equal(await remember.getAttribute("aria-checked"), "false");
@@ -777,6 +812,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.locator(`#${hint}`).textContent(), "Leave it empty for a statement without a password.");
     assert.equal(await frame.getByRole("button", { name: "Read statement", exact: true }).isDisabled(), true);
 
+    part();
     // AMFI is off, as in a new profile. Before a statement is read, one banner at the top of the page
     // asks to add it.
     await revisit();
@@ -939,6 +975,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("heading", { name: "Transactions, 1 Apr 2023 to 31 Mar 2025", exact: true }).waitFor({ timeout: 180_000 });
     assert.deepEqual((await host()).secrets, [["statement-password", "ABCDE1234F"]]);
 
+    part();
     // A detailed statement's transactions go to accounts that track transactions, on one Review
     // screen: where they go, what needs an answer, what will be imported and what won't, and one button.
     // The funds on the made-up detailed statement that aren't closed, as it prints them.
@@ -964,15 +1001,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       for (const [key, id] of choices) window.host.storage.set(key, id);
     }, choices);
     const restoreChoices = (saved) => hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, saved);
+    // Lets React render what a click or a host change started.
+    const painted = () => hosted(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     // The window is taller than the frame, so a select's list opened near the frame's bottom stays in view.
+    // Tables become stacked lists on a media query's change event, at the frame's next rendering update:
+    // the frame then renders at its new width before anything is measured (#346).
     const sizeFrame = async (width) => {
       await tab.setViewportSize({ width: 1280, height: 1000 });
       await tab.evaluate((width) => {
         Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
       }, width);
+      await painted();
     };
-    // Lets React render what a click or a host change started.
-    const painted = () => hosted(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     // Waits until each fund is looked up and what will be imported is worked out.
     const dSettled = async () => {
       await painted();
@@ -1108,6 +1148,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await scrollsOnlyWhereMeant("A detailed statement's questions");
     await ringsWhole("A detailed statement's questions");
 
+    part();
     // The heading says which transactions, from which statement and file. While a statement is
     // reviewed, its file form and the page's AMFI banner make way for it.
     await frame.getByText(`CAMS statement · ${investor} · made-up-cas.pdf`, { exact: true }).waitFor();
@@ -1129,6 +1170,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Nothing is remembered until the import.
     assert.deepEqual((await host()).storage, []);
 
+    part();
     // The PAN's box offers only active, unarchived accounts that track transactions, which in
     // Wealthfolio include NOT_SET, a new account, numbered past the Mutual funds Wealthfolio has, or
     // not importing them. With accounts that fit, the new one isn't preselected.
@@ -1147,6 +1189,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.locator(`[id="${bankHint}"]`).textContent(), "Purchases transfer from this account; sales and cash dividends transfer back to it.");
     await frame.getByText("Used again for your next statement.", { exact: true }).waitFor();
 
+    part();
     // Each fund's question asks which fund it is. Answering one moves the focus to the next open
     // question below it, past any left open above; with none left below, to the first one above; and
     // after the last answer, to the footer's summary.
@@ -1213,6 +1256,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.ok(!detailedSearches.some((query) => query.includes(" - ")), "full scheme names are never searched");
     assert.deepEqual((await host()).storage, [], "still nothing remembered");
 
+    part();
     // Ready to import: each fund with new transactions, its price source and Change, its new
     // transactions and its units after the import.
     await frame.getByRole("heading", { name: "Ready to import (4)", exact: true }).waitFor();
@@ -1252,6 +1296,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     ]);
     assert.equal(await everyTable.getByRole("checkbox").count(), 0, "read-only");
 
+    part();
     // An import Wealthfolio refuses outright keeps the review as it was, says so in plain words, with
     // Try again, and takes the focus there.
     await hosted(() => { window.host.failImport = true; });
@@ -1292,6 +1337,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(firstChoices[panKey], "account-1");
     const allImported = await hosted(() => window.host.activities);
 
+    part();
     // Read again, everything is in Wealthfolio: nothing is new, and Finish leaves the review.
     await readStatement();
     await frame.getByText("Chosen last time.", { exact: true }).waitFor();
@@ -1335,6 +1381,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await notCas.waitFor({ timeout: 180_000 });
     assert.equal(await finished.count(), 0, "a file that isn't a CAS");
 
+    part();
     // Activities show an asset's display code: each fund goes by the symbol and exchange on its
     // asset's profile, which must still be the fund's, with its type. Wealthfolio's reads are kept until
     // the page is opened again or Try again.
@@ -1378,6 +1425,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
     await renameFunds("");
 
+    part();
     // Equal purchases of the same fund in two folios have their own IDs: the other folio's are new,
     // with no possible duplicate, and the fund's row counts both folios' units.
     await hosted(() => { window.host.sharedIsin = "INFZ90K01LQ6"; });
@@ -1394,6 +1442,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.activities = rows;
     }, allImported);
 
+    part();
     // A switch in that Wealthfolio has as a purchase without the add-on's row ID, but without its cash,
     // may be another: it's asked about in the statement's words, with both rows side by side and
     // skipping it as the safe answer, and the import waits for the answer.
@@ -1448,6 +1497,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const forced = await hosted(() => window.host.activities.filter((a) => a.date.startsWith("2024-06-20")).map((a) => [a.activityType, a.assetSymbol]));
     assert.deepEqual(forced, [["BUY", "INFZ90K01LQ6"], ["BUY", "INFZ90K01LQ6"], ["DEPOSIT", ""]]);
 
+    part();
     // A validation failure imports none of the batch. The add-on sends the other transactions
     // without the refused one. Its funds aren't called checked while that transaction is missing.
     await hosted(() => { window.host.activities = []; });
@@ -1487,6 +1537,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // The holdings checks below start from the twelve transactions imported before the missing one.
     const baseline = await hosted(() => ({ activities: window.host.activities, storage: [...window.host.storage] }));
 
+    part();
     // The next read finds just the missing transaction. Once it is saved, a failed units check says
     // so, with Check again; that retry reads units alone and doesn't import the trade again.
     await readStatement();
@@ -1504,6 +1555,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await focused(frame.locator("[id$='-result-units']"), "Check again");
     assert.deepEqual(await hosted(() => window.host.activities), beforeUnitsRetry);
 
+    part();
     // With a bank account, purchases transfer from it, and sales and cash dividends back to it. Entries
     // it already has can be those transfers: one check per bank account, a question under the bank
     // choice that set it, with each pair's evidence; only strong evidence starts ticked.
@@ -1683,6 +1735,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await transactionParts(), "13 imported before, skipped · 26 waiting for earlier purchases");
     assert.equal(await savingsCheck.count(), 0);
 
+    part();
     // Each step of using the entry that fails says what's in Wealthfolio and what isn't, and its Try
     // again goes on from that step: the fund account's transfer is never added twice.
     // The fund goes by the name the Review screen gives it: its chosen listing's.
@@ -1725,6 +1778,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       assert.equal(await frame.getByText(/category wasn't removed because linking failed/).count(), 0, "the retry clears the old warning");
     }
 
+    part();
     // Before a pair is linked, it says what linking changes besides its type and link: its spending
     // split and category, and corrections from a synced account. One with a split never starts ticked.
     const syncedNote = "Savings is synced. Once linked, later corrections to this entry from the sync won't change it.";
@@ -1830,6 +1884,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     const beforeIgnoredDetailed = await storage();
     assert.deepEqual(beforeIgnoredDetailed, firstChoices);
 
+    part();
     // A folio's own bank account has its own check, under that folio's choice, here with the PAN's None.
     await resetBank({ enabled: true, accountIds: ["bank-1"] });
     await hosted((entry) => { window.host.activities = [entry]; }, bankEntry("bank-tb", "DEPOSIT", "7276.48", "2023-12-28", "TESTBRIDGE MF IDCW"));
@@ -1860,6 +1915,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     assert.deepEqual(await storage(), beforeIgnoredDetailed, "discarded");
 
+    part();
     // A family statement: a box per PAN, named by its investor, and a group of ready funds for each.
     const otherInvestor = "BHAVYA R TESTWALA";
     await hosted(() => {
@@ -1884,6 +1940,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await hosted(() => { window.host.otherInvestorFolio = ""; });
     await leaveDetailed();
 
+    part();
     // A remembered account that tracks holdings is ignored, and its choice says why; so is a bank
     // account that does. Go to the question goes to each in turn.
     await saveChoices([[panKey, "holdings-1"], [bankKey, "holdings-1"]]);
@@ -1906,6 +1963,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await imported(13);
     assert.deepEqual(await storage(), beforeIgnoredDetailed, "the choices made in their place");
 
+    part();
     // Remembered folio accounts that are hidden, archived or no longer listed are ignored too, inside
     // Save part of it to another account, which Go to the question opens. Their choices need making
     // again, even to go with the PAN's.
@@ -1961,6 +2019,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     );
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // So are the PAN's own: an archived account and a missing bank account. A folio that goes with
     // them needs a choice, unless it isn't imported; one with its own choices doesn't.
     await saveChoices([[panKey, "archived-2"], [bankKey, "gone-1"], [fictivaKey, "account-1"], [`bank-${fictivaKey}`, "outside"]]);
@@ -1987,6 +2046,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // A folio printed without a PAN has a box of its own, with the folio's remembered choices.
     await hosted(() => { window.host.noPanFolio = "1040012345"; });
     await saveChoices([[testbridgeKey, "hidden-1"], [`bank-${testbridgeKey}`, "gone-1"]]);
@@ -2011,6 +2071,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // Each read loads the accounts again. With none left that tracks transactions, Save to offers a new
     // account, numbered past the hidden Mutual funds; it isn't preselected while a remembered choice
     // asks to choose again. The next read offers the account added meanwhile too.
@@ -2059,6 +2120,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await hosted(() => window.host.parsed), parsedOnce, "Try again doesn't read the PDF again");
     await dSettled();
 
+    part();
     // Skipping a fund leaves it out of this import, and forgets its fund once imported, keeping the
     // other funds and the account. A failed deletion keeps the fund, and says it can come back.
     const changePanelDetailed = frame.locator("[data-focus-first]");
@@ -2121,6 +2183,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // A fund house's merger is one fund conversion: two lines with one status, both rows or neither.
     await hosted(() => {
       window.host.activities = [];
@@ -2163,6 +2226,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // A gift from a folio the statement doesn't include is an external transfer in. A gift between two
     // of its folios, in two accounts, is a transfer out and in: two lines with one status, which
     // Wealthfolio links. Neither has cash.
@@ -2211,6 +2275,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // A segregated portfolio's units are a purchase at a stand-in ₹0, marked as such, with no cash.
     await hosted(() => {
       window.host.activities = [];
@@ -2261,6 +2326,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // A fund whose rows don't add up to its closing balance is asked about, even with its opening units
     // in Wealthfolio, with skipping it as the safe answer, and the import waits for the answer.
     const flexiOpening = {
@@ -2346,6 +2412,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await saveChoices([[corporateKey, corporateChoice]]);
 
+    part();
     // With AMFI added, a fund whose ISIN finds exactly one AMFI result, in rupees, whose plan and option
     // don't differ from the statement's, is confirmed without a click, and its row says so. Wealthfolio's
     // checkImport accepts it without an exchange, and its import creates the fund priced from AMFI.
@@ -2379,6 +2446,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // A payment check under Save to is above the funds' questions: its answer takes the focus down to
     // a fund's question left open. That fund's answer adds its purchase to the check, which asks it
     // again: with nothing left below, the focus goes back up to it, and its answer is the last.
@@ -2395,6 +2463,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await leaveDetailed();
     await restoreChoices(beforeIgnoredDetailed);
 
+    part();
     // Below Tailwind's `sm` width, 320 px here, the ready funds are a stacked list, and nothing is wider
     // than the frame: the check's buttons and the footer's stay in view.
     await resetBank();
@@ -2411,6 +2480,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await sizeFrame(1000);
     await leaveDetailed();
 
+    part();
     // A detailed statement read in the holdings checks below starts from the import above that
     // Wealthfolio rejected a row of: its activities, and the account and two funds it chose.
     await resetBank();
@@ -2462,13 +2532,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }, unindexedAside);
     // The Review screen shows ready holdings as a table from Tailwind's `sm` width, 40rem of the add-on's
     // frame, and as a list below it. The test page's frame is otherwise the default 300 by 150.
-    const frameWidth = async (width) => {
-      // The window is taller than the frame, so a select's list opened near the frame's bottom stays in view.
-      await tab.setViewportSize({ width: 1280, height: 1000 });
-      await tab.evaluate((width) => {
-        Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
-      }, width);
-    };
+    const frameWidth = sizeFrame;
     await frameWidth(1000);
     const reviewHeading = frame.getByRole("heading", { name: /^Holdings on / });
     const anotherFile = frame.getByRole("button", { name: "Use another file", exact: true });
@@ -2588,9 +2652,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     };
     // A price or set of details the save left, which the result lists with its retry.
     const unfinishedLines = frame.getByText(/^The (price of .+ wasn't saved|statement's details for .+ weren't saved)\.$/);
-    // The answer that replaces an account's holdings saved for the statement's date.
+    // The answer that replaces an account's holdings saved for the statement's date. While what will be
+    // saved is worked out again, such as after opening the page again, the Review screen disables its
+    // questions' buttons, and a click dispatched to a disabled button does nothing. Unlike click(),
+    // dispatchEvent() doesn't wait for a button to be enabled, so the answers dispatched to this one and
+    // the other questions' buttons below match only enabled ones (#346).
     const sameDay = (account, date = "31 Mar 2025") =>
-      frame.getByRole("button", { name: `Replace them with this statement: holdings in ${account} for ${date}`, exact: true });
+      frame.getByRole("button", { name: `Replace them with this statement: holdings in ${account} for ${date}`, exact: true, disabled: false });
     // The read-only snapshot an account gets, under the footer's See … after saving.
     const snapshotTable = async (account, date = "31 Mar 2025") => {
       const toggle = frame.getByRole("button", { name: `See the holdings in ${account} on ${date} after saving`, exact: true });
@@ -2769,6 +2837,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await focused(footer.locator("[tabindex='-1']").first(), "the last answer");
     await said.getByText("All questions answered. Ready to save.", { exact: true }).waitFor();
 
+    part();
     // Choices are remembered when the review is saved, in order, and a new read waits for them, so a
     // delayed write can't be overtaken. The snapshot this saves is undone after, but the remembered
     // choices stay, as they would have once they were made.
@@ -2806,6 +2875,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       Object.assign(window.host, saved, { storage: new Map([...storage, ...kept]) });
     }, beforeFirstSave);
 
+    part();
     // Don't save them leaves nothing to save: the footer offers Finish, which saves nothing and
     // remembers the choice.
     const savesBeforeFinish = await hosted(() => window.host.saves.length);
@@ -2823,6 +2893,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await choose("investor", "Fund folios (INR)");
     assert.equal(await questions.count(), 1);
 
+    part();
     // Use another file asks first once something's changed, and Keep reviewing is the main choice.
     await answer("PLACEHOLDER PHARMA LIMITED", "skip");
     // The Bond's cost comes from its face value, and its note only says that saving also saves the
@@ -2858,6 +2929,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await showAllRows();
     await ready("FICTIVA FINANCE LIMITED SR I 8.10 NCD 15AP31").getByText(/^Purchase cost ₹50,000, from the face value · /).waitFor();
 
+    part();
     // A remembered demat account that doesn't track holdings, NOT_SET included, is ignored, and its
     // row says why. It needs choosing again, even to go with the statement's account.
     const nsdlTitle = "FICTIVA SECURITIES PRIVATE LIMITED demat account";
@@ -2895,6 +2967,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Nothing is remembered before saving.
     assert.deepEqual(await storage(), ignoredChoices);
 
+    part();
     // So is a remembered account for the whole statement, which isn't needed while each folio and
     // demat account has its own account or is left out.
     await saveChoices([[nsdlKey, "holdings-1"], [cdslKey, "holdings-1"], [statementKey, "unset-1"]]);
@@ -2915,6 +2988,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await frame.getByText(/^Chosen before:/).count(), 0);
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
 
+    part();
     // So are remembered accounts that are hidden, archived or no longer listed. A folio's or demat
     // account's own choice needs making again unless it's left out, and the snapshots go where chosen.
     const hiddenDemat = unavailable("Hidden demat, which is hidden in Wealthfolio");
@@ -2995,6 +3069,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await answer("PLACEHOLDER PHARMA LIMITED", "skip");
     assert.deepEqual(await storage(), beforeIgnored);
 
+    part();
     // The statement's own ignored account is needed only by the rows that go with it.
     await saveChoices([[statementKey, "hidden-2"]]);
     await readHoldings();
@@ -3015,6 +3090,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, beforeIgnored);
 
+    part();
     // With no account left that tracks holdings, each select offers a new account, and still says why
     // each choice is ignored, so nothing is preselected. Each read loads the accounts again, so the
     // next one offers the account added meanwhile too.
@@ -3064,6 +3140,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     assert.deepEqual(await storage(), withDemat);
 
+    part();
     // The same share in two snapshot accounts has a row in each, grouped by account, and each row's
     // controls are named apart.
     await choose(cdslTitle, "Fund folios (INR)");
@@ -3076,6 +3153,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await choose(cdslTitle, "Demat (INR)");
     assert.equal(await frame.getByRole("button", { name: /^Add cost: Fund INEZ90B01015/ }).count(), 1);
 
+    part();
     // A result or a chosen share quoted in another currency has a warning badge with its currency
     // and a line saying so, on its card and its row. A result in rupees, the other holdings and
     // their rows say nothing about currency.
@@ -3115,6 +3193,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await changePanel.waitFor({ state: "detached" });
     assert.equal(await quotedIn(frame).count(), 0);
 
+    part();
     // A known MANUAL asset in an inactive account gets the statement's price, even when the target starts empty.
     await hosted(() => {
       window.host.held["archived-1"] = ["INFZ90K01LQ6"];
@@ -3309,6 +3388,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(funds.holdings.find((h) => h.symbol === "GILT").averageCost, "100");
     await hosted((renamed) => { for (const id of renamed) window.host.assets[id].displayCode = window.host.assets[id].symbol; }, renamed);
 
+    part();
     // Keeping a snapshot for this date applies only to its account. Restore this fake state after
     // each path so the replacement checks below still start from the first save.
     const beforeKeptDate = await hosted(() => JSON.stringify({
@@ -3388,6 +3468,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await hosted((n) => window.host.saves.slice(n).map((s) => s.accountId), keptBeforeSave.saves), ["holdings-2"]);
     assert.deepEqual(await snapshot("holdings-1", "2025-03-31"), keptBeforeSave.snapshot);
 
+    part();
     // Changing the main account first cannot turn Keep ... in Demat into Same as above.
     await resetKeptDate();
     await keepSaved().click();
@@ -3405,6 +3486,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("Finished: nothing from made-up-nsdl.pdf was saved. The holdings in Demat for 31 Mar 2025 are kept.", { exact: true }).waitFor();
     assert.deepEqual(await hosted(() => ({ saves: window.host.saves.length, snapshots: window.host.snapshots })), beforeKeptFinish);
 
+    part();
     // Keeping the only destination also finishes without a write, including at 320 px with a long name.
     const longAccount = "DematAccountWithALongNameAndNoSpacesForTheNarrowWindow";
     await resetKeptDate(true, longAccount);
@@ -3452,6 +3534,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       Object.assign(window.host, state, { storage: new Map(storage) });
     }, beforeKeptDate);
 
+    part();
     // Two accounts named Demat, each with holdings saved for the date: what Wealthfolio shows beside
     // them, the end of their account numbers, tells them apart on every card, line, list and the bar,
     // shown and in accessible names.
@@ -3489,6 +3572,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       Object.assign(window.host, state, { storage: new Map(storage) });
     }, beforeKeptDate);
 
+    part();
     // A fund confirmed to another asset than the one an earlier import of its folio added keeps that
     // asset, and leaves the new one out, until the user answers its question: keep the old asset for
     // now, or replace it with the new one.
@@ -3528,7 +3612,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       const card = askCard(`Fictiva Balanced Advantage Fund is now matched to ${newName}`);
       await card.getByText(`Fund folios holds it as ${oldName} (${oldSymbol} · XBOM).`, { exact: true }).waitFor();
       const keep = card.getByRole("button", { name: `Keep ${oldName} for now: ${newName} in Fund folios`, exact: true });
-      const replace = card.getByRole("button", { name: `Replace ${oldName} with ${newName}: ${newName} in Fund folios`, exact: true });
+      const replace = card.getByRole("button", { name: `Replace ${oldName} with ${newName}: ${newName} in Fund folios`, exact: true, disabled: false });
       await keep.waitFor();
       // The safe answer says what it leaves, tied to it.
       const note = await keep.getAttribute("aria-describedby");
@@ -3568,6 +3652,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       ["GILT", "-10"], ["INFZ90K01LQ6", "8.053"], ["INFZ90K01BA1", "3540.293"],
     ]);
 
+    part();
     // A fund left out because Mutual funds holds it, but that an earlier import of its folio added
     // here, keeps the account's units or removes them only by the user's choice, and removing them
     // confirms that all of them came from the folio.
@@ -3594,7 +3679,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Asked as one card: its answers name the holding after their visible text, for screen readers.
     const flexiCard = askCard("Fund INFZ90K01FC8 is already tracked in Mutual funds");
     const keepFlexi = flexiCard.getByRole("button", { name: "Keep them in Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true });
-    const removeFlexi = flexiCard.getByRole("button", { name: "Remove them from Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true });
+    const removeFlexi = flexiCard.getByRole("button", { name: "Remove them from Fund folios: Fund INFZ90K01FC8 in Fund folios", exact: true, disabled: false });
     await flexiCard.getByText("Fund folios also holds 2,892.104 units of it, from an earlier import of Mutual fund folio 91234567/12.", { exact: true }).waitFor();
     // Removing says when to, tied to it: import records hold identifiers, not units.
     assert.equal(await frame.locator(`[id="${await removeFlexi.getAttribute("aria-describedby")}"]`).textContent(),
@@ -3634,6 +3719,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await flexiCard.count(), 0);
     await frame.getByText(/^Already tracked in Mutual funds \(1\)/).waitFor();
 
+    part();
     // Skipping a still-listed fund keeps both its units and the earlier import's provenance.
     await ready("Fictiva Liquid Fund - Direct Plan - Growth").getByRole("button", { name: /^Change: / }).click();
     await changePanelOf().getByRole("button", { name: /^Skip this holding: / }).click();
@@ -3646,6 +3732,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByText("Holdings saved", { exact: true }).waitFor();
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "INFZ90K01LQ6").quantity, "8.053");
 
+    part();
     // Once that fund is no longer listed, the remembered import still asks about it, also after its
     // asset's symbol changed in Wealthfolio and its choice was forgotten: the record's asset ID tells
     // its asset. Nothing is preselected, so saving waits for the answer. Replacing a snapshot on the
@@ -3799,6 +3886,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(after.quotes["asset-provider"].find((q) => q.dataSource === "MANUAL"), { ...providerOnly, id: "asset-provider_2025-03-31_MANUAL", dataSource: "MANUAL" });
     assert.equal(after.modes.INEZ92A01013, "MANUAL");
 
+    part();
     // The target's current, later snapshot can expose a MANUAL asset absent from the baseline.
     await hosted(() => {
       const other = window.host.snapshots["account-1"]["2025-03-31"];
@@ -3849,6 +3937,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await hosted(() => window.host.quotes["asset-INEZ90B01015"]), undefined);
     assert.equal(JSON.parse((await storage())["isin:INEZ90B01015"]).manual, undefined);
 
+    part();
     // Archived accounts are absent from portfolio.getHoldings, but their saved assets still use
     // their global pricing mode. The next read finds the hidden account archived, tracking transactions.
     await hosted((isins) => {
@@ -3866,6 +3955,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: /^(Update|Save) holdings$/, disabled: false }).waitFor();
     await ready("FICTIVA POWER AND LIGHT LIMITED").getByText(priced, { exact: true }).waitFor();
 
+    part();
     // An NPS account's schemes: searched by name, then priced from the statement, one asset per
     // scheme. A scheme without units is left out. A PRAN's remembered account that's archived is
     // ignored too, though it doesn't track holdings either.
@@ -3935,6 +4025,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.ok(Object.keys(await storage()).some((key) => /^nps:[0-9a-f]{64}$/.test(key)));
     assert.equal((await storage())[pranKey("XXXXXXXX9001")], "holdings-2");
 
+    part();
     // The same date replaces the snapshot and quote, without creating another asset or changing its quote ID.
     await readHoldings();
     await ready(scheme).getByText(/^Prices from the statement · chosen before/).waitFor();
@@ -3944,6 +4035,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await hosted(() => window.host.quotes["pension-created-007"].map((q) => [q.id, q.timestamp, q.close])), npsHost.quotes.map((q) => [q.id, q.timestamp, q.close]));
     assert.equal((await snapshot("holdings-2", "2025-03-31")).holdings.find((h) => h.symbol === "NPS-TEST-E-TIER-I").assetId, "pension-created-007");
 
+    part();
     // Another PRAN shares the scheme's asset; a later statement adds a dated quote and preserves the earlier snapshot.
     await hosted(() => {
       window.host.statementDate = "30-Apr-2025";
@@ -3963,6 +4055,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     ]);
     assert.equal(await hosted(() => Object.values(window.host.assets).filter((a) => a.symbol === "NPS-TEST-E-TIER-I").length), 1);
 
+    part();
     // With the only PRAN set to Don't save, Not included says so, and the footer offers Finish.
     await readHoldings();
     await choose("NPS account (PRAN XXXXXXXX9002)", "Don't save");
@@ -3971,6 +4064,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await footer.getByRole("button", { name: "Finish", exact: true }).waitFor();
     assert.equal(await saveHoldings.count(), 0);
 
+    part();
     // An unheld remembered fallback that the user switched to MARKET keeps its mode and profile.
     await hosted(() => {
       window.host.snapshots = {};
@@ -4004,7 +4098,13 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         await choose("NPS account (PRAN XXXXXXXX9001)", "Demat (INR)");
         await ready(scheme).getByRole("button", { name: /^Change: / }).waitFor();
       } else {
+        // The bar still says the same about the search's failure until the read that opening the page
+        // again starts fails on the profile itself and the add-on shows that (#346).
+        const failures = await hosted(() => window.host.getProfileFailures);
         await revisit();
+        await tab.frames()[1].waitForFunction((n) => window.host.getProfileFailures > n, failures);
+        await settled();
+        await painted();
       }
       await cantWorkOut(unpriced).waitFor();
       assert.equal(await saveHoldings.isDisabled(), true);
@@ -4029,6 +4129,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(unheld.asset.metadata.casStatement.scheme, scheme);
     assert.equal(await unfinishedLines.count(), 0);
 
+    part();
     // An observed MARKET mode remains usable when the extra lookup fails.
     await hosted(() => {
       window.host.assets["pension-created-007"].displayCode = "NPS-TEST-E-TIER-I";
@@ -4040,6 +4141,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await footer.getByText(/^We couldn't work out/).count(), 0);
     await hosted(() => { window.host.failSearchQueries = []; });
 
+    part();
     // A manual asset held only elsewhere still needs its ID to keep the quote's notes.
     const beforeLookupFailures = await hosted(() => window.host.snapshots);
     await hosted(() => {
@@ -4071,6 +4173,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.emptySearchQueries = [];
     }, beforeLookupFailures);
 
+    part();
     // A selected existing asset has an opaque ID and display code; adding details must also preserve GBp.
     const marketScheme = "NPS TRUST- A/C TEST PENSION FUND LIMITED SCHEME M - TIER I";
     await hosted((scheme) => {
@@ -4114,6 +4217,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     });
     assert.equal(await unfinishedLines.count(), 0);
 
+    part();
     // A missing ordinary remembered ID is dropped, then its fields find the existing asset.
     await hosted(() => {
       window.host.snapshots = {};
@@ -4138,6 +4242,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await unfinishedLines.count(), 0);
     await hosted(() => { window.host.failGetProfileIds = []; });
 
+    part();
     // ECNQUOTE, like MUTUALFUND above, is an older provider label for a canonical EQUITY asset.
     const relabel = (type, keepId = true) => hosted(([type, keepId]) => {
       for (const [key, value] of window.host.storage) {
@@ -4169,6 +4274,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await footer.getByText(/^We couldn't work out/).count(), 0);
     await hosted(() => { window.host.assets["market-profile-011"].instrumentType = "EQUITY"; });
 
+    part();
     // A failed first account can already have written prices. Repair known ones; a new asset the failed
     // save left in no snapshot isn't reported again. Continue the next account and every quote/detail
     // write after an individual failure.
@@ -4225,6 +4331,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(partial.assets["pension-g-009"].metadata, undefined);
     assert.equal(partial.assets["pension-c-010"].metadata.casStatement.assetClass, "E");
 
+    part();
     // The price is retried on its own, once its asset can be read; the details still aren't saved.
     await hosted(() => { window.host.failQuoteIds = []; window.host.failGetProfileIds = []; });
     await frame.getByRole("button", { name: `Retry saving the price: ${gScheme}`, exact: true }).press("Enter");
@@ -4252,6 +4359,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await dematLine.count(), 0);
     assert.deepEqual((await hosted(() => window.host.saves.map((s) => s.accountId))).slice(savedAccountsBefore.length), ["holdings-1"]);
 
+    part();
     // Re-importing retries each incomplete write and reuses the already-created assets.
     await hosted(() => { window.host.failSnapshotAccounts = []; window.host.failQuoteIds = []; window.host.failProfileIds = []; window.host.failGetProfileIds = []; });
     await readHoldings();
@@ -4280,6 +4388,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await saveHoldings.count(), 1);
     await hosted(() => { window.host.ambiguousSummary = false; });
 
+    part();
     // Funds and shares that no search result fits can use the statement's prices too: a summary
     // fund whose search finds only another fund, one with no ISIN whose search finds nothing, and a
     // depository fund and share. The first save can't write one price and one asset's details.
@@ -4369,6 +4478,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.ok(Object.entries(firstFunds.storage).some(([key, value]) =>
       /^fund:[0-9a-f]{64}$/.test(key) && JSON.parse(value).symbol === "MF-KFINTECH-TGLDG" && JSON.parse(value).statementPrices));
 
+    part();
     // The next import finds both choices and assets again, and finishes the incomplete writes.
     await hosted(() => { window.host.failQuoteIds = []; window.host.failProfileIds = []; });
     const saveFolios = async (saved = "Holdings saved") => {
@@ -4457,6 +4567,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await saveFolios();
     assert.deepEqual(await corporateStored(), corporatePriced);
 
+    part();
     // A depository statement's share and fund: the share's ISIN finds only another fund, the fund's nothing.
     const textiles = "IMAGINARY TEXTILES LIMITED";
     // The fund is printed with a plan but no option.
@@ -4550,6 +4661,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual([["INEZ94A01017", "share-priced-016"], ["INFZ92P01SC5", "fund-priced-017"]].map(([symbol, id]) =>
       [pretend.modes[symbol], pretend.assets[id].instrumentType, pretend.assets[id].quoteCcy]), [["MANUAL", "EQUITY", "INR"], ["MANUAL", "EQUITY", "INR"]]);
 
+    part();
     // A CDSL statement's CDSL demat fund whose name is cut short partway through its option, in
     // "- DIRECT GROW", gets Direct and Growth beside its name without the fund house, and a result or
     // choice on another plan and option warns.
@@ -4580,6 +4692,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await badges(cutRow.getByRole("rowheader")), ["Regular warning-subtle", "IDCW warning-subtle"]);
     await cutRow.getByText("Statement: Direct · Growth. Chosen: Regular · IDCW. Different plan and option.", { exact: true }).waitFor();
 
+    part();
     // A detailed statement keeps the fund confirmed for it instead of using the asset priced from statements.
     // This copy has no password, so it reads with the box empty, and the saved password stays.
     await leaveReview();
@@ -4642,6 +4755,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       window.host.statementDate = "";
     });
 
+    part();
     // With no account that tracks holdings, a summary statement's funds that accounts tracking
     // transactions already hold are still compared with them, by themselves, and nothing is saved.
     // Hidden accounts that track transactions are compared too, like Not set here.
@@ -4713,6 +4827,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await accountData(), beforeComparing);
     await setAccountList(beforeCheck);
 
+    part();
     // A summary import creates an AMFI fund without an exchange. Searching its ISIN then finds that
     // asset, even if automatic updates have since been turned off. Every fund's ISIN finds one AMFI
     // scheme, so once AMFI is added, each is confirmed without a click.
@@ -4813,6 +4928,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frameWidth(1000);
     await summaryLiquid().waitFor();
 
+    part();
     // A line whose units can't be read leaves the account's fund as it is, and isn't saved. The
     // Balanced Advantage fund, in another folio, is saved beside it: with nothing else to save, the
     // bar would offer Finish and save no snapshot (#276).
@@ -4854,6 +4970,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await hosted((code) => window.host.quotes[`asset-${code}`], summaryAmfi.symbol), liquidQuotes);
     await hosted(() => { window.host.summaryMisread = []; });
 
+    part();
     // A new profile: Save to proposes an account when none fits, created only when the import is
     // saved, and remembered once it exists (#214). AMFI confirms every fund here.
     const beforeNewAccounts = await hosted(() => ({
@@ -4892,6 +5009,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await footer.getByRole("button", { name: "See the holdings in Mutual funds on 31 Mar 2025 after saving", exact: true }).click();
     await frame.getByRole("table", { name: "Holdings in Mutual funds on 31 Mar 2025 after saving", exact: true }).waitFor({ state: "detached" });
 
+    part();
     // Rename edits the name in place: 2 to 50 characters, trimmed. While it's open, saving waits.
     await linksKeepTheirLine("A new account", ["Rename"]);
     await frame.getByRole("button", { name: "Rename the new account Mutual funds: ANANYA R TESTWALA's holdings", exact: true }).click();
@@ -4920,6 +5038,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal((await investorSelect.textContent()).trim(), "New: Family funds");
     assert.equal(await saveHoldings.isDisabled(), false);
 
+    part();
     // A folio sent to an account of its own gets one, named after it. One Wealthfolio doesn't create
     // saves nothing and isn't remembered; the others are saved. Try again creates only that one.
     const folioAccount = "Fictiva Mutual Fund folio 91234567 / 12";
@@ -4959,6 +5078,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal((await sourceSelect(liquidFolio).textContent()).trim(), `${folioAccount} (INR)`);
     assert.equal(await newLine.count(), 0);
 
+    part();
     // With accounts that track holdings but none remembered, nothing is preselected: choosing where to
     // save is a question, and the new account stays offered.
     await hosted(() => window.host.storage.clear());
@@ -4997,6 +5117,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.deepEqual(await rememberedIds(), ["created-2"]);
     await leaveReview();
 
+    part();
     // A family's detailed statement: an account for each investor, the second named for them. A gift
     // from one to the other waits whole while the receiving account isn't created; Try again creates it
     // and imports both sides together, which Wealthfolio links.
@@ -5054,6 +5175,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await frame.getByRole("button", { name: "Forget saved password" }).waitFor({ state: "hidden" });
     assert.deepEqual((await host()).secrets, []);
 
+    part();
     // A parser that stops, hits a fatal Python error, never starts or never answers says so in plain
     // words, with Try again, which starts a new parser and reads the same file with the password
     // typed, without choosing either again.
@@ -5099,6 +5221,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     assert.equal(await failRead("no-reply", passwordBox), 0);
     await readAfterFault();
 
+    part();
     // A file that isn't a CAS says so, with Choose another file in place of Read statement; a new file
     // clears it.
     await frame.locator("#cas-file").setInputFiles({ name: "not-a-cas.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF-1.4 not a statement") });
@@ -5111,6 +5234,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     await notCas.waitFor({ state: "detached" });
     await readButton.waitFor();
 
+    part();
     // A saved password that no longer opens the statement says so, and asks for its password in its
     // field, which takes the focus. The saved one stays, for other statements.
     await hosted(() => { window.host.secrets.set("statement-password", "an-old-password"); });
@@ -5170,6 +5294,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
   }
   // Pyodide refuses a classic Worker when its importScripts("data:...") probe works, which the CSP
   // would otherwise be all that prevents.
+  part("Parsing without the CSP");
   errors.length = 0;
   try {
     await tab.goto(noCspUrl);
@@ -5187,6 +5312,24 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     failed = true;
     console.log("  FAILED: CSP messages:", violations);
   }
-  await browser.close();
+};
+for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium", "firefox"]) {
+  parts = [];
+  checkTimes = new Map();
+  part("Launching the browser");
+  let browser;
+  let engine = name;
+  try {
+    browser = await engines[name].launch();
+    engine = `${name} ${browser.version()}`;
+    await runBrowser(browser, engine);
+  } finally {
+    if (browser) part("Closing the browser");
+    try {
+      await browser?.close();
+    } finally {
+      await reportTimes(engine);
+    }
+  }
 }
 process.exit(failed ? 1 : 0);
