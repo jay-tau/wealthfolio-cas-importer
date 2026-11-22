@@ -1008,9 +1008,21 @@ segment. It also refuses any backslash, which Wealthfolio reads as `/`; the pack
 
 `pnpm test:browser` runs the parser and the import page inside a copy of Wealthfolio's sandbox
 (sandboxed iframe, the add-on content security policy) in Playwright's browsers, against a fake
-host. Name the browsers to run (default `chromium firefox`; CI runs `chromium firefox webkit`), and
-install them first with `pnpm exec playwright-core install chromium firefox`, adding `webkit` to
-run WebKit.
+host. Name the browsers to run (default `chromium firefox`), and install them first with
+`pnpm exec playwright-core install chromium firefox`, adding `webkit` to run WebKit. After each
+browser it prints how long each part of the run took. CI runs it as three jobs at the same time, one
+each for Chromium, Firefox and WebKit. A failure in one doesn't stop the others, and CI fails if any
+of them fails.
+
+To run CI's `browser` jobs on your own machine with [act](https://github.com/nektos/act), name one
+browser per run. Run the three one after another, each after the last one ends, so that only one
+browser job uses memory at a time:
+
+```bash
+for browser in chromium firefox webkit; do
+  act pull_request -W .github/workflows/ci.yml -j browser --matrix "browser:$browser" || echo "$browser failed"
+done
+```
 
 The statements in `tests/fixtures/` are made up. `make_cas.py` (detailed), `make_summary_cas.py`,
 `make_nsdl_cas.py` and `make_cdsl_cas.py` write them (they need `reportlab` and `pikepdf`); their
@@ -1029,7 +1041,8 @@ itself, listed in `runtime.json`, follow its version. CI then:
 - parses the made-up statements, and runs casparser's own tests, under Pyodide in Node;
 - builds the package and checks it against Wealthfolio's limits: 256 entries, 5 MiB per file and
   25 MiB in total;
-- reads a statement in Chromium, Firefox and WebKit inside a copy of the add-on sandbox.
+- reads a statement in Chromium, Firefox and WebKit inside a copy of the add-on sandbox, a job per
+  browser.
 
 Every bump also needs `THIRD_PARTY_NOTICES.md` (and perhaps `licenses/`) brought up to date; the
 tests fail until it names the new files. When casparser starts needing a package Pyodide builds,
