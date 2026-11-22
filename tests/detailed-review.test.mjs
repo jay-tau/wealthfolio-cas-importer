@@ -3480,6 +3480,14 @@ test("Change beside a fund with rows left out names the fund its line names, num
   }
 });
 
+/** What an import sent, as Wealthfolio returns it with the add-on's row IDs. */
+const storedRows = (rows) => rows.map((r, i) => ({
+  id: `stored-${i}`, accountId: r.accountId, activityType: r.activityType, subtype: r.subtype ?? null, status: "POSTED",
+  date: `${r.date}T00:00:00+00:00`, quantity: r.quantity ?? null, unitPrice: r.unitPrice ?? null, amount: r.amount ?? null, fee: null,
+  tax: r.tax ?? null, currency: r.currency, needsReview: false, comment: null, assetId: r.symbol ? `asset-${r.symbol}` : "",
+  assetSymbol: r.symbol ?? "", exchangeMic: r.exchangeMic ?? null, sourceRecordId: `addon:cas-importer:${r.sourceRecordId}`,
+}));
+
 test("a repeated statement with a reversed purchase left out isn't called nothing new", async () => {
   // Liquid Fund alone, with a purchase and its reversal added.
   const change = (data) => {
@@ -3495,19 +3503,248 @@ test("a repeated statement with a reversed purchase left out isn't called nothin
   await first.run.flush();
   const [rows] = first.imported;
   first.run.dispose();
-  // What the import added, as Wealthfolio returns it with the add-on's row IDs.
-  const stored = rows.map((r, i) => ({
-    id: `stored-${i}`, accountId: r.accountId, activityType: r.activityType, subtype: r.subtype ?? null, status: "POSTED",
-    date: `${r.date}T00:00:00+00:00`, quantity: r.quantity ?? null, unitPrice: r.unitPrice ?? null, amount: r.amount ?? null, fee: null,
-    tax: r.tax ?? null, currency: r.currency, needsReview: false, comment: null, assetId: r.symbol ? `asset-${r.symbol}` : "",
-    assetSymbol: r.symbol ?? "", exchangeMic: r.exchangeMic ?? null, sourceRecordId: `addon:cas-importer:${r.sourceRecordId}`,
-  }));
-  const { run } = setup({ entries: stored, change });
+  const { run } = setup({ entries: storedRows(rows), change });
   await run.flush();
   const b = find(run, "TransactionsSummary").breakdown;
   assert.deepEqual([b.toImport, b.before, b.leftOut.map((l) => l.kind)], [0, 3, ["reversal", "reversal"]]);
   assert.deepEqual(footer(run).slice(0, 1), ["Nothing is ready to import. See the transactions left out or waiting above."]);
   assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("a statement read again after importing a fund with its difference doesn't ask about it again, until Wealthfolio lacks one of its transactions (#348)", async () => {
+  const mismatch = JSON.parse(await readFile("tests/fixtures/made-up-cas-mismatch.json", "utf8"));
+  const change = () => structuredClone(mismatch);
+  // The Flexi Cap fund's units from before the statement, entered by hand.
+  const opening = {
+    id: "flexi-opening", accountId: "mf", activityType: "BUY", subtype: null, status: "POSTED", date: "2023-03-15T00:00:00+00:00",
+    quantity: "1250", unitPrice: "1", amount: "1250", fee: null, tax: null, currency: "INR", needsReview: false, comment: null,
+    assetId: "asset-INFZ90K01FC8", assetSymbol: "INFZ90K01FC8", exchangeMic: "XBOM", sourceRecordId: null,
+  };
+  const review = async (entries) => {
+    const context = setup({ entries, change });
+    for (const { fund } of Object.values(context.props.fundChoices)) {
+      context.profiles[`asset-${fund.symbol}`] = { instrumentSymbol: fund.symbol, instrumentExchangeMic: fund.exchangeMic, instrumentType: fund.instrumentType };
+    }
+    await context.run.flush();
+    return context;
+  };
+  const counts = (run) => {
+    const b = find(run, "TransactionsSummary").breakdown;
+    return { toImport: b.toImport, before: b.before, unbalanced: b.unbalanced, skippedUnbalanced: b.skippedUnbalanced, duplicates: b.duplicates, leftOut: b.leftOut.map((l) => l.reason) };
+  };
+  const orphan = ["There's no transaction on this day to add this stamp duty to."];
+  const gapCards = (run) => askCards(run).filter((c) => c.title.endsWith("don't add up"));
+  const closing = /: its rows add up to 2,798\.066 units, but the statement's closing balance is 2,892\.104\. A row may be missing or misread\.$/;
+  const closingLines = (run) => find(run, "StatementWarnings").lines.filter((line) => closing.test(line.text));
+
+  // The first read asks, with the stamp duty that lost its purchase left out on its own.
+  const first = await review([opening]);
+  assert.deepEqual(counts(first.run), { toImport: 13, before: 0, unbalanced: 25, skippedUnbalanced: 0, duplicates: 0, leftOut: orphan });
+  assert.equal(gapCards(first.run).length, 1);
+  assert.deepEqual(closingLines(first.run), []);
+  gapCards(first.run)[0].other.onClick();
+  await first.run.flush();
+  assert.deepEqual(counts(first.run), { toImport: 38, before: 0, unbalanced: 0, skippedUnbalanced: 0, duplicates: 0, leftOut: orphan });
+  find(first.run, "Footer").action.onClick();
+  await first.run.flush();
+  const stored = storedRows(first.imported.flat());
+  first.run.dispose();
+
+  // Read again, Wealthfolio has every transaction: no question, and the difference among the warnings, once.
+  const again = await review([opening, ...stored]);
+  assert.deepEqual(counts(again.run), { toImport: 0, before: 38, unbalanced: 0, skippedUnbalanced: 0, duplicates: 0, leftOut: orphan });
+  assert.deepEqual(askCards(again.run), []);
+  assert.equal(closingLines(again.run).length, 1);
+  assert.deepEqual(footer(again.run).slice(0, 1), ["Nothing is ready to import. See the transactions left out or waiting above."]);
+  assert.equal(find(again.run, "Footer").action.label, "Finish");
+  again.run.dispose();
+
+  // Without one of the fund's purchases, it asks again; the transactions Wealthfolio has stay imported
+  // before, and the purchase whose cash is still there isn't a possible duplicate.
+  const flexiBuy = stored.find((a) => a.assetSymbol === "INFZ90K01FC8" && a.activityType === "BUY");
+  const lacking = await review([opening, ...stored.filter((a) => a !== flexiBuy)]);
+  assert.deepEqual(counts(lacking.run), { toImport: 0, before: 37, unbalanced: 1, skippedUnbalanced: 0, duplicates: 0, leftOut: orphan });
+  assert.equal(gapCards(lacking.run).length, 1);
+  assert.deepEqual(closingLines(lacking.run), []);
+  gapCards(lacking.run)[0].main.onClick();
+  await lacking.run.flush();
+  assert.deepEqual(counts(lacking.run), { toImport: 0, before: 37, unbalanced: 0, skippedUnbalanced: 1, duplicates: 0, leftOut: orphan });
+  assert.deepEqual(askCards(lacking.run), []);
+  assert.equal(find(lacking.run, "Footer").action.label, "Finish");
+});
+
+test("a review that finds the transactions on refresh shows one closing warning for the accepted difference (#348)", async () => {
+  const { run, activities, profiles, props, imported } = setup({ entries: [], change(data) {
+    const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    const balanced = { ...structuredClone(data.folios[0]), folio: "222222222", schemes: [{ ...structuredClone(liquid), scheme: "" }] };
+    liquid.scheme = "";
+    liquid.close = "9.053";
+    // The parser reset to 8.5 units at a printed balance before comparing the closing balance.
+    liquid.transactions.at(-1).balance = "8.5";
+    data.parse_warnings = ["'' [FLQDG]: closing unit balance mismatch — computed 8.5 but statement printed 9.053 (Δ=-0.553); a transaction row may be missing or mis-parsed"];
+    data.folios = [{ ...data.folios[0], schemes: [liquid] }, balanced];
+    return data;
+  } });
+  const fund = props.fundChoices["isin:INFZ90K01LQ6"].fund;
+  fund.name = "Chosen Liquid Fund";
+  profiles["asset-INFZ90K01LQ6"] = { instrumentSymbol: fund.symbol, instrumentExchangeMic: fund.exchangeMic, instrumentType: fund.instrumentType };
+  await run.flush();
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.equal(askAnswers(run).length, 1);
+  // Wealthfolio acquires the same rows while the review is open, without submitting this import.
+  await shownTable(run);
+  activities.push(...storedRows(find(run, "ActivityTable").plan.flatMap((t) => t.rows.map((r) => r.activity))));
+  const closing = "Chosen Liquid Fund: its rows add up to 8.053 units, but the statement's closing balance is 9.053. A row may be missing or misread.";
+  run.update({ visit: {} });
+  await run.flush();
+  assert.deepEqual(askAnswers(run).map((a) => a.text), ["Chosen Liquid Fund, folio 91234567 / 12: difference accepted"]);
+  assert.deepEqual(askCards(run), []);
+  assert.deepEqual(find(run, "StatementWarnings").lines.map((line) => line.text), [closing]);
+  assert.match(textOf(run.tree), /Nothing new for Chosen Liquid Fund/);
+  assert.equal(imported.length, 0);
+});
+
+test("Wealthfolio's purchase equal to two folios' purchases goes to the later folio when the earlier one's rows don't add up (#348)", async () => {
+  const change = (data) => {
+    const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    // Its purchase and the purchase's stamp duty, in two folios; the earlier one's rows don't add up.
+    liquid.transactions = liquid.transactions.slice(0, 2);
+    liquid.close_calculated = liquid.transactions[0].units;
+    const later = { ...structuredClone(data.folios[0]), folio: "222222222", schemes: [structuredClone(liquid)] };
+    later.schemes[0].close = liquid.close_calculated;
+    liquid.close = String(Number(liquid.close_calculated) + 1);
+    data.folios = [{ ...data.folios[0], schemes: [liquid] }, later];
+    return data;
+  };
+  /** Each transaction's folio and status, from Every transaction, which the bar offers once no question is open. */
+  const statuses = async (run) => {
+    if (!find(run, "ActivityTable")) {
+      nodes(find(run, "Footer").lines).find((node) => node.props?.children === "See every transaction").props.onClick();
+      await run.flush();
+    }
+    return find(run, "ActivityTable").plan.map((t) => [t.transaction.folio, t.status, !!t.transaction.bank]);
+  };
+  const first = setup({ entries: [], change });
+  await first.run.flush();
+  askCards(first.run)[0].main.onClick();
+  await first.run.flush();
+  assert.deepEqual(await statuses(first.run), [["91234567 / 12", "held", false], ["222222222", "new", false]]);
+  const plan = find(first.run, "ActivityTable").plan;
+  // The purchase and its deposit, entered by hand.
+  const { activity, cash } = plan[1].transaction;
+  const entries = [stored(activity, "mf", "buy-by-hand"), stored(cash, "mf", "deposit-by-hand")];
+  first.run.dispose();
+  const { run, profiles } = setup({ entries, change });
+  profiles["liquid-asset"] = { instrumentSymbol: activity.symbol, instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+  await run.flush();
+  const counts = () => {
+    const b = find(run, "TransactionsSummary").breakdown;
+    return [b.toImport, b.before, b.unbalanced, b.skippedUnbalanced, b.duplicates];
+  };
+  // The later folio's purchase is imported before; the earlier one's still asks.
+  assert.deepEqual(counts(), [0, 1, 1, 0, 0]);
+  assert.deepEqual(askCards(run).map((c) => c.title), ["Fictiva Liquid Fund's transactions in folio 91234567 / 12 don't add up"]);
+  // Accepting makes the first folio's buy first to match. The answer can still be changed.
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.deepEqual(counts(), [1, 1, 0, 0, 0]);
+  assert.match(find(run, "FundsReadyTable").rows[0].note, /Check the closing balance warning against the PDF\./);
+  assert.match(askAnswers(run)[0].text, /91234567 \/ 12: difference accepted$/);
+  assert.ok(find(run, "StatementWarnings").lines.some((line) => /statement's closing balance/.test(line.text)));
+  askAnswers(run)[0].onChange();
+  run.render();
+  assert.equal(askCards(run).length, 1);
+  assert.ok(!find(run, "StatementWarnings").lines.some((line) => /statement's closing balance/.test(line.text)));
+  await run.flush();
+  assert.deepEqual(counts(), [0, 1, 1, 0, 0]);
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  // Skipped, the earlier folio's purchase stays out.
+  assert.deepEqual(counts(), [0, 1, 0, 1, 0]);
+  assert.deepEqual(await statuses(run), [["91234567 / 12", "held", false], ["222222222", "existing", false]]);
+  assert.equal(find(run, "Footer").action.label, "Finish");
+});
+
+test("two skipped differences for one fund in one folio have distinct Change controls (#348)", async () => {
+  const { run } = setup({ entries: [], change(data) {
+    const folio = data.folios[0];
+    const liquid = folio.schemes.find((s) => s.scheme.includes("Liquid"));
+    liquid.close = "9.053";
+    folio.schemes = [liquid, { ...structuredClone(liquid), close: "10.053" }];
+    data.folios = [folio];
+    return data;
+  } });
+  await run.flush();
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  askCards(run)[0].main.onClick();
+  await run.flush();
+  const excluded = find(run, "NotIncludedDetailed");
+  assert.deepEqual(excluded.unbalanced.map((fund) => fund.label), ["Fictiva Liquid Fund, fund 1", "Fictiva Liquid Fund, fund 2"]);
+  excluded.onReopenAsk(excluded.unbalanced[1].id);
+  await run.flush();
+  assert.match(textOf(askCards(run)[0].children), /10\.053/);
+});
+
+test("a mismatch with no mapped transactions can't use matches from another section of the same folio (#348)", async () => {
+  const change = (data) => {
+    const liquid = data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"));
+    const orphan = { ...liquid, close: "1", close_calculated: "0", transactions: [{ ...liquid.transactions[1], date: "2024-02-20" }] };
+    data.folios = [{ ...data.folios[0], schemes: [liquid, orphan] }];
+    return data;
+  };
+  const first = setup({ entries: [], change });
+  await first.run.flush();
+  askCards(first.run)[0].main.onClick();
+  await first.run.flush();
+  find(first.run, "Footer").action.onClick();
+  await first.run.flush();
+  const entries = storedRows(first.imported.flat());
+  first.run.dispose();
+  const { run, profiles } = setup({ entries, change });
+  profiles["asset-INFZ90K01LQ6"] = { instrumentSymbol: "INFZ90K01LQ6", instrumentExchangeMic: "XBOM", instrumentType: "MUTUALFUND" };
+  await run.flush();
+  const b = find(run, "TransactionsSummary").breakdown;
+  assert.deepEqual([b.toImport, b.before, b.unbalanced, b.leftOut.length], [0, 3, 0, 1]);
+  assert.deepEqual(askCards(run).map((c) => c.title), ["Fictiva Liquid Fund's transactions don't add up"]);
+  assert.deepEqual(find(run, "StatementWarnings").lines, []);
+});
+
+test("a merger between same-named sections of one folio needs both mismatch answers (#348)", async () => {
+  const { run, api } = setup({ entries: [], change(data) {
+    const folio = data.folios[0];
+    const old = folio.schemes.find((s) => s.scheme.includes("Liquid"));
+    const next = folio.schemes.find((s) => s.scheme.includes("Balanced"));
+    const row = (date, type, amount, units, nav) => ({
+      ...old.transactions[0], date, type, amount, units, nav, balance: null, description: type,
+    });
+    Object.assign(old, { open: "0", close: "1", close_calculated: "0", transactions: [
+      row("2024-06-01", "PURCHASE", "500", "10", "50"), row("2024-06-03", "SWITCH_OUT_MERGER", "-500", "-10", "50"),
+    ] });
+    Object.assign(next, { scheme: old.scheme, open: "0", close: "21", close_calculated: "20", transactions: [
+      row("2024-06-03", "SWITCH_IN_MERGER", "500", "20", "25"),
+    ] });
+    folio.schemes = [old, next];
+    data.folios = [folio];
+    return data;
+  } });
+  const checked = [];
+  api.activities.checkImport = async (rows) => {
+    checked.push(...rows.flatMap((r) => r.activityType === "ADJUSTMENT" ? [r.subtype] : []));
+    return rows;
+  };
+  await run.flush();
+  assert.equal(askCards(run).length, 2);
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.deepEqual(checked, []);
+  assert.equal(find(run, "TransactionsSummary").breakdown.unbalanced, 2);
+  assert.equal(askCards(run).length, 1);
+  askCards(run)[0].other.onClick();
+  await run.flush();
+  assert.deepEqual(checked, ["CONVERSION_OUT", "CONVERSION_IN"]);
+  assert.equal(find(run, "TransactionsSummary").breakdown.toImport, 3);
 });
 
 // Accounts proposed when none fits, created when the transactions are imported.
@@ -3713,6 +3950,59 @@ function twoInvestorGift(data) {
   ];
   return data;
 }
+
+test("a paired gift waits for each mismatch answer and stops offering a duplicate when one is reopened (#348)", async () => {
+  for (const twoMismatches of [false, true]) {
+    const { run, api } = setup({ entries: [], remembered: {
+      [choices.panKey("ABCDE1234F")]: "mf", [choices.panKey("FGHIJ5678K")]: "other",
+    }, change(data) {
+      twoInvestorGift(data);
+      data.folios = data.folios.slice(-2);
+      data.folios[0].schemes[0].close = "1";
+      if (twoMismatches) data.folios[1].schemes[0].close = "11";
+      return data;
+    } });
+    const checkedTransfers = [];
+    api.activities.checkImport = async (rows) => rows.map((row) => {
+      if (!row.activityType.startsWith("TRANSFER")) return row;
+      checkedTransfers.push(row.activityType);
+      return { ...row, duplicateOfId: "previous" };
+    });
+    const counts = () => {
+      const b = find(run, "TransactionsSummary").breakdown;
+      return [b.toImport, b.unbalanced, b.skippedUnbalanced, b.duplicates];
+    };
+    await run.flush();
+    assert.doesNotMatch(textOf(run.tree), /2 funds0 ready\d+ not included/);
+    assert.deepEqual(counts(), [0, 3, 0, 0]);
+    assert.deepEqual(checkedTransfers, []);
+    askCards(run)[0].other.onClick();
+    await run.flush();
+    if (twoMismatches) {
+      assert.deepEqual(counts(), [1, 2, 0, 0]);
+      assert.deepEqual(checkedTransfers, []);
+      askCards(run)[0].other.onClick();
+      await run.flush();
+    }
+    assert.deepEqual(counts(), [1, 0, 0, 2]);
+    assert.deepEqual(checkedTransfers, ["TRANSFER_OUT", "TRANSFER_IN"]);
+    askAnswers(run)[0].onChange();
+    run.render();
+    assert.deepEqual(askCards(run).map((c) => c.main.label), ["Skip this fund"]);
+    assert.equal(find(run, "Footer").action.disabled, true);
+    await run.flush();
+    askCards(run)[0].main.onClick();
+    await run.flush();
+    assert.deepEqual(counts(), [0, 0, 3, 0]);
+    assert.equal(find(run, "Footer").action.label, "Finish");
+    const gift = (await shownTable(run)).find((cells) => cells[2] === "transfer out");
+    assert.match(gift.at(-1), /Not imported.*Import with this difference/);
+    assert.match(gift.at(-1), /folio 33333333/);
+    assert.doesNotMatch(gift.at(-1), /folio 44444444/);
+    assert.doesNotMatch(gift.at(-1), /Wealthfolio links this transfer out/);
+    run.dispose();
+  }
+});
 
 test("a gift to an account Wealthfolio didn't create waits whole, and Try again imports both sides together", async () => {
   const refuse = new Set(["Mutual funds (B. Investor)"]);

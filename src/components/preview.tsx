@@ -140,7 +140,17 @@ const STATUS: Record<Status, { badge: string; variant: "success-subtle" | "secon
   existing: { badge: "Already in Wealthfolio", variant: "secondary" },
   duplicate: { badge: "Possible duplicate", variant: "warning-subtle" },
   invalid: { badge: "Can't import", variant: "destructive-subtle" },
+  held: { badge: "Not imported", variant: "warning-subtle" },
 };
+
+/** Why a held transaction isn't imported, naming the folio when a gift spans two or both funds hold it back. */
+function heldNote({ status, transaction: { held = [], receiving } }: PlannedTransaction) {
+  if (status !== "held") return undefined;
+  const names = held.map(({ folio, scheme }) => (receiving || held.length > 1 ? `${scheme.scheme} in folio ${folio.folio}` : scheme.scheme));
+  return names.length > 1
+    ? `The rows of ${list(names)} don't add up to their closing balances, so this is imported only if you choose Import with this difference for each.`
+    : `The rows of ${names[0]} don't add up to its closing balance, so this is imported only if you choose Import with this difference.`;
+}
 
 function reasons(row: PlannedRow) {
   const name = label(row.activity);
@@ -183,7 +193,9 @@ export function ActivityTable({
   label: string;
 }) {
   const caveats = mapping.warnings.filter((w) => !w.leftOut);
-  const caveatsOf = (t: PlannedTransaction) => caveats.filter((w) => w.rows[0] === t.transaction.rows[0]);
+  const caveatsOf = (t: PlannedTransaction) => t.transaction.held && t.status !== "existing"
+    ? []
+    : caveats.filter((w) => w.rows[0] === t.transaction.rows[0]);
   return (
     // Narrow padding and wrapping Cash keep Status visible with Extra large text in a 1440 px window.
     <Table aria-label={tableLabel}>
@@ -209,6 +221,7 @@ export function ActivityTable({
             ...t.rows.flatMap(reasons),
             ...caveatsOf(t).map((w) => w.message),
             t.problem,
+            heldNote(t),
             earlierNote(t),
             ...currencyNotes(t),
             forced ? "Imported anyway, by your answer." : undefined,

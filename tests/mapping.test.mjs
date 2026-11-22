@@ -1380,14 +1380,28 @@ describe("gifts", () => {
 
   test("when one side can't be imported, neither is", () => {
     const stamped = map(twoFolios([purchase, giftOut()], [giftIn(), charge("2024-06-03", "STAMP_DUTY_TAX", "0.15")]));
-    const heldBack = map(twoFolios([purchase, giftOut()], [giftIn()], {}, { close: "1" }));
     const noHistory = map(twoFolios([giftOut()], [giftIn()], { open: "1000" }), {
       target: (f, s) => ({ ...input().target(f, s), openingCovered: f.folio !== GIVER }),
     });
-    for (const mapping of [stamped, heldBack, noHistory]) {
+    for (const mapping of [stamped, noHistory]) {
       assert.ok(!mapping.transactions.some((t) => t.activity.activityType.startsWith("TRANSFER_")));
       assert.equal(mapping.warnings.filter((w) => w.message === OTHER_SIDE).length, 1);
     }
+  });
+
+  test("a gift with a side whose rows don't add up is held back whole, for each such side's answer", () => {
+    const gift = (mapping) => mapping.transactions.find((t) => t.activity.activityType === "TRANSFER_OUT");
+    const heldBy = (mapping) => gift(mapping).held?.map(({ folio, scheme }) => [folio.folio, scheme.scheme]);
+    const both = twoFolios([purchase, giftOut()], [giftIn()], { close: "1" }, { close: "1" });
+    const one = twoFolios([purchase, giftOut()], [giftIn()], {}, { close: "1" });
+    assert.deepEqual(heldBy(map(one)), [[RECEIVER, "A"]]);
+    assert.ok(gift(map(one)).receiving);
+    assert.equal(map(one).warnings.filter((w) => w.message === OTHER_SIDE).length, 0);
+    assert.deepEqual(heldBy(map(both)), [[GIVER, "A"], [RECEIVER, "A"]]);
+    // Imported with the difference on one side, it waits for the other's answer.
+    const answered = (folio) => ({ target: (f, s) => ({ ...input().target(f, s), importUnbalanced: f.folio === folio }) });
+    assert.deepEqual(heldBy(map(both, answered(GIVER))), [[RECEIVER, "A"]]);
+    assert.equal(heldBy(map(one, answered(RECEIVER))), undefined);
   });
 
   test("both sides confirmed as different Wealthfolio funds are left out", () => {
@@ -1928,23 +1942,32 @@ describe("rows that don't add up to the closing balance", async () => {
   const gap =
     "The rows take the unit balance from 1250 to 2798.066, but the statement's closing balance is 2892.104, 94.038 units apart: a row was probably dropped or misread.";
 
-  test("leave out the fund's rows, with both figures", () => {
+  test("hold back the fund's transactions, with both figures", () => {
     const mapping = map(data);
-    assert.equal(mapping.transactions.length, 13);
-    assert.ok(mapping.transactions.every((t) => t.scheme !== flexi.scheme));
-    // The removed purchase's stamp duty is part of the gap, so it gets no warning of its own.
+    assert.equal(mapping.transactions.length, 38);
+    // Its transactions are made, to find those Wealthfolio has, but held back.
+    const held = mapping.transactions.filter((t) => t.held);
+    assert.equal(held.length, 25);
+    assert.ok(held.every((t) => t.scheme === flexi.scheme && t.held.length === 1 && t.held[0].scheme === flexi && t.held[0].folio === data.folios[0]));
+    assert.ok(mapping.transactions.every((t) => !!t.held === (t.scheme === flexi.scheme)));
+    // The removed purchase's stamp duty is left out on its own, as when the rows are imported anyway.
     assert.deepEqual(
-      mapping.warnings.map((w) => [w.scheme, w.folio, w.rows, w.leftOut, w.unbalanced, w.units, w.message]),
-      [[
-        "Fictiva Flexi Cap Fund - Direct Plan - Growth",
-        "91234567 / 12",
-        [],
-        true,
-        true,
-        { added: "2798.066", closing: "2892.104" },
-        `${gap} None of this fund's rows are imported unless you choose to import it with this difference: then check them against the PDF.`,
-      ]],
+      mapping.warnings.map((w) => [w.section, w.folio, w.rows.map((row) => row.type), w.leftOut, w.unbalanced, w.units, w.message]),
+      [
+        [
+          flexi,
+          "91234567 / 12",
+          [],
+          true,
+          true,
+          { added: "2798.066", closing: "2892.104" },
+          `${gap} None of this fund's rows are imported unless you choose to import it with this difference: then check them against the PDF.`,
+        ],
+        [flexi, "91234567 / 12", ["STAMP_DUTY_TAX"], true, undefined, undefined, "There's no transaction on this day to add this stamp duty to."],
+      ],
     );
+    const outcomes = mapping.outcomes.filter((o) => o.scheme === flexi);
+    assert.deepEqual([outcomes.filter((o) => o.transaction?.held).length, outcomes.filter((o) => o.leftOut?.kind === "row").length, outcomes.length], [25, 1, 26]);
   });
 
   test("the user can import them anyway, with a caveat", () => {
@@ -1954,10 +1977,10 @@ describe("rows that don't add up to the closing balance", async () => {
     assert.equal(mapping.transactions.length, 38);
     assert.equal(format(rows.reduce((sum, t) => add(sum, units(t.activity)), dec(flexi.open))), flexi.close_calculated);
     assert.deepEqual(
-      mapping.warnings.map((w) => [w.leftOut, w.unbalanced ?? false, w.message]),
+      mapping.warnings.map((w) => [w.leftOut, w.section, w.unbalanced ?? false, w.message]),
       [
-        [false, true, `${gap} Its rows are imported with this difference, as you chose: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`],
-        [true, false, "There's no transaction on this day to add this stamp duty to."],
+        [false, flexi, true, `${gap} Its rows are imported with this difference, as you chose: check them against the PDF, and after importing add or correct the missing rows in Wealthfolio.`],
+        [true, flexi, false, "There's no transaction on this day to add this stamp duty to."],
       ],
     );
   });
@@ -1966,7 +1989,7 @@ describe("rows that don't add up to the closing balance", async () => {
     const purchase = tx("2024-01-10", "PURCHASE", "1000.00", "100.000", "10.0000");
     for (const [close, apart] of [["100.005", ""], ["99.995", ""], ["100.006", "0.006"], ["99.994", "0.006"]]) {
       const mapping = map(statement(scheme("A", [purchase], { close, close_calculated: "100.000" })));
-      assert.equal(mapping.transactions.length, apart ? 0 : 1, close);
+      assert.deepEqual(mapping.transactions.map((t) => !!t.held), [!!apart], close);
       assert.deepEqual(
         mapping.warnings.map((w) => w.message.split(":")[0]),
         apart ? [`The rows take the unit balance from 0 to 100, but the statement's closing balance is ${close}, ${apart} units apart`] : [],
@@ -1975,7 +1998,7 @@ describe("rows that don't add up to the closing balance", async () => {
     }
   });
 
-  test("a fund left out still says how to correct earlier imports", () => {
+  test("a fund held back still says how to correct earlier imports, and leaves out rows it can't import for their own reasons", () => {
     const purchase = tx("2024-01-10", "PURCHASE_SIP", "999.95", "99.995", "10.0000");
     const reversal = tx("2024-01-15", "REVERSAL", "-999.95", "-99.995", "10.0000");
     const orphan = tx("2024-02-15", "REVERSAL", "-300.00", "-30.000", "10.0000");
@@ -1988,29 +2011,34 @@ describe("rows that don't add up to the closing balance", async () => {
     });
     assert.deepEqual(mapping.transactions, []);
     assert.deepEqual(
-      mapping.warnings.map((w) => [w.rows.map((row) => row.date), w.leftOut, w.unbalanced ?? false]),
+      mapping.warnings.map((w) => [w.rows.map((row) => row.date), w.leftOut, !!w.unbalanced]),
       [
         [[], true, true],
         [["2024-01-10", "2024-01-15"], true, false],
         [["2024-02-15"], true, false],
         [["2024-04-01", "2024-04-05"], true, false],
+        [["2024-05-01"], true, false],
       ],
     );
     assert.match(mapping.warnings[1].message, /^Wealthfolio has this purchase from an earlier import, but the statement reverses it\. Delete/);
     assert.match(mapping.warnings[2].message, /^This reversal's purchase isn't in the statement/);
     assert.match(mapping.warnings[3].message, /Wealthfolio has the sale or its cash from an earlier import/);
+    assert.equal(mapping.warnings[4].message, "This gift has no NAV, so its value on the day isn't known and it isn't imported.");
+    assert.deepEqual(mapping.outcomes.map((o) => o.leftOut.kind), ["reversal", "reversal", "row", "reversal", "reversal", "row"]);
   });
 
-  test("a merger's other half is left out with the fund", () => {
+  test("a merger with a fund whose rows don't add up is held back whole", () => {
     const out = tx("2024-08-01", "SWITCH_OUT_MERGER", "-1000.00", "-100.000", "10.0000");
     const into = tx("2024-08-01", "SWITCH_IN_MERGER", "1000.00", "50.000", "20.0000");
-    const mapping = map(statement(scheme("A", [out], { close: "1" }), scheme("B", [into])));
-    assert.deepEqual(mapping.transactions, []);
-    assert.deepEqual(
-      mapping.warnings.map((w) => [w.scheme, w.unbalanced ?? false]),
-      [["A", true], ["B", false]],
-    );
-    assert.equal(mapping.warnings[1].message, "The other half of this merger can't be imported, so neither half is.");
+    for (const [a, b, held] of [[{ close: "1" }, {}, ["A"]], [{}, { close: "1" }, ["B"]], [{ close: "1" }, { close: "1" }, ["A", "B"]]]) {
+      const mapping = map(statement(scheme("A", [out], a), scheme("B", [into], b)));
+      const [merger] = mapping.transactions;
+      assert.equal(mapping.transactions.length, 1);
+      assert.ok(merger.arriving);
+      assert.deepEqual(merger.held.map(({ scheme }) => scheme.scheme), held);
+      assert.deepEqual(mapping.warnings.map((w) => [w.scheme, !!w.unbalanced]), held.map((name) => [name, true]));
+      assert.deepEqual(mapping.outcomes.map((o) => o.transaction === merger), [true, true]);
+    }
   });
 });
 

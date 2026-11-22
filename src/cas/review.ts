@@ -28,7 +28,7 @@ export const plannedOf = (plan: PlannedTransaction[]): Planned => new Map(plan.m
 
 /** Whether the import sends the transaction: new, or a possible duplicate the user chose to import anyway. */
 export const sends = (t: PlannedTransaction, importAnyway: (t: PlannedTransaction) => boolean) =>
-  t.status === "new" || ((t.status === "duplicate" || t.status === "existing") && !t.transaction.arriving && importAnyway(t));
+  !t.transaction.held && (t.status === "new" || ((t.status === "duplicate" || t.status === "existing") && !t.transaction.arriving && importAnyway(t)));
 
 /** The units an imported row adds to its fund, or takes away. A cash row has none. */
 export function rowUnits(row: ActivityImport): Dec | undefined {
@@ -123,9 +123,8 @@ export function fundGroups({
       groupOf.set(scheme, group);
     }
   }
-  const unbalanced = mapping.warnings.filter((w) => w.unbalanced && !w.leftOut);
+  const unbalanced = new Set(mapping.warnings.filter((w) => w.unbalanced && !w.leftOut).map((w) => w.section));
   for (const group of groups.values()) {
-    group.unbalanced = group.schemes.some(({ folio, scheme }) => unbalanced.some((w) => w.amc === folio.amc && w.folio === folio.folio && w.scheme === scheme.scheme));
     const held = unitsHeld(existing, group.accountId, group.asset, funds, (d) => d <= to, timeZone);
     group.after = held;
   }
@@ -140,6 +139,7 @@ export function fundGroups({
     }
     if (sent(t)) {
       group.sent++;
+      group.unbalanced ||= unbalanced.has(outcome.scheme);
       if (t.status !== "new") group.forced++;
     } else if (t.status === "existing") group.before++;
     else group.other++;
@@ -187,9 +187,9 @@ export interface Breakdown {
   skipped: number;
   /** In folios set to Don't import. */
   notImported: number;
-  /** In funds whose rows don't add up, waiting for the user's answer. */
+  /** Held back by funds whose rows don't add up, waiting for the user's answer. */
   unbalanced: number;
-  /** In funds whose rows don't add up, skipped by the user's answer. */
+  /** Held back by funds whose rows don't add up, skipped by the user's answer. */
   skippedUnbalanced?: number;
   /** Left out for a reason of their own: a reversal, a row the add-on can't import, a transaction Wealthfolio refuses. */
   leftOut: { row: RowOutcome; reason: string; kind: "reversal" | "row" }[];
@@ -201,7 +201,7 @@ export function breakdown({
   sent,
   why,
   duplicate,
-  unbalancedAnswer,
+  skipsHeld,
 }: {
   mapping: Mapping;
   planned: Planned;
@@ -210,8 +210,8 @@ export function breakdown({
   why: (folio: CasFolio, scheme: CasScheme) => Waiting;
   /** What became of a possible duplicate; undefined for any other transaction. Without it, each one waits. */
   duplicate?: (t: PlannedTransaction) => DuplicateState | undefined;
-  /** The answer for a fund whose rows don't add up: false skipped it; undefined while it waits. */
-  unbalancedAnswer?: (folio: CasFolio, scheme: CasScheme) => boolean | undefined;
+  /** Whether the user skipped any fund holding back the transaction. */
+  skipsHeld?: (t: PlannedTransaction) => boolean;
 }): Breakdown {
   const b: Breakdown = {
     total: 0, toImport: 0, before: 0, duplicates: 0, skippedDuplicates: 0, importedDuplicates: 0, otherDuplicates: 0,
@@ -223,16 +223,17 @@ export function breakdown({
     if (leftOut) {
       if (leftOut.kind === "unchosen") b[why(outcome.folio, outcome.scheme)]++;
       else if (leftOut.kind === "opening") b.earlier++;
-      else if (leftOut.kind === "unbalanced") {
-        if (unbalancedAnswer?.(outcome.folio, outcome.scheme) === false) b.skippedUnbalanced!++;
-        else b.unbalanced++;
-      } else b.leftOut.push({ row: outcome, reason: leftOut.reason, kind: leftOut.kind === "reversal" ? "reversal" : "row" });
+      else b.leftOut.push({ row: outcome, reason: leftOut.reason, kind: leftOut.kind === "reversal" ? "reversal" : "row" });
       continue;
     }
     const t = planned.get(outcome.transaction!);
     const asked = !t ? undefined : duplicate ? duplicate(t) : t.status === "duplicate" ? "open" : undefined;
     if (!t) b.leftOut.push({ row: outcome, reason: "This row isn't imported.", kind: "row" });
-    else if (asked === "imported") b.importedDuplicates!++;
+    else if (t.status === "held") {
+      // Skipping either side of a merger or gift whose rows don't add up skips the transaction.
+      if (skipsHeld?.(t)) b.skippedUnbalanced!++;
+      else b.unbalanced++;
+    } else if (asked === "imported") b.importedDuplicates!++;
     else if (sent(t)) b.toImport++;
     else if (asked === "open") b.duplicates++;
     else if (asked === "skipped") b.skippedDuplicates!++;
@@ -241,6 +242,18 @@ export function breakdown({
     else b.leftOut.push({ row: outcome, reason: invalidReason(t), kind: "row" });
   }
   return b;
+}
+
+/**
+ * The parts of the statement whose rows don't add up, but have at least one transaction and
+ * Wealthfolio has them all. A merger's or gift's transaction counts for both its funds.
+ */
+export function settledUnbalanced(mapping: Mapping, planned: Planned) {
+  return new Set(mapping.warnings.flatMap(({ unbalanced, section }) => {
+    if (!unbalanced) return [];
+    const own = mapping.outcomes.flatMap((o) => o.scheme === section && o.transaction ? [o.transaction] : []);
+    return own.length > 0 && own.every((t) => planned.get(t)?.status === "existing") ? [section] : [];
+  }));
 }
 
 /** Why Wealthfolio can't import a planned transaction. */
