@@ -1005,15 +1005,18 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
       for (const [key, id] of choices) window.host.storage.set(key, id);
     }, choices);
     const restoreChoices = (saved) => hosted((saved) => { window.host.storage = new Map(Object.entries(saved)); }, saved);
+    // Lets React render what a click or a host change started.
+    const painted = () => hosted(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     // The window is taller than the frame, so a select's list opened near the frame's bottom stays in view.
+    // Tables become stacked lists on a media query's change event, at the frame's next rendering update:
+    // the frame then renders at its new width before anything is measured (#346).
     const sizeFrame = async (width) => {
       await tab.setViewportSize({ width: 1280, height: 1000 });
       await tab.evaluate((width) => {
         Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
       }, width);
+      await painted();
     };
-    // Lets React render what a click or a host change started.
-    const painted = () => hosted(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
     // Waits until each fund is looked up and what will be imported is worked out.
     const dSettled = async () => {
       await painted();
@@ -2533,13 +2536,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     }, unindexedAside);
     // The Review screen shows ready holdings as a table from Tailwind's `sm` width, 40rem of the add-on's
     // frame, and as a list below it. The test page's frame is otherwise the default 300 by 150.
-    const frameWidth = async (width) => {
-      // The window is taller than the frame, so a select's list opened near the frame's bottom stays in view.
-      await tab.setViewportSize({ width: 1280, height: 1000 });
-      await tab.evaluate((width) => {
-        Object.assign(document.querySelector("iframe").style, { width: `${width}px`, height: "900px" });
-      }, width);
-    };
+    const frameWidth = sizeFrame;
     await frameWidth(1000);
     const reviewHeading = frame.getByRole("heading", { name: /^Holdings on / });
     const anotherFile = frame.getByRole("button", { name: "Use another file", exact: true });
