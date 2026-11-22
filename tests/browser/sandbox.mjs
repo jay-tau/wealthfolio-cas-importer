@@ -148,8 +148,10 @@ let parts;
 let checkTimes;
 const part = (name) => {
   if (name === undefined) {
-    const line = Number(/:(\d+):\d+\)?$/.exec(new Error().stack.split("\n")[2])[1]);
-    name = `line ${line + 1}: ${source[line].trim().replace(/^\/\/ ?/, "").slice(0, 70)}`;
+    const caller = new Error().stack?.split("\n")[2];
+    const line = Number(caller?.match(/:(\d+):\d+\)?$/)?.[1]);
+    const comment = source[line]?.trim().match(/^\/\/ ?(.*)$/)?.[1];
+    name = comment ? `line ${line + 1}: ${comment.slice(0, 70)}` : "Unnamed part";
   }
   parts.push([name, performance.now()]);
 };
@@ -165,9 +167,11 @@ const timed = (name, check) => async (...args) => {
 const seconds = (ms) => `${(ms / 1000).toFixed(1).padStart(7)} s`;
 const reportTimes = (engine) => {
   const end = performance.now();
-  console.log(`${engine}: ${seconds(end - parts[0][1]).trim()} in all (#346)`);
-  parts.forEach(([name, start], i) => console.log(`  ${seconds((parts[i + 1]?.[1] ?? end) - start)}  ${name}`));
-  for (const [name, [total, calls]] of checkTimes) console.log(`  ${seconds(total)}  in ${name}, ${calls} calls`);
+  const lines = [`${engine}: ${seconds(end - parts[0][1]).trim()} in all (#346)`];
+  parts.forEach(([name, start], i) => lines.push(`  ${seconds((parts[i + 1]?.[1] ?? end) - start)}  ${name}`));
+  for (const [name, [total, calls]] of checkTimes) lines.push(`  ${seconds(total)}  in ${name}, ${calls} calls`);
+  // Wait for the report to reach the pipe before process.exit().
+  return new Promise((resolve) => process.stdout.write(`${lines.join("\n")}\n`, resolve));
 };
 
 const expected = JSON.parse(await readFile("tests/fixtures/made-up-cas.json", "utf8"));
@@ -175,12 +179,7 @@ const engines = { chromium, firefox, webkit };
 const sandboxUrl = "http://sandbox.test/";
 const noCspUrl = `${sandboxUrl}no-csp`;
 let failed = false;
-for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium", "firefox"]) {
-  parts = [];
-  checkTimes = new Map();
-  part("Launching the browser");
-  const browser = await engines[name].launch();
-  const engine = `${name} ${browser.version()}`;
+const runBrowser = async (browser, engine) => {
   const tab = await browser.newPage();
   tab.setDefaultTimeout(30_000);
   await tab.addInitScript(watchInput);
@@ -5312,8 +5311,24 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     failed = true;
     console.log("  FAILED: CSP messages:", violations);
   }
-  part("Closing the browser");
-  await browser.close();
-  reportTimes(engine);
+};
+for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium", "firefox"]) {
+  parts = [];
+  checkTimes = new Map();
+  part("Launching the browser");
+  let browser;
+  let engine = name;
+  try {
+    browser = await engines[name].launch();
+    engine = `${name} ${browser.version()}`;
+    await runBrowser(browser, engine);
+  } finally {
+    if (browser) part("Closing the browser");
+    try {
+      await browser?.close();
+    } finally {
+      await reportTimes(engine);
+    }
+  }
 }
 process.exit(failed ? 1 : 0);
