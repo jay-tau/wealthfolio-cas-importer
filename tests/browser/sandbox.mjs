@@ -88,6 +88,20 @@ const watchInput = () => {
   for (const type of ["pointerdown", "pointerup", "mousedown", "mouseup", "click", "keydown", "focusin"]) {
     document.addEventListener(type, (e) => push(`${type} ${name(e.target)}${e.target?.disabled ? " (disabled)" : ""}${at(e)} ${page()}`), true);
   }
+  // TEMPORARY census (#252): every press and its release, with scrollY, the document's height and the
+  // pressed element's top at each.
+  const presses = (window.presses = []);
+  let down = null;
+  const geo = (el) => ({ sy: Math.round(scrollY), h: document.documentElement.scrollHeight, top: Math.round(el.getBoundingClientRect().top) });
+  document.addEventListener("pointerdown", (e) => {
+    down = { t: Math.round(performance.now()), target: name(e.target), el: e.target, x: Math.round(e.clientX), y: Math.round(e.clientY), ...geo(e.target) };
+  }, true);
+  document.addEventListener("pointerup", (e) => {
+    if (!down) return;
+    const { el, ...rest } = down;
+    presses.push({ ...rest, up: name(e.target), at: geo(el), dt: Math.round(performance.now()) - down.t });
+    down = null;
+  }, true);
   // Scroll events don't bubble, but reach the document's capture listeners, an inner scroller's included.
   document.addEventListener("scroll", (e) => push(`scroll ${e.target === document ? "document" : name(e.target)} ${page()}`), { capture: true, passive: true });
   new MutationObserver((records) => {
@@ -5309,6 +5323,17 @@ const runBrowser = async (browser, engine) => {
     failed = true;
     console.log(`  FAILED: ${engine} ${error.stack}`);
     await reportState(tab, sandboxUrl, errors);
+  }
+  // TEMPORARY census (#252): presses whose release landed elsewhere or whose page moved in between.
+  try {
+    const presses = await within(tab.frames()[1].evaluate(() => window.presses));
+    if (Array.isArray(presses)) {
+      const moved = presses.filter((p) => p.up !== p.target || p.at.sy !== p.sy || p.at.h !== p.h || p.at.top !== p.top);
+      console.log(`CENSUS ${engine}: ${presses.length} presses, ${moved.length} released elsewhere or moved`);
+      for (const p of moved) console.log("CENSUS-MOVED", JSON.stringify(p));
+    } else console.log("CENSUS unavailable", presses);
+  } catch (error) {
+    console.log("CENSUS failed", error.message);
   }
   // Pyodide refuses a classic Worker when its importScripts("data:...") probe works, which the CSP
   // would otherwise be all that prevents.
