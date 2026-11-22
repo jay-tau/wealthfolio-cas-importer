@@ -473,9 +473,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     // Tab reaches each control with its whole ring, and its whole touch area inside the frame: by
     // default at 744 px and at the rule's 1,024 px, and at 1,100 px without it, 900 px tall, in light and
     // dark, and at the first width with Wealthfolio main's rule, which clips only sideways. The page lets
-    // those boxes reach past instead and clips sideways itself, so nothing that shows may reach past its
-    // sides, and no text past the row that holds it, long unbroken text included. Then the frame gets
-    // its size, scroll and focus back. Returns the controls Tab reached in each pass.
+    // rings and touch areas reach past those boxes and clips all four sides itself (#344). Nothing that
+    // shows may reach past the page's sides, and no text past the row that holds it, long unbroken text
+    // included. Then the frame gets its size, scroll and focus back. Returns the controls Tab reached
+    // in each pass.
     const ringsWhole = async (what, { widths = [744, 1024, 1100], height = 900 } = {}) => {
       const passes = [
         ...widths.flatMap((width) => ["light", "dark"].map((theme) => ({ width, theme, rule: "3.13.0" }))),
@@ -533,6 +534,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
               return shown.get(box);
             };
             const out = [];
+            const { overflowX, overflowY } = getComputedStyle(page);
+            if (overflowX !== "clip" || overflowY !== "clip") {
+              out.push(`the page needs overflow: clip (#344), got overflow-x: ${overflowX} and overflow-y: ${overflowY}`);
+            }
             const walker = document.createTreeWalker(page, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT);
             for (let node = walker.nextNode(); node; node = walker.nextNode()) {
               const text = node.nodeType === Node.TEXT_NODE;
@@ -598,10 +603,9 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
               const cuts = areas.flatMap(([area, box, from]) => {
                 const out = [];
                 for (let box2 = from.parentElement; box2 !== document.body; box2 = box2.parentElement) {
-                  // A touch area can't reach past the frame, so nor past the page, which spans it.
-                  if (area === "touch area" && box2 === page) break;
                   const s = getComputedStyle(box2);
-                  const x = s.overflowX !== "visible";
+                  // The frame already limits touch areas sideways. Check the page's top and bottom.
+                  const x = (area === "ring" || box2 !== page) && s.overflowX !== "visible";
                   const y = s.overflowY !== "visible";
                   if (!x && !y) continue;
                   const b = box2.getBoundingClientRect();
@@ -644,7 +648,7 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
         }, scrolledBefore);
         await focusedBefore.evaluate((element) => (element === document.body ? document.activeElement.blur() : element.focus()));
       }
-      assert.deepEqual(cuts, [], `${what}: every focus ring and touch area is whole`);
+      assert.deepEqual(cuts, [], `${what}: the page clips both ways and every focus ring and touch area is whole`);
       return reaches;
     };
     // A click outside the add-on while the page is locked, such as on Wealthfolio's own menu, keeps

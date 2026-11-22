@@ -24,7 +24,9 @@ import { HoldingsImport, holdingItems } from "./holdings-import";
  * touch area, with negative insets of 12 px sideways and 8 px vertically. On this page they reach past
  * instead, as on Wealthfolio's own form rows and settings lists. A box with an overflow of its own
  * keeps it, and each keeps its scrolling box's zero automatic minimum size; explicit size utilities
- * still win. The page itself clips sideways, so nothing can make the frame scroll sideways.
+ * still win. The page clips its sides so its content can't make the frame scroll sideways. It clips
+ * its top and bottom too: with `overflow-x: clip` alone, Wealthfolio's Linux desktop app (WebKitGTK
+ * 2.54.2) showed black bands across the Review screen's bottom bar after a statement was read (#344).
  */
 const UNCLIPPED = `@media (max-width: 1024px) {
   [data-cas-importer] :is(.flex, .grid):not([class*="overflow"]) {
@@ -217,7 +219,7 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   const reviewing = statement && remembered && accounts ? (holdings ? "holdings" : data ? "detailed" : null) : null;
 
   return (
-    <Page data-cas-importer="" style={{ overflowX: "clip" }}>
+    <Page data-cas-importer="" style={{ overflow: "clip" }}>
       <style>{UNCLIPPED}</style>
       <PageHeader heading="CAS Importer (India)" />
       <PageContent>
