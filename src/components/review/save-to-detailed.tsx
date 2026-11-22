@@ -26,6 +26,8 @@ export interface FundsBox {
 
 const NOT_TRANSACTIONS = "tracks holdings. Transactions imported there wouldn't change its holdings";
 const NOT_TRANSFERS = "tracks holdings. Transfers imported there wouldn't change its cash";
+/** Why a remembered credit card isn't the funds' account: Wealthfolio refuses purchases, sales and dividends there. */
+export const NOT_FOR_FUNDS = "is a credit card. Credit cards can't hold fund purchases";
 export const NO_TRANSFERS = "None: don't add bank transfers";
 /** What a bank account is for, tied to its select. */
 export const BANK_HINT = "Purchases transfer from this account; sales and cash dividends transfer back to it.";
@@ -38,12 +40,13 @@ export const folioName = (folio: CasFolio) => `${folio.amc} folio ${folio.folio}
  * account for its funds and the bank account for their purchases and payouts, and under Save part of
  * it to another account, each folio's own account and bank account. A folio without a PAN has a box
  * of its own. Each funds' select offers a new account of its own, created when the transactions are
- * imported; bank accounts are existing ones. Each select's id is its choice's storage key. `checks`
- * gives the bank matches shown right under the bank choice that set them.
+ * imported, and no credit card; bank accounts are existing ones. Each select's id is its choice's
+ * storage key. `checks` gives the bank matches shown right under the bank choice that set them.
  */
 export function SaveToDetailed({
   boxes,
   targets,
+  funds,
   labels,
   proposed,
   newLine,
@@ -59,8 +62,10 @@ export function SaveToDetailed({
   partId,
 }: {
   boxes: FundsBox[];
-  /** Accounts transactions can go to today: active, unarchived, tracking transactions. */
+  /** Accounts transactions can go to today, for the bank selects: active, unarchived, tracking transactions. */
   targets: Account[];
+  /** Accounts the funds can go to, for the funds' selects: `targets` without credit cards. */
+  funds: Account[];
   /** How the screen names each account: an account another one shares its name with is told apart. */
   labels: ReadonlyMap<string, AccountLabel>;
   /** The new account each funds' select offers, by key, until it's created. */
@@ -84,11 +89,11 @@ export function SaveToDetailed({
   checks: (bankChoiceKey: string) => ReactNode;
   partId: string;
 }) {
-  const nameOf = (key: string) => {
+  const nameOf = (key: string, accounts: Account[]) => {
     const id = values[key];
     const account = proposed(key);
     if (isProposed(id)) return account && newLabel(account);
-    return targets.some((a) => a.id === id) ? labels.get(id!)?.text : undefined;
+    return accounts.some((a) => a.id === id) ? labels.get(id!)?.text : undefined;
   };
   const isNew = (key: string) => isProposed(values[key]) && values[key] === proposed(key)?.id;
   const heading = (
@@ -127,18 +132,19 @@ export function SaveToDetailed({
       </div>
     );
   };
-  // What numbers the accounts the screen names, read with each select when the lists number one.
+  // What numbers the accounts the screen names, read with each select whose list numbers one.
   const noteId = `${partId}-numbered`;
-  const describedBy = numbers(targets, labels) ? noteId : undefined;
+  const fundsDescribedBy = numbers(funds, labels) ? noteId : undefined;
+  const bankDescribedBy = numbers(targets, labels) ? noteId : undefined;
   const described = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       {heading}
       <NumberedNote id={noteId} accounts={targets} named={Object.values(ignored).flatMap((i) => i.ids ?? [])} labels={labels} />
       {boxes.map((box) => {
-        const account = values[box.key] === LEFT_OUT ? "Don't import" : nameOf(box.key);
+        const account = values[box.key] === LEFT_OUT ? "Don't import" : nameOf(box.key, funds);
         const bank = values[bankKey(box.key)];
-        const bankName = bank === "" || bank === NO_BANK ? "None" : nameOf(bankKey(box.key));
+        const bankName = bank === "" || bank === NO_BANK ? "None" : nameOf(bankKey(box.key), targets);
         return (
           <div key={box.key} role="group" aria-labelledby={`${partId}-${box.key}-title`} className="grid gap-3 rounded-lg border p-4">
             <div className="grid gap-1">
@@ -148,10 +154,10 @@ export function SaveToDetailed({
                 </Label>
                 <AccountSelect
                   id={box.key}
-                  accounts={targets}
+                  accounts={funds}
                   labels={labels}
                   proposed={proposed(box.key)}
-                  describedBy={describedBy}
+                  describedBy={fundsDescribedBy}
                   value={values[box.key]}
                   onChange={(id) => onChange(box.key, id)}
                   leaveOut={LEFT_OUT}
@@ -175,7 +181,7 @@ export function SaveToDetailed({
                   value={values[bankKey(box.key)]}
                   onChange={(id) => onChange(bankKey(box.key), id)}
                   inherit={NO_TRANSFERS}
-                  describedBy={described(hint, describedBy)}
+                  describedBy={described(hint, bankDescribedBy)}
                 />
               ),
             )}
@@ -202,10 +208,10 @@ export function SaveToDetailed({
                               </Label>
                               <AccountSelect
                                 id={key}
-                                accounts={targets}
+                                accounts={funds}
                                 labels={labels}
                                 proposed={proposed(key)}
-                                describedBy={describedBy}
+                                describedBy={fundsDescribedBy}
                                 value={values[key]}
                                 onChange={(id) => onChange(key, id)}
                                 inherit={`Same as above${account ? ` (${account})` : ""}`}
@@ -232,7 +238,7 @@ export function SaveToDetailed({
                                 leaveOut={NO_BANK}
                                 leaveOutLabel={NO_TRANSFERS}
                                 leaveOutFirst
-                                describedBy={described(hint, describedBy)}
+                                describedBy={described(hint, bankDescribedBy)}
                               />
                             ),
                           )}

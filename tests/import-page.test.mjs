@@ -199,6 +199,37 @@ test("an unanswered difference under a fund house's names stays for the next rea
   assert.deepEqual(Object.fromEntries(data), stored);
 });
 
+test("a hidden and archived card remembered for funds explains both reasons to choose again (#351)", async () => {
+  const bank = choices.bankKey(pan());
+  const { api, read } = await page({ [pan()]: "card", [bank]: "card" }, "Bandhan Mutual Fund");
+  api.accounts.getAll = async () => [...ACCOUNTS, account("card", "Visa card", { accountType: "CREDIT_CARD", isActive: false, isArchived: true })];
+  const review = await read();
+  const { ChooseAgain } = await server.ssrLoadModule("/src/components/account-choices.tsx");
+  const warning = (key) => ChooseAgain({ ignored: review.unavailable[key], mode: "tracks holdings" }).props.children.join("");
+  assert.equal(warning(pan()), "Chosen before: Visa card, which is hidden and archived in Wealthfolio and is a credit card. Credit cards can't hold fund purchases, so choose again.");
+  assert.equal(warning(bank), "Chosen before: Visa card, which is hidden and archived in Wealthfolio, so choose again.");
+});
+
+test("differing choices under a fund house's names explain the credit card only for funds (#351)", async () => {
+  const old = printedKey("IDFC Mutual Fund", fixture.folios[0].folio);
+  const own = printedKey("Bandhan Mutual Fund", fixture.folios[0].folio);
+  const bank = choices.bankKey;
+  const stored = { [own]: "mf", [old]: "card", [bank(own)]: "bank", [bank(old)]: "card" };
+  const { api, read } = await page(stored, "Bandhan Mutual Fund");
+  api.accounts.getAll = async () => [...ACCOUNTS, account("card", "Visa card", { accountType: "CREDIT_CARD" })];
+  const review = await read();
+  assert.equal(own in review.accountChoices, false);
+  assert.equal(bank(own) in review.accountChoices, false);
+  assert.deepEqual(review.unavailable[own].under, [
+    { name: "Bandhan Mutual Fund", choice: "Mutual funds" },
+    { name: "IDFC Mutual Fund", choice: "Visa card (credit card that can't hold fund purchases)" },
+  ]);
+  assert.deepEqual(review.unavailable[bank(own)].under, [
+    { name: "Bandhan Mutual Fund", choice: "Savings" },
+    { name: "IDFC Mutual Fund", choice: "Visa card" },
+  ]);
+});
+
 test("a later account-creation callback cannot replay a migrated choice over the user's answer", async () => {
   const old = printedKey("IDFC Mutual Fund", fixture.folios[0].folio);
   for (const [keyOf, answer] of [[(key) => key, "mf"], [(key) => key, ""], [choices.bankKey, ""]]) {

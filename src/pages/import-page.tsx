@@ -8,6 +8,7 @@ import { type CasData, isDepository, type Statement } from "../cas/types";
 import type { Ignored } from "../components/account-choices";
 import { AmfiBanner, useAmfiCheck } from "../components/amfi-banner";
 import { type FundChoice, fundsOf } from "../components/fund-choices";
+import { NOT_FOR_FUNDS } from "../components/review/save-to-detailed";
 import { StatementForm } from "../components/statement-form";
 import { accountLabels } from "../lib/account-labels";
 import {
@@ -82,27 +83,36 @@ export function ImportPage({ ctx, location }: { ctx: AddonContext; location?: Ad
   // How the review names each account: told apart from another account of the same name.
   const labels = allAccounts && accountLabels(allAccounts);
   const stateOf = (account: Account) => [!account.isActive && "hidden", account.isArchived && "archived"].filter(Boolean).join(" and ");
+  const cardForFunds = (key: string, account: Account) => detailed && !key.startsWith("bank-") && account.accountType === "CREDIT_CARD";
   const unavailable: Record<string, Ignored> = Object.fromEntries(
     Object.entries(remembered ?? {}).flatMap(([key, id]) => {
       // Empty goes with the PAN or the statement.
       if (!allAccounts || !id || key in accountChoices) return [];
       const account = allAccounts.find((a) => a.id === id);
-      return [[key, account ? { ids: [account.id], name: labels?.get(account.id)?.text ?? account.name, state: stateOf(account) } : {}]];
+      if (!account) return [[key, {}]];
+      return [[key, {
+        ids: [account.id], name: labels?.get(account.id)?.text ?? account.name, state: stateOf(account),
+        ...(cardForFunds(key, account) && { why: NOT_FOR_FUNDS }),
+      }]];
     }),
   );
   // A folio's choices that differ under its fund house's names are ignored too, and the user chooses again.
-  const choiceName = (value: string) => {
+  const choiceName = (key: string, value: string) => {
     if (value === LEFT_OUT) return "Don't import";
     if (value === NO_BANK) return "None";
     const account = allAccounts?.find((a) => a.id === value);
     if (!account) return "an account that's no longer available";
     const state = stateOf(account);
-    return `${labels?.get(account.id)?.text ?? account.name}${state ? ` (${state} in Wealthfolio)` : ""}`;
+    const details = [
+      state && `${state} in Wealthfolio`,
+      cardForFunds(key, account) && "credit card that can't hold fund purchases",
+    ].filter(Boolean);
+    return `${labels?.get(account.id)?.text ?? account.name}${details.length ? ` (${details.join(", ")})` : ""}`;
   };
   for (const [key, { found }] of Object.entries(renamed.current)) {
     if (found) {
       const ids = found.flatMap(({ value }) => (allAccounts?.some((a) => a.id === value) ? [value] : []));
-      unavailable[key] = { ids, under: found.map(({ name, value }) => ({ name, choice: choiceName(value) })) };
+      unavailable[key] = { ids, under: found.map(({ name, value }) => ({ name, choice: choiceName(key, value) })) };
     }
   }
   // Where a choice was found under a fund house's former name, by key.

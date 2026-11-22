@@ -71,7 +71,7 @@ import { StatementWarnings } from "../components/review/statement-warnings";
 import { SearchDown } from "../components/review/trouble";
 import { Disclosure, LinkButton, shownName, useWide, WrapButton } from "../components/review/parts";
 import { AnsweredLine, answerWords, nothingFound, Picker, pickerIds, QuestionCard } from "../components/review/question";
-import { folioName, type FundsBox, SaveToDetailed } from "../components/review/save-to-detailed";
+import { folioName, type FundsBox, NOT_FOR_FUNDS, SaveToDetailed } from "../components/review/save-to-detailed";
 import { useHoldingSearches } from "../components/review/search";
 import { bankKey, type ChosenFund, folioKey, fundKey, LEFT_OUT, NO_BANK, panKey } from "../lib/choices";
 import { fundName, readableName } from "../lib/fund-name";
@@ -309,8 +309,10 @@ export function DetailedImport({
   const uid = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const id = (part: string) => `${uid}-${part.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
   // Wealthfolio values an account that tracks holdings from its snapshots alone, so transactions go to
-  // the others, which include NOT_SET.
+  // the others, which include NOT_SET. A bank account can be any of them.
   const targets = accounts.filter((a) => a.trackingMode !== "HOLDINGS");
+  // Wealthfolio refuses purchases, sales and dividends in a credit card account, so funds go to the others.
+  const funds = targets.filter((a) => a.accountType !== "CREDIT_CARD");
   // The accounts this review created, by proposed ID: importing again goes into them, never creating another.
   const created = useRef(new Map<string, Account>());
   // How the screen names each account: told apart from another account of the same name.
@@ -386,20 +388,23 @@ export function DetailedImport({
   );
   const proposed = (key: string): Proposed => ({ id: proposedId(key), name: proposalNames.get(key) ?? "" });
   // Accounts this review creates don't change what it preselected.
-  const proposeNew = useRef(targets.length === 0).current;
+  const proposeNew = useRef(funds.length === 0).current;
 
   // Like a hidden, archived or missing one, a remembered account that tracks holdings is ignored, and
-  // its row says why.
+  // so is a credit card for funds; its row says why.
   const usable = Object.fromEntries(
     Object.entries(accountChoices).filter(([key, value]) =>
-      key.startsWith("bank-") ? value === NO_BANK || targets.some((a) => a.id === value) : value === LEFT_OUT || targets.some((a) => a.id === value)),
+      key.startsWith("bank-") ? value === NO_BANK || targets.some((a) => a.id === value) : value === LEFT_OUT || funds.some((a) => a.id === value)),
   );
   const ignored: Record<string, Ignored> = {
     ...unavailable,
     ...Object.fromEntries(
       Object.entries(accountChoices).flatMap(([key, value]) => {
-        const found = accounts.find((a) => a.id === value && a.trackingMode === "HOLDINGS");
-        return found ? [[key, { ids: [found.id], name: labels.get(found.id)?.text ?? found.name }]] : [];
+        if (key in usable) return [];
+        const found = accounts.find((a) => a.id === value);
+        if (!found) return [];
+        const card = found.trackingMode !== "HOLDINGS" && found.accountType === "CREDIT_CARD";
+        return [[key, { ids: [found.id], name: labels.get(found.id)?.text ?? found.name, ...(card && { why: NOT_FOR_FUNDS }) }]];
       }),
     ),
   };
@@ -461,7 +466,7 @@ export function DetailedImport({
     if (key in ignored) return null;
     const value = usable[key];
     if (value !== undefined) return boxBankKeys.has(key) && value === NO_BANK ? "" : value;
-    // With no account that tracks transactions when the review starts, each box's new one is chosen.
+    // When the review starts without an account that can take funds, choose the box's new one.
     return boxKeys.has(key) ? (proposeNew ? proposedId(key) : null) : "";
   };
   /** Where a folio's transactions go: an account, `LEFT_OUT`, or undefined until chosen. */
@@ -2422,6 +2427,7 @@ export function DetailedImport({
       <SaveToDetailed
         boxes={boxes}
         targets={targets}
+        funds={funds}
         labels={labels}
         proposed={(key) => created.current.has(proposedId(key)) ? undefined : proposed(key)}
         newLine={newLine}

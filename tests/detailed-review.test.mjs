@@ -3351,6 +3351,76 @@ test("a remembered bank account of another account type that tracks transactions
   assert.equal(saveTo(run).remembered, "all");
 });
 
+// #351: Wealthfolio refuses a fund purchase in a credit card account, but takes a transfer to or from one.
+const card = { ...account("card", "Visa card"), accountType: "CREDIT_CARD" };
+/** Mutual funds, a Securities account, Savings, a Cash one, and Visa card, a credit card, all tracking transactions. */
+const WITH_CARD = [{ ...account("mf", "Mutual funds"), accountType: "SECURITIES" }, { ...account("bank", "Savings"), accountType: "CASH" }, card];
+/** Save to's selects by their choice's key, and its lines that ask to choose again, as shown. */
+function saveToView(run) {
+  const view = nodes(run.tree).find((n) => n.type?.name === "SaveToDetailed");
+  const shown = nodes(view.type(view.props));
+  return {
+    selects: Object.fromEntries(shown.filter((n) => n.type?.name === "AccountSelect").map((n) => [n.props.id, n.props])),
+    again: shown.filter((n) => n.type?.name === "ChooseAgain").map((n) => textOf(n.type(n.props))).filter(Boolean),
+  };
+}
+
+test("the funds' selects leave out a credit card, which the bank selects keep (#351)", async () => {
+  const { run, props, keys } = setup();
+  props.accounts = props.allAccounts = WITH_CARD;
+  await run.flush();
+  saveTo(run).onOpen(keys.pan, true);
+  await run.flush();
+  const { selects, again } = saveToView(run);
+  const offered = (key) => selects[key].accounts.map((a) => a.id);
+  // The PAN's and a folio's funds, and the PAN's and the folio's bank accounts.
+  for (const key of [keys.pan, keys.fictiva]) assert.deepEqual(offered(key), ["mf", "bank"], key);
+  for (const key of [keys.pan, keys.fictiva].map(choices.bankKey)) assert.deepEqual(offered(key), ["mf", "bank", "card"], key);
+  assert.deepEqual(again, []);
+  assert.equal(saveTo(run).values[keys.pan], "mf");
+});
+
+test("a remembered credit card for funds asks again, saying why, while one for bank transfers is kept (#351)", async () => {
+  const pan = choices.panKey("ABCDE1234F");
+  const { fictiva } = keys0();
+  const { run, props, keys, remembers, imported } = setup({ remembered: { [pan]: "card", [choices.bankKey(pan)]: "card", [fictiva]: "card" } });
+  props.accounts = props.allAccounts = WITH_CARD;
+  await run.flush();
+  for (const key of [keys.pan, keys.fictiva]) {
+    assert.equal(saveTo(run).values[key], null, key);
+    assert.deepEqual(saveTo(run).ignored[key], { ids: ["card"], name: "Visa card", why: "is a credit card. Credit cards can't hold fund purchases" }, key);
+  }
+  assert.equal(saveTo(run).values[choices.bankKey(keys.pan)], "card");
+  assert.equal(saveTo(run).ignored[choices.bankKey(keys.pan)], undefined);
+  assert.equal(saveTo(run).remembered, "none");
+  assert.deepEqual(footer(run), ["1 question left: the account choice before importing."]);
+  assert.equal(find(run, "Footer").action.disabled, true);
+  const warning = "Chosen before: Visa card, which is a credit card. Credit cards can't hold fund purchases, so choose again.";
+  saveTo(run).onOpen(keys.pan, true);
+  await run.flush();
+  assert.deepEqual(saveToView(run).again, [warning, warning]);
+  // The PAN's choice leaves the folio's as it was: it's still to choose again.
+  saveTo(run).onChange(keys.pan, "mf");
+  await run.flush();
+  assert.equal(saveTo(run).values[keys.fictiva], null);
+  const { selects, again } = saveToView(run);
+  assert.deepEqual(again, [warning]);
+  assert.equal(selects[keys.fictiva].inherit, "Same as above (Mutual funds)");
+  assert.equal(find(run, "Footer").action.disabled, true);
+  saveTo(run).onChange(keys.fictiva, "");
+  await run.flush();
+  assert.deepEqual(saveToView(run).again, []);
+  assert.equal(find(run, "Footer").action.disabled, false);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  const bankRows = imported[0].filter((r) => r.accountId === "card");
+  assert.deepEqual([...new Set(bankRows.map((r) => r.activityType))].sort(), ["TRANSFER_IN", "TRANSFER_OUT"]);
+  assert.ok(bankRows.every((r) => r.symbol === ""));
+  assert.deepEqual([...new Set(imported[0].filter((r) => r.accountId !== "card").map((r) => r.accountId))], ["mf"]);
+  // The new choices replace the card, the folio's Same as above included.
+  assert.deepEqual(new Map(remembers.at(-1).accounts), new Map([[keys.pan, "mf"], [keys.fictiva, ""]]));
+});
+
 test("answering a fund's question moves its transactions from waiting to import", async () => {
   const { run, props } = setup({ entries: [] });
   const overnight = Object.keys(props.fundChoices).find((key) => !key.startsWith("isin:"));
@@ -3511,6 +3581,23 @@ test("with an account for transactions but none remembered, nothing is preselect
   find(run, "Footer").action.onClick();
   await run.flush();
   assert.deepEqual(asked, []);
+});
+
+test("with only a credit card, the funds' new account is preselected, and the card is offered for bank transfers (#351)", async () => {
+  const { run, keys, asked, imported } = withNewAccounts({ accounts: [card] });
+  await run.flush();
+  assert.equal(saveTo(run).values[keys.pan], proposedId(keys.pan));
+  assert.equal(saveTo(run).proposed(keys.pan).name, "Mutual funds");
+  saveTo(run).onOpen(keys.pan, true);
+  await run.flush();
+  const { selects } = saveToView(run);
+  assert.deepEqual(selects[keys.pan].accounts, []);
+  assert.deepEqual(selects[keys.fictiva].accounts, []);
+  assert.deepEqual(selects[choices.bankKey(keys.pan)].accounts.map((a) => a.id), ["card"]);
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.deepEqual(asked.map((a) => a.name), ["Mutual funds"]);
+  assert.deepEqual([...new Set(imported[0].map((r) => r.accountId))], ["created-1"]);
 });
 
 test("a folio sent to its own new account gets one, named after it", async () => {
