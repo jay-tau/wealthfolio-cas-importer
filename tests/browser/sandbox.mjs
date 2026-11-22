@@ -203,7 +203,10 @@ for (const name of process.argv.length > 2 ? process.argv.slice(2) : ["chromium"
     console.log(engine, result);
     assert.equal(result.wrongPassword, "password");
     assert.deepEqual(data, expected);
-    const frame = tab.frameLocator("iframe");
+    // The add-on's frame. Its document stays until the run without the CSP. Locators from
+    // tab.frameLocator("iframe") look for the iframe again on every call, which took about 115 ms a call in
+    // Chromium and 60 ms in Firefox, against under 2 ms from the frame itself (#346).
+    const frame = tab.frames()[1];
     const host = () => tab.frames()[1].evaluate(() => ({ secrets: [...window.host.secrets], storage: [...window.host.storage] }));
     const pause = (name) => tab.frames()[1].evaluate((name) => { window.host.pause = name; }, name);
     const waiting = () => tab.frames()[1].waitForFunction(() => window.host.resume);
