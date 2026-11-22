@@ -490,7 +490,7 @@ test("bank choices and folio disclosures distinguish PAN boxes whose investors h
     key: pan, name: "A. Investor", title: `A. Investor (PAN ${pan})'s funds`, pan: true, folios: [],
   }));
   const props = {
-    boxes, targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }], labels: new Map([["mf", { text: "Mutual funds", option: "Mutual funds (INR)" }]]),
+    boxes, targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }], funds: [{ id: "mf", name: "Mutual funds", currency: "INR" }], labels: new Map([["mf", { text: "Mutual funds", option: "Mutual funds (INR)" }]]),
     proposed: (key) => ({ id: `new-account:${key}`, name: "Mutual funds 2" }), newLine: () => null,
     values: Object.fromEntries(boxes.flatMap((box) => [[box.key, "mf"], [`bank-${box.key}`, ""]])),
     ignored: {}, conflicts: new Set(), remembered: "none", open: {}, onOpen() {}, onChange() {}, checks: () => null, partId: "save-to",
@@ -508,7 +508,7 @@ test("Save to says when a folio's choice was found under its fund house's former
   const [own, bank] = [folioKey(folio), bankKey(folioKey(folio))];
   const box = { key: "pan", name: "A. Investor", title: "A. Investor's funds", pan: true, folios: [folio] };
   const props = {
-    boxes: [box], targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }], labels: new Map([["mf", { text: "Mutual funds", option: "Mutual funds (INR)" }]]),
+    boxes: [box], targets: [{ id: "mf", name: "Mutual funds", currency: "INR" }], funds: [{ id: "mf", name: "Mutual funds", currency: "INR" }], labels: new Map([["mf", { text: "Mutual funds", option: "Mutual funds (INR)" }]]),
     proposed: () => undefined, newLine: () => null,
     values: { pan: "mf", "bank-pan": "", [own]: null, [bank]: "mf" },
     ignored: { [own]: { under: [{ name: "Bandhan Mutual Fund", choice: "Mutual funds" }, { name: "IDFC Mutual Fund", choice: "Don't import" }] } },
@@ -577,7 +577,7 @@ test("Save to's note says what a number means whenever the Review screen names a
   const hidden = [funds, ...["old1", "old2"].map((id) => ({ id, name: "Old funds", currency: "INR", trackingMode: "TRANSACTIONS", isActive: false, isArchived: false }))];
   const box = { key: "pan", name: "A. Investor", title: "A. Investor's funds", pan: false, folios: [] };
   const detailed = (ignoredAccounts) => ({
-    boxes: [box], targets: [funds], labels: accountLabels(hidden), proposed: () => undefined, newLine: () => null,
+    boxes: [box], targets: [funds], funds: [funds], labels: accountLabels(hidden), proposed: () => undefined, newLine: () => null,
     values: { pan: null, "bank-pan": "" }, ignored: ignoredAccounts, conflicts: new Set(), remembered: "none", open: {}, onOpen() {}, onChange() {},
     checks: () => null, partId: "save-to",
   });
@@ -592,6 +592,24 @@ test("Save to's note says what a number means whenever the Review screen names a
   const renamed = text("SaveToDetailed", detailed(under));
   assert.ok(renamed.includes("Chosen before under this fund house's names: Funds for Bandhan Mutual Fund and Old funds (account 1) (hidden in Wealthfolio) for IDFC Mutual Fund"), renamed);
   assert.ok(renamed.includes(note("Old funds (account 1)")), renamed);
+});
+
+// #351: the funds' selects leave out credit cards, which the bank selects list.
+test("on the detailed Save to, the note on numbered accounts is read with the bank selects alone when only their list numbers one (#351)", async () => {
+  const { accountLabels } = await server.ssrLoadModule("/src/lib/account-labels.ts");
+  const funds = { id: "funds", name: "Funds", currency: "INR", accountType: "SECURITIES", trackingMode: "TRANSACTIONS", isActive: true, isArchived: false };
+  const cards = ["card1", "card2"].map((id) => ({ ...funds, id, name: "Card", accountType: "CREDIT_CARD" }));
+  const all = [funds, ...cards];
+  const props = {
+    boxes: [{ key: "pan", name: "A. Investor", title: "A. Investor's funds", pan: false, folios: [] }], targets: all, funds: [funds],
+    labels: accountLabels(all), proposed: () => undefined, newLine: () => null, values: { pan: "funds", "bank-pan": "" }, ignored: {},
+    conflicts: new Set(), remembered: "none", open: {}, onOpen() {}, onChange() {}, checks: () => null, partId: "save-to",
+  };
+  assert.ok(text("SaveToDetailed", props).includes("A number after a name, as in Card (account 1), is the account's place"));
+  const markup = renderToStaticMarkup(createElement(components.SaveToDetailed, props));
+  const describedBy = (id) => markup.match(new RegExp(`<[^>]*\\sid="${id}"[^>]*>`))[0].match(/aria-describedby="([^"]*)"/)?.[1].split(" ") ?? [];
+  assert.deepEqual(describedBy("pan"), []);
+  assert.ok(describedBy("bank-pan").includes("save-to-numbered"));
 });
 
 /** A search state with nothing searched yet, and searches that do nothing, for rendering a question. */

@@ -47,17 +47,22 @@ the statement is read, one Review screen shows, in this order:
   transactions aren't imported, so add them in Wealthfolio. Any other warning says "casparser found
   something it couldn't read cleanly", with casparser's message to copy and report.
 - **Save to**: one box per PAN, named by the investor ("A. Investor's funds"), with the Wealthfolio
-  account that tracks transactions their funds go to, or "Don't import them", and **Bank account for
-  purchases and payouts (optional)**: "None: don't add bank transfers", the first time, or an account
-  (see [Bank account](#bank-account)). The choices made last time are preselected; with no account
-  that tracks transactions, a new one is, created when you import (see [New accounts](#new-accounts)).
+  account that tracks transactions their funds go to, or "Don't import them". Wealthfolio doesn't
+  allow fund purchases in a credit card account, so the funds' list leaves them out.
+  **Bank account for purchases and payouts (optional)** lists accounts that track transactions, credit
+  cards included, with "None: don't add bank transfers" chosen the first time (see [Bank account](#bank-account)).
+  The choices made last time are preselected if they still fit. When there's no account the funds
+  can go to and none was remembered for them, **Save to** preselects a new one, created when you
+  import (see [New accounts](#new-accounts)).
   Two accounts with the same name are told apart here and everywhere else on the screen (see
   [Accounts with the same name](#accounts-with-the-same-name)).
   Under **Save part of it to another account**, each folio can go to another account, a new one of its
-  own or "Don't import", and have its own bank account. A folio printed without a PAN has a box of its own. A remembered account that's hidden,
-  archived, no longer listed or tracks holdings asks you to choose again, and so does a bank account
-  that's also the funds' account. Closed schemes, with no units at either end and nothing to import,
-  are skipped.
+  own or "Don't import", and have its own bank account. A folio printed without a PAN has a box of
+  its own. A remembered account that's hidden, archived, no longer listed or tracks holdings asks
+  you to choose again, and so do a credit card remembered for the funds ("Chosen before: Visa card,
+  which is a credit card. Credit cards can't hold fund purchases, so choose again.") and a bank
+  account that's also the funds' account. Closed schemes, with no units at either end and nothing
+  to import, are skipped.
 - The bank matches, right under the bank account they're for, as a question: see
   [Bank account](#bank-account).
 - **Questions for you**: each fund with no confirmed Wealthfolio fund, as one card with what the
@@ -774,7 +779,8 @@ the later snapshot's prices.
 
 ## New accounts
 
-When Wealthfolio has no account a statement can go to, **Save to** proposes one and preselects it:
+When Wealthfolio has no account a statement can go to and there is no remembered choice for that box,
+**Save to** proposes an account and preselects it:
 "New: Mutual funds" for a detailed statement or a CAMS or KFintech summary statement, and "New: CDSL
 Demat" or "New: NSDL Demat" for a depository statement. A family's detailed statement proposes one
 for each investor, the second and later named for them ("New: Mutual funds (B. Investor)"), or for
@@ -812,8 +818,8 @@ button is **Finish** here too.
 
 When Wealthfolio has accounts that fit but none was chosen before, nothing is preselected and
 choosing where to save is a question; the new account stays in the list. A remembered account that's
-hidden, archived, no longer listed or tracks the wrong thing asks you to choose again, with the new
-account offered but not preselected, so a second account isn't made beside one you may still use.
+hidden, archived, no longer listed, tracks the wrong thing or is a credit card chosen for funds in a
+detailed statement asks you to choose again. The new account stays in the list for you to choose.
 
 If Wealthfolio doesn't create an account, nothing that needs it is saved and it isn't remembered.
 Everything else is saved, and the result says, account by account, what was saved and what wasn't,
