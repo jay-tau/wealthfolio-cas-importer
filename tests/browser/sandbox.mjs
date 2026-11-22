@@ -920,7 +920,8 @@ const runBrowser = async (browser, engine) => {
     await revisit();
     await tab.frames()[1].waitForFunction((n) => window.host.providerChecks > n, checks);
     assert.equal(await providerChecks(), checks + 1, "opened again, the page checks again");
-    assert.equal(await amfiOutcome.textContent(), "");
+    // The check starts within revisit(), but the outcome clears in a render after it (#346).
+    await amfiOutcome.waitForFunction((outcome) => outcome.textContent === "");
     assert.equal(await amfiBanner.count(), 0);
     // When the window gets the focus while AMFI isn't on, the add-on checks again by itself, and says
     // nothing when it's still off.
