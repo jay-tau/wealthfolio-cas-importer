@@ -14,9 +14,11 @@ v2.2.0 from [Releases](https://github.com/jay-tau/wealthfolio-cas-importer/relea
 3.11.0, v1.2.0. v3.0.0, v3.1.0 and v3.2.0 were each checked in Wealthfolio 3.13.0's desktop app on
 Linux and Windows ([v3.0.0](https://github.com/jay-tau/wealthfolio-cas-importer/issues/195),
 [v3.1.0](https://github.com/jay-tau/wealthfolio-cas-importer/issues/218),
-[v3.2.0](https://github.com/jay-tau/wealthfolio-cas-importer/issues/229)); none of them has been
-tried in its web app or on macOS. Earlier releases were checked in the desktop app on Linux (3.11.0
-and 3.12.0) and Windows (3.11.0 and 3.12.0), and in the web app (3.12.0, in Chromium).
+[v3.2.0](https://github.com/jay-tau/wealthfolio-cas-importer/issues/229)).
+[v3.3.0](https://github.com/jay-tau/wealthfolio-cas-importer/issues/342) was checked in
+Wealthfolio 3.13.1's desktop app on Linux and Windows. None of these four releases has been tried
+in Wealthfolio's web app or on macOS. Earlier releases were checked in the desktop app on Linux
+(3.11.0 and 3.12.0) and Windows (3.11.0 and 3.12.0), and in the web app (3.12.0, in Chromium).
 
 To import, choose or drop the PDF under **Add your statement** and enter its password, if it has
 one; with a password saved, the add-on uses it until you choose **Use a different password** or it
