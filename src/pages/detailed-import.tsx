@@ -918,8 +918,12 @@ export function DetailedImport({
   /** The funds a row's new transactions are for. */
   const linesOfRow = (row: FundRow) =>
     sentOutcomes.filter((o) => row.group.schemes.some((s) => s.scheme === o.scheme)).map((o) => lineOf(o.folio, o.scheme));
-  const nothingNew = groups.filter((g) => g.sent === 0 && g.other === 0 && !g.schemes.some(({ scheme }) => blockedSchemes.has(scheme)));
-  const nothingNewKeys = [...new Set(nothingNew.flatMap((g) => g.schemes.map((s) => fundKey(s.scheme))))].filter((key) => !readyKeys.has(key));
+  // A fund has nothing new in an account when none of its own rows there is sent, left out or waiting,
+  // and none of its sections is held back, whatever another fund confirmed as the same listing has (#370).
+  const nothingNewKeys = [...new Set(groups.flatMap((g) => {
+    const pending = new Set(g.schemes.filter((s) => s.sent || s.other || blockedSchemes.has(s.scheme)).map((s) => fundKey(s.scheme)));
+    return g.schemes.map((s) => fundKey(s.scheme)).filter((key) => !pending.has(key));
+  }))].filter((key) => !readyKeys.has(key));
   const nothingNewFunds = nothingNewKeys.map((key) => ({ key, name: fundNameOf(key) }));
   const autoCount = new Set(rows.filter((r) => r.by === "auto").map((r) => r.item.key)).size;
 
