@@ -698,7 +698,12 @@ export function HoldingsImport({
                 positions: [...plan.existing.positions].sort((a, b) => a.assetId.localeCompare(b.assetId)),
                 cash: Object.entries(plan.existing.cash).sort(),
               };
-              const facts = (p?: PlannedPosition) => p && [p.ref, p.ask, p.existing, p.asset, p.lines, p.removable, p.heldBy, p.replacedBy];
+              const facts = (p?: PlannedPosition) => {
+                if (!p) return undefined;
+                // A resolved asset's choice name is a label, including an older display-code placeholder.
+                const asset = p.asset?.assetId ? { ...p.asset, name: undefined } : p.asset;
+                return [p.ref, p.ask, p.existing, asset, p.lines, p.removable, p.heldBy, p.replacedBy];
+              };
               const position = plan.positions.find((p) => p.key === key);
               return position && [plan.existing.date, facts(position),
                 position.replaces?.map((key) => facts(plan.positions.find((p) => p.key === key)))];

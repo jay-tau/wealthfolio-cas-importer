@@ -1381,7 +1381,7 @@ test("a replacement asked about waits for its answer, and changing it back clear
   assert.deepEqual(find(run, "NotIncluded").defaulted.map((r) => [r.name, r.notes]), [["Example ISINX", ["A keeps Old listing (OLD · XBOM) for now, by your answer above."]]]);
 });
 
-test("choosing the same saved Auto listing again keeps the holdings replacement answer (#371)", async () => {
+for (const legacy of [false, true]) test(`choosing the same saved Auto listing again keeps the holdings replacement answer (${legacy ? "older choice" : "current choice"}, #371)`, async () => {
   const holdingToReplace = holding("ISINX");
   const first = source("X", [holdingToReplace]);
   const { run, api, props } = setup([first]);
@@ -1393,16 +1393,18 @@ test("choosing the same saved Auto listing again keeps the holdings replacement 
   api.storage.set = async (key, value) => stored.set(key, value);
   const { readFund, saveFund, saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
   const { toFund } = await server.ssrLoadModule("/src/components/fund-choices.tsx");
-  const result = { existingAssetId: "new", canonicalSymbol: "ISINX", symbol: "ISINX.BO", exchangeMic: "XBOM", quoteMode: "MARKET", quoteType: "EQUITY", longName: holdingToReplace.name };
+  const display = legacy ? "SAVED-DISPLAY-CODE" : "ISINX.BO";
+  const result = { existingAssetId: "new", canonicalSymbol: "ISINX", symbol: display, exchangeMic: "XBOM", quoteMode: "MARKET", quoteType: "EQUITY", longName: legacy ? display : holdingToReplace.name };
   api.market.searchTicker = async () => [result];
   const key = holdingKey(holdingToReplace);
-  await saveFund(api.storage, key, toFund(result));
+  // Before #371 an unnamed listing with a custom display code kept that code as its name.
+  await saveFund(api.storage, key, { ...toFund(result), name: result.longName });
   props.fundChoices[key] = { fund: await readFund(api.storage, key) };
   await saveImported(api.storage, first, "A", "2025-02-28", { "OLD@XBOM": [holdingToReplace.isin] });
   await run.flush();
   find(run, "AskCard").other.onClick();
   await run.flush();
-  const answer = find(run, "AskAnswered").text;
+  assert.ok(find(run, "AskAnswered"));
   const { handlers, rows } = find(run, "ReadyTable");
   handlers.onChange(rows[0]);
   await run.flush();
@@ -1410,7 +1412,7 @@ test("choosing the same saved Auto listing again keeps the holdings replacement 
   const picker = nodes(ready.handlers.changePanel(ready.rows[0])).find((node) => node.type?.name === "Picker").props;
   picker.onUse(picker.search.auto.results[0]);
   await run.flush();
-  assert.equal(find(run, "AskAnswered")?.text, answer);
+  assert.equal(find(run, "AskAnswered")?.text, `Example ISINX: Old listing replaced with ${legacy ? "ISINX" : "Example ISINX"} in A`);
   assert.equal(find(run, "Footer").action.disabled, false);
 });
 
