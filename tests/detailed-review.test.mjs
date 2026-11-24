@@ -3709,6 +3709,52 @@ test("a repeated statement with a reversed purchase left out isn't called nothin
   assert.equal(find(run, "Footer").action.label, "Finish");
 });
 
+test("a fund keeps its Nothing new line when another fund confirmed as its listing has rows left out or a section skipped (#370)", async () => {
+  // Liquid, imported before, and Balanced Advantage, confirmed as Liquid's listing in the same account:
+  // with a purchase and its reversal left out, or with no rows and a difference the user skipped.
+  for (const other of ["left out", "skipped"]) {
+    const funds = (both) => (data) => {
+      const [liquid, balanced] = ["Liquid", "Balanced"].map((name) => data.folios[0].schemes.find((s) => s.scheme.includes(name)));
+      const row = (date, type, amount, units) => ({ ...balanced.transactions[0], date, type, amount, units, description: type, balance: null });
+      Object.assign(balanced, other === "left out"
+        ? { transactions: [row("2024-02-01", "PURCHASE", "1000.00", "0.400"), row("2024-02-03", "REVERSAL", "-1000.00", "-0.400")], open: "0", close: "0", close_calculated: "0" }
+        : { transactions: [], open: "0", close: "10", close_calculated: "0" });
+      data.folios = [{ ...data.folios[0], schemes: both ? [liquid, balanced] : [liquid] }];
+      return data;
+    };
+    const first = setup({ entries: [], change: funds(false) });
+    await first.run.flush();
+    find(first.run, "Footer").action.onClick();
+    await first.run.flush();
+    const [rows] = first.imported;
+    first.run.dispose();
+    const { run, props, profiles, data } = setup({ entries: storedRows(rows), change: funds(true) });
+    const [liquid, balanced] = data.folios[0].schemes.map(choices.fundKey);
+    props.fundChoices[balanced] = structuredClone(props.fundChoices[liquid]);
+    const { fund } = props.fundChoices[liquid];
+    profiles[`asset-${fund.symbol}`] = { instrumentSymbol: fund.symbol, instrumentExchangeMic: fund.exchangeMic, instrumentType: fund.instrumentType };
+    await run.flush();
+    if (other === "skipped") {
+      // Balanced Advantage's question, named by the listing it's confirmed as.
+      assert.deepEqual(askCards(run).map((c) => c.title), ["Fictiva Liquid Fund's transactions don't add up"], other);
+      askCards(run)[0].main.onClick();
+      await run.flush();
+    }
+    const b = find(run, "TransactionsSummary").breakdown;
+    assert.deepEqual([b.toImport, b.leftOut.length], [0, other === "left out" ? 2 : 0], other);
+    assert.equal(find(run, "FundsReadyTable"), undefined, other);
+    // Liquid's line, and only Liquid's: Balanced Advantage's rows aren't all in Wealthfolio.
+    assert.deepEqual(textOf(run.tree).match(/Nothing new for [^.]*\./g), ["Nothing new for Fictiva Liquid Fund."], other);
+    assert.equal(readyHeading(run), "Ready to import (0)", other);
+    const changes = nodes(run.tree).filter((node) => node.props?.["aria-label"]?.endsWith("nothing new") && node.props.onClick);
+    assert.deepEqual(changes.map((node) => node.props["aria-label"]), ["Change: Fictiva Liquid Fund, nothing new"], other);
+    changes[0].props.onClick();
+    await run.flush();
+    assert.equal(find(run, "QuestionCard").item.key, liquid, other);
+    run.dispose();
+  }
+});
+
 test("a statement read again after importing a fund with its difference doesn't ask about it again, until Wealthfolio lacks one of its transactions (#348)", async () => {
   const mismatch = JSON.parse(await readFile("tests/fixtures/made-up-cas-mismatch.json", "utf8"));
   const change = () => structuredClone(mismatch);

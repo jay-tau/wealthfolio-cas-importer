@@ -57,19 +57,24 @@ const fundRows = ({ transaction }: PlannedTransaction) =>
 
 type Target = (folio: CasFolio, scheme: CasScheme) => { accountId: string; asset: FundAsset } | undefined;
 
-/** A fund in an account, as the Ready list shows it: one row however many folios and schemes go to it. */
-export interface FundGroup {
-  /** `accountId|fundRef`. */
-  key: string;
-  accountId: string;
-  asset: FundAsset;
-  schemes: { folio: CasFolio; scheme: CasScheme }[];
+/** Statement rows by what the import does with them. */
+interface RowCounts {
   /** Statement rows the import sends. */
   sent: number;
   /** Statement rows Wealthfolio already has. */
   before: number;
   /** Statement rows left out, waiting or not sent. */
   other: number;
+}
+
+/** A fund in an account, as the Ready list shows it: one row however many folios and schemes go to it. */
+export interface FundGroup extends RowCounts {
+  /** `accountId|fundRef`. */
+  key: string;
+  accountId: string;
+  asset: FundAsset;
+  /** Each folio's scheme in it, with its own rows counted. */
+  schemes: ({ folio: CasFolio; scheme: CasScheme } & RowCounts)[];
   /** The statement's closing units. */
   statement: Dec;
   /**
@@ -108,7 +113,7 @@ export function fundGroups({
 }): FundGroup[] {
   const to = statementDay(data.statement_period.to);
   const groups = new Map<string, FundGroup>();
-  const groupOf = new Map<CasScheme, FundGroup>();
+  const groupOf = new Map<CasScheme, { group: FundGroup; counts: RowCounts }>();
   for (const folio of data.folios) {
     for (const scheme of folio.schemes) {
       const t = target(folio, scheme);
@@ -117,10 +122,11 @@ export function fundGroups({
       const group = groups.get(key) ?? {
         key, accountId: t.accountId, asset: t.asset, schemes: [], sent: 0, before: 0, other: 0, statement: dec("0"), forced: 0, unbalanced: false,
       };
-      group.schemes.push({ folio, scheme });
+      const counts = { folio, scheme, sent: 0, before: 0, other: 0 };
+      group.schemes.push(counts);
       group.statement = add(group.statement, dec(scheme.close));
       groups.set(key, group);
-      groupOf.set(scheme, group);
+      groupOf.set(scheme, { group, counts });
     }
   }
   const unbalanced = new Set(mapping.warnings.filter((w) => w.unbalanced && !w.leftOut).map((w) => w.section));
@@ -130,20 +136,17 @@ export function fundGroups({
   }
   const counted = new Set<PlannedTransaction>();
   for (const outcome of mapping.outcomes) {
-    const group = groupOf.get(outcome.scheme);
-    if (!group) continue;
+    const entry = groupOf.get(outcome.scheme);
+    if (!entry) continue;
+    const { group, counts } = entry;
     const t = outcome.transaction && planned.get(outcome.transaction);
-    if (!t) {
-      group.other++;
-      continue;
-    }
-    if (sent(t)) {
-      group.sent++;
-      group.unbalanced ||= unbalanced.has(outcome.scheme);
-      if (t.status !== "new") group.forced++;
-    } else if (t.status === "existing") group.before++;
-    else group.other++;
-    if (!sent(t) || counted.has(t)) continue;
+    const kind = !t ? "other" : sent(t) ? "sent" : t.status === "existing" ? "before" : "other";
+    group[kind]++;
+    counts[kind]++;
+    if (!t || kind !== "sent") continue;
+    group.unbalanced ||= unbalanced.has(outcome.scheme);
+    if (t.status !== "new") group.forced++;
+    if (counted.has(t)) continue;
     counted.add(t);
     // Each fund row of a sent transaction changes its fund's units in its account, once.
     for (const row of fundRows(t)) {
