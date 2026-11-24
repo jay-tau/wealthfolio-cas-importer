@@ -1,7 +1,7 @@
 import type { AddonContext, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { useEffect, useRef, useState } from "react";
 import { isStatementAsset } from "../../cas/holdings";
-import { certain, fromAmfi, pricedElsewhere } from "../../lib/amfi";
+import { addsAsset, certain, fromAmfi } from "../../lib/amfi";
 import type { ChosenFund } from "../../lib/choices";
 import { listingName } from "../../lib/fund-label";
 import { differs, fundName, fundQuery, planAndOption } from "../../lib/fund-name";
@@ -17,8 +17,11 @@ export type Search =
       results: ChosenFund[];
       /** A result is AMFI's, or a saved asset priced from AMFI. */
       amfi: boolean;
-      /** Wealthfolio already has the fund among them, priced from another source than AMFI. */
-      pricedElsewhere: boolean;
+      /**
+       * Using AMFI's new listing among them adds another asset for the fund: Wealthfolio already has
+       * it among them, priced from another source than AMFI or with no preferred provider.
+       */
+      addsAsset: boolean;
     };
 
 /** The search the Review screen runs by itself: the printed ISIN, then the name when that finds nothing. */
@@ -137,7 +140,7 @@ export function useHoldingSearches(
     status: "done",
     results: found.map((r) => choiceFor(item, r)),
     amfi: found.some(fromAmfi),
-    pricedElsewhere: found.some(fromAmfi) && found.some(pricedElsewhere),
+    addsAsset: addsAsset(found),
   });
 
   const runAuto = async (item: FundItem) => {

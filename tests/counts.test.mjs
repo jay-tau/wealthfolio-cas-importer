@@ -1617,8 +1617,16 @@ test("a saved listing set to Auto is priced from Wealthfolio's default source an
   assert.equal(listing.defaultSource, undefined);
   assert.equal(listing.displaySymbol, undefined);
   assert.match(label(listing), / Yahoo Finance · 0P0000ZZZZ\.BO /);
-  const search = { ...idle, auto: { status: "done", results: [fund], amfi: false, pricedElsewhere: false } };
-  assert.match(text("QuestionCard", { item, label: item.name, search, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} }), / Found by the ISIN printed for it\. /);
+  const search = { ...idle, auto: { status: "done", results: [fund], amfi: false, addsAsset: false } };
+  const card = (search, action) => text("QuestionCard", { item, label: item.name, search, searches, base: "q", amfiOn: true, headingId: "h", action, onAnswer() {} });
+  assert.match(card(search, "import"), / Found by the ISIN printed for it\. /);
+  // AMFI's new listing beside it adds another asset when the Review screen imports or saves (#374).
+  const scheme = toFund({ ...result, isExisting: undefined, existingAssetId: undefined, providerId: "AMFI", providerSymbol: "123456", symbol: "123456" });
+  const beside = { ...idle, auto: { status: "done", results: [preferred, scheme], amfi: true, addsAsset: true } };
+  const addsAnother = (action) => `Wealthfolio already has this fund, priced from another source, and using AMFI's new listing adds another asset for it when you ${action}. `;
+  assert.ok(card(beside, "import").includes(addsAnother("import")));
+  assert.ok(card(beside, "save").includes(addsAnother("save")));
+  assert.match(card({ ...beside, auto: { ...beside.auto, addsAsset: false } }, "import"), / Several results fit the ISIN printed for it\. /);
 });
 
 

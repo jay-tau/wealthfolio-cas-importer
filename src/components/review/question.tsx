@@ -13,8 +13,11 @@ export const useWord = (item: FundItem) => (item.noun === "share" ? "listing" : 
 export const questionTitle = (item: FundItem) =>
   item.noun === "share" ? `Where should ${item.name}'s price come from?` : `Which ${item.noun} is this?`;
 
-/** The line under the statement's name on why the holding is asked about, from its automatic search. */
-function why(item: FundItem, auto: AutoSearch | undefined, amfiOn: boolean) {
+/**
+ * The line under the statement's name on why the holding is asked about, from its automatic search.
+ * `action` is what the Review screen's button does: it adds the asset of a new listing used.
+ */
+function why(item: FundItem, auto: AutoSearch | undefined, amfiOn: boolean, action: "import" | "save") {
   if (!auto || auto.status !== "done") return undefined;
   const { results } = auto;
   if (item.noun === "share" && !auto.byName && results.length === 2) {
@@ -36,8 +39,8 @@ function why(item: FundItem, auto: AutoSearch | undefined, amfiOn: boolean) {
       : "Nothing was found for the ISIN printed for it, so its name was searched.";
   }
   if (!results.length) return undefined;
-  if (auto.pricedElsewhere) {
-    return "Wealthfolio already has this fund, priced from another source, and using AMFI's result adds a second asset for it. To price the one it has from AMFI instead, edit that asset in Wealthfolio: under Market data, turn on automatic updates if it's priced by hand, then choose AMFI as the preferred provider and map AMFI to the fund's ISIN or scheme code.";
+  if (auto.addsAsset) {
+    return `Wealthfolio already has this fund, priced from another source, and using AMFI's new listing adds another asset for it when you ${action}. To price the one it has from AMFI instead, edit that asset in Wealthfolio: under Market data, turn on automatic updates if it's priced by hand, then choose AMFI as the preferred provider and map AMFI to the fund's ISIN or scheme code.`;
   }
   const providers = new Set(results.map((r) => r.defaultSource ? undefined : providerName(r) ?? "another source"));
   const [provider] = providers;
@@ -263,12 +266,15 @@ export function QuestionCard({
   amfiOn,
   headingId,
   skip = "holding",
+  action,
   onAnswer,
 }: {
   item: FundItem;
   label: string;
   /** What Skip calls it: "Skip this holding", "Skip this fund". */
   skip?: string;
+  /** What the Review screen's button does: "import", "save". It adds the asset of a new listing used. */
+  action: "import" | "save";
   /** The statement's units, already grouped, with their noun: "1,000.000 units", "40 shares". None when they're unknown. */
   units?: string;
   /** More about those units, after them: where the statement lists them, when that's more than one place, "in 2 folios". */
@@ -281,7 +287,7 @@ export function QuestionCard({
   onAnswer: (choice: FundChoice) => void;
 }) {
   const plan = statementPlan(item);
-  const reason = why(item, search.auto, amfiOn);
+  const reason = why(item, search.auto, amfiOn, action);
   return (
     <section aria-labelledby={headingId} onFocus={() => searches.interact(item.key)} className="border-warning grid gap-3 rounded-lg border p-4">
       <h4 id={headingId} tabIndex={-1} className="font-semibold">

@@ -14,6 +14,14 @@ export const fromAmfi = (result: Result) => result.providerId === AMFI;
 /** An asset Wealthfolio already has, priced from another source. */
 export const pricedElsewhere = (result: Result) => !!result.existingAssetId && !fromAmfi(result);
 
+/**
+ * Whether using AMFI's new listing among the results adds another asset for a fund Wealthfolio
+ * already has among them, priced from another source or with no preferred provider. A saved asset
+ * with AMFI selected is no new listing: using it adds none.
+ */
+export const addsAsset = (results: Result[]) =>
+  results.some((result) => fromAmfi(result) && !result.existingAssetId) && results.some(pricedElsewhere);
+
 /** Whether AMFI is on in Wealthfolio's Settings → Market data, or "unknown" when Wealthfolio doesn't say. */
 export type AmfiStatus = "on" | "off" | "unknown";
 
@@ -39,8 +47,9 @@ const exactMatch = (result: Result) => (result as { exactMatch?: unknown }).exac
  * Of the results of the search for a fund's printed ISIN, the one that's certainly that fund: the
  * only AMFI result, either AMFI's own (AMFI answers only an exact ISIN or scheme code) or a saved
  * asset the search found by an identifier, quoted in rupees and accepted by `fits`. None while
- * Wealthfolio has an asset among them priced from another source, since confirming AMFI's would
- * add a second asset for the fund.
+ * Wealthfolio has an asset among them priced from another source or with no preferred provider:
+ * confirming AMFI's new listing would add another asset for the fund, and the user chooses which
+ * saved asset to use, even when one has AMFI selected.
  */
 export function certain<R extends Result & Pick<SymbolSearchResult, "currency">>(
   results: R[],

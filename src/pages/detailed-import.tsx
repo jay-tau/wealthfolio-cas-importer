@@ -2592,6 +2592,7 @@ export function DetailedImport({
                       item={item}
                       label={labelOf.get(item.key)!}
                       skip="fund"
+                      action="import"
                       {...onStatement(item.key)}
                       search={searches.get(item.key)}
                       searches={searches}

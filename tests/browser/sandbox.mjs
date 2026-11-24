@@ -2517,6 +2517,61 @@ const runBrowser = async (browser, engine) => {
     await restoreChoices(beforeIgnoredDetailed);
 
     part();
+    // A saved asset priced from Yahoo Finance among the results of a fund's printed ISIN keeps its
+    // question open for a choice, whatever AMFI result is beside it. Only AMFI's new listing adds
+    // another asset, which the question says, even beside a saved asset with AMFI selected. Beside
+    // that saved asset alone, the question gives the usual line (#374).
+    await hosted(() => {
+      window.host.amfi = true;
+      window.host.providers = "";
+      window.host.storage.delete("isin:INFZ90K01LQ6");
+    });
+    const addsAnother = "Wealthfolio already has this fund, priced from another source, and using AMFI's new listing adds " +
+      "another asset for it when you import. To price the one it has from AMFI instead, edit that asset in Wealthfolio: under " +
+      "Market data, turn on automatic updates if it's priced by hand, then choose AMFI as the preferred provider and map AMFI " +
+      "to the fund's ISIN or scheme code.";
+    for (const [kinds, line] of [
+      [["yahoo", "scheme"], addsAnother],
+      [["yahoo", "savedScheme"], "Several results fit the ISIN printed for it."],
+      [["yahoo", "switched", "scheme"], addsAnother],
+    ]) {
+      await hosted((kinds) => {
+        const { listing, scheme } = window.host.make;
+        const isin = "INFZ90K01LQ6";
+        // As Wealthfolio's search lists a saved asset found by an identifier, here AMFI mapped to
+        // the ISIN: with its preferred provider and no provider ticker.
+        const saved = (result, id, providerId) => ({
+          ...result, providerId, providerSymbol: undefined, isExisting: true, existingAssetId: id, quoteMode: "MARKET", exactMatch: true,
+        });
+        const results = {
+          yahoo: saved(listing("0P0000ZLQ6"), "yahoo-liquid", "YAHOO"),
+          // AMFI's new listing, and the asset an import that used it saved, which takes its place.
+          scheme: scheme(isin),
+          savedScheme: saved(scheme(isin), "amfi-liquid", "AMFI"),
+          // Another saved listing with AMFI selected, listed apart from AMFI's scheme.
+          switched: saved(listing("0P0001ZLQ6"), "switched-liquid", "AMFI"),
+        };
+        window.host.answers = { [isin]: kinds.map((kind) => results[kind]) };
+      }, kinds);
+      await readStatement();
+      const card = fundQuestion(detailed.liquid);
+      await card.getByText(line, { exact: true }).waitFor();
+      await painted();
+      assert.equal(await card.getByText(addsAnother, { exact: true }).count(), line === addsAnother ? 1 : 0, kinds.join(", "));
+      assert.deepEqual(await card.getByRole("radio").evaluateAll((all) => all.map((r) => r.getAttribute("aria-checked"))), kinds.map(() => "false"));
+      assert.equal(await card.getByRole("button", { name: /^Use this fund for / }).isDisabled(), true);
+      await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+      assert.equal(await storage().then((saved) => "isin:INFZ90K01LQ6" in saved), false, kinds.join(", "));
+    }
+    await hosted(() => {
+      window.host.amfi = false;
+      window.host.providers = "fail";
+      window.host.answers = {};
+    });
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
+
+    part();
     // A payment check under Save to is above the funds' questions: its answer takes the focus down to
     // a fund's question left open. That fund's answer adds its purchase to the check, which asks it
     // again: with nothing left below, the focus goes back up to it, and its answer is the last.

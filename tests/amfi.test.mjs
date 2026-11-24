@@ -1,7 +1,7 @@
 // Which search result the Review screen confirms without a click when Wealthfolio offers AMFI's, and AMFI's state.
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { amfiStatus, certain, fromAmfi, pricedElsewhere } from "../src/lib/amfi.ts";
+import { addsAsset, amfiStatus, certain, fromAmfi, pricedElsewhere } from "../src/lib/amfi.ts";
 
 // As Wealthfolio 3.12.0 lists them for a fund's ISIN: Yahoo's listing first, then AMFI's scheme.
 const yahoo = { providerId: "YAHOO" };
@@ -19,6 +19,18 @@ test("a fund Wealthfolio prices from another source is told apart from AMFI's", 
 
 test("AMFI results", () => {
   assert.deepEqual([yahoo, amfi, existing, existingAmfi].map(fromAmfi), [false, true, false, true]);
+});
+
+test("only AMFI's new listing adds another asset for a fund Wealthfolio prices from another source", () => {
+  assert.equal(addsAsset([existing, amfi]), true);
+  // Even beside a saved asset with AMFI selected, which adds none.
+  assert.equal(addsAsset([existing, existingAmfi, amfi]), true);
+  assert.equal(addsAsset([existing, existingAmfi]), false);
+  // Nothing saved priced from another source, or no new AMFI listing.
+  assert.equal(addsAsset([existingAmfi, amfi]), false);
+  assert.equal(addsAsset([yahoo, amfi]), false);
+  assert.equal(addsAsset([existing, yahoo]), false);
+  assert.equal(addsAsset([]), false);
 });
 
 test("AMFI's state from Wealthfolio's market data providers", () => {
