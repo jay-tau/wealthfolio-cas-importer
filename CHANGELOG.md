@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 
 ### Fixed
+- Leave the import notes off a transaction marked **Can't import** in **See every transaction**, which keeps why it can't be imported and its other status notes. The two credits of segregated units in the v3.3.1 Linux check (#362) now open with the reason that names the purchases Wealthfolio already has. A credit already in Wealthfolio keeps "Units credited in a segregated portfolio, imported at a stand-in cost of ₹0 with no cash." Before, each left-out credit began with that note, though it wasn't imported. A gift's "Imported at NAV …", a gift between folios' "A gift to folio …: Wealthfolio links this transfer out with that folio's transfer in, …" and a trade's "… It's imported at … using the printed units and NAV." no longer show on such a row either
 
 ### Security
 

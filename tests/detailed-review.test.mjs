@@ -1039,7 +1039,7 @@ const copyOf = (units) => `a purchase of ${units} units of this fund at ₹0 a u
 const oneCreditByHand = (units) =>
   `Wealthfolio has ${copyOf(units)} on this day, perhaps entered by hand, so this credit of segregated units isn't imported. If that's how this credit was entered, keep the activity, or delete it and any cash that came with it and read the statement again to import this credit from the statement.`;
 
-test("equal credits left out for the same purchases entered by hand share one numbered line that counts them, and each table note says this credit (#353)", async () => {
+test("equal credits left out for the same purchases entered by hand share one numbered line that counts them, and each table note says this credit without the stand-in note (#353, #365)", async () => {
   const { run, activities, byHand } = segregatedSetup();
   activities.push(byHand("copy-large", "3067.468"), byHand("copy-small", "0.013"));
   await run.flush();
@@ -1049,10 +1049,13 @@ test("equal credits left out for the same purchases entered by hand share one nu
   // See every transaction names each credit by its place, and its own note says this credit.
   const credits = (await shownTable(run)).filter((row) => row[1].includes("Segregated") && row[2].startsWith("purchase"));
   assert.deepEqual(credits.map((row) => row[2]), ["purchase (1 of 2)", "purchase (2 of 2)"]);
-  for (const row of credits) assert.match(row.at(-1), /so this credit of segregated units isn't imported\./);
+  for (const row of credits) {
+    assert.match(row.at(-1), /^Can't import Wealthfolio has a purchase of .* so this credit of segregated units isn't imported\./);
+    assert.doesNotMatch(row.at(-1), /stand-in/);
+  }
 });
 
-test("a credit left out after its equal one was imported keeps its statement number, alone on its line (#353)", async () => {
+test("a credit left out after its equal one was imported keeps its statement number, alone on its line, and only the imported one keeps the stand-in note (#353, #365)", async () => {
   const first = segregatedSetup();
   await first.run.flush();
   await shownTable(first.run);
@@ -1062,8 +1065,13 @@ test("a credit left out after its equal one was imported keeps its statement num
   activities.push({ ...stored(large, "mf", "imported-large", `addon:cas-importer:${large.sourceRecordId}`), assetId: "segregated-asset" }, byHand("copy-small", "0.013"));
   await run.flush();
   assert.deepEqual(leftOutLines(run), [[SEGREGATED, [`${CREDIT} (2 of 2): ${oneCreditByHand("0.013")}`]]]);
-  await shownTable(run);
+  const credits = (await shownTable(run)).filter((row) => row[1].includes("Segregated") && row[2].startsWith("purchase"));
   assert.deepEqual(find(run, "ActivityTable").plan.filter((t) => t.transaction.rows[0].type === "SEGREGATION").map((t) => t.status), ["existing", "invalid"]);
+  const STAND_IN = /Units credited in a segregated portfolio, imported at a stand-in cost of ₹0 with no cash\./;
+  assert.match(credits[0].at(-1), /^Already in Wealthfolio /);
+  assert.match(credits[0].at(-1), STAND_IN);
+  assert.match(credits[1].at(-1), /^Can't import Wealthfolio has a purchase of 0\.013 units /);
+  assert.doesNotMatch(credits[1].at(-1), /stand-in/);
 });
 
 test("credits left out on different days by the same edited purchase get a line each, unnumbered when no row equals them (#353)", async () => {
