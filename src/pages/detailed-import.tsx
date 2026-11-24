@@ -2328,7 +2328,8 @@ export function DetailedImport({
   const values = Object.fromEntries(
     [...boxes.map((b) => b.key), ...boxes.map((b) => bankKey(b.key)), ...data.folios.flatMap((f) => [folioKey(f), bankKey(folioKey(f))])].map((key) => [key, valueOf(key)]),
   );
-  const rememberedBoxes = boxes.filter((b) => !!usable[b.key] && !(b.key in picks)).length;
+  // Boxes whose funds' account is a usable remembered one that this review hasn't changed.
+  const rememberedBoxes = new Set(boxes.filter((b) => !!usable[b.key] && !(b.key in picks)).map((b) => b.key));
   // A folio's own bank choice, or one of its checks, keeps its box's folios open.
   const partOpen = Object.fromEntries(boxes.map((box) => [
     box.key,
@@ -2477,7 +2478,7 @@ export function DetailedImport({
         ignored={Object.fromEntries(Object.entries(ignored).filter(([key]) => !(key in picks)))}
         formerNames={Object.fromEntries(Object.entries(formerNames).filter(([key]) => !(key in picks)))}
         conflicts={conflicts}
-        remembered={rememberedBoxes === boxes.length ? "all" : rememberedBoxes ? "some" : "none"}
+        remembered={rememberedBoxes}
         open={Object.fromEntries(boxes.map((b) => [b.key, partOpen[b.key]]))}
         onOpen={(key, yes) => setOpen(`part:${key}`, yes)}
         onChange={chooseAccount}

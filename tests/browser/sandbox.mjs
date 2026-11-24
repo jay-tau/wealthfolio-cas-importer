@@ -267,6 +267,29 @@ const runBrowser = async (browser, engine) => {
         assert.fail(`${what}: the focus is on ${active}`);
       }
     };
+    // The line under a Save to box's main account choice says `text` (#364). It's in that select's box,
+    // after the select and before the box's other choices and toggles, and only that select reads it,
+    // last, after any note on numbered accounts.
+    const rememberedNote = timed("rememberedNote", async (select, text) => {
+      await select.waitFor();
+      const found = await select.evaluate((select) => {
+        const note = document.getElementById(select.getAttribute("aria-describedby")?.split(" ").at(-1) ?? "");
+        if (!note) return null;
+        const box = select.closest(".rounded-lg.border");
+        const follows = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+        return {
+          text: note.textContent,
+          visible: note.checkVisibility({ visibilityProperty: true }),
+          inBox: box.contains(note),
+          afterSelect: follows(select, note),
+          beforeOthers: [...box.querySelectorAll('[data-slot="select-trigger"], [aria-expanded]')].filter((e) => e !== select).every((e) => follows(note, e)),
+          readBy: [...document.querySelectorAll("[aria-describedby]")]
+            .filter((e) => e.getAttribute("aria-describedby").split(" ").includes(note.id))
+            .map((e) => e === select),
+        };
+      });
+      assert.deepEqual(found, { text, visible: true, inBox: true, afterSelect: true, beforeOthers: true, readBy: [true] });
+    });
     // A clipped parent can hide overflow without changing the document's scroll width.
     const textFits = timed("textFits", async (locator, what) => {
       const { width, rects } = await locator.evaluate((element) => {
@@ -1222,7 +1245,7 @@ const runBrowser = async (browser, engine) => {
     assert.equal((await bankSelect().textContent()).trim(), "None: don't add bank transfers");
     const bankHint = await bankSelect().getAttribute("aria-describedby");
     assert.equal(await frame.locator(`[id="${bankHint}"]`).textContent(), "Purchases transfer from this account; sales and cash dividends transfer back to it.");
-    await frame.getByText("Used again for your next statement.", { exact: true }).waitFor();
+    await rememberedNote(fundsSelect(), "Used again for your next statement.");
 
     part();
     // Each fund's question asks which fund it is. Answering one moves the focus to the next open
@@ -1375,7 +1398,7 @@ const runBrowser = async (browser, engine) => {
     part();
     // Read again, everything is in Wealthfolio: nothing is new, and Finish leaves the review.
     await readStatement();
-    await frame.getByText("Chosen last time.", { exact: true }).waitFor();
+    await rememberedNote(fundsSelect(), "Chosen last time.");
     assert.match(await fundsSelect().textContent(), /^Mutual funds \(INR\)$/);
     assert.equal(await fundQuestions.count(), 0);
     await frame.getByRole("heading", { name: "Ready to import (0)", exact: true }).waitFor();
@@ -1965,8 +1988,14 @@ const runBrowser = async (browser, engine) => {
     await readStatement();
     await frame.getByText(`CAMS statement · ${investor} and ${otherInvestor} · made-up-cas.pdf`, { exact: true }).waitFor();
     assert.match(await fundsSelect(otherInvestor).textContent(), /Choose an account/);
-    await frame.getByText("Chosen last time where there was one.", { exact: true }).waitFor();
+    // Each box says whether its own account was chosen last time (#364).
+    await rememberedNote(fundsSelect(), "Chosen last time.");
+    await rememberedNote(fundsSelect(otherInvestor), "Used again for your next statement.");
+    assert.equal(await frame.getByText(/^Chosen last time where/).count(), 0);
     await pickOption(fundsSelect(otherInvestor), "Not set (INR)");
+    // An account chosen on this read is used next time; only the other box's was chosen last time.
+    await rememberedNote(fundsSelect(otherInvestor), "Used again for your next statement.");
+    await rememberedNote(fundsSelect(), "Chosen last time.");
     assert.deepEqual(await frame.locator("th[scope=colgroup]").allTextContents(), [`${investor} → Mutual funds`, `${otherInvestor} → Not set`]);
     await dFooter.getByText("Import 7 transactions for 2 funds into Mutual funds.", { exact: true }).waitFor();
     await dFooter.getByText("Import 6 transactions for 2 funds into Not set.", { exact: true }).waitFor();
@@ -2763,7 +2792,13 @@ const runBrowser = async (browser, engine) => {
     await ready("TESTBRIDGE NIFTY 50 INDEX FUND - DIRECT PLAN - GROWTH").getByText(/^Price source unknown · chosen before ·/).waitFor();
     // Nothing is chosen for the statement yet, so that's a question too, and saving waits for it.
     assert.match(await investorSelect.textContent(), /Choose an account/);
-    await frame.getByText("Used again for your next statement.", { exact: true }).waitFor();
+    await rememberedNote(investorSelect, "Used again for your next statement.");
+    // Save part of it to another account is under the box, on a line of its own (#364).
+    assert.deepEqual(await investorSelect.evaluate((select, button) => {
+      const box = select.closest(".rounded-lg.border");
+      const line = box.nextElementSibling;
+      return { inBox: box.contains(button), next: !!line?.contains(button), alone: line?.innerText.trim() === button.innerText.trim() };
+    }, await partButton.elementHandle()), { inBox: false, next: true, alone: true });
     await footer.getByText("14 questions left: the account choice and 13 other questions before saving.", { exact: true }).waitFor();
     await frame.getByRole("button", { name: "14 questions: the account choice and 13 other questions", exact: true }).waitFor();
     assert.equal(await saveHoldings.isDisabled(), true);
@@ -2913,7 +2948,7 @@ const runBrowser = async (browser, engine) => {
     await settled();
     assert.equal((await storage())[statementKey], "holdings-2");
     assert.match(await investorSelect.textContent(), /Fund folios/);
-    await frame.getByText("Chosen last time.", { exact: true }).waitFor();
+    await rememberedNote(investorSelect, "Chosen last time.");
     // The answers are remembered too, except a skipped share, which is asked again.
     assert.equal(await questions.count(), 1);
     await question("PLACEHOLDER PHARMA LIMITED").waitFor();
@@ -3056,7 +3091,7 @@ const runBrowser = async (browser, engine) => {
     for (const title of [nsdlTitle, cdslTitle, otherFolioTitle]) assert.match(await sourceSelect(title).textContent(), /Choose an account/);
     assert.match(await sourceSelect(leftOutFolioTitle).textContent(), /Don't save/);
     assert.match(await investorSelect.textContent(), /Fund folios/);
-    await frame.getByText("Chosen last time.", { exact: true }).waitFor();
+    await rememberedNote(investorSelect, "Chosen last time.");
     assert.equal(await saveHoldings.isDisabled(), true);
     await choose(nsdlTitle, "Demat (INR)");
     await choose(cdslTitle, "Same as above (Fund folios)");
@@ -5118,7 +5153,7 @@ const runBrowser = async (browser, engine) => {
     // The next statement preselects them.
     await readHoldings();
     assert.equal((await investorSelect.textContent()).trim(), "Family funds (INR)");
-    await frame.getByText("Chosen last time.", { exact: true }).waitFor();
+    await rememberedNote(investorSelect, "Chosen last time.");
     await openParts();
     assert.equal((await sourceSelect(liquidFolio).textContent()).trim(), `${folioAccount} (INR)`);
     assert.equal(await newLine.count(), 0);

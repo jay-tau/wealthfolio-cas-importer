@@ -3871,7 +3871,8 @@ for (const holds of [true, false]) {
     assert.equal(find(run, "NotIncluded").tracked[0].accounts, "Mutual funds (account 1)");
     assert.equal(textOf(shown).replace(/\s+/g, " "), "A number after a name, as in Mutual funds (account 1), is the account's place among the accounts of that name in " +
       "Wealthfolio under Settings → Accounts, counting hidden and archived ones. Giving them different names in Wealthfolio tells them apart.");
-    assert.equal(nodes(SaveTo(saveTo)).some((node) => node.props?.describedBy), false, "the selects list no numbered account");
+    const numbered = `${saveTo.partId}-numbered`;
+    assert.equal(nodes(SaveTo(saveTo)).some((node) => node.props?.describedBy?.split(" ").includes(numbered)), false, "the selects list no numbered account");
   });
 }
 

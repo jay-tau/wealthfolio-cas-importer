@@ -696,11 +696,35 @@ test("a folio without a PAN has a box of its own, with its remembered account an
     [false, true, "Testbridge Mutual Fund folio 1040012345 (no PAN printed)", false],
   ]);
   assert.deepEqual([values[keys.testbridge], values[choices.bankKey(keys.testbridge)]], ["other", "bank"]);
-  assert.equal(saveTo(run).remembered, "all");
+  // Each box says its own account was chosen last time.
+  assert.deepEqual([...saveTo(run).remembered], [keys.pan, keys.testbridge]);
   const [check] = checksUnder(run, choices.bankKey(keys.testbridge));
   assert.equal(check.check.bankName, "Savings");
   // Each box's funds go under who they belong to and where.
   assert.deepEqual([...new Set(find(run, "FundsReadyTable").rows.map((r) => r.groupTitle))], ["ANANYA R TESTWALA → Mutual funds", "ANANYA R TESTWALA → Other funds"]);
+});
+
+// #364: one line under every box said "Chosen last time where there was one." without saying where.
+test("on a family statement, each box says whether its own funds' account was chosen last time", async () => {
+  const other = choices.panKey("OTHER1234F");
+  const { run, keys } = setup({ entries: [], change(data) {
+    data.folios[1].PAN = "OTHER1234F";
+    data.folios[1].name = "B. Investor";
+    return data;
+  }, remembered: { [choices.panKey("ABCDE1234F")]: "mf", [choices.bankKey(other)]: "bank" } });
+  await run.flush();
+  assert.deepEqual(saveTo(run).boxes.map((b) => b.key), [keys.pan, other]);
+  assert.equal(saveTo(run).values[other], null);
+  assert.deepEqual([...saveTo(run).remembered], [keys.pan]);
+  // An account chosen on this read is used next time; it wasn't chosen last time.
+  saveTo(run).onChange(other, "other");
+  await run.flush();
+  assert.deepEqual([...saveTo(run).remembered], [keys.pan]);
+  // Nor is the remembered one once it's changed, even back to itself.
+  saveTo(run).onChange(keys.pan, "other");
+  saveTo(run).onChange(keys.pan, "mf");
+  await run.flush();
+  assert.deepEqual([...saveTo(run).remembered], []);
 });
 
 test("changing another folio's bank keeps an answered check; a change to its own pairs asks again", async () => {
@@ -3522,7 +3546,7 @@ test("a remembered bank account of another account type that tracks transactions
   await run.flush();
   assert.equal(saveTo(run).values[choices.bankKey(keys.pan)], "other");
   assert.equal(saveTo(run).ignored[choices.bankKey(keys.pan)], undefined);
-  assert.equal(saveTo(run).remembered, "all");
+  assert.deepEqual([...saveTo(run).remembered], [keys.pan]);
 });
 
 // #351: Wealthfolio refuses a fund purchase in a credit card account, but takes a transfer to or from one.
@@ -3566,7 +3590,7 @@ test("a remembered credit card for funds asks again, saying why, while one for b
   }
   assert.equal(saveTo(run).values[choices.bankKey(keys.pan)], "card");
   assert.equal(saveTo(run).ignored[choices.bankKey(keys.pan)], undefined);
-  assert.equal(saveTo(run).remembered, "none");
+  assert.deepEqual([...saveTo(run).remembered], []);
   assert.deepEqual(footer(run), ["1 question left: the account choice before importing."]);
   assert.equal(find(run, "Footer").action.disabled, true);
   const warning = "Chosen before: Visa card, which is a credit card. Credit cards can't hold fund purchases, so choose again.";

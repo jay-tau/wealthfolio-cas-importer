@@ -68,6 +68,22 @@ export function NumberedNote({
 /** Whether Save to's lists number an account, so its note describes the selects. */
 export const numbers = (accounts: Account[], labels: ReadonlyMap<string, AccountLabel>) => accounts.some((a) => labels.get(a.id)?.numbered);
 
+/**
+ * In a Save to box, under its main account choice and any new-account or Chosen before line: whether
+ * the choice is the one made last time, or is kept for the next statement. Its `id` describes that
+ * select alone.
+ */
+export function RememberedNote({ id, remembered }: { id: string; remembered: boolean }) {
+  return (
+    <p id={id} className="text-muted-foreground w-full text-sm">
+      {remembered ? "Chosen last time." : "Used again for your next statement."}
+    </p>
+  );
+}
+
+/** A select's `aria-describedby`: the ids given, in order, or none. */
+export const described = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined;
+
 const SAME_AS_PAN = "same-as-pan";
 /**
  * Wealthfolio's CSS gives every span and div overflow-wrap: break-word, which still sizes a select or its list to fit
