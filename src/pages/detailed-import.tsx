@@ -2264,6 +2264,7 @@ export function DetailedImport({
           outcomes={outcomesOf(imported)}
           closing={imported.closing}
           links={imported.links}
+          chosen={imported.parts.filter((p) => p.entry).length}
           transactions={imported.parts.map((p) => p.t)}
           fundName={fundInFolio}
           place={transactionPlace}

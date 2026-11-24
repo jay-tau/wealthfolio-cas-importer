@@ -1710,20 +1710,24 @@ const runBrowser = async (browser, engine) => {
     const linkedCash = everyTable.getByRole("row").filter({ hasText: "2023-05-05" }).filter({ hasText: detailed.liquid }).locator("td").nth(7);
     assert.equal((await linkedCash.textContent()).trim(), "transfer in 25001.1470564from Savings, using an entry already there");
     // A trade Wealthfolio rejects or skips leaves its chosen bank entry and the fund's cash alone.
-    const linkedImport = async () => {
+    const idcwPair = "Fund 0P0000TBCB Cash dividend · 28 Dec 2023 · ₹7,276.48, to Savings";
+    const linkedImport = async (extraPair) => {
       await readStatement();
       // Remembered once imported.
       if ((await bankSelect().textContent()).trim() !== "Savings (INR)") await pickOption(bankSelect(), "Savings (INR)");
+      if (extraPair) await pairBox(extraPair).dispatchEvent("click");
       await linkSelected.click();
       await importButton.click();
     };
     for (const outcome of ["rejectLine", "skipLine"]) {
       await resetBank();
       await hosted((outcome) => { window.host[outcome] = 1; }, outcome);
-      await linkedImport();
+      // The rejected trade's entry never reaches linking, but counts among those chosen.
+      await linkedImport(outcome === "rejectLine" ? idcwPair : undefined);
       await imported(12, 13);
       if (outcome === "rejectLine") {
         assert.equal(await frame.getByRole("button", { name: "Try again: Mutual funds", exact: true }).count(), 0, "the other transactions saved automatically");
+        await frame.getByText("Linked 1 of 2 bank entries you chose with their transactions.").waitFor();
       } else {
         // Its line, and what's announced, name the transaction.
         const skippedLink = "Purchase of Fund INFZ90K01LQ6 on 5 May 2023: The trade wasn't imported, so the bank entry of 4 May 2023 was left as it is.";
@@ -1736,9 +1740,9 @@ const runBrowser = async (browser, engine) => {
       const unchanged = await hosted(() => ({
         bank: window.host.activities.find((a) => a.id === "bank-neft"),
         fundRows: window.host.activities.filter((a) => a.accountId === "account-1" && a.date.startsWith("2023-05-05")),
-        links: window.host.links,
+        linked: window.host.links.map(([bankRowId]) => bankRowId),
       }));
-      assert.deepEqual(unchanged, { bank: bankEntries[0], fundRows: [], links: [] });
+      assert.deepEqual(unchanged, { bank: bankEntries[0], fundRows: [], linked: outcome === "rejectLine" ? ["bank-idcw"] : [] });
       await hosted(() => {
         window.host.rejectLine = undefined;
         window.host.skipLine = undefined;
@@ -1752,7 +1756,7 @@ const runBrowser = async (browser, engine) => {
     await resetBank();
     await linkedImport();
     await imported(13);
-    await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
+    await frame.getByText("Linked the bank entry you chose with its transaction.").waitFor();
     const banked = await hosted(() => ({ activities: window.host.activities, links: window.host.links }));
     const byId = Object.fromEntries(banked.activities.map((a) => [a.id, a]));
     assert.equal(banked.links.length, 1);
@@ -1802,7 +1806,7 @@ const runBrowser = async (browser, engine) => {
       // Its name says which transaction's entry it links.
       const retry = frame.getByRole("button", { name: "Try again: link the bank entry of 4 May 2023 with the purchase of Fund INFZ90K01LQ6 on 5 May 2023", exact: true });
       await retry.press("Enter");
-      await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
+      await frame.getByText("Linked the bank entry you chose with its transaction.").waitFor();
       await focused(frame.locator("[id$='-result-linked']"), `Try again after a failed ${step}`);
       const after = await hosted(() => ({ rows: window.host.activities.length, updates: window.host.updates.length, links: window.host.links.length }));
       assert.deepEqual(
@@ -1863,7 +1867,7 @@ const runBrowser = async (browser, engine) => {
     await fundsBox().getByRole("button", { name: /^Change answer: 1 of / }).waitFor();
     await importButton.click();
     await imported(13);
-    await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
+    await frame.getByText("Linked the bank entry you chose with its transaction.").waitFor();
     await frame.getByText(
       `${neftWithdrawal} (NEFT FICTIVA MF SIP), for ${liquidPurchaseName}: Its split across 2 spending categories was deleted. Its spending category was removed. Later corrections to it from the sync won't change it.`,
       { exact: true },
@@ -1902,7 +1906,7 @@ const runBrowser = async (browser, engine) => {
     assert.equal(await pairBox(neftPair).getAttribute("aria-checked"), "true", "a category alone doesn't stop the tick");
     await linkSelected.click();
     await importButton.click();
-    await frame.getByText("Linked 1 of 1 bank entry you chose with its transaction.").waitFor();
+    await frame.getByText("Linked the bank entry you chose with its transaction.").waitFor();
     await frame.getByText(
       `${neftWithdrawal} (NEFT FICTIVA MF), for ${liquidPurchaseName}: Later corrections to it from the sync won't change it. Couldn't remove its spending category. A transfer isn't spending: remove it in Wealthfolio.`,
       { exact: true },

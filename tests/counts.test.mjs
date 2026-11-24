@@ -71,6 +71,9 @@ test("every one of two is both, of three or more all of them, and of one the one
   assert.equal(every(1, "fund"), "the fund");
   assert.equal(every(2, "fund"), "both funds");
   assert.equal(every(3, "fund"), "all 3 funds");
+  assert.equal(every(1, "bank entry", "bank entries"), "the bank entry");
+  assert.equal(every(2, "bank entry", "bank entries"), "both bank entries");
+  assert.equal(every(3, "bank entry", "bank entries"), "all 3 bank entries");
 });
 
 test("the transactions in a statement count each part only when it isn't zero, one in the singular", () => {
@@ -1013,9 +1016,10 @@ test("separately compared funds keep their accounts' global labels in headings a
   }
 });
 
-/** The detailed import's result, with made-up outcomes. */
+/** The detailed import's result, with made-up outcomes: unless said, the bank entries chosen are those of its links. */
 const importResult = (props) => text("ImportResult", {
   imported: (props.outcomes ?? []).reduce((n, a) => n + a.imported, 0),
+  chosen: props.links?.length ?? 0,
   result: { activities: [], summary: { success: true, total: 0, imported: 0, duplicates: 0, assetsCreated: 0 } },
   sent: [], total: 1, outcomes: [], closing: undefined, links: [], transactions: [], fundName: (t) => t.transaction.scheme, place: () => "",
   unitsFund: (f) => ({ key: f.asset.symbol, name: f.schemes[0].scheme, label: f.schemes[0].scheme }), accountName: () => "the bank account", base: "r",
@@ -1030,13 +1034,20 @@ test("the import result counts transactions, each account's, the funds added and
     outcomes: [outcome({ imported: 1 })], links: [link("bank-1")],
   });
   assert.match(one, /^ 1 transaction imported ✓ 1 transaction imported into Mutual funds Wealthfolio added 1 fund\. /);
-  assert.match(one, / ✓ Linked 1 of 1 bank entry you chose with its transaction\. /);
+  assert.match(one, / ✓ Linked the bank entry you chose with its transaction\. /);
   const two = importResult({
     result: { activities: [], summary: { success: true, total: 2, imported: 2, duplicates: 0, assetsCreated: 2 } },
     total: 2, outcomes: [outcome({ imported: 2, isNew: true })], links: [link("bank-1"), link("bank-2")],
   });
   assert.match(two, /^ 2 transactions imported ✓ 2 transactions imported into Mutual funds \(new\) Wealthfolio added 2 funds\. /);
-  assert.match(two, / ✓ Linked 2 of 2 bank entries you chose with their transactions\. /);
+  assert.match(two, / ✓ Linked both bank entries you chose with their transactions\. /);
+  const three = importResult({ total: 3, outcomes: [outcome({ imported: 3 })], links: [link("bank-1"), link("bank-2"), link("bank-3")] });
+  assert.match(three, / ✓ Linked all 3 bank entries you chose with their transactions\./);
+  // An entry whose trade Wealthfolio refused before linking has no link, but was chosen.
+  const refused = importResult({ total: 2, outcomes: [outcome({ imported: 1 })], links: [link("bank-1")], chosen: 2 });
+  assert.match(refused, / ✓ Linked 1 of 2 bank entries you chose with their transactions\./);
+  // With none linked, there's no line to say so.
+  assert.ok(!importResult({ total: 2, outcomes: [outcome({ imported: 1 })], chosen: 2 }).includes("Linked"));
 });
 
 test("the import result says per account what wasn't imported, each with Try again", () => {
@@ -1154,7 +1165,7 @@ test("rejected rows name their transaction as a bank entry's line does, a line e
   ]]);
   // As shown: each transaction a list item, its rows a list under it.
   const html = renderToStaticMarkup(createElement(components.ImportResult, {
-    ...props, result: { activities, summary: { success: false } }, sent: [], total: 5, imported: 0, outcomes: [], closing: undefined, links: [],
+    ...props, result: { activities, summary: { success: false } }, sent: [], total: 5, imported: 0, outcomes: [], closing: undefined, links: [], chosen: 0,
     unitsFund: () => ({}), base: "r", onRetryAccount() {}, onRetryLink() {}, onCheckAgain() {}, onOpenAccount() {},
   })).replaceAll("&#x27;", "'");
   assert.ok(html.includes("<li>Purchase (1 of 2) of Fictiva Liquid Fund, folio 111 on 5 May 2023, ₹24,998.75:<ul class=\"list-disc ps-4\"><li>The purchase in Mutual funds: The fund could not be created</li>"), html);
