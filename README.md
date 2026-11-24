@@ -300,13 +300,28 @@ search for a fund's name when its ISIN finds nothing or none is printed, or from
 are never confirmed this way. Neither is a fund whose search answers once the focus has been in its
 question, so the question doesn't go from under you.
 
+A saved asset with AMFI selected can also be confirmed beside one new AMFI listing. A fund's Yahoo
+listing saved in Wealthfolio and switched to AMFI can appear this way. It must be the only saved
+asset among the results and pass the identifier, currency, name, plan and option checks above. The
+add-on reads the asset from Wealthfolio and confirms it only when AMFI is its preferred provider and
+both settings in its asset editor give the printed ISIN. Set AMFI's mapping under **Market data**
+and the asset's **ISIN** under **General**. The mapping alone can bring up a saved asset in the
+search, even when it points to another fund. While the add-on reads the asset, the fund still counts
+as being looked up and any already-open question says "Searching…". If the asset can't be read or
+the check fails, Review asks you to choose. If the same check still fails on the next read, Review
+asks again unless an import or save remembered your choice.
+
 When the search for a fund's printed ISIN finds a saved asset with another preferred provider or
 none, you choose which result to use. If the search also finds AMFI's new listing, the fund's question
 warns that using it adds another asset when you import or save. This applies even when the results
-also include a saved asset with AMFI selected. Using any saved asset reuses it. To switch a saved
-asset to AMFI, edit it in Wealthfolio. Under **Market data**, turn on **Automatic updates** if it's
-priced by hand, then choose AMFI as the preferred provider and map AMFI to the fund's ISIN or scheme
-code.
+also include a saved asset with AMFI selected. When the only saved assets have AMFI selected, the
+question explains that choosing a saved asset reuses it and choosing AMFI's new listing adds an asset
+when you import or save. Whenever the offered results include AMFI's new listing and a saved asset,
+each saved asset says "Saved in Wealthfolio: using it reuses this asset", and each other result says
+"New listing: using it adds an asset". To switch a saved asset to AMFI, edit it in Wealthfolio. Under
+**Market data**, turn on **Automatic updates** if it's priced by hand, then choose AMFI as the preferred
+provider and map AMFI to the fund's ISIN or scheme code. Map it to the ISIN and enter the same ISIN
+under **General** to let the add-on confirm the asset automatically when the other checks pass.
 
 ### Bank account
 

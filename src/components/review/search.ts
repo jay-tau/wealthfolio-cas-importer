@@ -1,7 +1,7 @@
 import type { AddonContext, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { useEffect, useRef, useState } from "react";
 import { isStatementAsset } from "../../cas/holdings";
-import { addsAsset, certain, fromAmfi } from "../../lib/amfi";
+import { addsAsset, amfiIsin, besideSaved, certain, fromAmfi, savedBesideListing } from "../../lib/amfi";
 import type { ChosenFund } from "../../lib/choices";
 import { listingName } from "../../lib/fund-label";
 import { differs, fundName, fundQuery, planAndOption } from "../../lib/fund-name";
@@ -22,6 +22,11 @@ export type Search =
        * A printed ISIN search also counts saved assets the Review screen doesn't offer.
        */
       addsAsset: boolean;
+      /**
+       * When the results include AMFI's new listing and a saved asset, which of them are saved assets,
+       * by position: using one reuses it, and using any other adds an asset.
+       */
+      saved?: boolean[];
     };
 
 /** The search the Review screen runs by itself: the printed ISIN, then the name when that finds nothing. */
@@ -78,7 +83,8 @@ export const pickedFund = (search: ItemSearch) => shown(search).find(([id]) => i
 /**
  * Searches for the holdings that need a choice, each by itself, and keeps what they found. The
  * Review screen's automatic search for a holding goes by its printed ISIN, and by its name when that
- * finds nothing or none is printed; it can confirm a fund without a click (`certain`). The user's own
+ * finds nothing or none is printed; it can confirm a fund without a click (`certain`), or a saved asset
+ * beside AMFI's new listing once its profile is read (`savedBesideListing`). The user's own
  * searches go by what they type. This hook's searches send market-data providers only the printed
  * ISIN, the name from the statement and what the user types. Outside this hook, the holdings import
  * also searches by an asset's symbol while working out what to save (`prepare` in
@@ -141,6 +147,7 @@ export function useHoldingSearches(
     results: found.map((r) => choiceFor(item, r)),
     amfi: found.some(fromAmfi),
     addsAsset: addsAsset(returned),
+    ...(besideSaved(found) && { saved: found.map((r) => !!r.existingAssetId) }),
   });
 
   const runAuto = async (item: FundItem) => {
@@ -164,18 +171,37 @@ export function useHoldingSearches(
         if (stale()) return;
       }
       const search = done(item, found, byName ? found : results);
-      update(key, (s) => ({ ...s, auto: { ...search, byName } }));
-      answered(true);
       // AMFI's scheme for the printed ISIN is confirmed without a click when nothing contradicts it,
       // unless the holding was answered or changed, or the user has started on it.
-      const own = current.current[key];
-      if (noun !== "fund" || !isin || byName || withheld || handledRef.current.has(key) || interacted.current.has(key) || own?.text.trim() || own?.typed || own?.picked) return;
+      const untouched = () => {
+        const own = current.current[key];
+        return noun === "fund" && !!isin && !byName && !withheld && !handledRef.current.has(key) && !interacted.current.has(key) &&
+          !own?.text.trim() && !own?.typed && !own?.picked;
+      };
       const plan = statementPlan(item);
-      const match = certain(found, (r) => {
+      const fits = (r: SymbolSearchResult) => {
         // As the result shows it: a listing its provider didn't name has its plan and option unknown.
         const shownName = listingName(choiceFor(item, r));
         return !!shownName && !(["plan", "option"] as const).some((field) => differs(planAndOption(shownName), plan, field));
-      });
+      };
+      let match = untouched() ? certain(found, fits) : undefined;
+      // So is a saved asset with AMFI selected beside AMFI's new listing, once its profile has the
+      // printed ISIN as its own and as AMFI's mapping. Until then the search is still running, so its
+      // question doesn't show only to go, and a question already shown keeps "Searching…".
+      const saved = match === undefined && untouched() ? savedBesideListing(found, fits) : undefined;
+      if (saved !== undefined && isin) {
+        let mapped = false;
+        try {
+          const asset = await ctx.api.assets.getProfile(found[saved].existingAssetId!);
+          mapped = amfiIsin(asset, isin);
+        } catch {
+          // A profile failure leaves the search results available.
+        }
+        if (stale()) return;
+        if (mapped && untouched()) match = saved;
+      }
+      update(key, (s) => ({ ...s, auto: { ...search, byName } }));
+      answered(true);
       if (match !== undefined) onMatchRef.current(key, choiceFor(item, found[match]));
     } catch (e) {
       if (stale()) return;

@@ -153,9 +153,16 @@ const unnamedKind = (fund: ChosenFund) => (fund.providerId === YAHOO ? "Unnamed 
 
 /**
  * A search result as a choice: its name, or its exchange for a share, with its plan and option
- * badges and currency; under that its provider and ticker, and whether its plan and option match.
+ * badges and currency; under that its provider and ticker, whether it's a saved asset or a new
+ * listing when `saved` says, and whether its plan and option match.
  */
-export function ResultLabel({ item, fund, statement }: { item: FundItem; fund: ChosenFund; statement?: PlanAndOption }) {
+export function ResultLabel({ item, fund, statement, saved }: {
+  item: FundItem;
+  fund: ChosenFund;
+  statement?: PlanAndOption;
+  /** Among results that include AMFI's new listing and a saved asset: whether this one is saved, so using it reuses it, or new, so using it adds an asset. */
+  saved?: boolean;
+}) {
   const exchange = shareExchange(item, fund);
   const name = listingName(fund);
   const currency = otherCurrency(fund.quoteCcy);
@@ -175,6 +182,13 @@ export function ResultLabel({ item, fund, statement }: { item: FundItem; fund: C
       <span className="text-muted-foreground text-sm" style={{ overflowWrap: "anywhere" }}>
         {detail}
       </span>{" "}
+      {saved !== undefined && (
+        <>
+          <span className="text-muted-foreground text-sm">
+            {saved ? "Saved in Wealthfolio: using it reuses this asset" : "New listing: using it adds an asset"}
+          </span>{" "}
+        </>
+      )}
       {match && match.text !== "Plan and option unknown" && (
         <span className={match.warn ? "text-warning text-sm" : "text-muted-foreground text-sm"}>{match.text}</span>
       )}

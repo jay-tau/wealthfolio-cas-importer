@@ -1631,6 +1631,41 @@ test("a saved listing set to Auto is priced from Wealthfolio's default source an
 });
 
 
+test("results beside AMFI's new listing say which one reuses a saved asset and which adds one (#376)", () => {
+  const { toFund } = components;
+  const item = { key: "isin:INFZ90K01LQ6", isin: "INFZ90K01LQ6", name: "Fictiva Liquid Fund - Direct Plan - Growth", noun: "fund" };
+  const statement = { plan: "Direct", option: "Growth" };
+  // A BSE listing saved in Wealthfolio and switched to AMFI, as the search lists it, and AMFI's scheme.
+  const switched = toFund({
+    symbol: "0P0001ZLQ6.BO", canonicalSymbol: "0P0001ZLQ6", canonicalExchangeMic: "XBOM", exchangeMic: "XBOM", exchange: "BSE",
+    currency: "INR", quoteType: "EQUITY", typeDisplay: "EQUITY", shortName: "Fictiva Liquid Dir Gr", longName: "Fictiva Liquid Dir Gr",
+    quoteMode: "MARKET", isExisting: true, existingAssetId: "switched", providerId: "AMFI", index: "", score: 100,
+  });
+  const scheme = toFund({ symbol: "123456", providerId: "AMFI", providerSymbol: "123456", currency: "INR", quoteType: "MUTUALFUND", longName: "Fictiva Liquid Dir Gr" });
+  const label = (fund, saved) => text("ResultLabel", { item, fund, statement, saved });
+  assert.match(label(switched, true), /^ Fictiva Liquid Dir Gr Direct Growth AMFI · 0P0001ZLQ6\.BO Saved in Wealthfolio: using it reuses this asset Plan and option match your statement $/);
+  assert.match(label(scheme, false), /^ Fictiva Liquid Dir Gr Direct Growth AMFI · 123456 New listing: using it adds an asset Plan and option match your statement $/);
+  for (const fund of [switched, scheme]) assert.doesNotMatch(label(fund), /Saved in Wealthfolio|New listing/);
+  const card = (auto, action) => text("QuestionCard", { item, label: item.name, search: { ...idle, auto }, searches, base: "q", amfiOn: true, headingId: "h", action, onAnswer() {} });
+  const beside = { status: "done", results: [switched, scheme], amfi: true, addsAsset: false, saved: [true, false] };
+  for (const action of ["import", "save"]) {
+    const shown = card(beside, action);
+    assert.ok(shown.includes(` Choose the saved asset to reuse it. Choosing AMFI's new listing adds an asset when you ${action}. `), shown);
+    assert.match(shown, /0P0001ZLQ6\.BO Saved in Wealthfolio: using it reuses this asset .*123456 New listing: using it adds an asset /);
+  }
+  const twoSaved = card({ ...beside, results: [switched, { ...switched, assetId: "other" }, scheme], saved: [true, true, false] }, "import");
+  assert.ok(twoSaved.includes(" Choose a saved asset to reuse it. Choosing AMFI's new listing adds "));
+  // Beside a saved asset with another provider, the warning stays as it was, and the results are marked too.
+  const yahoo = { ...switched, providerId: "YAHOO" };
+  const addsAnother = card({ ...beside, results: [yahoo, scheme], addsAsset: true }, "import");
+  assert.ok(addsAnother.includes(" Wealthfolio already has this fund, and using AMFI's new listing adds another asset for it when you import. To switch "));
+  assert.match(addsAnother, /Saved in Wealthfolio: using it reuses this asset .*New listing: using it adds an asset /);
+  // Without the new listing, nothing is marked.
+  const savedOnly = card({ ...beside, results: [switched, { ...switched, assetId: "other" }], saved: undefined }, "import");
+  assert.match(savedOnly, / Several results on AMFI fit the ISIN printed for it\. /);
+  assert.doesNotMatch(savedOnly, /Saved in Wealthfolio|New listing/);
+});
+
 test("held and refused account results explain the next step without an ineffective retry", () => {
   const waiting = importResult({ total: 5, outcomes: [outcome({
     imported: 4, waiting: 1, state: "failed", retryable: false, waitingFor: "Other funds",

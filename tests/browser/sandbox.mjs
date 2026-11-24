@@ -2574,6 +2574,92 @@ const runBrowser = async (browser, engine) => {
     await restoreChoices(beforeIgnoredDetailed);
 
     part();
+    // The fund's BSE listing, saved in Wealthfolio and switched to AMFI: AMFI is its preferred provider
+    // and is mapped to the fund's ISIN, which finds it beside AMFI's new listing (#376). Once the ISIN
+    // under General is the fund's too, it's confirmed without a click. Without it, the question stays
+    // open, and says which result reuses the saved asset and which adds another.
+    const switchedName = "Fictiva Liquid Dir Gr";
+    const switchLiquid = (own) => hosted(([name, own]) => {
+      const isin = "INFZ90K01LQ6";
+      window.host.amfi = true;
+      window.host.providers = "";
+      window.host.answers = {};
+      window.host.activities = [];
+      window.host.storage.delete(`isin:${isin}`);
+      window.host.assets = { "switched-liquid": {
+        symbol: "0P0001ZLQ6", displayCode: "0P0001ZLQ6.BO", exchangeMic: "XBOM", instrumentType: "EQUITY", name, kind: "INVESTMENT", quoteCcy: "INR", aliases: [isin],
+        providerConfig: { preferred_provider: "AMFI", overrides: { AMFI: { type: "equity_symbol", symbol: isin } } },
+        metadata: own ? { identifiers: { isin: own } } : {},
+      } };
+    }, [switchedName, own]);
+    await switchLiquid("");
+    await readStatement();
+    const switchedCard = fundQuestion(detailed.liquid);
+    await switchedCard.getByText("Choose the saved asset to reuse it. Choosing AMFI's new listing adds an asset when you import.", { exact: true }).waitFor();
+    const savedResult = switchedCard.locator("label").filter({ hasText: "Saved in Wealthfolio: using it reuses this asset" });
+    await savedResult.getByText("AMFI · 0P0001ZLQ6.BO", { exact: true }).waitFor();
+    await switchedCard.locator("label").filter({ hasText: "New listing: using it adds an asset" }).getByText(/^AMFI · \d{6}$/).waitFor();
+    // The radios' names say which is which.
+    const radioNames = await switchedCard.getByRole("radiogroup").ariaSnapshot();
+    assert.match(radioNames, /radio "[^"]*AMFI · 0P0001ZLQ6\.BO Saved in Wealthfolio: using it reuses this asset[^"]*"/, radioNames);
+    assert.match(radioNames, /radio "[^"]*AMFI · \d{6} New listing: using it adds an asset[^"]*"/, radioNames);
+    assert.equal(await switchedCard.getByText(/^(Saved in Wealthfolio|New listing): /).count(), 2);
+    assert.deepEqual(await switchedCard.getByRole("radio").evaluateAll((all) => all.map((r) => r.getAttribute("aria-checked"))), ["false", "false"]);
+    await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+    await switchLiquid("INFZ90K01LQ6");
+    await readStatement();
+    await dSaid.getByText("1 fund found automatically on AMFI. No questions for you.", { exact: true }).waitFor();
+    await readyFund(switchedName).getByText(/^Prices from AMFI · Change$/).waitFor();
+    assert.equal(await fundQuestions.count(), 0);
+    // Force a Yahoo-only response while AMFI is off so the question opens. The harness normally
+    // finds the saved asset by alias even with AMFI off. When AMFI is added, the question is searched
+    // again. Entering it while the saved listing's profile loads keeps it open.
+    const amfiCheck = frame.getByRole("button", { name: "I've added AMFI: check", exact: true });
+    for (const enter of [true, false]) {
+      await hosted(() => {
+        window.host.amfi = false;
+        window.host.answers = { INFZ90K01LQ6: [window.host.make.listing("0P0000ZLQ6")] };
+        window.host.storage.delete("isin:INFZ90K01LQ6");
+      });
+      // Opening the page again checks AMFI again: Wealthfolio now says it's off.
+      await revisit();
+      await readStatement();
+      await frame.getByText(/^AMFI isn't added, so 1 fund was only searched on Yahoo Finance and needs you\./).waitFor();
+      if (!(await amfiCheck.count())) await frame.getByRole("button", { name: "Open Market data settings", exact: true }).click();
+      await hosted(() => {
+        window.host.amfi = true;
+        window.host.answers = {};
+        window.host.pause = "profile";
+      });
+      await amfiCheck.click();
+      await waiting();
+      await switchedCard.getByText("Searching…", { exact: true }).waitFor();
+      const searchBox = switchedCard.getByRole("textbox");
+      if (enter) await searchBox.focus();
+      await resume();
+      if (enter) {
+        await dSaid.getByText("AMFI added: 0 funds matched. 1 question remains.", { exact: true }).waitFor();
+        await savedResult.waitFor();
+        await focused(searchBox, "AMFI added while the profile loads and the question is entered");
+        assert.equal(await switchedCard.getByRole("radio", { checked: true }).count(), 0);
+        await dFooter.getByText("1 question left before importing.", { exact: true }).waitFor();
+      } else {
+        await dSaid.getByText("AMFI added: 1 fund matched. No questions remain.", { exact: true }).waitFor();
+        await readyFund(switchedName).getByText(/^Prices from AMFI · Change$/).waitFor();
+        assert.equal(await fundQuestions.count(), 0);
+      }
+    }
+    await hosted(() => {
+      window.host.amfi = false;
+      window.host.providers = "fail";
+      window.host.answers = {};
+      window.host.assets = {};
+    });
+    await leaveDetailed();
+    await restoreChoices(beforeIgnoredDetailed);
+    await revisit();
+
+    part();
     // A payment check under Save to is above the funds' questions: its answer takes the focus down to
     // a fund's question left open. That fund's answer adds its purchase to the check, which asks it
     // again: with nothing left below, the focus goes back up to it, and its answer is the last.

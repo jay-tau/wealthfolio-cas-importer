@@ -1416,6 +1416,133 @@ test("a withheld statement-price asset keeps an AMFI result unconfirmed", async 
   }
 });
 
+// #376: a fund's BSE listing saved in Wealthfolio and switched to AMFI, which its printed ISIN finds
+// beside AMFI's new listing.
+const SWITCHED = "switched-liquid";
+const LIQUID_ISIN = "INFZ90K01LQ6";
+/** As Wealthfolio 3.13.1's search lists the saved listing, found by AMFI's mapping, and AMFI's scheme. */
+const switchedResult = (patch = {}) => ({
+  symbol: "0P0001ZLQ6.BO", canonicalSymbol: "0P0001ZLQ6", canonicalExchangeMic: "XBOM", exchangeMic: "XBOM", exchange: "BSE",
+  shortName: "Fictiva Liquid Dir Gr", longName: "Fictiva Liquid Dir Gr", currency: "INR", quoteType: "EQUITY", quoteMode: "MARKET",
+  isExisting: true, existingAssetId: SWITCHED, providerId: "AMFI", dataSource: "AMFI", exactMatch: true, ...patch,
+});
+const liquidScheme = { symbol: "123456", longName: "Fictiva Liquid Fund - Direct Plan - Growth", currency: "INR", quoteType: "MUTUALFUND", providerId: "AMFI", providerSymbol: "123456" };
+/** Its profile: AMFI as the preferred provider, mapped to `mapped`, and `own` as its ISIN under General. */
+const switchedProfile = ({ preferred = "AMFI", mapped = LIQUID_ISIN, own = LIQUID_ISIN } = {}) => ({
+  id: SWITCHED, kind: "INVESTMENT", name: "Fictiva Liquid Dir Gr", instrumentType: "EQUITY", instrumentSymbol: "0P0001ZLQ6", instrumentExchangeMic: "XBOM",
+  quoteMode: "MARKET", quoteCcy: "INR",
+  providerConfig: { preferred_provider: preferred, ...(mapped && { overrides: { AMFI: { type: "equity_symbol", symbol: mapped } } }) },
+  metadata: own ? { identifiers: { isin: own } } : {},
+});
+/** The Liquid fund alone, with no fund chosen for it. */
+const liquidAlone = () => {
+  const review = setup({ entries: [], change(data) {
+    data.folios = [data.folios[0]];
+    data.folios[0].schemes = [data.folios[0].schemes.find((s) => s.scheme.includes("Liquid"))];
+    return data;
+  } });
+  review.props.fundChoices = {};
+  return review;
+};
+
+test("a saved listing switched to AMFI is confirmed beside AMFI's new listing once its profile has the printed ISIN as its own and AMFI's, and remembered with its asset ID (#376)", async () => {
+  const { run, api, profiles, remembers, imported } = liquidAlone();
+  profiles[SWITCHED] = switchedProfile();
+  api.market.searchTicker = async (query) => (query === LIQUID_ISIN ? [switchedResult(), liquidScheme] : []);
+  await run.flush();
+  assert.equal(find(run, "QuestionCard"), undefined);
+  assert.equal(await announced(run), "1 fund found automatically on AMFI. No questions for you.");
+  const row = find(run, "FundsReadyTable").rows.find((r) => r.fund.assetId === SWITCHED);
+  assert.equal(row?.by, "auto");
+  assert.equal(row.fund.symbol, "0P0001ZLQ6");
+  assert.equal(row.fund.providerId, "AMFI");
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 1);
+  assert.deepEqual(new Set(imported[0].filter((r) => r.symbol).map((r) => `${r.symbol}:${r.exchangeMic}`)), new Set(["0P0001ZLQ6:XBOM"]));
+  const funds = remembers.flatMap((r) => r.funds);
+  assert.deepEqual(funds.map(([key, choice]) => [key, choice.fund.assetId, choice.fund.symbol]), [[`isin:${LIQUID_ISIN}`, SWITCHED, "0P0001ZLQ6"]]);
+});
+
+test("a saved listing switched to AMFI keeps its question open beside AMFI's new listing unless both of its ISIN settings name the printed ISIN (#376)", async () => {
+  const cases = {
+    "no ISIN under General": { profile: switchedProfile({ own: "" }) },
+    "another ISIN under General": { profile: switchedProfile({ own: "INFZ90K01FC8" }) },
+    "no AMFI mapping": { profile: switchedProfile({ mapped: "" }) },
+    "AMFI mapped to another code": { profile: switchedProfile({ mapped: "100123" }) },
+    "another preferred provider": { profile: switchedProfile({ preferred: "YAHOO" }) },
+    "an unreadable profile": { readProfile: async () => { throw new Error("Profile unavailable"); } },
+    "a profile call that throws": { readProfile: () => { throw new Error("Profile unavailable"); } },
+    "an empty profile": { readProfile: async () => null },
+    // A different fund with the same plan and option, with AMFI mapped to the printed ISIN by mistake.
+    "another fund with the same plan and option": {
+      profile: switchedProfile({ own: "INFZ90K01US2" }),
+      results: [switchedResult({ shortName: "Fictiva Ultra Short Dir Gr", longName: "Fictiva Ultra Short Dir Gr" }), liquidScheme],
+    },
+    "another saved asset beside it": {
+      profile: switchedProfile(),
+      results: [switchedResult(), switchedResult({ existingAssetId: "another-liquid", canonicalSymbol: "0P0002ZLQ6", symbol: "0P0002ZLQ6.BO" }), liquidScheme],
+    },
+    "no match on an identifier": { profile: switchedProfile(), results: [switchedResult({ exactMatch: false }), liquidScheme] },
+    "a plan that differs": { profile: switchedProfile(), results: [switchedResult({ longName: "Fictiva Liquid Reg Gr", shortName: "Fictiva Liquid Reg Gr" }), liquidScheme] },
+  };
+  for (const [name, { profile, readProfile, results: shown = [switchedResult(), liquidScheme] }] of Object.entries(cases)) {
+    const { run, api, profiles } = liquidAlone();
+    if (readProfile) api.assets.getProfile = readProfile;
+    else profiles[SWITCHED] = profile;
+    api.market.searchTicker = async (query) => (query === LIQUID_ISIN ? shown : []);
+    await run.flush();
+    const question = find(run, "QuestionCard");
+    assert.ok(question, name);
+    assert.equal(question.search.auto.status, "done", name);
+    assert.deepEqual(question.search.auto.results.map((r) => r.assetId), shown.map((r) => r.existingAssetId), name);
+    // Its results say which are saved assets.
+    assert.deepEqual(question.search.auto.saved, shown.map((r) => !!r.existingAssetId), name);
+    assert.equal(find(run, "Footer").action.disabled, true, name);
+    run.dispose();
+  }
+});
+
+test("a saved listing switched to AMFI isn't confirmed once the user enters its question while its profile loads, or a newer search starts (#376)", async () => {
+  for (const meanwhile of ["nothing", "enters the question", "searches again"]) {
+    const { run, props, api } = liquidAlone();
+    // With AMFI off, the ISIN finds only Yahoo's new listing, and the question is asked.
+    const yahoo = { symbol: "0P0000ZLQ6.BO", longName: "Fictiva Liquid Dir Gr", currency: "INR", quoteType: "MUTUALFUND", providerId: "YAHOO", providerSymbol: "0P0000ZLQ6.BO" };
+    api.market.searchTicker = async () => [yahoo];
+    await run.flush();
+    let question = find(run, "QuestionCard");
+    assert.ok(question, meanwhile);
+    // AMFI is added: the search finds the switched listing beside AMFI's new one, and reads its profile.
+    let loaded;
+    const profile = new Promise((resolve) => { loaded = resolve; });
+    api.assets.getProfile = () => profile;
+    api.market.searchTicker = async () => [switchedResult(), liquidScheme];
+    run.update({ amfi: { status: "on", searches: props.amfi.searches + 1 } });
+    await run.flush();
+    assert.ok(loaded, meanwhile);
+    question = find(run, "QuestionCard");
+    assert.equal(question?.search.auto.status, "searching", `${meanwhile}: the question still shows while the profile loads`);
+    if (meanwhile === "enters the question") question.searches.interact(question.item.key);
+    if (meanwhile === "searches again") {
+      api.market.searchTicker = async () => [yahoo];
+      question.searches.retry(question.item);
+      await run.flush();
+      assert.deepEqual(find(run, "QuestionCard").search.auto.results.map((r) => r.providerId), ["YAHOO"]);
+    }
+    loaded(switchedProfile());
+    await run.flush();
+    question = find(run, "QuestionCard");
+    if (meanwhile === "nothing") {
+      assert.equal(question, undefined);
+      assert.equal(find(run, "FundsReadyTable").rows.find((r) => r.fund.assetId === SWITCHED)?.by, "auto");
+    } else {
+      assert.ok(question, meanwhile);
+      assert.deepEqual(question.search.auto.results.map((r) => r.providerId), meanwhile === "searches again" ? ["YAHOO"] : ["AMFI", "AMFI"]);
+    }
+    run.dispose();
+  }
+});
+
 /**
  * The made-up statement's Liquid Fund in its first folio only, with its purchase twice and, between
  * the two, one of `other` rupees on the same day, if given.
