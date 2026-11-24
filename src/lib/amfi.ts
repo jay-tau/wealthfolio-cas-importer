@@ -11,13 +11,12 @@ type Result = Pick<SymbolSearchResult, "providerId" | "existingAssetId">;
 /** AMFI's search result, or an asset with AMFI selected, even if automatic updates are off. */
 export const fromAmfi = (result: Result) => result.providerId === AMFI;
 
-/** An asset Wealthfolio already has, priced from another source. */
+/** A saved asset with a preferred provider other than AMFI, or with no preferred provider. */
 export const pricedElsewhere = (result: Result) => !!result.existingAssetId && !fromAmfi(result);
 
 /**
- * Whether using AMFI's new listing among the results adds another asset for a fund Wealthfolio
- * already has among them, priced from another source or with no preferred provider. A saved asset
- * with AMFI selected is no new listing: using it adds none.
+ * Whether the results include AMFI's new listing and a saved asset with another preferred provider
+ * or none. Using the new listing adds another asset. Using a saved asset reuses it.
  */
 export const addsAsset = (results: Result[]) =>
   results.some((result) => fromAmfi(result) && !result.existingAssetId) && results.some(pricedElsewhere);
@@ -47,9 +46,9 @@ const exactMatch = (result: Result) => (result as { exactMatch?: unknown }).exac
  * Of the results of the search for a fund's printed ISIN, the one that's certainly that fund: the
  * only AMFI result, either AMFI's own (AMFI answers only an exact ISIN or scheme code) or a saved
  * asset the search found by an identifier, quoted in rupees and accepted by `fits`. None while
- * Wealthfolio has an asset among them priced from another source or with no preferred provider:
- * confirming AMFI's new listing would add another asset for the fund, and the user chooses which
- * saved asset to use, even when one has AMFI selected.
+ * the results include a saved asset with another preferred provider or none. The user chooses
+ * which result to use. Using AMFI's new listing adds another asset. Using a saved asset, including
+ * one with AMFI selected, reuses it.
  */
 export function certain<R extends Result & Pick<SymbolSearchResult, "currency">>(
   results: R[],

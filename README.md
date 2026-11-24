@@ -300,14 +300,13 @@ search for a fund's name when its ISIN finds nothing or none is printed, or from
 are never confirmed this way. Neither is a fund whose search answers once the focus has been in its
 question, so the question doesn't go from under you.
 
-A fund Wealthfolio already has, priced from Yahoo or from statements, or with no preferred
-provider, isn't switched: while such an asset is among the results, the add-on doesn't confirm an AMFI
-result for the fund by itself, and you choose which to use. Using AMFI's new listing adds another
-asset for the fund when you import or save, and the fund's question says so, even when a saved asset
-with AMFI selected is among the results too. Using a saved asset, one with AMFI selected included,
-adds none. To price the asset Wealthfolio has from AMFI, edit it in Wealthfolio: under **Market
-data**, turn on **Automatic updates** if it's priced by hand, then choose AMFI as the preferred
-provider and map AMFI to the fund's ISIN or scheme code.
+When the search for a fund's printed ISIN finds a saved asset with another preferred provider or
+none, you choose which result to use. If the search also finds AMFI's new listing, the fund's question
+warns that using it adds another asset when you import or save. This applies even when the results
+also include a saved asset with AMFI selected. Using any saved asset reuses it. To switch a saved
+asset to AMFI, edit it in Wealthfolio. Under **Market data**, turn on **Automatic updates** if it's
+priced by hand, then choose AMFI as the preferred provider and map AMFI to the fund's ISIN or scheme
+code.
 
 ### Bank account
 

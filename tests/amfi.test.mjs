@@ -6,10 +6,11 @@ import { addsAsset, amfiStatus, certain, fromAmfi, pricedElsewhere } from "../sr
 // As Wealthfolio 3.12.0 lists them for a fund's ISIN: Yahoo's listing first, then AMFI's scheme.
 const yahoo = { providerId: "YAHOO" };
 const amfi = { providerId: "AMFI" };
-// An asset Wealthfolio has: one priced from Yahoo or from statements has no provider, one priced
-// from AMFI has AMFI's.
+// Saved assets can specify a preferred provider or leave it to Wealthfolio.
 const existing = { existingAssetId: "asset-1" };
+const existingYahoo = { ...existing, providerId: "YAHOO" };
 const existingAmfi = { existingAssetId: "asset-2", providerId: "AMFI" };
+const manualAmfi = { ...existingAmfi, quoteMode: "MANUAL", dataSource: "MANUAL" };
 
 test("a fund Wealthfolio prices from another source is told apart from AMFI's", () => {
   assert.equal(pricedElsewhere(existing), true);
@@ -21,13 +22,15 @@ test("AMFI results", () => {
   assert.deepEqual([yahoo, amfi, existing, existingAmfi].map(fromAmfi), [false, true, false, true]);
 });
 
-test("only AMFI's new listing adds another asset for a fund Wealthfolio prices from another source", () => {
+test("only AMFI's new listing adds another asset beside a saved asset with another preferred provider or none", () => {
+  assert.equal(addsAsset([existingYahoo, amfi]), true);
   assert.equal(addsAsset([existing, amfi]), true);
   // Even beside a saved asset with AMFI selected, which adds none.
   assert.equal(addsAsset([existing, existingAmfi, amfi]), true);
   assert.equal(addsAsset([existing, existingAmfi]), false);
   // Nothing saved priced from another source, or no new AMFI listing.
   assert.equal(addsAsset([existingAmfi, amfi]), false);
+  assert.equal(addsAsset([manualAmfi, amfi]), false);
   assert.equal(addsAsset([yahoo, amfi]), false);
   assert.equal(addsAsset([existing, yahoo]), false);
   assert.equal(addsAsset([]), false);

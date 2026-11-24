@@ -18,8 +18,8 @@ export type Search =
       /** A result is AMFI's, or a saved asset priced from AMFI. */
       amfi: boolean;
       /**
-       * Using AMFI's new listing among them adds another asset for the fund: Wealthfolio already has
-       * it among them, priced from another source than AMFI or with no preferred provider.
+       * The results include AMFI's new listing and a saved asset with another preferred provider
+       * or none. Using the new listing adds another asset for the fund.
        */
       addsAsset: boolean;
     };

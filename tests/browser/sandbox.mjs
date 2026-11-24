@@ -2526,8 +2526,8 @@ const runBrowser = async (browser, engine) => {
       window.host.providers = "";
       window.host.storage.delete("isin:INFZ90K01LQ6");
     });
-    const addsAnother = "Wealthfolio already has this fund, priced from another source, and using AMFI's new listing adds " +
-      "another asset for it when you import. To price the one it has from AMFI instead, edit that asset in Wealthfolio: under " +
+    const addsAnother = "Wealthfolio already has this fund, and using AMFI's new listing adds another asset for it when you " +
+      "import. To switch a saved asset to AMFI, edit it in Wealthfolio: under " +
       "Market data, turn on automatic updates if it's priced by hand, then choose AMFI as the preferred provider and map AMFI " +
       "to the fund's ISIN or scheme code.";
     for (const [kinds, line] of [
@@ -2541,7 +2541,9 @@ const runBrowser = async (browser, engine) => {
         // As Wealthfolio's search lists a saved asset found by an identifier, here AMFI mapped to
         // the ISIN: with its preferred provider and no provider ticker.
         const saved = (result, id, providerId) => ({
-          ...result, providerId, providerSymbol: undefined, isExisting: true, existingAssetId: id, quoteMode: "MARKET", exactMatch: true,
+          ...result, providerId, providerSymbol: undefined, dataSource: providerId,
+          isExisting: true, existingAssetId: id, quoteMode: "MARKET", exactMatch: true,
+          quoteType: "EQUITY", typeDisplay: "EQUITY", exchange: result.exchangeMic ? result.exchange : "", score: 100,
         });
         const results = {
           yahoo: saved(listing("0P0000ZLQ6"), "yahoo-liquid", "YAHOO"),
