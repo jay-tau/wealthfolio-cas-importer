@@ -6,7 +6,7 @@ import { bankKey, folioKey, LEFT_OUT, NO_BANK } from "../../lib/choices";
 import type { AccountLabel } from "../../lib/account-labels";
 import { isProposed } from "../../lib/new-accounts";
 import { plural } from "../../lib/plural";
-import { AccountSelect, ChooseAgain, type Ignored, newLabel, NumberedNote, numbers, type Proposed } from "../account-choices";
+import { AccountSelect, ChooseAgain, described, type Ignored, newLabel, NumberedNote, numbers, type Proposed, RememberedNote } from "../account-choices";
 import { Disclosure } from "./parts";
 
 /** One investor's funds, by PAN, or a folio printed without a PAN, which goes by itself. */
@@ -80,8 +80,8 @@ export function SaveToDetailed({
   formerNames?: Record<string, string>;
   /** Bank choices that are also the funds' account, by key. */
   conflicts: ReadonlySet<string>;
-  /** How many boxes' accounts are the ones chosen last time. */
-  remembered: "all" | "some" | "none";
+  /** Boxes whose funds' account is the one chosen last time, by key. */
+  remembered: ReadonlySet<string>;
   /** Which boxes' Save part of it to another account is open, by key. */
   open: Record<string, boolean>;
   onOpen: (key: string, open: boolean) => void;
@@ -136,7 +136,6 @@ export function SaveToDetailed({
   const noteId = `${partId}-numbered`;
   const fundsDescribedBy = numbers(funds, labels) ? noteId : undefined;
   const bankDescribedBy = numbers(targets, labels) ? noteId : undefined;
-  const described = (...ids: (string | undefined)[]) => ids.filter(Boolean).join(" ") || undefined;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       {heading}
@@ -145,6 +144,8 @@ export function SaveToDetailed({
         const account = values[box.key] === LEFT_OUT ? "Don't import" : nameOf(box.key, funds);
         const bank = values[bankKey(box.key)];
         const bankName = bank === "" || bank === NO_BANK ? "None" : nameOf(bankKey(box.key), targets);
+        // Whether the box's funds' account is the one chosen last time, read with its select alone.
+        const rememberedId = `${partId}-${box.key}-remembered`;
         return (
           <div key={box.key} role="group" aria-labelledby={`${partId}-${box.key}-title`} className="grid gap-3 rounded-lg border p-4">
             <div className="grid gap-1">
@@ -157,7 +158,7 @@ export function SaveToDetailed({
                   accounts={funds}
                   labels={labels}
                   proposed={proposed(box.key)}
-                  describedBy={fundsDescribedBy}
+                  describedBy={described(fundsDescribedBy, rememberedId)}
                   value={values[box.key]}
                   onChange={(id) => onChange(box.key, id)}
                   leaveOut={LEFT_OUT}
@@ -166,6 +167,7 @@ export function SaveToDetailed({
               </div>
               {isNew(box.key) && newLine(box.key, box.title)}
               {why(box.key, NOT_TRANSACTIONS)}
+              <RememberedNote id={rememberedId} remembered={remembered.has(box.key)} />
             </div>
             {bankChoice(
               bankKey(box.key),
@@ -252,9 +254,6 @@ export function SaveToDetailed({
           </div>
         );
       })}
-      <p className="text-muted-foreground text-sm">
-        {remembered === "all" ? "Chosen last time." : remembered === "some" ? "Chosen last time where there was one." : "Used again for your next statement."}
-      </p>
     </section>
   );
 }

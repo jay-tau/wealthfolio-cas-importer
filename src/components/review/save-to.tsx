@@ -6,7 +6,7 @@ import { LEFT_OUT, sourceKey } from "../../lib/choices";
 import type { AccountLabel } from "../../lib/account-labels";
 import { isProposed } from "../../lib/new-accounts";
 import { plural } from "../../lib/plural";
-import { AccountSelect, ChooseAgain, type Ignored, newLabel, NumberedNote, numbers, type Proposed } from "../account-choices";
+import { AccountSelect, ChooseAgain, described, type Ignored, newLabel, NumberedNote, numbers, type Proposed, RememberedNote } from "../account-choices";
 import { Disclosure } from "./parts";
 
 const NOT_HOLDINGS = "doesn't track holdings. A snapshot saved there wouldn't change its holdings";
@@ -68,6 +68,8 @@ export function SaveTo({
   // What numbers the accounts the screen names, read with each select when the lists number one.
   const noteId = `${partId}-numbered`;
   const describedBy = numbers(targets, labels) ? noteId : undefined;
+  // Whether the statement's account is the one chosen last time, read with its select alone.
+  const rememberedId = `${partId}-remembered`;
   return (
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       <h3 id={`${partId}-heading`} className="text-muted-foreground text-sm font-semibold uppercase tracking-wide">
@@ -83,7 +85,7 @@ export function SaveTo({
             id={investorKey}
             accounts={targets}
             labels={labels}
-            describedBy={describedBy}
+            describedBy={described(describedBy, rememberedId)}
             proposed={proposed(investorKey)}
             value={values[investorKey]}
             onChange={(id) => onChange(investorKey, id)}
@@ -93,9 +95,9 @@ export function SaveTo({
         </div>
         {isNew(investorKey) && newLine(investorKey, `${investorName}'s holdings`)}
         {why(investorKey)}
+        <RememberedNote id={rememberedId} remembered={remembered} />
       </div>
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-2 text-sm">
-        <span className="text-muted-foreground">{remembered ? "Chosen last time." : "Used again for your next statement."}</span>
         <Disclosure alone label="Save part of it to another account" open={open} onOpenChange={onOpen} id={`${partId}-part`}>
           <div className="mt-2 grid gap-4 rounded-lg border p-4">
             {sources.map((source) => {
