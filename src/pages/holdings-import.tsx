@@ -1503,6 +1503,9 @@ export function HoldingsImport({
     editing: editor?.kind === "cost" ? { rowId: editor.rowId, draft: editor.draft, error: editor.error } : undefined,
     changing: editor?.kind === "change" ? editor.rowId : undefined,
     changingItem: editor?.kind === "change" ? editor.itemKey : undefined,
+    changingAssetId: editor?.kind === "change"
+      ? rows.find((row) => row.id === editor.rowId)?.fund.assetId ?? fundOf(editor.itemKey)?.assetId
+      : undefined,
     nag,
     onChange: (row, item = row.item) => {
       if (busyEditor(row.id + "change" + item.key)) return;

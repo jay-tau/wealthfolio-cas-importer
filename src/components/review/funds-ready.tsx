@@ -40,6 +40,7 @@ export interface FundRowHandlers {
   /** The row whose Change is open, by its id, and for which of its statement funds. */
   changing?: string;
   changingItem?: string;
+  changingAssetId?: string;
   /** "Save or cancel this edit first." beside the open edit. */
   nag: boolean;
   onChange: (row: FundRow, item?: FundItem) => void;
@@ -55,7 +56,7 @@ function chosenPlan(row: FundRow) {
 }
 
 function Source({ ctx, row, handlers }: { ctx: AddonContext; row: FundRow; handlers: FundRowHandlers }) {
-  const source = usePricesFrom(ctx, row.item, row.fund);
+  const source = usePricesFrom(ctx, row.item, row.fund, handlers.changingAssetId);
   return (
     <span className="text-muted-foreground text-sm">
       {source ?? "Prices from…"}

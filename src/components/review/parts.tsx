@@ -228,13 +228,15 @@ export function Disclosure({
  * Where a confirmed fund's prices come from now: an existing asset keeps its pricing mode and
  * preferred provider, even when it was first chosen to use statement prices. One priced from market
  * data with no preferred provider is priced from Wealthfolio's default source, whatever provider a
- * remembered choice names. Undefined while read.
+ * remembered choice names. Read again after a Change panel for this asset closes. Undefined until
+ * first read.
  */
-export function usePricesFrom(ctx: AddonContext, item: Pick<FundItem, "noun">, fund: ChosenFund) {
+export function usePricesFrom(ctx: AddonContext, item: Pick<FundItem, "noun">, fund: ChosenFund, changingAssetId?: string) {
   const id = fund.assetId;
+  const changing = !!id && id === changingAssetId;
   const [read, setRead] = useState<{ id: string; source?: Pick<ChosenFund, "manual" | "providerId" | "exchangeMic" | "defaultSource"> }>();
   useEffect(() => {
-    if (!id) return;
+    if (!id || changing) return;
     let current = true;
     ctx.api.assets.getProfile(id).then(
       (asset) => {
@@ -256,7 +258,7 @@ export function usePricesFrom(ctx: AddonContext, item: Pick<FundItem, "noun">, f
     return () => {
       current = false;
     };
-  }, [id]);
+  }, [id, changing]);
   if (!id) return pricesFrom(item, fund);
   if (read?.id !== id) return undefined;
   return pricesFrom(item, {

@@ -1707,6 +1707,43 @@ test("a remembered choice's saved asset with no preferred provider is priced fro
   assert.equal(await sourceWith({ quoteMode: "MARKET", providerConfig: { preferred_provider: " AMFI " } }, auto), "Prices from AMFI");
 });
 
+test("closing Change refreshes every ready row for the edited asset (#371)", async () => {
+  const { ReadyTable } = await server.ssrLoadModule("/src/components/review/ready.tsx");
+  const name = "Fictiva Liquid Dir Gr";
+  const item = { key: "first", name, noun: "fund" };
+  const other = { ...item, key: "second" };
+  const fund = {
+    assetId: "auto-asset", symbol: "0P0000ZZZZ", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "EQUITY",
+    providerId: "YAHOO", manual: false, name,
+  };
+  const row = { id: "shared", accountId: "A", position: { lines: [] }, item, items: [item, other], fund, by: "you", name, units: "2 units", notes: [] };
+  const secondRow = { ...row, id: "second-account", accountId: "B" };
+  let preferred;
+  const ctx = { api: { assets: { getProfile: async () => ({
+    quoteMode: "MARKET", providerConfig: { preferred_provider: preferred },
+  }) } } };
+  const run = active = controller({}, ({ changing }) => {
+    const handlers = { changing, changingItem: other.key, changingAssetId: changing ? fund.assetId : undefined, ids: () => ({}), changePanel: () => null };
+    const table = ReadyTable({ ctx, rows: [row, secondRow], date: "2025-03-31", wide: false, handlers });
+    return nodes(table).filter((node) => node.type?.name === "RowHead").map((head) => {
+      const source = nodes(head.type(head.props)).find((node) => node.type?.name === "Source");
+      return textOf(source.type(source.props)).split(" · ")[0];
+    });
+  });
+  const auto = "Prices from Wealthfolio's default source";
+  await run.flush();
+  assert.deepEqual(run.tree, [auto, auto]);
+
+  // The second holding can confirm the same listing while the shared row keeps the first choice.
+  preferred = "YAHOO";
+  run.update({ changing: row.id });
+  await run.flush();
+  assert.deepEqual(run.tree, [auto, auto]);
+  run.update({ changing: undefined });
+  await run.flush();
+  assert.deepEqual(run.tree, ["Prices from Yahoo Finance", "Prices from Yahoo Finance"]);
+});
+
 /** A Change open on a statement row left out so that units aren't counted twice, under Not included, with a typed draft. */
 async function leftOutEditor(mode) {
   const a = source("A", [holding("ISINA")]);

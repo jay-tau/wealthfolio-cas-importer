@@ -1581,6 +1581,9 @@ export function DetailedImport({
     label: (row, item) => `${labelOf.get(item.key)!} in ${accountName(row.group.accountId)}`,
     changing: editor?.rowId,
     changingItem: editor?.itemKey,
+    changingAssetId: editor
+      ? rows.find((row) => row.id === editor.rowId)?.fund.assetId ?? fundOf(editor.itemKey)?.assetId
+      : undefined,
     nag,
     onChange: (row, item = row.item) => openEditor(row.id, item, item.key === row.item.key ? row.name : item.name, ids.row(row, item).change),
     changePanel: (row) => {
