@@ -1589,6 +1589,9 @@ test("a saved listing set to Auto is priced from Wealthfolio's default source an
   const blankTicker = toFund({ ...result, providerSymbol: " " });
   assert.equal(blankTicker.providerSymbol, " ");
   assert.match(label(blankTicker), / Wealthfolio's default source · 0P0000ZZZZ\.BO /);
+  // Wealthfolio can return a saved display code as the name when the asset has none.
+  const unnamed = toFund({ ...result, symbol: "LIQUID-BSE", shortName: "LIQUID-BSE", longName: "LIQUID-BSE" });
+  assert.match(label(unnamed), /^ Unnamed listing Wealthfolio's default source · LIQUID-BSE · plan and option unknown $/);
   assert.equal(pricesFrom(item, fund), "Prices from Wealthfolio's default source");
   assert.equal(pricesFrom({ noun: "share" }, fund), "Prices from BSE on Wealthfolio's default source");
   assert.match(label(fund, { ...item, noun: "share" }), /^ Bombay Stock Exchange \(BSE\) Fictiva Liquid Dir Gr · Wealthfolio's default source · 0P0000ZZZZ\.BO /);

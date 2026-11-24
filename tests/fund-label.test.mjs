@@ -87,6 +87,9 @@ test("a listing's ticker is its provider's, else the one Wealthfolio shows for a
   const saved = { ...yahoo, providerSymbol: undefined, displaySymbol: "0P0000XXXX.BO" };
   assert.equal(ticker(saved), "0P0000XXXX.BO");
   assert.equal(unnamed({ ...saved, name: "" }), "Unnamed Yahoo listing (0P0000XXXX.BO)");
+  // A saved asset without a name is named by the symbol Wealthfolio shows for it, such as its display code.
+  assert.equal(listingName({ ...saved, displaySymbol: "LIQUID-BSE", name: "LIQUID-BSE" }), undefined);
+  assert.equal(listingName({ ...saved, displaySymbol: "LIQUID-BSE", name: "Fictiva Liquid Dir Gr" }), "Fictiva Liquid Dir Gr");
   assert.equal(ticker({ ...yahoo, providerSymbol: undefined }), "0P0000XXXX");
 });
 

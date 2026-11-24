@@ -5009,10 +5009,9 @@ const runBrowser = async (browser, engine) => {
     await summaryLiquid().waitFor();
 
     part();
-    // A saved listing set to Auto (default), as Wealthfolio 3.13.1 saves a Yahoo listing whose ticker
-    // needs no override: market prices, no preferred provider or provider ticker, and found by its
-    // symbol with the exchange's suffix. Its prices come from Wealthfolio's default source, even when a
-    // remembered Yahoo choice for it names Yahoo, and its result shows the ticker Wealthfolio gives (#371).
+    // A saved listing set to Auto (default), with market prices and no preferred provider or provider ticker.
+    // The ISIN lookup returns its display symbol with the exchange's suffix. Its ready row uses
+    // Wealthfolio's default source even when the remembered choice names Yahoo Finance (#371).
     const beforeAuto = await hosted(() => ({
       storage: [...window.host.storage], assets: window.host.assets, snapshots: window.host.snapshots, held: window.host.held,
       quotes: window.host.quotes, pricingModes: window.host.pricingModes, saves: window.host.saves,

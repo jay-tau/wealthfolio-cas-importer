@@ -30,7 +30,8 @@ type Fund = Pick<ChosenFund, "name" | "symbol" | "exchangeMic" | "providerSymbol
 
 /**
  * A search result's or confirmed fund's name, or undefined when its provider gave it none: an empty
- * name, or only its symbol, with or without an exchange suffix.
+ * name, or only its symbol, with or without an exchange suffix. A saved asset without a name gets
+ * the symbol Wealthfolio shows for it as its name.
  */
 export function listingName(fund: Fund): string | undefined {
   const name = fund.name.trim();
@@ -38,7 +39,7 @@ export function listingName(fund: Fund): string | undefined {
   const own = name.toUpperCase();
   // Saved assets can keep a Yahoo name but no provider symbol; use their exchange's suffix.
   const suffix = SUFFIXES.get(fund.exchangeMic ?? "");
-  return [fund.symbol, fund.providerSymbol].some((symbol) => {
+  return [fund.symbol, fund.providerSymbol, fund.displaySymbol].some((symbol) => {
     const ticker = symbol?.trim().toUpperCase();
     return ticker && (ticker === own || (suffix && (ticker === own + suffix || own === ticker + suffix)));
   }) ? undefined : name;
