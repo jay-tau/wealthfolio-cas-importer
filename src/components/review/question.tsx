@@ -39,8 +39,9 @@ function why(item: FundItem, auto: AutoSearch | undefined, amfiOn: boolean) {
   if (auto.pricedElsewhere) {
     return "Wealthfolio already has this fund, priced from another source, and using AMFI's result adds a second asset for it. To price the one it has from AMFI instead, edit that asset in Wealthfolio: under Market data, turn on automatic updates if it's priced by hand, then choose AMFI as the preferred provider and map AMFI to the fund's ISIN or scheme code.";
   }
-  const providers = new Set(results.map((r) => providerName(r) ?? "another source"));
-  const where = providers.size === 1 ? ` on ${[...providers][0]}` : "";
+  const providers = new Set(results.map((r) => r.defaultSource ? undefined : providerName(r) ?? "another source"));
+  const [provider] = providers;
+  const where = providers.size === 1 && provider ? ` on ${provider}` : "";
   return results.length === 1 ? `Found${where} by the ISIN printed for it.` : `Several results${where} fit the ISIN printed for it.`;
 }
 

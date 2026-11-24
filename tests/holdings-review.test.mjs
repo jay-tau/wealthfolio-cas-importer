@@ -1381,6 +1381,39 @@ test("a replacement asked about waits for its answer, and changing it back clear
   assert.deepEqual(find(run, "NotIncluded").defaulted.map((r) => [r.name, r.notes]), [["Example ISINX", ["A keeps Old listing (OLD · XBOM) for now, by your answer above."]]]);
 });
 
+test("choosing the same saved Auto listing again keeps the holdings replacement answer (#371)", async () => {
+  const holdingToReplace = holding("ISINX");
+  const first = source("X", [holdingToReplace]);
+  const { run, api, props } = setup([first]);
+  api.snapshots.getAll = async () => [{ snapshotDate: "2025-02-28", source: "MANUAL" }];
+  api.snapshots.getByDate = async () => [{ holdingType: "security", quantity: "10", costBasis: null, localCurrency: "INR", instrument: { id: "old", name: "Old listing", symbol: "OLD", quoteMode: "MARKET" } }];
+  api.assets.getProfile = async (id) => ({ instrumentSymbol: id === "old" ? "OLD" : "ISINX", instrumentExchangeMic: "XBOM", quoteMode: "MARKET" });
+  const stored = new Map();
+  api.storage.get = async (key) => stored.get(key) ?? null;
+  api.storage.set = async (key, value) => stored.set(key, value);
+  const { readFund, saveFund, saveImported } = await server.ssrLoadModule("/src/lib/choices.ts");
+  const { toFund } = await server.ssrLoadModule("/src/components/fund-choices.tsx");
+  const result = { existingAssetId: "new", canonicalSymbol: "ISINX", symbol: "ISINX.BO", exchangeMic: "XBOM", quoteMode: "MARKET", quoteType: "EQUITY", longName: holdingToReplace.name };
+  api.market.searchTicker = async () => [result];
+  const key = holdingKey(holdingToReplace);
+  await saveFund(api.storage, key, toFund(result));
+  props.fundChoices[key] = { fund: await readFund(api.storage, key) };
+  await saveImported(api.storage, first, "A", "2025-02-28", { "OLD@XBOM": [holdingToReplace.isin] });
+  await run.flush();
+  find(run, "AskCard").other.onClick();
+  await run.flush();
+  const answer = find(run, "AskAnswered").text;
+  const { handlers, rows } = find(run, "ReadyTable");
+  handlers.onChange(rows[0]);
+  await run.flush();
+  const ready = find(run, "ReadyTable");
+  const picker = nodes(ready.handlers.changePanel(ready.rows[0])).find((node) => node.type?.name === "Picker").props;
+  picker.onUse(picker.search.auto.results[0]);
+  await run.flush();
+  assert.equal(find(run, "AskAnswered")?.text, answer);
+  assert.equal(find(run, "Footer").action.disabled, false);
+});
+
 test("saving a shared overlap includes every contributing holding and either warning can exclude it", async () => {
   const one = { ...holding("INFZ90A01017"), kind: "fund" };
   const two = { ...holding("INFZ90B01015"), kind: "fund" };
@@ -1667,9 +1700,9 @@ test("a remembered choice's saved asset with no preferred provider is priced fro
   // Without the asset's pricing mode, or its profile, the remembered choice's provider stays the fallback.
   assert.equal(await sourceWith({}), "Prices from Yahoo Finance");
   assert.equal(await sourceWith(new Error("Profile unavailable")), "Prices from Yahoo Finance");
-  // A saved result whose search said it was set to Auto keeps that when its profile can't be read.
-  assert.equal(await sourceWith(new Error("Profile unavailable"), { ...fund, providerId: undefined, providerSymbol: undefined, defaultSource: true }),
-    "Prices from Wealthfolio's default source");
+  const auto = { ...fund, providerId: undefined, providerSymbol: undefined, manual: false, defaultSource: true };
+  assert.equal(await sourceWith(new Error("Profile unavailable"), auto), "Prices from Wealthfolio's default source");
+  assert.equal(await sourceWith({ quoteMode: "MARKET", providerConfig: { preferred_provider: " AMFI " } }, auto), "Prices from AMFI");
 });
 
 /** A Change open on a statement row left out so that units aren't counted twice, under Not included, with a typed draft. */

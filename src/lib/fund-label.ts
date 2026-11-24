@@ -46,7 +46,7 @@ export function listingName(fund: Fund): string | undefined {
 
 /** The ticker that tells a listing apart, as its provider or, for a saved asset, Wealthfolio shows it. */
 export const ticker = (fund: Pick<ChosenFund, "symbol" | "providerSymbol" | "displaySymbol">) =>
-  fund.providerSymbol || fund.displaySymbol || fund.symbol;
+  fund.providerSymbol?.trim() ? fund.providerSymbol : fund.displaySymbol || fund.symbol;
 
 /** What a listing without a name is shown as: the kind, and the ticker that tells it apart from others. */
 export const unnamed = (fund: Fund) =>

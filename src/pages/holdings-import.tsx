@@ -72,6 +72,7 @@ import { SaveTo } from "../components/review/save-to";
 import { statementPlan, useHoldingSearches } from "../components/review/search";
 import {
   type ChosenFund,
+  fundForPlan,
   holdingKey,
   indexSources,
   investorKey,
@@ -566,7 +567,7 @@ export function HoldingsImport({
     return choice && "fund" in choice ? choice.fund : undefined;
   };
   const assetOf = (h: StatementHolding) => {
-    const fund = fundOf(holdingKey(h));
+    const fund = fundForPlan(fundOf(holdingKey(h)));
     // A remembered statement-price choice can predate a corrected statement name.
     return fund?.statementPrices ? { ...fund, name: h.name } : fund;
   };
@@ -668,7 +669,7 @@ export function HoldingsImport({
 
   const destinations = holdings.sources.map((s) => accountOf(s) ?? "");
   const [attempt, setAttempt] = useState(0);
-  const signature = JSON.stringify([generation, attempt, destinations, items.map((item) => fundOf(item.key) ?? null)]);
+  const signature = JSON.stringify([generation, attempt, destinations, items.map((item) => fundForPlan(fundOf(item.key)) ?? null)]);
   // Try again stays, busy, while the plan is worked out again, so its focus does too; once it's worked
   // out, the focus goes to the bar's summary, unless the user moved it meanwhile.
   const [retrying, setRetrying] = useState(false);

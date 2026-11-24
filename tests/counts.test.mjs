@@ -1572,13 +1572,13 @@ test("a saved listing set to Auto is priced from Wealthfolio's default source an
   // no preferred provider or provider ticker, and its symbol with the exchange's suffix.
   const result = {
     symbol: "0P0000ZZZZ.BO", canonicalSymbol: "0P0000ZZZZ", canonicalExchangeMic: "XBOM", exchangeMic: "XBOM", exchange: "BSE",
-    currency: "INR", quoteType: "MUTUALFUND", typeDisplay: "MUTUALFUND", shortName: "Fictiva Liquid Dir Gr", longName: "Fictiva Liquid Dir Gr",
+    currency: "INR", quoteType: "EQUITY", typeDisplay: "EQUITY", shortName: "Fictiva Liquid Dir Gr", longName: "Fictiva Liquid Dir Gr",
     quoteMode: "MARKET", isExisting: true, existingAssetId: "auto-asset", index: "", score: 100,
   };
   const fund = toFund(result);
   // Imports and remembered choices keep the canonical symbol and no provider.
   assert.deepEqual(fund, {
-    assetId: "auto-asset", symbol: "0P0000ZZZZ", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND",
+    assetId: "auto-asset", symbol: "0P0000ZZZZ", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "EQUITY",
     providerId: undefined, providerSymbol: undefined, name: "Fictiva Liquid Dir Gr", manual: false,
     defaultSource: true, displaySymbol: "0P0000ZZZZ.BO",
   });
@@ -1586,6 +1586,9 @@ test("a saved listing set to Auto is priced from Wealthfolio's default source an
   const statement = { plan: "Direct", option: "Growth" };
   const label = (fund, it = item) => text("ResultLabel", { item: it, fund, statement });
   assert.match(label(fund), / Wealthfolio's default source · 0P0000ZZZZ\.BO /);
+  const blankTicker = toFund({ ...result, providerSymbol: " " });
+  assert.equal(blankTicker.providerSymbol, " ");
+  assert.match(label(blankTicker), / Wealthfolio's default source · 0P0000ZZZZ\.BO /);
   assert.equal(pricesFrom(item, fund), "Prices from Wealthfolio's default source");
   assert.equal(pricesFrom({ noun: "share" }, fund), "Prices from BSE on Wealthfolio's default source");
   assert.match(label(fund, { ...item, noun: "share" }), /^ Bombay Stock Exchange \(BSE\) Fictiva Liquid Dir Gr · Wealthfolio's default source · 0P0000ZZZZ\.BO /);
@@ -1603,6 +1606,8 @@ test("a saved listing set to Auto is priced from Wealthfolio's default source an
   assert.equal(listing.defaultSource, undefined);
   assert.equal(listing.displaySymbol, undefined);
   assert.match(label(listing), / Yahoo Finance · 0P0000ZZZZ\.BO /);
+  const search = { ...idle, auto: { status: "done", results: [fund], amfi: false, pricedElsewhere: false } };
+  assert.match(text("QuestionCard", { item, label: item.name, search, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} }), / Found by the ISIN printed for it\. /);
 });
 
 

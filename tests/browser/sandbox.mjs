@@ -5015,7 +5015,7 @@ const runBrowser = async (browser, engine) => {
     // remembered Yahoo choice for it names Yahoo, and its result shows the ticker Wealthfolio gives (#371).
     const beforeAuto = await hosted(() => ({
       storage: [...window.host.storage], assets: window.host.assets, snapshots: window.host.snapshots, held: window.host.held,
-      quotes: window.host.quotes, pricingModes: window.host.pricingModes,
+      quotes: window.host.quotes, pricingModes: window.host.pricingModes, saves: window.host.saves,
     }));
     const auto = { assetId: "auto-listing-016", symbol: "0P0000ZLQ6", ticker: "0P0000ZLQ6.BO", name: "Fictiva Liquid Dir Gr" };
     await hosted((auto) => {
@@ -5041,10 +5041,9 @@ const runBrowser = async (browser, engine) => {
     await summaryLiquid().getByText(/^Prices from Wealthfolio's default source · chosen before · Change$/).waitFor();
     // Change lists it with the source and the ticker Wealthfolio gives it, beside AMFI's scheme.
     await summaryLiquid().getByRole("button", { name: /^Change: / }).click();
-    await changePanelOf().getByText(/Searching…/).waitFor({ state: "detached" });
     const autoResult = changePanelOf().locator("label").filter({ hasText: auto.name });
-    assert.equal(await autoResult.count(), 1);
     await autoResult.getByText(`Wealthfolio's default source · ${auto.ticker}`, { exact: true }).waitFor();
+    assert.equal(await autoResult.count(), 1);
     assert.equal(await changePanelOf().getByText(/Unknown source/).count(), 0);
     await autoResult.getByRole("radio").dispatchEvent("click");
     await changePanelOf().getByRole("button", { name: /^Use this fund for /, disabled: false }).click();

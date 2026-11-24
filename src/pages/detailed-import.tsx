@@ -76,7 +76,7 @@ import { Disclosure, LinkButton, shownName, useWide, WrapButton } from "../compo
 import { AnsweredLine, answerWords, nothingFound, Picker, pickerIds, QuestionCard } from "../components/review/question";
 import { folioName, type FundsBox, NOT_FOR_FUNDS, SaveToDetailed } from "../components/review/save-to-detailed";
 import { useHoldingSearches } from "../components/review/search";
-import { bankKey, type ChosenFund, folioKey, fundKey, LEFT_OUT, NO_BANK, panKey } from "../lib/choices";
+import { bankKey, type ChosenFund, folioKey, fundForPlan, fundKey, LEFT_OUT, NO_BANK, panKey } from "../lib/choices";
 import { fundName, readableName } from "../lib/fund-name";
 import { explanation, Explained } from "../lib/explained";
 import { isDuplicateActivity } from "../lib/host-errors";
@@ -588,7 +588,7 @@ export function DetailedImport({
   // Where each folio goes, as its questions were answered: creating the chosen account doesn't change it.
   const asked = destinations.map(([state, account, bank]) => [state, [...created.current].find(([, a]) => a.id === account)?.[0] ?? account, bank]);
   // The destinations, funds and host reads that the rare questions' cards were worked out from.
-  const questionSignature = JSON.stringify([generation, asked, items.map((item) => fundOf(item.key) ?? null)]);
+  const questionSignature = JSON.stringify([generation, asked, items.map((item) => fundForPlan(fundOf(item.key)) ?? null)]);
   // A folio can print the same scheme name twice. Each section gets its own answer.
   const sectionKeys = new Map<CasScheme, string>(data.folios.flatMap((folio, i) => folio.schemes.map((scheme, j) => [scheme, `${i}:${j}`])));
   const schemeKey = (scheme: CasScheme) => sectionKeys.get(scheme)!;
@@ -597,7 +597,7 @@ export function DetailedImport({
   // units it's about are the statement's. A possible duplicate's answer belongs to its rows and
   // Wealthfolio's, checked each time the plan is worked out.
   const unbalancedEvidence = new Map(data.folios.flatMap((folio, i) => folio.schemes.map((scheme) =>
-    [schemeKey(scheme), JSON.stringify([asked[i], fundOf(fundKey(scheme)) ?? null])] as const)));
+    [schemeKey(scheme), JSON.stringify([asked[i], fundForPlan(fundOf(fundKey(scheme))) ?? null])] as const)));
   const unbalancedAnswer = (key: string) => {
     const answer = unbalancedAnswers.get(key);
     return answer && answer.evidence === unbalancedEvidence.get(key) ? answer.skip : undefined;

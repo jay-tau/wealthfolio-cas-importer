@@ -424,6 +424,16 @@ export interface ChosenFund extends FundAsset {
   statementPrices?: boolean;
 }
 
+/**
+ * A choice without the fields only its search result's label uses, for working out what's imported
+ * or saved: picking the same saved asset again doesn't change that, or clear the answers given for it.
+ */
+export function fundForPlan(fund: ChosenFund | undefined) {
+  if (!fund) return undefined;
+  const { defaultSource, displaySymbol, ...asset } = fund;
+  return asset;
+}
+
 function asFund(value: unknown): ChosenFund | undefined {
   if (!record(value) || typeof value.symbol !== "string" || typeof value.quoteCcy !== "string" ||
       typeof value.name !== "string" || typeof value.instrumentType !== "string") return undefined;
