@@ -1109,6 +1109,42 @@ test("an AMFI match does not remove a question the user has started interacting 
   assert.equal(find(control.run, "ReadyTable").rows.length, 1);
 });
 
+test("the AMFI-added announcement and focus wait for a fund's first profile read (#376)", async () => {
+  const first = { ...holding("INFZ90A01017"), kind: "fund", name: "Example Fund - Direct Plan - Growth" };
+  const second = { ...holding(LIQUID.isin), ...LIQUID, kind: "fund" };
+  const { run, api } = setup([source("X", [first, second])], false);
+  const initialSearch = Promise.withResolvers();
+  const firstScheme = { symbol: "100123", longName: first.name, currency: "INR", quoteType: "MUTUALFUND", providerId: "AMFI" };
+  api.market.searchTicker = async (query) => query === first.isin ? [{ ...firstScheme, symbol: "EXAMPLE", providerId: "YAHOO" }] : initialSearch.promise;
+  await run.flush();
+  assert.equal(find(run, "QuestionCard").item.isin, first.isin);
+
+  const profile = Promise.withResolvers();
+  let readingProfile = false;
+  api.assets.getProfile = () => { readingProfile = true; return profile.promise; };
+  const secondScheme = { ...firstScheme, symbol: "123456", longName: second.name };
+  const switched = { ...secondScheme, symbol: "0P0001ZLQ6.BO", canonicalSymbol: "0P0001ZLQ6", exchangeMic: "XBOM",
+    quoteType: "EQUITY", existingAssetId: "switched-liquid", exactMatch: true };
+  api.market.searchTicker = async (query) => query === first.isin ? [firstScheme] : [switched, secondScheme];
+  const focused = [];
+  document.activeElement = document.body;
+  document.getElementById = (id) => ({ dataset: {}, focus() { focused.push(id); }, scrollIntoView() {} });
+  run.update({ amfi: { status: "on", searches: 1 } });
+  await settle(run);
+  assert.equal(readingProfile, true);
+  assert.equal(find(run, "QuestionCard"), undefined);
+  assert.doesNotMatch(said(run), /AMFI added:/);
+  assert.deepEqual(focused, []);
+
+  profile.resolve({ providerConfig: { preferred_provider: "AMFI", overrides: { AMFI: { type: "equity_symbol", symbol: second.isin } } } });
+  initialSearch.resolve([]);
+  await settle(run);
+  const question = find(run, "QuestionCard");
+  assert.equal(question.item.isin, second.isin);
+  assert.equal(said(run), "AMFI added: 1 fund matched. 1 question remains.");
+  assert.deepEqual(focused, [question.headingId]);
+});
+
 test("the last asset answer does not announce ready while an account question remains", async () => {
   const { run, props } = setup([source("X", [holding("ISINX")])], false);
   props.accountChoices = {};

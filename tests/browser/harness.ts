@@ -613,6 +613,7 @@ const api = {
   },
   assets: {
     getProfile: async (id: string) => {
+      await wait("profile");
       if (host.failGetProfileIds.includes(id)) {
         host.getProfileFailures++;
         throw new Error("Profile unavailable");

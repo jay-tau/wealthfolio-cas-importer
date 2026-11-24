@@ -1391,7 +1391,7 @@ export function HoldingsImport({
       return;
     }
     if (!batch.started && ++batch.seen < 3) return;
-    if (!current) return;
+    if (!current || lookingUp.length) return;
     amfiBatch.current = null;
     const found = batch.keys.filter((key) => matched[key]).length;
     announce(`AMFI added: ${plural(found, "fund")} matched. ${questionCount ? `${questionsWords(questionCount === 1 ? "remains" : "remain")}.` : "No questions remain."}`);

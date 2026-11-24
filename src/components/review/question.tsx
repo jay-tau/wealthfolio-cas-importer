@@ -39,6 +39,11 @@ function why(item: FundItem, auto: AutoSearch | undefined, amfiOn: boolean, acti
   if (auto.addsAsset) {
     return `Wealthfolio already has this fund, and using AMFI's new listing adds another asset for it when you ${action}. To switch a saved asset to AMFI, edit it in Wealthfolio: under Market data, turn on automatic updates if it's priced by hand, then choose AMFI as the preferred provider and map AMFI to the fund's ISIN or scheme code.`;
   }
+  // Saved assets with AMFI selected, beside AMFI's new listing.
+  if (auto.saved) {
+    const which = auto.saved.filter(Boolean).length === 1 ? "the saved asset" : "a saved asset";
+    return `Choose ${which} to reuse it. Choosing AMFI's new listing adds an asset when you ${action}.`;
+  }
   const providers = new Set(results.map((r) => r.defaultSource ? undefined : providerName(r) ?? "another source"));
   const [provider] = providers;
   const where = providers.size === 1 && provider ? ` on ${provider}` : "";
@@ -118,7 +123,7 @@ export function Picker({
       Use this {word}
     </WrapButton>
   );
-  const options = (group: "auto" | "typed", results: ChosenFund[], legend: string) =>
+  const options = (group: "auto" | "typed", results: ChosenFund[], legend: string, saved?: boolean[]) =>
     results.length > 0 && (
       <RadioGroup
         aria-label={legend}
@@ -129,7 +134,7 @@ export function Picker({
         {results.map((fund, i) => (
           <Label key={`${group}:${i}`} className="flex items-start gap-3 rounded-md border p-3 font-normal leading-snug">
             <RadioGroupItem id={group === "typed" && i === 0 ? ids.firstTyped : undefined} value={`${group}:${i}`} className="mt-0.5" />
-            <ResultLabel item={item} fund={fund} statement={plan} />
+            <ResultLabel item={item} fund={fund} statement={plan} saved={saved?.[i]} />
           </Label>
         ))}
       </RadioGroup>
@@ -165,7 +170,7 @@ export function Picker({
         </p>
       )}
       {auto?.status === "done" &&
-        (single?.[0].startsWith("auto:") ? card(single[1], false) : options("auto", auto.results, `Results for ${label}`))}
+        (single?.[0].startsWith("auto:") ? card(single[1], false) : options("auto", auto.results, `Results for ${label}`, auto.saved))}
       <div className="grid gap-1.5">
         <Label htmlFor={ids.field} className="font-medium">
           {field.label}
@@ -209,7 +214,7 @@ export function Picker({
           <p className="text-muted-foreground text-sm">
             {typed.results.length === 1 ? "1 result" : `${typed.results.length} results`} for “{typed.text}”:
           </p>
-          {single?.[0].startsWith("typed:") ? card(single[1], true) : options("typed", typed.results, `Results for “${typed.text}”`)}
+          {single?.[0].startsWith("typed:") ? card(single[1], true) : options("typed", typed.results, `Results for “${typed.text}”`, typed.saved)}
         </div>
       )}
       <div className="flex flex-wrap items-center gap-2">
