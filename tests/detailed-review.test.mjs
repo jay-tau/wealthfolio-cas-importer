@@ -1408,6 +1408,7 @@ test("a withheld statement-price asset keeps an AMFI result unconfirmed", async 
     const question = find(run, "QuestionCard");
     assert.ok(question, "the result requires an answer");
     assert.deepEqual(question.search.auto.results.map((r) => r.symbol), ["123456"]);
+    assert.equal(question.search.auto.addsAsset, providerId !== "AMFI");
     question.onAnswer({ fund: question.search.auto.results[0] });
     await run.flush();
     assert.equal(find(run, "Footer").action.disabled, false);

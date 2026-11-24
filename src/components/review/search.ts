@@ -18,8 +18,8 @@ export type Search =
       /** A result is AMFI's, or a saved asset priced from AMFI. */
       amfi: boolean;
       /**
-       * The results include AMFI's new listing and a saved asset with another preferred provider
-       * or none. Using the new listing adds another asset for the fund.
+       * AMFI's new listing appears alongside a saved asset with another preferred provider or none.
+       * A printed ISIN search also counts saved assets the Review screen doesn't offer.
        */
       addsAsset: boolean;
     };
@@ -136,11 +136,11 @@ export function useHoldingSearches(
   const update = (key: string, change: (s: ItemSearch) => ItemSearch) =>
     setSearches((all) => ({ ...all, [key]: change(all[key] ?? empty) }));
 
-  const done = (item: FundItem, found: SymbolSearchResult[]): Search => ({
+  const done = (item: FundItem, found: SymbolSearchResult[], returned = found): Search => ({
     status: "done",
     results: found.map((r) => choiceFor(item, r)),
     amfi: found.some(fromAmfi),
-    addsAsset: addsAsset(found),
+    addsAsset: addsAsset(returned),
   });
 
   const runAuto = async (item: FundItem) => {
@@ -163,7 +163,7 @@ export function useHoldingSearches(
         found = offered(item, await ctx.api.market.searchTicker(name));
         if (stale()) return;
       }
-      const search = done(item, found);
+      const search = done(item, found, byName ? found : results);
       update(key, (s) => ({ ...s, auto: { ...search, byName } }));
       answered(true);
       // AMFI's scheme for the printed ISIN is confirmed without a click when nothing contradicts it,

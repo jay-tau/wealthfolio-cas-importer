@@ -28,7 +28,6 @@ test("only AMFI's new listing adds another asset beside a saved asset with anoth
   // Even beside a saved asset with AMFI selected, which adds none.
   assert.equal(addsAsset([existing, existingAmfi, amfi]), true);
   assert.equal(addsAsset([existing, existingAmfi]), false);
-  // Nothing saved priced from another source, or no new AMFI listing.
   assert.equal(addsAsset([existingAmfi, amfi]), false);
   assert.equal(addsAsset([manualAmfi, amfi]), false);
   assert.equal(addsAsset([yahoo, amfi]), false);
