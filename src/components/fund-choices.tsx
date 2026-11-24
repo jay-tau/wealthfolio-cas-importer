@@ -2,19 +2,20 @@ import type { SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { statementSymbol } from "../cas/holdings";
 import type { CasData, CasScheme } from "../cas/types";
 import { type ChosenFund, fundKey } from "../lib/choices";
+import { listingName } from "../lib/fund-label";
 
 // A statement's funds and shares to confirm, and the choices made for them.
 
 /** Undefined while undecided. */
 export type FundChoice = { fund: ChosenFund } | { leftOut: true };
 
-/** The import fields the way Wealthfolio's own import builds them from a search result. */
+/** A choice with Wealthfolio's import fields and the search result's label details. */
 export function toFund(result: SymbolSearchResult): ChosenFund {
   const { pricingMode, quoteMode } = result as SymbolSearchResult & { pricingMode?: string | null; quoteMode?: string | null };
   const mode = pricingMode ?? quoteMode;
   const saved = !!result.existingAssetId;
   const shown = result.symbol?.trim();
-  return {
+  const fund: ChosenFund = {
     assetId: result.existingAssetId,
     symbol: (result.canonicalSymbol || result.symbol).trim().toUpperCase(),
     exchangeMic: result.canonicalExchangeMic || result.exchangeMic,
@@ -29,6 +30,12 @@ export function toFund(result: SymbolSearchResult): ChosenFund {
     ...(saved && mode === "MARKET" && !result.providerId?.trim() && { defaultSource: true }),
     ...(saved && !result.providerSymbol?.trim() && !!shown && { displaySymbol: shown }),
   };
+  // A remembered choice keeps no display symbol. When only that shows the listing has no name, its
+  // symbol becomes its name, so it still reads as unnamed once remembered.
+  if (fund.displaySymbol && !listingName(fund) && listingName({ ...fund, displaySymbol: undefined })) {
+    fund.name = fund.symbol;
+  }
+  return fund;
 }
 
 /** The currency of the statement and its imported activities and snapshot holdings. */

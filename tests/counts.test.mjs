@@ -9,7 +9,7 @@ import { createServer } from "vite";
 import { withoutClosed, withReadableNames } from "../src/cas/mapping.ts";
 import { dec } from "../src/cas/decimal.ts";
 import { bothOrAll, every, plural } from "../src/lib/plural.ts";
-import { bankKey, folioKey } from "../src/lib/choices.ts";
+import { bankKey, folioKey, readFund, saveFund } from "../src/lib/choices.ts";
 
 let server;
 let components;
@@ -1566,7 +1566,7 @@ test("an existing asset's market pricing takes precedence over its remembered st
   assert.equal(components.pricesFrom(item, listed, true), "Prices entered by hand");
 });
 
-test("a saved listing set to Auto is priced from Wealthfolio's default source and shows the ticker Wealthfolio gives it (#371)", () => {
+test("a saved listing set to Auto is priced from Wealthfolio's default source and shows the ticker Wealthfolio gives it (#371)", async () => {
   const { toFund, pricesFrom } = components;
   // As Wealthfolio 3.13.1 lists a saved Yahoo listing whose ticker needed no override: market pricing,
   // no preferred provider or provider ticker, and its symbol with the exchange's suffix.
@@ -1589,9 +1589,17 @@ test("a saved listing set to Auto is priced from Wealthfolio's default source an
   const blankTicker = toFund({ ...result, providerSymbol: " " });
   assert.equal(blankTicker.providerSymbol, " ");
   assert.match(label(blankTicker), / Wealthfolio's default source · 0P0000ZZZZ\.BO /);
+  // A suffix-only name already looked unnamed in older remembered choices.
+  assert.equal(toFund({ ...result, longName: result.symbol, shortName: result.symbol }).name, result.symbol);
   // Wealthfolio can return a saved display code as the name when the asset has none.
   const unnamed = toFund({ ...result, symbol: "LIQUID-BSE", shortName: "LIQUID-BSE", longName: "LIQUID-BSE" });
   assert.match(label(unnamed), /^ Unnamed listing Wealthfolio's default source · LIQUID-BSE · plan and option unknown $/);
+  const stored = new Map();
+  const storage = { get: async (key) => stored.get(key), set: async (key, value) => stored.set(key, value) };
+  await saveFund(storage, item.key, unnamed);
+  const remembered = await readFund(storage, item.key);
+  assert.equal(components.shownName(item, remembered), components.shownName(item, unnamed));
+  assert.equal(components.planConflict(remembered, statement), "Chosen listing's plan and option are unknown.");
   assert.equal(pricesFrom(item, fund), "Prices from Wealthfolio's default source");
   assert.equal(pricesFrom({ noun: "share" }, fund), "Prices from BSE on Wealthfolio's default source");
   assert.match(label(fund, { ...item, noun: "share" }), /^ Bombay Stock Exchange \(BSE\) Fictiva Liquid Dir Gr · Wealthfolio's default source · 0P0000ZZZZ\.BO /);
