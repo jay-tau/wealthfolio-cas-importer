@@ -1637,6 +1637,41 @@ test("a resolved statement-price choice shows the asset's current market pricing
   assert.equal(profiles, reads + 1, "the source hook checks the resolved asset's current provider");
 });
 
+test("a remembered choice's saved asset with no preferred provider is priced from Wealthfolio's default source (#371)", async () => {
+  const { usePricesFrom } = await server.ssrLoadModule("/src/components/review/parts.tsx");
+  const item = { noun: "fund" };
+  // Remembered from a Yahoo result, the asset is now set to Auto (default) in Wealthfolio.
+  const fund = {
+    assetId: "auto-asset", symbol: "0P0000ZZZZ", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND",
+    providerId: "YAHOO", providerSymbol: "0P0000ZZZZ.BO", name: "Fictiva Liquid Dir Gr",
+  };
+  const sourceWith = async (profile, chosen = fund) => {
+    const ctx = { api: { assets: { getProfile: async (id) => {
+      if (profile instanceof Error) throw profile;
+      return { id, instrumentSymbol: fund.symbol, instrumentExchangeMic: "XBOM", ...profile };
+    } } } };
+    active = controller({ ctx, item, fund: chosen }, ({ ctx, item, fund }) => usePricesFrom(ctx, item, fund));
+    await active.flush();
+    const source = active.tree;
+    active.dispose();
+    active = undefined;
+    return source;
+  };
+  assert.equal(await sourceWith({ quoteMode: "MARKET" }), "Prices from Wealthfolio's default source");
+  assert.equal(await sourceWith({ quoteMode: "MARKET", providerConfig: { preferred_provider: " " } }), "Prices from Wealthfolio's default source");
+  assert.equal(await sourceWith({ quoteMode: "MARKET", providerConfig: { preferred_provider: "AMFI" } }), "Prices from AMFI");
+  assert.equal(await sourceWith({ quoteMode: "MANUAL" }), "Prices entered by hand");
+  // A statement-price choice whose asset now takes market prices is priced from the default source too.
+  assert.equal(await sourceWith({ quoteMode: "MARKET" }, { ...fund, providerId: undefined, providerSymbol: undefined, statementPrices: true }),
+    "Prices from Wealthfolio's default source");
+  // Without the asset's pricing mode, or its profile, the remembered choice's provider stays the fallback.
+  assert.equal(await sourceWith({}), "Prices from Yahoo Finance");
+  assert.equal(await sourceWith(new Error("Profile unavailable")), "Prices from Yahoo Finance");
+  // A saved result whose search said it was set to Auto keeps that when its profile can't be read.
+  assert.equal(await sourceWith(new Error("Profile unavailable"), { ...fund, providerId: undefined, providerSymbol: undefined, defaultSource: true }),
+    "Prices from Wealthfolio's default source");
+});
+
 /** A Change open on a statement row left out so that units aren't counted twice, under Not included, with a typed draft. */
 async function leftOutEditor(mode) {
   const a = source("A", [holding("ISINA")]);

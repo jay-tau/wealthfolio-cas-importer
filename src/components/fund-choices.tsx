@@ -10,7 +10,10 @@ export type FundChoice = { fund: ChosenFund } | { leftOut: true };
 
 /** The import fields the way Wealthfolio's own import builds them from a search result. */
 export function toFund(result: SymbolSearchResult): ChosenFund {
-  const mode = result as SymbolSearchResult & { pricingMode?: string | null; quoteMode?: string | null };
+  const { pricingMode, quoteMode } = result as SymbolSearchResult & { pricingMode?: string | null; quoteMode?: string | null };
+  const mode = pricingMode ?? quoteMode;
+  const saved = !!result.existingAssetId;
+  const shown = result.symbol?.trim();
   return {
     assetId: result.existingAssetId,
     symbol: (result.canonicalSymbol || result.symbol).trim().toUpperCase(),
@@ -21,7 +24,10 @@ export function toFund(result: SymbolSearchResult): ChosenFund {
     providerId: result.providerId,
     providerSymbol: result.providerSymbol,
     name: result.longName || result.shortName || result.symbol,
-    manual: (mode.pricingMode ?? mode.quoteMode) === "MANUAL",
+    manual: mode === "MANUAL",
+    // A saved asset's result gives the provider its settings prefer, and no provider ticker.
+    ...(saved && mode === "MARKET" && !result.providerId?.trim() && { defaultSource: true }),
+    ...(saved && !result.providerSymbol?.trim() && !!shown && { displaySymbol: shown }),
   };
 }
 

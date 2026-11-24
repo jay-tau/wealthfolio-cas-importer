@@ -36,6 +36,15 @@ test("manual pricing metadata is refreshed rather than stored with a fund choice
   assert.deepEqual(await readFund(store, "fund-choice"), choice);
 });
 
+test("a saved asset's default source and shown ticker are its search result's, not stored with its choice (#371)", async () => {
+  const store = storage();
+  const choice = { assetId: "auto-asset", symbol: "0P0000ZZZZ", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND", name: "Made-up Fund Dir Gr" };
+  await saveFund(store, "fund-choice", { ...choice, manual: false, defaultSource: true, displaySymbol: "0P0000ZZZZ.BO" });
+  assert.deepEqual(JSON.parse(store.data.get("fund-choice")), choice);
+  store.data.set("fund-choice", JSON.stringify({ ...choice, defaultSource: true, displaySymbol: "0P0000ZZZZ.BO" }));
+  assert.deepEqual(await readFund(store, "fund-choice"), choice);
+});
+
 test("a choice to use the statement's prices is remembered, under the bond's ISIN or the scheme's symbol", async () => {
   const store = storage();
   const choice = { symbol: "NPS-SBI-E-TIER-I", quoteCcy: "INR", instrumentType: "EQUITY", name: "NPS TRUST- A/C SBI", statementPrices: true };
