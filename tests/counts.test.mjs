@@ -701,9 +701,12 @@ test("each Save to box says under its account choice whether it was chosen last 
   const former = { ...folioBox, key: folioKey({ ...folio, amc: "IDFC Mutual Fund" }), title: "IDFC Mutual Fund folio 123 (no PAN printed)" };
   assert.equal(former.key, folioBox.key);
   const split = detailed([folioBox, former]);
-  assert.deepEqual([...split.matchAll(/<p id="(save-to-\d+-remembered)"/g)].map(([, id]) => id), ["save-to-0-remembered", "save-to-1-remembered"]);
-  assert.deepEqual(describing(split, "save-to-0-remembered"), [folioBox.key]);
-  assert.deepEqual(describing(split, "save-to-1-remembered"), [former.key]);
+  const noteIds = ["save-to-0-remembered", "save-to-1-remembered"];
+  assert.deepEqual([...split.matchAll(/<p id="(save-to-\d+-remembered)"/g)].map(([, id]) => id), noteIds);
+  for (const id of noteIds) {
+    assert.deepEqual(describing(split, id), [folioBox.key]);
+    assert.deepEqual(describing(boxAround(split, id), id), [folioBox.key]);
+  }
 });
 
 /** A search state with nothing searched yet, and searches that do nothing, for rendering a question. */
