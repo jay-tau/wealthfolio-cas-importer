@@ -72,6 +72,7 @@ import { SaveTo } from "../components/review/save-to";
 import { statementPlan, useHoldingSearches } from "../components/review/search";
 import {
   type ChosenFund,
+  fundForPlan,
   holdingKey,
   indexSources,
   investorKey,
@@ -566,7 +567,7 @@ export function HoldingsImport({
     return choice && "fund" in choice ? choice.fund : undefined;
   };
   const assetOf = (h: StatementHolding) => {
-    const fund = fundOf(holdingKey(h));
+    const fund = fundForPlan(fundOf(holdingKey(h)));
     // A remembered statement-price choice can predate a corrected statement name.
     return fund?.statementPrices ? { ...fund, name: h.name } : fund;
   };
@@ -668,7 +669,7 @@ export function HoldingsImport({
 
   const destinations = holdings.sources.map((s) => accountOf(s) ?? "");
   const [attempt, setAttempt] = useState(0);
-  const signature = JSON.stringify([generation, attempt, destinations, items.map((item) => fundOf(item.key) ?? null)]);
+  const signature = JSON.stringify([generation, attempt, destinations, items.map((item) => fundForPlan(fundOf(item.key)) ?? null)]);
   // Try again stays, busy, while the plan is worked out again, so its focus does too; once it's worked
   // out, the focus goes to the bar's summary, unless the user moved it meanwhile.
   const [retrying, setRetrying] = useState(false);
@@ -697,7 +698,12 @@ export function HoldingsImport({
                 positions: [...plan.existing.positions].sort((a, b) => a.assetId.localeCompare(b.assetId)),
                 cash: Object.entries(plan.existing.cash).sort(),
               };
-              const facts = (p?: PlannedPosition) => p && [p.ref, p.ask, p.existing, p.asset, p.lines, p.removable, p.heldBy, p.replacedBy];
+              const facts = (p?: PlannedPosition) => {
+                if (!p) return undefined;
+                // A resolved asset's choice name is a label, including an older display-code placeholder.
+                const asset = p.asset?.assetId ? { ...p.asset, name: undefined } : p.asset;
+                return [p.ref, p.ask, p.existing, asset, p.lines, p.removable, p.heldBy, p.replacedBy];
+              };
               const position = plan.positions.find((p) => p.key === key);
               return position && [plan.existing.date, facts(position),
                 position.replaces?.map((key) => facts(plan.positions.find((p) => p.key === key)))];
@@ -1497,6 +1503,9 @@ export function HoldingsImport({
     editing: editor?.kind === "cost" ? { rowId: editor.rowId, draft: editor.draft, error: editor.error } : undefined,
     changing: editor?.kind === "change" ? editor.rowId : undefined,
     changingItem: editor?.kind === "change" ? editor.itemKey : undefined,
+    changingAssetId: editor?.kind === "change"
+      ? rows.find((row) => row.id === editor.rowId)?.fund.assetId ?? fundOf(editor.itemKey)?.assetId
+      : undefined,
     nag,
     onChange: (row, item = row.item) => {
       if (busyEditor(row.id + "change" + item.key)) return;

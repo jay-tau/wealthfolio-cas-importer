@@ -2,7 +2,7 @@
 // when its provider didn't name it, where its prices come from, and the codes behind it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { codes, listingName, priceSource, unnamed } from "../src/lib/fund-label.ts";
+import { codes, listingName, priceSource, ticker, unnamed } from "../src/lib/fund-label.ts";
 
 // Made-up results the way Wealthfolio 3.13.0 lists them for an ISIN: AMFI's scheme, with its code as
 // its symbol and no exchange, and Yahoo's listing on the Bombay Stock Exchange.
@@ -69,9 +69,28 @@ test("each result says where its prices come from", () => {
   assert.equal(priceSource({ ...amfi, manual: true }), "Priced by hand");
   assert.equal(priceSource({ ...yahoo, manual: true }), "Priced by hand");
   assert.equal(priceSource({ providerId: undefined, manual: true }), "Priced by hand");
-  // A remembered choice from before providers were kept, or a saved asset with no provider preferred.
+  // A saved asset priced from market data with no provider preferred, "Auto (default)" in Wealthfolio's
+  // asset editor: Wealthfolio picks the provider itself (#371).
+  const auto = { ...yahoo, providerId: undefined, providerSymbol: undefined, manual: false, defaultSource: true };
+  assert.equal(priceSource(auto), "Wealthfolio's default source");
+  assert.equal(priceSource({ ...auto, manual: true }), "Priced by hand");
+  assert.equal(priceSource({ ...auto, statementPrices: true }), "Statement prices");
+  // A remembered choice from before providers were kept, or a saved asset whose settings aren't known.
   assert.equal(priceSource({ ...yahoo, providerId: undefined, manual: undefined }), "Unknown source");
   assert.equal(priceSource({ ...yahoo, providerId: " ", manual: false }), "Unknown source");
+});
+
+test("a listing's ticker is its provider's, else the one Wealthfolio shows for a saved asset, else its symbol", () => {
+  assert.equal(ticker(yahoo), "0P0000XXXX.BO");
+  assert.equal(ticker({ ...yahoo, displaySymbol: "0P0000XXXX.NS" }), "0P0000XXXX.BO");
+  // A saved asset's result gives no provider ticker, and shows its symbol with the exchange's suffix (#371).
+  const saved = { ...yahoo, providerSymbol: undefined, displaySymbol: "0P0000XXXX.BO" };
+  assert.equal(ticker(saved), "0P0000XXXX.BO");
+  assert.equal(unnamed({ ...saved, name: "" }), "Unnamed Yahoo listing (0P0000XXXX.BO)");
+  // A saved asset without a name is named by the symbol Wealthfolio shows for it, such as its display code.
+  assert.equal(listingName({ ...saved, displaySymbol: "LIQUID-BSE", name: "LIQUID-BSE" }), undefined);
+  assert.equal(listingName({ ...saved, displaySymbol: "LIQUID-BSE", name: "Fictiva Liquid Dir Gr" }), "Fictiva Liquid Dir Gr");
+  assert.equal(ticker({ ...yahoo, providerSymbol: undefined }), "0P0000XXXX");
 });
 
 test("a result's details list its symbol, exchange, type and currency", () => {

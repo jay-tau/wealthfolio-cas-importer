@@ -41,7 +41,12 @@ interface HostAsset {
   quoteCcy?: string;
   providerConfig?: unknown;
   metadata?: unknown;
-  /** AMFI for a fund with AMFI selected, even if automatic updates are off. */
+  /**
+   * The provider it was saved from, such as AMFI for a fund with AMFI selected, even if automatic
+   * updates are off: its preferred provider unless `providerConfig` says otherwise. With neither, as
+   * Wealthfolio 3.13.1 saves a Yahoo listing whose ticker needs no override, Wealthfolio picks the
+   * provider itself: "Auto (default)" in its asset editor.
+   */
   providerId?: string;
   /** Symbols its market data settings map providers to, such as AMFI to the fund's ISIN: a search for one finds it exactly. */
   aliases?: string[];
@@ -475,6 +480,14 @@ const instrumentType = (type: string | undefined) => /^(EQUITY|STOCK|ETF|MUTUALF
 const assetId = (h: SnapshotHoldingInput) => h.assetId ?? Object.entries(host.assets).find(([, a]) =>
   a.symbol === h.symbol.toUpperCase() && a.exchangeMic === (h.exchangeMic ?? null) && (!h.instrumentType || instrumentType(a.instrumentType) === instrumentType(h.instrumentType)),
 )?.[0] ?? host.assetIds[h.symbol.toUpperCase()] ?? `asset-${h.symbol.toUpperCase()}`;
+// The provider an asset's market data settings prefer, as its profile and search result give it.
+const providerConfigOf = (a: HostAsset) =>
+  a.providerConfig !== undefined ? a.providerConfig : a.providerId ? { preferred_provider: a.providerId } : undefined;
+const preferredOf = (a: HostAsset) => {
+  const preferred = (providerConfigOf(a) as { preferred_provider?: unknown } | null | undefined)?.preferred_provider;
+  return typeof preferred === "string" && preferred.trim() ? preferred.trim() : undefined;
+};
+
 const assetOf = (id: string): HostAsset => host.assets[id] ?? { symbol: id.replace(/^asset-/, "").toUpperCase(), exchangeMic: "XBOM", instrumentType: "EQUITY" };
 
 // Wealthfolio keeps assets after their last holding is removed; materialize implicit fixture assets.
@@ -607,7 +620,10 @@ const api = {
       // An activity's asset exists too, whether or not a holding lists it.
       const a = knownAssets().get(id) ?? (host.activities.some((x) => x.assetId === id) ? assetOf(id) : undefined);
       if (!a) throw new Error("Asset not found");
-      return { id, ...a, instrumentSymbol: a.instrumentSymbol !== undefined ? a.instrumentSymbol : a.symbol, instrumentExchangeMic: a.exchangeMic, quoteMode: host.pricingModes[a.symbol] ?? "MARKET", kind: a.kind ?? "INVESTMENT", quoteCcy: a.quoteCcy ?? "INR" };
+      return {
+        id, ...a, instrumentSymbol: a.instrumentSymbol !== undefined ? a.instrumentSymbol : a.symbol, instrumentExchangeMic: a.exchangeMic,
+        quoteMode: host.pricingModes[a.symbol] ?? "MARKET", kind: a.kind ?? "INVESTMENT", quoteCcy: a.quoteCcy ?? "INR", providerConfig: providerConfigOf(a),
+      };
     },
     // Like Wealthfolio, fields left out are cleared and the pricing mode goes back to market.
     updateProfile: async (payload: { id: string; name?: string | null; displayCode?: string | null; notes: string; kind?: string; quoteMode?: string; quoteCcy?: string; instrumentExchangeMic?: string | null; providerConfig?: unknown; metadata?: unknown }) => {
@@ -823,7 +839,7 @@ const api = {
       ...fund(a.symbol), symbol: a.displayCode ?? a.symbol, canonicalSymbol: a.symbol,
       canonicalExchangeMic: a.exchangeMic ?? undefined, exchangeMic: a.exchangeMic ?? undefined,
       quoteType: instrumentType(a.instrumentType) ?? "OTHER", currency: a.quoteCcy ?? "INR", longName: a.name ?? a.symbol,
-      quoteMode: host.pricingModes[a.symbol] ?? "MARKET", isExisting: true, existingAssetId: id, providerId: a.providerId, providerSymbol: undefined,
+      quoteMode: host.pricingModes[a.symbol] ?? "MARKET", isExisting: true, existingAssetId: id, providerId: preferredOf(a), providerSymbol: undefined,
       ...(exact(a) && { exactMatch: true }),
     }));
     // Replace a provider result with its existing asset, keeping Yahoo's other listing for an ISIN.

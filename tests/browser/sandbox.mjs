@@ -5009,6 +5009,59 @@ const runBrowser = async (browser, engine) => {
     await summaryLiquid().waitFor();
 
     part();
+    // A saved listing set to Auto (default), with market prices and no preferred provider or provider ticker.
+    // The ISIN lookup returns its display symbol with the exchange's suffix. Its ready row uses
+    // Wealthfolio's default source even when the remembered choice names Yahoo Finance (#371).
+    const beforeAuto = await hosted(() => ({
+      storage: [...window.host.storage], assets: window.host.assets, snapshots: window.host.snapshots, held: window.host.held,
+      quotes: window.host.quotes, pricingModes: window.host.pricingModes, saves: window.host.saves,
+    }));
+    const auto = { assetId: "auto-listing-016", symbol: "0P0000ZLQ6", ticker: "0P0000ZLQ6.BO", name: "Fictiva Liquid Dir Gr" };
+    await hosted((auto) => {
+      window.host.storage.clear();
+      window.host.assets = {
+        [auto.assetId]: {
+          symbol: auto.symbol, exchangeMic: "XBOM", instrumentType: "EQUITY", name: auto.name, displayCode: auto.ticker,
+          kind: "INVESTMENT", quoteCcy: "INR", aliases: ["INFZ90K01LQ6"],
+        },
+      };
+      window.host.snapshots = {};
+      window.host.held = {};
+      window.host.quotes = {};
+      window.host.pricingModes = {};
+      window.host.storage.set("isin:INFZ90K01LQ6", JSON.stringify({
+        assetId: auto.assetId, symbol: auto.symbol, exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "MUTUALFUND",
+        providerId: "YAHOO", providerSymbol: auto.ticker, name: auto.name,
+      }));
+    }, auto);
+    await readHoldings();
+    await choose("investor", "Fund folios (INR)");
+    await skipOthersThanLiquid();
+    await summaryLiquid().getByText(/^Prices from Wealthfolio's default source · chosen before · Change$/).waitFor();
+    // Change lists it with the source and the ticker Wealthfolio gives it, beside AMFI's scheme.
+    await summaryLiquid().getByRole("button", { name: /^Change: / }).click();
+    const autoResult = changePanelOf().locator("label").filter({ hasText: auto.name });
+    await autoResult.getByText(`Wealthfolio's default source · ${auto.ticker}`, { exact: true }).waitFor();
+    assert.equal(await autoResult.count(), 1);
+    assert.equal(await changePanelOf().getByText(/Unknown source/).count(), 0);
+    await autoResult.getByRole("radio").dispatchEvent("click");
+    await changePanelOf().getByRole("button", { name: /^Use this fund for /, disabled: false }).click();
+    await changePanelOf().waitFor({ state: "detached" });
+    await settled();
+    await summaryLiquid().getByText(/^Prices from Wealthfolio's default source · chosen by you · Change$/).waitFor();
+    await zeroNotListed();
+    await saveHoldings.click();
+    await frame.getByText("Holdings saved", { exact: true }).waitFor();
+    assert.deepEqual((await snapshot("holdings-2", "2025-03-31")).holdings.map((h) => h.assetId), [auto.assetId]);
+    // The new remembered choice keeps the canonical symbol, and no provider or provider ticker.
+    const autoChoice = JSON.parse((await storage())["isin:INFZ90K01LQ6"]);
+    assert.deepEqual(
+      [autoChoice.assetId, autoChoice.symbol, autoChoice.exchangeMic, ...["providerId", "providerSymbol", "defaultSource", "displaySymbol"].map((key) => key in autoChoice)],
+      [auto.assetId, auto.symbol, "XBOM", false, false, false, false],
+    );
+    await hosted((state) => { Object.assign(window.host, { ...state, storage: new Map(state.storage) }); }, beforeAuto);
+
+    part();
     // A line whose units can't be read leaves the account's fund as it is, and isn't saved. The
     // Balanced Advantage fund, in another folio, is saved beside it: with nothing else to save, the
     // bar would offer Finish and save no snapshot (#276).

@@ -53,6 +53,7 @@ export interface ReadyHandlers {
   /** The row whose Change is open, by its id. */
   changing?: string;
   changingItem?: string;
+  changingAssetId?: string;
   /** "Save or cancel this edit first." beside the open edit. */
   nag: boolean;
   onChange: (row: ReadyRow, item?: FundItem) => void;
@@ -75,7 +76,7 @@ function chosenPlan(row: ReadyRow) {
 }
 
 function Source({ ctx, row, handlers }: { ctx: AddonContext; row: ReadyRow; handlers: ReadyHandlers }) {
-  const source = usePricesFrom(ctx, row.item, row.fund);
+  const source = usePricesFrom(ctx, row.item, row.fund, handlers.changingAssetId);
   const ids = handlers.ids(row);
   return (
     <span className="text-muted-foreground text-sm">

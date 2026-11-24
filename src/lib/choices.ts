@@ -411,13 +411,30 @@ export interface ChosenFund extends FundAsset {
   name: string;
   /** Wealthfolio's pricing mode at the time; looked up again for each import, so not stored. */
   manual?: boolean;
+  /**
+   * A saved asset priced from market data with no preferred provider, as its search result said:
+   * Wealthfolio picks the provider itself, "Auto (default)" in its asset editor. Not stored either.
+   */
+  defaultSource?: boolean;
+  /**
+   * The ticker a saved asset's search result shows when it gives no provider ticker, such as the
+   * symbol with its exchange's suffix. Only for its label, so not stored.
+   */
+  displaySymbol?: string;
   statementPrices?: boolean;
+}
+
+/** The choice fields used in plans and answer comparisons. */
+export function fundForPlan(fund: ChosenFund | undefined) {
+  if (!fund) return undefined;
+  const { defaultSource, displaySymbol, ...asset } = fund;
+  return asset;
 }
 
 function asFund(value: unknown): ChosenFund | undefined {
   if (!record(value) || typeof value.symbol !== "string" || typeof value.quoteCcy !== "string" ||
       typeof value.name !== "string" || typeof value.instrumentType !== "string") return undefined;
-  const { manual, transactions, ...choice } = value;
+  const { manual, defaultSource, displaySymbol, transactions, ...choice } = value;
   return choice as unknown as ChosenFund;
 }
 
@@ -463,7 +480,7 @@ export async function readRecordChoices(storage: Storage, keys: Iterable<string>
  * failed read rejects, so the other import's fund isn't lost.
  */
 export async function saveFund(storage: Storage, key: string, fund: ChosenFund, detailed = false) {
-  const { manual, ...choice } = fund;
+  const { manual, defaultSource, displaySymbol, ...choice } = fund;
   let value: ChosenFund & { transactions?: ChosenFund } = choice;
   if (detailed || choice.statementPrices) {
     const stored = parseChoice(await storage.get(key));

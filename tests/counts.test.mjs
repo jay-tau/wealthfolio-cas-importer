@@ -9,7 +9,7 @@ import { createServer } from "vite";
 import { withoutClosed, withReadableNames } from "../src/cas/mapping.ts";
 import { dec } from "../src/cas/decimal.ts";
 import { bothOrAll, every, plural } from "../src/lib/plural.ts";
-import { bankKey, folioKey } from "../src/lib/choices.ts";
+import { bankKey, folioKey, readFund, saveFund } from "../src/lib/choices.ts";
 
 let server;
 let components;
@@ -1564,6 +1564,61 @@ test("an existing asset's market pricing takes precedence over its remembered st
   const listed = { ...statement, statementPrices: undefined, providerId: "YAHOO", exchangeMic: "XNSE" };
   assert.equal(components.pricesFrom({ noun: "share" }, listed, false), "Prices from NSE on Yahoo Finance");
   assert.equal(components.pricesFrom(item, listed, true), "Prices entered by hand");
+});
+
+test("a saved listing set to Auto is priced from Wealthfolio's default source and shows the ticker Wealthfolio gives it (#371)", async () => {
+  const { toFund, pricesFrom } = components;
+  // As Wealthfolio 3.13.1 lists a saved Yahoo listing whose ticker needed no override: market pricing,
+  // no preferred provider or provider ticker, and its symbol with the exchange's suffix.
+  const result = {
+    symbol: "0P0000ZZZZ.BO", canonicalSymbol: "0P0000ZZZZ", canonicalExchangeMic: "XBOM", exchangeMic: "XBOM", exchange: "BSE",
+    currency: "INR", quoteType: "EQUITY", typeDisplay: "EQUITY", shortName: "Fictiva Liquid Dir Gr", longName: "Fictiva Liquid Dir Gr",
+    quoteMode: "MARKET", isExisting: true, existingAssetId: "auto-asset", index: "", score: 100,
+  };
+  const fund = toFund(result);
+  // Imports and remembered choices keep the canonical symbol and no provider.
+  assert.deepEqual(fund, {
+    assetId: "auto-asset", symbol: "0P0000ZZZZ", exchangeMic: "XBOM", quoteCcy: "INR", instrumentType: "EQUITY",
+    providerId: undefined, providerSymbol: undefined, name: "Fictiva Liquid Dir Gr", manual: false,
+    defaultSource: true, displaySymbol: "0P0000ZZZZ.BO",
+  });
+  const item = { key: "isin:INFZ90K01LQ6", isin: "INFZ90K01LQ6", name: "Fictiva Liquid Fund - Direct Plan - Growth", noun: "fund" };
+  const statement = { plan: "Direct", option: "Growth" };
+  const label = (fund, it = item) => text("ResultLabel", { item: it, fund, statement });
+  assert.match(label(fund), / Wealthfolio's default source · 0P0000ZZZZ\.BO /);
+  const blankTicker = toFund({ ...result, providerSymbol: " " });
+  assert.equal(blankTicker.providerSymbol, " ");
+  assert.match(label(blankTicker), / Wealthfolio's default source · 0P0000ZZZZ\.BO /);
+  // A suffix-only name already looked unnamed in older remembered choices.
+  assert.equal(toFund({ ...result, longName: result.symbol, shortName: result.symbol }).name, result.symbol);
+  // Wealthfolio can return a saved display code as the name when the asset has none.
+  const unnamed = toFund({ ...result, symbol: "LIQUID-BSE", shortName: "LIQUID-BSE", longName: "LIQUID-BSE" });
+  assert.match(label(unnamed), /^ Unnamed listing Wealthfolio's default source · LIQUID-BSE · plan and option unknown $/);
+  const stored = new Map();
+  const storage = { get: async (key) => stored.get(key), set: async (key, value) => stored.set(key, value) };
+  await saveFund(storage, item.key, unnamed);
+  const remembered = await readFund(storage, item.key);
+  assert.equal(components.shownName(item, remembered), components.shownName(item, unnamed));
+  assert.equal(components.planConflict(remembered, statement), "Chosen listing's plan and option are unknown.");
+  assert.equal(pricesFrom(item, fund), "Prices from Wealthfolio's default source");
+  assert.equal(pricesFrom({ noun: "share" }, fund), "Prices from BSE on Wealthfolio's default source");
+  assert.match(label(fund, { ...item, noun: "share" }), /^ Bombay Stock Exchange \(BSE\) Fictiva Liquid Dir Gr · Wealthfolio's default source · 0P0000ZZZZ\.BO /);
+  // One with a preferred provider is priced from it; one priced by hand says so.
+  const preferred = toFund({ ...result, providerId: "YAHOO", dataSource: "YAHOO" });
+  assert.equal(preferred.defaultSource, undefined);
+  assert.match(label(preferred), / Yahoo Finance · 0P0000ZZZZ\.BO /);
+  const byHand = toFund({ ...result, quoteMode: "MANUAL", dataSource: "MANUAL" });
+  assert.equal(byHand.defaultSource, undefined);
+  assert.match(label(byHand), / Priced by hand · 0P0000ZZZZ\.BO /);
+  // Without its pricing mode, where its prices come from is unknown.
+  assert.match(label(toFund({ ...result, quoteMode: undefined })), / Unknown source · 0P0000ZZZZ\.BO /);
+  // A provider's result shows its own ticker, and its provider.
+  const listing = toFund({ ...result, isExisting: undefined, existingAssetId: undefined, quoteMode: undefined, providerId: "YAHOO", providerSymbol: "0P0000ZZZZ.BO" });
+  assert.equal(listing.defaultSource, undefined);
+  assert.equal(listing.displaySymbol, undefined);
+  assert.match(label(listing), / Yahoo Finance · 0P0000ZZZZ\.BO /);
+  const search = { ...idle, auto: { status: "done", results: [fund], amfi: false, pricedElsewhere: false } };
+  assert.match(text("QuestionCard", { item, label: item.name, search, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} }), / Found by the ISIN printed for it\. /);
 });
 
 

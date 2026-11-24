@@ -26,11 +26,12 @@ const PROVIDERS = new Map([
 /** Recognized exchange suffixes; a dot in a name or share-class symbol alone isn't evidence of one. */
 const SUFFIXES = new Map([["XBOM", ".BO"], ["XNSE", ".NS"], ["XLON", ".L"]]);
 
-type Fund = Pick<ChosenFund, "name" | "symbol" | "exchangeMic" | "providerSymbol" | "providerId">;
+type Fund = Pick<ChosenFund, "name" | "symbol" | "exchangeMic" | "providerSymbol" | "providerId" | "displaySymbol">;
 
 /**
  * A search result's or confirmed fund's name, or undefined when its provider gave it none: an empty
- * name, or only its symbol, with or without an exchange suffix.
+ * name, or only its symbol, with or without an exchange suffix. A saved asset without a name gets
+ * the symbol Wealthfolio shows for it as its name.
  */
 export function listingName(fund: Fund): string | undefined {
   const name = fund.name.trim();
@@ -38,21 +39,29 @@ export function listingName(fund: Fund): string | undefined {
   const own = name.toUpperCase();
   // Saved assets can keep a Yahoo name but no provider symbol; use their exchange's suffix.
   const suffix = SUFFIXES.get(fund.exchangeMic ?? "");
-  return [fund.symbol, fund.providerSymbol].some((symbol) => {
+  return [fund.symbol, fund.providerSymbol, fund.displaySymbol].some((symbol) => {
     const ticker = symbol?.trim().toUpperCase();
     return ticker && (ticker === own || (suffix && (ticker === own + suffix || own === ticker + suffix)));
   }) ? undefined : name;
 }
 
+/** The ticker that tells a listing apart, as its provider or, for a saved asset, Wealthfolio shows it. */
+export const ticker = (fund: Pick<ChosenFund, "symbol" | "providerSymbol" | "displaySymbol">) =>
+  fund.providerSymbol?.trim() ? fund.providerSymbol : fund.displaySymbol || fund.symbol;
+
 /** What a listing without a name is shown as: the kind, and the ticker that tells it apart from others. */
 export const unnamed = (fund: Fund) =>
-  `${fund.providerId === YAHOO ? "Unnamed Yahoo listing" : "Unnamed listing"} (${fund.providerSymbol || fund.symbol})`;
+  `${fund.providerId === YAHOO ? "Unnamed Yahoo listing" : "Unnamed listing"} (${ticker(fund)})`;
+
+/** Where a saved asset with no preferred provider is priced from: "Auto (default)" in Wealthfolio's asset editor. */
+export const DEFAULT_SOURCE = "Wealthfolio's default source";
 
 /** Where a search result's or confirmed fund's prices come from. */
-export function priceSource(fund: Pick<ChosenFund, "providerId" | "manual" | "statementPrices">) {
+export function priceSource(fund: Pick<ChosenFund, "providerId" | "manual" | "statementPrices" | "defaultSource">) {
   if (fund.statementPrices) return "Statement prices";
   // A saved asset priced by hand keeps the provider preferred for automatic updates, which are off.
   if (fund.manual) return "Priced by hand";
+  if (fund.defaultSource) return DEFAULT_SOURCE;
   const provider = fund.providerId?.trim();
   return provider ? (PROVIDERS.get(provider) ?? provider) : "Unknown source";
 }

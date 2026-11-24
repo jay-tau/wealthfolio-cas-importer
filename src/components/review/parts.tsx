@@ -2,7 +2,7 @@ import type { AddonContext } from "@wealthfolio/addon-sdk";
 import { Badge, Button, type ButtonProps, Collapsible, CollapsibleContent, CollapsibleTrigger } from "@wealthfolio/ui";
 import { Fragment, type ReactNode, useEffect, useState, useSyncExternalStore } from "react";
 import type { ChosenFund } from "../../lib/choices";
-import { listingName, priceSource, unnamed, YAHOO } from "../../lib/fund-label";
+import { DEFAULT_SOURCE, listingName, priceSource, ticker, unnamed, YAHOO } from "../../lib/fund-label";
 import { differs, fundName, type PlanAndOption, planAndOption } from "../../lib/fund-name";
 import { exchangeOf } from "../../lib/review-format";
 import { type FundItem, otherCurrency } from "../fund-choices";
@@ -117,17 +117,15 @@ export const shareExchange = (item: Pick<FundItem, "noun">, fund: Pick<ChosenFun
 /** The provider a fund is priced from, by the name Wealthfolio's settings give it. */
 export const providerName = (fund: ChosenFund) => (fund.providerId?.trim() ? priceSource({ providerId: fund.providerId }) : undefined);
 
-/** The ticker that tells a listing apart, as its provider has it. */
-export const ticker = (fund: ChosenFund) => fund.providerSymbol || fund.symbol;
-
 /**
  * Where a ready row's prices come from: "Prices from AMFI", "Prices from NSE on Yahoo Finance",
- * "Prices from the statement". `manual` is the saved asset's pricing mode, when known.
+ * "Prices from Wealthfolio's default source", "Prices from the statement". `manual` is the saved
+ * asset's pricing mode, when known.
  */
 export function pricesFrom(item: Pick<FundItem, "noun">, fund: ChosenFund, manual = fund.manual) {
   if (fund.statementPrices && manual !== false) return "Prices from the statement";
   if (manual) return "Prices entered by hand";
-  const provider = providerName(fund);
+  const provider = fund.defaultSource ? DEFAULT_SOURCE : providerName(fund);
   if (!provider) return "Price source unknown";
   const exchange = shareExchange(item, fund);
   return exchange ? `Prices from ${exchange.short} on ${provider}` : `Prices from ${provider}`;
@@ -162,8 +160,7 @@ export function ResultLabel({ item, fund, statement }: { item: FundItem; fund: C
   const name = listingName(fund);
   const currency = otherCurrency(fund.quoteCcy);
   const match = item.noun === "fund" ? matchWords(fund, statement) : undefined;
-  // A saved asset priced by hand keeps the provider preferred for automatic updates, which are off.
-  const source = fund.statementPrices ? "the statement's prices" : fund.manual ? "Priced by hand" : (providerName(fund) ?? "Unknown source");
+  const source = fund.statementPrices ? "the statement's prices" : priceSource(fund);
   const detail = [exchange ? (name ?? unnamedKind(fund)) : undefined, source, ticker(fund), !name && item.noun === "fund" ? "plan and option unknown" : undefined]
     .filter(Boolean)
     .join(" · ");
@@ -229,21 +226,28 @@ export function Disclosure({
 
 /**
  * Where a confirmed fund's prices come from now: an existing asset keeps its pricing mode and
- * preferred provider, even when it was first chosen to use statement prices. Undefined while read.
+ * preferred provider, even when it was first chosen to use statement prices. One priced from market
+ * data with no preferred provider is priced from Wealthfolio's default source, whatever provider a
+ * remembered choice names. Read again after a Change panel for this asset closes. Undefined until
+ * first read.
  */
-export function usePricesFrom(ctx: AddonContext, item: Pick<FundItem, "noun">, fund: ChosenFund) {
+export function usePricesFrom(ctx: AddonContext, item: Pick<FundItem, "noun">, fund: ChosenFund, changingAssetId?: string) {
   const id = fund.assetId;
-  const [read, setRead] = useState<{ id: string; source?: Pick<ChosenFund, "manual" | "providerId" | "exchangeMic"> }>();
+  const changing = !!id && id === changingAssetId;
+  const [read, setRead] = useState<{ id: string; source?: Pick<ChosenFund, "manual" | "providerId" | "exchangeMic" | "defaultSource"> }>();
   useEffect(() => {
-    if (!id) return;
+    if (!id || changing) return;
     let current = true;
     ctx.api.assets.getProfile(id).then(
       (asset) => {
         const mode = (asset as typeof asset & { pricingMode?: string | null }).pricingMode ?? asset.quoteMode;
         const preferred = asset.providerConfig?.preferred_provider;
+        const manual = mode === "MANUAL" ? true : mode === "MARKET" ? false : undefined;
+        const providerId = typeof preferred === "string" && preferred.trim() ? preferred.trim() : undefined;
         if (current) setRead({ id, source: {
-          manual: mode === "MANUAL" ? true : mode === "MARKET" ? false : undefined,
-          providerId: typeof preferred === "string" && preferred.trim() ? preferred.trim() : undefined,
+          manual,
+          providerId,
+          defaultSource: providerId ? false : manual === false ? true : undefined,
           exchangeMic: asset.instrumentExchangeMic ?? undefined,
         } });
       },
@@ -254,13 +258,14 @@ export function usePricesFrom(ctx: AddonContext, item: Pick<FundItem, "noun">, f
     return () => {
       current = false;
     };
-  }, [id]);
+  }, [id, changing]);
   if (!id) return pricesFrom(item, fund);
   if (read?.id !== id) return undefined;
   return pricesFrom(item, {
     ...fund, ...read.source,
     manual: read.source?.manual ?? fund.manual,
     providerId: read.source?.providerId ?? (fund.statementPrices ? undefined : fund.providerId),
+    defaultSource: read.source?.defaultSource ?? fund.defaultSource,
   });
 }
 
