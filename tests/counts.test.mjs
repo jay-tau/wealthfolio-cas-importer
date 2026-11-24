@@ -723,7 +723,7 @@ test("a typed search that finds nothing says to check the name for an NPS scheme
   ] };
   const said = components.holdingItems(holdings).map((item, i) => {
     const search = { text: "SBI Scheme E", typed: { status: "done", text: "SBI Scheme E", results: [] } };
-    const props = { item, label: item.name, units: "10 units", search, searches, base: `q${i}`, amfiOn: false, headingId: `h${i}`, onAnswer() {} };
+    const props = { item, label: item.name, units: "10 units", search, searches, base: `q${i}`, amfiOn: false, headingId: `h${i}`, action: "save", onAnswer() {} };
     const words = components.nothingFound(item, "SBI Scheme E");
     assert.ok(text("QuestionCard", props).includes(words), item.noun);
     return [item.noun, words];
@@ -744,7 +744,7 @@ test("controls distinguish equal holding names", () => {
   const items = components.holdingItems(holdings);
   items.forEach((item, i) => {
     const label = `${item.name.replace(/\s+/g, " ")}, share ${i + 1}`;
-    const props = { item, label, units: "10 shares", search: idle, searches, base: `q${i}`, amfiOn: false, headingId: `h${i}`, onAnswer() {} };
+    const props = { item, label, units: "10 shares", search: idle, searches, base: `q${i}`, amfiOn: false, headingId: `h${i}`, action: "save", onAnswer() {} };
     const markup = renderToStaticMarkup(createElement(components.QuestionCard, props)).replace(/\s+/g, " ");
     assert.ok(text("QuestionCard", props).includes(`Search by ISIN for ${label}`), label);
     for (const name of [`Search for ${label}`, `Use the price on the statement for ${label}`, `Skip this holding: ${label}`]) {
@@ -1017,7 +1017,7 @@ test("a question whose units are unknown, as a line of it may have been misread,
   }] };
   const [item] = components.holdingItems(holdings);
   const where = "a line may have been misread, so the import leaves its holding as it is, or doesn't add one";
-  const card = text("QuestionCard", { item, label: item.name, where, search: idle, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} });
+  const card = text("QuestionCard", { item, label: item.name, where, search: idle, searches, base: "q", amfiOn: false, headingId: "h", action: "save", onAnswer() {} });
   assert.ok(card.includes(`On your statement: Fictiva Liquid Fund - Direct Plan - Growth · Direct plan · Growth · ${where} `), card);
   assert.ok(!card.includes("units"), card);
 });
@@ -1498,7 +1498,7 @@ test("the Review screen names CDSL demat funds without their fund house, short n
   ]);
   for (const item of items) assert.equal(item.statementAsset?.name, item.name);
   for (const item of items.filter((i) => isins.includes(i.isin))) {
-    const props = { item, label: item.name, units: "1 unit", search: idle, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} };
+    const props = { item, label: item.name, units: "1 unit", search: idle, searches, base: "q", amfiOn: false, headingId: "h", action: "save", onAnswer() {} };
     assert.ok(!/[\x00-\x1f\x7f]/.test(renderToStaticMarkup(createElement(components.QuestionCard, props))));
     const card = text("QuestionCard", props);
     assert.ok(card.includes(` ${item.name} `), item.isin);
@@ -1617,8 +1617,17 @@ test("a saved listing set to Auto is priced from Wealthfolio's default source an
   assert.equal(listing.defaultSource, undefined);
   assert.equal(listing.displaySymbol, undefined);
   assert.match(label(listing), / Yahoo Finance · 0P0000ZZZZ\.BO /);
-  const search = { ...idle, auto: { status: "done", results: [fund], amfi: false, pricedElsewhere: false } };
-  assert.match(text("QuestionCard", { item, label: item.name, search, searches, base: "q", amfiOn: false, headingId: "h", onAnswer() {} }), / Found by the ISIN printed for it\. /);
+  const search = { ...idle, auto: { status: "done", results: [fund], amfi: false, addsAsset: false } };
+  const card = (search, action) => text("QuestionCard", { item, label: item.name, search, searches, base: "q", amfiOn: true, headingId: "h", action, onAnswer() {} });
+  assert.match(card(search, "import"), / Found by the ISIN printed for it\. /);
+  // AMFI's new listing beside it adds another asset when the Review screen imports or saves (#374).
+  const scheme = toFund({ symbol: "123456", providerId: "AMFI", providerSymbol: "123456", currency: "INR", quoteType: "MUTUALFUND", longName: "Fictiva Liquid Dir Gr" });
+  const beside = { ...idle, auto: { status: "done", results: [fund, scheme], amfi: true, addsAsset: true } };
+  const addsAnother = (action) => `Wealthfolio already has this fund, and using AMFI's new listing adds another asset for it when you ${action}. `;
+  assert.ok(card(beside, "import").includes(addsAnother("import")));
+  assert.ok(card(beside, "save").includes(addsAnother("save")));
+  const savedScheme = { ...scheme, assetId: "amfi-asset", providerSymbol: undefined, instrumentType: "EQUITY" };
+  assert.match(card({ ...beside, auto: { ...beside.auto, results: [fund, savedScheme], addsAsset: false } }, "import"), / Several results fit the ISIN printed for it\. /);
 });
 
 

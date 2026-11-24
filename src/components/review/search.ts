@@ -1,7 +1,7 @@
 import type { AddonContext, SymbolSearchResult } from "@wealthfolio/addon-sdk";
 import { useEffect, useRef, useState } from "react";
 import { isStatementAsset } from "../../cas/holdings";
-import { certain, fromAmfi, pricedElsewhere } from "../../lib/amfi";
+import { addsAsset, certain, fromAmfi } from "../../lib/amfi";
 import type { ChosenFund } from "../../lib/choices";
 import { listingName } from "../../lib/fund-label";
 import { differs, fundName, fundQuery, planAndOption } from "../../lib/fund-name";
@@ -17,8 +17,11 @@ export type Search =
       results: ChosenFund[];
       /** A result is AMFI's, or a saved asset priced from AMFI. */
       amfi: boolean;
-      /** Wealthfolio already has the fund among them, priced from another source than AMFI. */
-      pricedElsewhere: boolean;
+      /**
+       * AMFI's new listing appears alongside a saved asset with another preferred provider or none.
+       * A printed ISIN search also counts saved assets the Review screen doesn't offer.
+       */
+      addsAsset: boolean;
     };
 
 /** The search the Review screen runs by itself: the printed ISIN, then the name when that finds nothing. */
@@ -133,11 +136,11 @@ export function useHoldingSearches(
   const update = (key: string, change: (s: ItemSearch) => ItemSearch) =>
     setSearches((all) => ({ ...all, [key]: change(all[key] ?? empty) }));
 
-  const done = (item: FundItem, found: SymbolSearchResult[]): Search => ({
+  const done = (item: FundItem, found: SymbolSearchResult[], returned = found): Search => ({
     status: "done",
     results: found.map((r) => choiceFor(item, r)),
     amfi: found.some(fromAmfi),
-    pricedElsewhere: found.some(fromAmfi) && found.some(pricedElsewhere),
+    addsAsset: addsAsset(returned),
   });
 
   const runAuto = async (item: FundItem) => {
@@ -160,7 +163,7 @@ export function useHoldingSearches(
         found = offered(item, await ctx.api.market.searchTicker(name));
         if (stale()) return;
       }
-      const search = done(item, found);
+      const search = done(item, found, byName ? found : results);
       update(key, (s) => ({ ...s, auto: { ...search, byName } }));
       answered(true);
       // AMFI's scheme for the printed ISIN is confirmed without a click when nothing contradicts it,

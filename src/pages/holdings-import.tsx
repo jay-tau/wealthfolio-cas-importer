@@ -2233,6 +2233,7 @@ export function HoldingsImport({
                       key={item.key}
                       item={item}
                       label={labelOf.get(item.key)!}
+                      action="save"
                       {...onStatement(item)}
                       search={searches.get(item.key)}
                       searches={searches}
