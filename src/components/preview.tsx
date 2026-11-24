@@ -193,7 +193,9 @@ export function ActivityTable({
   label: string;
 }) {
   const caveats = mapping.warnings.filter((w) => !w.leftOut);
-  const caveatsOf = (t: PlannedTransaction) => t.transaction.held && t.status !== "existing"
+  // The mapper's caveats say how a transaction is imported, so a transaction that can't be imported,
+  // or that waits for an answer about a fund whose rows don't add up, shows none.
+  const caveatsOf = (t: PlannedTransaction) => t.status === "invalid" || t.status === "held"
     ? []
     : caveats.filter((w) => w.rows[0] === t.transaction.rows[0]);
   return (
