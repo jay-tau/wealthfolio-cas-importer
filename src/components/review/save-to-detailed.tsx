@@ -140,12 +140,12 @@ export function SaveToDetailed({
     <section aria-labelledby={`${partId}-heading`} className="grid gap-3">
       {heading}
       <NumberedNote id={noteId} accounts={targets} named={Object.values(ignored).flatMap((i) => i.ids ?? [])} labels={labels} />
-      {boxes.map((box) => {
+      {boxes.map((box, index) => {
         const account = values[box.key] === LEFT_OUT ? "Don't import" : nameOf(box.key, funds);
         const bank = values[bankKey(box.key)];
         const bankName = bank === "" || bank === NO_BANK ? "None" : nameOf(bankKey(box.key), targets);
-        // Whether the box's funds' account is the one chosen last time, read with its select alone.
-        const rememberedId = `${partId}-${box.key}-remembered`;
+        // A folio under both names of a renamed fund house can share its storage key across boxes.
+        const rememberedId = `${partId}-${index}-remembered`;
         return (
           <div key={box.key} role="group" aria-labelledby={`${partId}-${box.key}-title`} className="grid gap-3 rounded-lg border p-4">
             <div className="grid gap-1">

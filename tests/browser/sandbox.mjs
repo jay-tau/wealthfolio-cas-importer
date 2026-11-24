@@ -279,6 +279,7 @@ const runBrowser = async (browser, engine) => {
         const follows = (a, b) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
         return {
           text: note.textContent,
+          visible: note.checkVisibility({ visibilityProperty: true }),
           inBox: box.contains(note),
           afterSelect: follows(select, note),
           beforeOthers: [...box.querySelectorAll('[data-slot="select-trigger"], [aria-expanded]')].filter((e) => e !== select).every((e) => follows(note, e)),
@@ -287,7 +288,7 @@ const runBrowser = async (browser, engine) => {
             .map((e) => e === select),
         };
       });
-      assert.deepEqual(found, { text, inBox: true, afterSelect: true, beforeOthers: true, readBy: [true] });
+      assert.deepEqual(found, { text, visible: true, inBox: true, afterSelect: true, beforeOthers: true, readBy: [true] });
     });
     // A clipped parent can hide overflow without changing the document's scroll width.
     const textFits = timed("textFits", async (locator, what) => {

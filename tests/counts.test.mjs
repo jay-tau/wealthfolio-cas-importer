@@ -613,7 +613,7 @@ test("on the detailed Save to, the note on numbered accounts is read with the ba
   assert.ok(text("SaveToDetailed", props).includes("A number after a name, as in Card (account 1), is the account's place"));
   const markup = renderToStaticMarkup(createElement(components.SaveToDetailed, props));
   const describedBy = (id) => markup.match(new RegExp(`<[^>]*\\sid="${id}"[^>]*>`))[0].match(/aria-describedby="([^"]*)"/)?.[1].split(" ") ?? [];
-  assert.deepEqual(describedBy("pan"), ["save-to-pan-remembered"]);
+  assert.deepEqual(describedBy("pan"), ["save-to-0-remembered"]);
   assert.ok(describedBy("bank-pan").includes("save-to-numbered"));
 });
 
@@ -659,39 +659,51 @@ test("each Save to box says under its account choice whether it was chosen last 
   });
   const remembered = renderToStaticMarkup(createElement(components.SaveTo, holdings()));
   const box = boxAround(remembered, "pan");
-  inOrder(box, [' id="pan"', '<p id="save-to-remembered" class="text-muted-foreground w-full text-sm">Chosen last time.</p>']);
+  inOrder(box, [' id="pan"', '<p id="save-to-remembered"', ">Chosen last time.</p>"]);
   // Save part of it to another account is below the box, on its own line.
   assert.ok(!box.includes('id="save-to-part"'));
   inOrder(remembered, [box, 'id="save-to-part"']);
   assert.deepEqual(describing(remembered, "save-to-remembered"), ["pan"]);
-  // A new account's line and a Chosen before line come first.
-  const chosen = renderToStaticMarkup(createElement(components.SaveTo, holdings({
-    values: { pan: "new-account:pan" }, ignored: { pan: { ids: [], name: "Old" } }, remembered: false,
+  // An unavailable remembered account asks the investor to choose again.
+  const unavailable = renderToStaticMarkup(createElement(components.SaveTo, holdings({
+    values: { pan: null }, ignored: { pan: { name: "Old" } }, remembered: false,
   }))).replaceAll("&#x27;", "'");
-  inOrder(boxAround(chosen, "pan"), [' id="pan"', "NEW LINE", "Chosen before: Old, which doesn't track holdings", ">Used again for your next statement.</p>"]);
-  assert.deepEqual(describing(chosen, "save-to-remembered"), ["pan"]);
+  inOrder(boxAround(unavailable, "pan"), [' id="pan"', "Chosen before: Old, which doesn't track holdings", ">Used again for your next statement.</p>"]);
+  const proposed = renderToStaticMarkup(createElement(components.SaveTo, holdings({ values: { pan: "new-account:pan" }, remembered: false })));
+  inOrder(boxAround(proposed, "pan"), [' id="pan"', "NEW LINE", ">Used again for your next statement.</p>"]);
 
-  // A family statement: one box's account was chosen last time, the other's on this read.
-  const accounts = [{ id: "mf", name: "Mutual funds", currency: "INR", trackingMode: "TRANSACTIONS" }];
-  const boxes = ["one", "two"].map((key) => ({ key, name: key, title: `${key}'s funds`, pan: true, folios: [] }));
-  const markup = renderToStaticMarkup(createElement(components.SaveToDetailed, {
+  // A no-PAN folio's account was found under its fund house's former name. The PAN's is new.
+  const accounts = ["mf", "other"].map((id) => ({ id, name: "Mutual funds", currency: "INR", trackingMode: "TRANSACTIONS" }));
+  const folio = { amc: "Bandhan Mutual Fund", folio: "123" };
+  const folioBox = { key: folioKey(folio), name: "A. Investor", title: "Bandhan Mutual Fund folio 123 (no PAN printed)", pan: false, folios: [] };
+  const panBox = { key: "two", name: "B. Investor", title: "B. Investor's funds", pan: true, folios: [] };
+  const detailed = (boxes, formerNames = {}) => renderToStaticMarkup(createElement(components.SaveToDetailed, {
     boxes, targets: accounts, funds: accounts, labels: accountLabels(accounts),
     proposed: (key) => ({ id: `new-account:${key}`, name: "Mutual funds 2" }), newLine: (key) => createElement("p", null, `NEW LINE ${key}`),
-    values: { one: "mf", "bank-one": "", two: "new-account:two", "bank-two": "" }, ignored: { two: { ids: [], name: "Old" } },
-    formerNames: { two: "IDFC Mutual Fund" }, conflicts: new Set(), remembered: new Set(["one"]), open: {}, onOpen() {}, onChange() {},
+    values: { [folioBox.key]: "mf", [bankKey(folioBox.key)]: "", two: "new-account:two", "bank-two": "" }, ignored: {},
+    formerNames, conflicts: new Set(), remembered: new Set([folioBox.key]), open: {}, onOpen() {}, onChange() {},
     checks: () => null, partId: "save-to",
   })).replaceAll("&#x27;", "'");
-  const note = (text) => `class="text-muted-foreground w-full text-sm">${text}</p>`;
-  const [one, two] = ["one", "two"].map((key) => boxAround(markup, key));
-  inOrder(one, [' id="one"', `<p id="save-to-one-remembered" ${note("Chosen last time.")}`, ' id="bank-one"', ' id="save-to-one-part"']);
-  inOrder(two, [' id="two"', "NEW LINE two", "Chosen before: Old", "Chosen before, when this fund house was IDFC Mutual Fund.",
-    `<p id="save-to-two-remembered" ${note("Used again for your next statement.")}`, ' id="bank-two"', ' id="save-to-two-part"']);
-  assert.ok(!one.includes("save-to-two-remembered") && !two.includes("save-to-one-remembered"));
-  assert.deepEqual(describing(markup, "save-to-one-remembered"), ["one"]);
-  assert.deepEqual(describing(markup, "save-to-two-remembered"), ["two"]);
+  const markup = detailed([folioBox, panBox], { [folioBox.key]: "IDFC Mutual Fund" });
+  const [one, two] = [folioBox, panBox].map(({ key }) => boxAround(markup, key));
+  inOrder(one, [` id="${folioBox.key}"`, "Chosen before, when this fund house was IDFC Mutual Fund.",
+    '<p id="save-to-0-remembered"', ">Chosen last time.</p>", ` id="${bankKey(folioBox.key)}"`]);
+  inOrder(two, [' id="two"', "NEW LINE two", '<p id="save-to-1-remembered"', ">Used again for your next statement.</p>", ' id="bank-two"', ' id="save-to-two-part"']);
+  assert.match(one, /aria-describedby="save-to-numbered save-to-0-remembered"/);
+  assert.match(two, /aria-describedby="save-to-numbered save-to-1-remembered"/);
+  assert.deepEqual(describing(markup, "save-to-0-remembered"), [folioBox.key]);
+  assert.deepEqual(describing(markup, "save-to-1-remembered"), [panBox.key]);
   // Nothing under the boxes speaks for all of them.
   assert.ok(markup.endsWith(`${two}</section>`), markup.slice(-300));
   assert.ok(!markup.includes("where there was one"));
+
+  // The parser can return the same folio under both names. The rendered notes have separate IDs.
+  const former = { ...folioBox, key: folioKey({ ...folio, amc: "IDFC Mutual Fund" }), title: "IDFC Mutual Fund folio 123 (no PAN printed)" };
+  assert.equal(former.key, folioBox.key);
+  const split = detailed([folioBox, former]);
+  assert.deepEqual([...split.matchAll(/<p id="(save-to-\d+-remembered)"/g)].map(([, id]) => id), ["save-to-0-remembered", "save-to-1-remembered"]);
+  assert.deepEqual(describing(split, "save-to-0-remembered"), [folioBox.key]);
+  assert.deepEqual(describing(split, "save-to-1-remembered"), [former.key]);
 });
 
 /** A search state with nothing searched yet, and searches that do nothing, for rendering a question. */
