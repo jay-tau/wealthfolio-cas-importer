@@ -502,6 +502,7 @@ export function ImportResult({
   outcomes,
   closing,
   links,
+  chosen,
   transactions,
   fundName,
   place,
@@ -524,6 +525,11 @@ export function ImportResult({
   outcomes: ImportOutcome[];
   closing: ClosingCheck;
   links: BankLink[];
+  /**
+   * The bank entries chosen for the import, linked or not: one whose trade Wealthfolio refused, or
+   * that waits for Try again, has no link yet.
+   */
+  chosen: number;
   /** The transactions the review approved, to name those of the rows Wealthfolio rejected or skipped. */
   transactions: PlannedTransaction[];
   /** The name each transaction's fund goes by on the Review screen, with its folio when needed. */
@@ -552,6 +558,7 @@ export function ImportResult({
     if (focusDropped()) title.current?.focus();
   }, []);
   const failedLinks = links.filter((l) => l.stage);
+  const linked = links.length - failedLinks.length;
   const changedLinks = links.filter((l) => l.changes.length || l.warnings.length);
   const failed = rowsLines(
     result.activities.filter((a) => Object.keys(a.errors ?? {}).length > 0), transactions, fundName, place, accountName, rejection);
@@ -653,10 +660,11 @@ export function ImportResult({
             </AlertDescription>
           </Alert>
         )}
-        {links.length > failedLinks.length && (
+        {linked > 0 && (
           <p id={ids.linked} tabIndex={-1}>
-            <Mark ok /> Linked {links.length - failedLinks.length} of {plural(links.length, "bank entry", "bank entries")} you chose with{" "}
-            {links.length === 1 ? "its transaction" : "their transactions"}.
+            <Mark ok /> Linked{" "}
+            {linked === chosen ? every(chosen, "bank entry", "bank entries") : `${linked} of ${plural(chosen, "bank entry", "bank entries")}`} you chose with{" "}
+            {chosen === 1 ? "its transaction" : "their transactions"}.
           </p>
         )}
         {failedLinks.length > 0 && (

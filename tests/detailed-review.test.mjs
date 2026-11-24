@@ -1871,6 +1871,12 @@ function shownResult(run) {
     buttons: [...html.matchAll(/<button[^>]*>(.*?)<\/button>/g)].map(([, button]) => button.replace(/<[^>]+>/g, "")),
   };
 }
+/** The import result's line that counts the bank entries linked, if it shows one. */
+function linkedLine(run) {
+  const html = markup(nodes(run.tree).find((node) => node.type?.name === "ImportResult"));
+  const line = html.match(/<p[^>]* id="[^"]*-result-linked"[^>]*>(.*?)<\/p>/);
+  return line && line[1].replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").replace(/ ([.,])/g, "$1").trim();
+}
 /** The live region's words, once its delay is over. */
 async function announced(run) {
   await new Promise((resolve) => setTimeout(resolve, 85));
@@ -1891,6 +1897,7 @@ test("equal linked purchases say which they are in the result's failed links, th
   find(run, "Footer").action.onClick();
   await run.flush();
   assert.deepEqual(find(run, "ImportResult").links.map((l) => l.stage), ["transfer", "transfer", "transfer"]);
+  assert.equal(linkedLine(run), null, "none linked, so no line counts them");
   const unlinked = "The trade is in Wealthfolio, but the fund account's transfer wasn't added, so the bank entry of 5 May 2023 wasn't linked.";
   const failed = shownResult(run);
   assert.deepEqual(failed.lines.filter((line) => line.startsWith("✗ Purchase")), purchases.map((p) =>
@@ -1904,14 +1911,42 @@ test("equal linked purchases say which they are in the result's failed links, th
   for (const p of purchases) assert.ok(notice.includes(`${title(p)}: ${unlinked} Try again to link the bank entry.`), notice);
   // Each linked once tried again, each changed entry names its transaction the same way.
   failing.create = false;
+  // Each Try again counts the entries linked out of all chosen, and every one once they all are.
+  const counts = [];
   for (const i of [0, 1, 2]) {
     const result = find(run, "ImportResult");
     result.onRetryLink(result.links[i]);
     await run.flush();
+    counts.push(linkedLine(run));
   }
+  assert.deepEqual(counts, [
+    "✓ Linked 1 of 3 bank entries you chose with their transactions.",
+    "✓ Linked 2 of 3 bank entries you chose with their transactions.",
+    "✓ Linked all 3 bank entries you chose with their transactions.",
+  ]);
   assert.deepEqual(find(run, "ImportResult").links.map((l) => l.stage), [undefined, undefined, undefined]);
   assert.deepEqual(shownResult(run).lines.filter((line) => line.startsWith("The withdrawal")), purchases.map((p) =>
     `The withdrawal of ₹24,998.75 on 5 May 2023 in Savings (NEFT FICTIVA MF), for the ${p}: Any split it had across spending categories was deleted.`));
+});
+
+test("a bank entry chosen for a trade Wealthfolio refused before linking counts among those chosen", async () => {
+  const { run, api, imported } = await equalLinks();
+  // The first try refuses the first purchase, so its entry never reaches linking; the second imports the rest.
+  api.activities.import = async (rows) => {
+    imported.push(rows);
+    const first = imported.length === 1;
+    const refused = rows.find((r) => r.activityType === "BUY");
+    return {
+      activities: rows.map((r) => first && r === refused ? { ...r, isValid: false, errors: { symbol: ["The fund could not be created"] } } : { ...r }),
+      summary: { success: !first, total: rows.length, imported: first ? 0 : rows.length, duplicates: 0, assetsCreated: 0 },
+    };
+  };
+  find(run, "Footer").action.onClick();
+  await run.flush();
+  assert.equal(imported.length, 2);
+  const result = find(run, "ImportResult");
+  assert.deepEqual([result.links.length, result.links.filter((l) => l.stage).length, result.chosen], [2, 0, 3]);
+  assert.equal(linkedLine(run), "✓ Linked 2 of 3 bank entries you chose with their transactions.");
 });
 
 test("a linked purchase keeps its statement number in the result when an equal one is skipped", async () => {
@@ -5229,6 +5264,8 @@ test("an account's retry converts the freshly checked entry after a time edit wi
   // 02:00 and 06:00 on 28 Dec in India fall on different UTC days.
   const dividend = { ...ENTRIES[0], date: "2023-12-27T20:30:00Z", sourceSystem: "MANUAL" };
   const { run, api, key, activities } = await withHeldFolio({ dividend, timeZone: "Asia/Kolkata" });
+  assert.equal(find(run, "ImportResult").chosen, 1, "the held dividend's entry still counts");
+  assert.equal(linkedLine(run), null);
   const latest = { ...dividend, date: "2023-12-28T00:30:00Z", comment: "Edited TESTBRIDGE MF IDCW", isUserModified: true };
   activities[activities.findIndex((a) => a.id === dividend.id)] = latest;
   const updates = [];
@@ -5238,6 +5275,7 @@ test("an account's retry converts the freshly checked entry after a time edit wi
   await run.flush();
   assert.deepEqual(updates.map((row) => [row.id, row.activityDate, row.comment]), [[latest.id, latest.date, latest.comment]]);
   assert.equal(find(run, "ImportResult").outcomes.find((a) => a.key === key).state, "imported");
+  assert.equal(linkedLine(run), "✓ Linked the bank entry you chose with its transaction.");
 });
 
 for (const message of ["Duplicate activity", "", "Network unavailable"]) {
@@ -5309,7 +5347,10 @@ test("a transaction found after a duplicate refusal names its bank entry on its 
   };
   find(run, "ImportResult").onRetryAccount(key);
   await run.flush();
-  assert.deepEqual(find(run, "ImportResult").found.map((f) => f.entryDay), ["2023-12-28"]);
+  const result = find(run, "ImportResult");
+  assert.deepEqual(result.found.map((f) => f.entryDay), ["2023-12-28"]);
+  assert.equal(result.chosen, 1, "the found dividend's entry still counts");
+  assert.equal(linkedLine(run), null);
   const lines = shownResult(run).lines;
   assert.ok(lines.some((line) => line.includes("so it wasn't imported again, nor linked with the bank entry of 28 Dec 2023.")), lines.join(" | "));
 });

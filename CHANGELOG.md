@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 ### Changed
+- Say "the", "both" or "all" in a detailed import's result when every bank entry you chose is linked: "Linked the bank entry you chose with its transaction.", "Linked both bank entries you chose with their transactions." or "Linked all 3 bank entries you chose with their transactions." When only some are linked, the line counts them out of every entry chosen for the import, including one whose trade Wealthfolio rejected before it could be linked, as in "Linked 1 of 2 bank entries you chose with their transactions." It counts the same way after **Try again**, and shows only once at least one entry is linked. Before, it read "Linked 2 of 2 bank entries you chose with their transactions." when both were linked, and "Linked 1 of 1 bank entry you chose with its transaction." when one of two was linked and the other's trade was rejected
 
 ### Deprecated
 

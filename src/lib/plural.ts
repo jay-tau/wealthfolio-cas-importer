@@ -10,5 +10,8 @@ export const bothOrAll = (count: number, start = false) => {
   return start ? `${words.charAt(0).toUpperCase()}${words.slice(1)}` : words;
 };
 
-/** Say "the fund", "both funds" or "all 3 funds" with a noun that takes an "s" plural. */
-export const every = (count: number, noun: string) => (count === 1 ? `the ${noun}` : `${bothOrAll(count)} ${noun}s`);
+/**
+ * Say "the fund", "both funds" or "all 3 funds", with the noun's plural when it isn't an added "s":
+ * "both bank entries".
+ */
+export const every = (count: number, noun: string, nouns = `${noun}s`) => (count === 1 ? `the ${noun}` : `${bothOrAll(count)} ${nouns}`);
