@@ -203,6 +203,9 @@ const engines = { chromium, firefox, webkit };
 const sandboxUrl = "http://sandbox.test/";
 const noCspUrl = `${sandboxUrl}no-csp`;
 let failed = false;
+// #246 experiment: repeat the AMFI recheck flow, with the add-on's renderer slowed SLOW_246 times.
+const repeat246 = Number(process.env.REPEAT_246 || 0);
+const slow246 = Number(process.env.SLOW_246 || 1);
 const runBrowser = async (browser, engine) => {
   const tab = await browser.newPage();
   tab.setDefaultTimeout(30_000);
@@ -5054,6 +5057,8 @@ const runBrowser = async (browser, engine) => {
     // A summary import creates an AMFI fund without an exchange. Searching its ISIN then finds that
     // asset, even if automatic updates have since been turned off. Every fund's ISIN finds one AMFI
     // scheme, so once AMFI is added, each is confirmed without a click.
+    // #246 experiment: the flow is a function, run once, or REPEAT_246 times before the run ends.
+    const flow246 = async (times) => {
     await hosted(() => {
       window.host.providers = "";
       window.host.storage.clear();
@@ -5067,8 +5072,11 @@ const runBrowser = async (browser, engine) => {
     });
     // Opening the page again checks AMFI again: Wealthfolio now says it's off.
     await revisit();
+    times.start = performance.now();
     await readHoldings();
+    times.read = performance.now();
     await choose("investor", "Fund folios (INR)");
+    times.chose = performance.now();
     // With AMFI off, Questions for you says so above its cards, and offers Market data settings. They
     // were opened from the banner before, so I've added AMFI: check is offered already; AMFI on, the
     // funds are searched again, find AMFI's schemes and are confirmed without a click.
@@ -5087,6 +5095,50 @@ const runBrowser = async (browser, engine) => {
     const schemeCodes = await readyRows.evaluateAll((all) => all.map((row) => row.textContent.match(/Scheme (\d{6})/)[1]));
     assert.equal(schemeCodes.length, 6);
     assert.equal(new Set(schemeCodes).size, schemeCodes.length, "different funds have different AMFI scheme codes");
+    };
+    if (repeat246) {
+      // The add-on's frame and its CPU slowdown: out of process, a session of its own; else the page's.
+      const workload = () => hosted(() => {
+        const start = performance.now();
+        let x = 0;
+        for (let i = 0; i < 2e7; i++) x = (x + i) % 1e9;
+        return Math.round(performance.now() - start);
+      });
+      const before = await workload();
+      let target = "add-on frame (out of process)";
+      let session;
+      try {
+        session = await tab.context().newCDPSession(tab.frames()[1]);
+      } catch {
+        target = "page (frame in process)";
+        session = await tab.context().newCDPSession(tab);
+      }
+      if (slow246 > 1) await session.send("Emulation.setCPUThrottlingRate", { rate: slow246 });
+      console.log(`#246 setup: ${engine}, slowdown ${slow246}x on the ${target}; busy loop ${before} ms before, ${await workload()} ms after`);
+      let passed = 0;
+      const failures = [];
+      for (let rep = 1; rep <= repeat246; rep++) {
+        const times = {};
+        const start = performance.now();
+        try {
+          // Each repetition starts with AMFI off again; the first already has it off.
+          await hosted(() => { window.host.amfi = false; });
+          await flow246(times);
+          passed++;
+          const ms = (a, b) => Math.round((b ?? performance.now()) - a);
+          console.log(`#246 rep ${rep}/${repeat246} passed in ${ms(start)} ms: read ${ms(times.start, times.read)} ms, choose+settle ${ms(times.read, times.chose)} ms`);
+        } catch (error) {
+          failures.push(rep);
+          console.log(`#246 rep ${rep}/${repeat246} FAILED after ${Math.round(performance.now() - start)} ms: ${error.stack}`);
+          await reportState(tab, sandboxUrl, errors);
+          if (failures.length >= 3) break;
+        }
+      }
+      console.log(`#246 summary: ${engine}, slowdown ${slow246}x, ${passed + failures.length} repetitions, ${passed} passed, ${failures.length} failed${failures.length ? ` (repetitions ${failures.join(", ")})` : ""}`);
+      if (failures.length) failed = true;
+      return;
+    }
+    await flow246({});
     // Skips every fund but the Liquid fund, and `also` when given, from their rows.
     const skipOthersThanLiquid = async (also) => {
       const kept = also ? new RegExp(`${escaped(liquidName)}|${escaped(also)}`) : liquidName;

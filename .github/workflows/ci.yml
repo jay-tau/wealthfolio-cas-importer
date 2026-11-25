@@ -11,91 +11,17 @@ permissions:
   contents: read
 
 jobs:
-  test:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    outputs:
-      zip-sha256: ${{ steps.zip.outputs.sha256 }}
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/cache@v6
-        with:
-          path: .cache/runtime
-          key: runtime-${{ hashFiles('pnpm-lock.yaml', 'runtime.json', 'runtime-requirements.txt') }}
-      # Downloads the pinned files, and fails if a release has no wheel Pyodide can load.
-      - run: pnpm runtime
-      - run: pnpm lint
-      - run: pnpm test
-      - run: pnpm test:casparser
-      # Builds the add-on and checks the zip against Wealthfolio's limits.
-      - run: pnpm bundle
-      # The windows job must build the same zip.
-      - id: zip
-        run: echo "sha256=$(sha256sum dist/*.zip | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
-      # A release publishes this zip.
-      - if: github.ref_type == 'tag'
-        uses: actions/upload-artifact@v7
-        with:
-          name: package
-          path: dist/*.zip
-          if-no-files-found: error
-
-  # Git for Windows sets core.autocrlf=true, which checks text files out with CRLF line endings
-  # unless .gitattributes says otherwise. Builds the zip in such a checkout and compares it with
-  # the test job's.
-  windows:
-    needs: test
-    runs-on: windows-2025
-    timeout-minutes: 30
-    steps:
-      - run: git config --global core.autocrlf true
-      - uses: actions/checkout@v7
-      - uses: pnpm/action-setup@v6
-        with:
-          version: 10
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - uses: actions/cache@v6
-        with:
-          path: .cache/runtime
-          key: runtime-${{ hashFiles('pnpm-lock.yaml', 'runtime.json', 'runtime-requirements.txt') }}
-      - run: pnpm bundle
-      - name: Compare the zip with Ubuntu's
-        shell: bash
-        env:
-          UBUNTU: ${{ needs.test.outputs.zip-sha256 }}
-        run: |
-          windows=$(sha256sum dist/*.zip | cut -d ' ' -f 1)
-          echo "Ubuntu:  $UBUNTU"
-          echo "Windows: $windows"
-          if [ -z "$UBUNTU" ] || [ "$windows" != "$UBUNTU" ]; then
-            echo "::error::Windows built a different zip"
-            exit 1
-          fi
-
-  # A job per browser, run side by side. One failing doesn't cancel the others, and CI fails if any
-  # of them does.
-  browser:
+  # #246 experiment, not for merging: repeats the AMFI recheck flow in Chromium, 25 times a job,
+  # normally and with the add-on's renderer slowed 4 times.
+  repro-246:
+    name: "#246 chromium slow ${{ matrix.slow }}x, shard ${{ matrix.shard }}"
     strategy:
       fail-fast: false
       matrix:
-        browser: [chromium, firefox, webkit]
+        slow: [1, 4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
-    # Playwright's image has Node 24, the browsers and the Ubuntu packages they need; downloading
-    # those packages took some runs past the time limit. Its tag must match playwright-core in
-    # package.json, so change the two together.
+    timeout-minutes: 120
     container:
       image: mcr.microsoft.com/playwright:v1.64.1-noble
       options: --user 1001
@@ -110,4 +36,8 @@ jobs:
           path: .cache/runtime
           key: runtime-${{ hashFiles('pnpm-lock.yaml', 'runtime.json', 'runtime-requirements.txt') }}
       - run: pnpm runtime
-      - run: pnpm test:browser ${{ matrix.browser }}
+      - run: nproc && free -m
+      - run: pnpm test:browser chromium
+        env:
+          REPEAT_246: 25
+          SLOW_246: ${{ matrix.slow }}
